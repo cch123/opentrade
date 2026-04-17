@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package opentrade.event;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/event;event";
+
+// -----------------------------------------------------------------------------
+// counter-journal events — Counter's normalized WAL. See ADR-0004.
+//
+// Partition key: user_id.
+// Consumed by: Counter backup (state replay), trade-dump (MySQL), push (user
+// private channel).
+// -----------------------------------------------------------------------------
+
+// Snapshot of a balance for a given (user, asset) pair. Included in every
+// journal event so that replay / audit can be done without cross-referencing.
+message BalanceSnapshot {
+  string user_id = 1;
+  string asset = 2;
+  string available = 3;  // decimal string
+  string frozen = 4;     // decimal string
+}
+
+// Event envelope for counter-journal.
+message CounterJournalEvent {
+  EventMeta meta = 1;
+
+  oneof payload {
+    FreezeEvent       freeze        = 10;
+    UnfreezeEvent     unfreeze      = 11;
+    SettlementEvent   settlement    = 12;
+    TransferEvent     transfer      = 13;
+    OrderStatusEvent  order_status  = 14;
+    CancelRequested   cancel_req    = 15;
+  }
+}
+
+// Funds frozen as result of PlaceOrder.
+message FreezeEvent {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string client_order_id = 3;
+  string symbol = 4;
+  Side side = 5;
+  OrderType order_type = 6;
+  TimeInForce tif = 7;
+  string price = 8;             // decimal; empty for market
+  string qty = 9;                // decimal
+  string freeze_asset = 10;
+  string freeze_amount = 11;    // decimal
+  BalanceSnapshot balance_after = 12;
+}
+
+// Reverse of freeze (Match rejected, full cancel without fill, etc.).
+message UnfreezeEvent {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string asset = 3;
+  string amount = 4;
+  BalanceSnapshot balance_after = 5;
+}
+
+// Settlement of a trade — Counter consumes trade-event and produces this.
+message SettlementEvent {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string trade_id = 3;
+  string symbol = 4;
+  Side side = 5;
+
+  // What happens to balances:
+  //   delta_base:   signed change to base asset available
+  //   delta_quote:  signed change to quote asset available
+  //   unfreeze_base / unfreeze_quote: amount released from frozen
+  //   fee_asset / fee_amount: fee paid (deducted from settlement)
+  string price = 10;
+  string qty = 11;
+  string delta_base = 12;
+  string delta_quote = 13;
+  string unfreeze_base = 14;
+  string unfreeze_quote = 15;
+  string fee_asset = 16;
+  string fee_amount = 17;
+
+  BalanceSnapshot base_balance_after = 20;
+  BalanceSnapshot quote_balance_after = 21;
+}
+
+// Non-order fund movement (deposit / withdraw / freeze / unfreeze).
+message TransferEvent {
+  enum TransferType {
+    TRANSFER_TYPE_UNSPECIFIED = 0;
+    TRANSFER_TYPE_DEPOSIT = 1;
+    TRANSFER_TYPE_WITHDRAW = 2;
+    TRANSFER_TYPE_FREEZE = 3;
+    TRANSFER_TYPE_UNFREEZE = 4;
+  }
+
+  string user_id = 1;
+  string transfer_id = 2;       // idempotency key
+  string asset = 3;
+  string amount = 4;
+  TransferType type = 5;
+  string biz_ref_id = 6;
+  string memo = 7;
+  BalanceSnapshot balance_after = 8;
+}
+
+// Status transition of an order (purely informational for consumers that
+// materialize order state, e.g. push / trade-dump).
+message OrderStatusEvent {
+  string user_id = 1;
+  uint64 order_id = 2;
+  InternalOrderStatus old_status = 3;
+  InternalOrderStatus new_status = 4;
+  string filled_qty = 5;
+  RejectReason reject_reason = 6; // set when new_status = REJECTED
+}
+
+// Cancel has been received by Counter and forwarded to Match.
+message CancelRequested {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string symbol = 3;
+}

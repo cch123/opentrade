@@ -76,7 +76,7 @@
 ### go.work 示例
 
 ```
-go 1.22
+go 1.26
 
 use (
     ./api

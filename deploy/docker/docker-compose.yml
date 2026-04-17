@@ -1,0 +1,123 @@
+# OpenTrade local development dependencies.
+#
+# Requirements: Colima (or Docker Desktop / OrbStack). On Colima:
+#   brew install colima docker docker-compose
+#   colima start --cpu 2 --memory 4
+#   cd deploy/docker && docker compose up -d
+#
+# Exposed ports on localhost:
+#   9092  Kafka (KRaft mode, single broker)
+#   2379  etcd v3 client
+#   3306  MySQL 8
+#   9000  MinIO S3 API
+#   9001  MinIO console UI
+#   8080  (optional) kafka-ui
+
+services:
+  kafka:
+    image: bitnami/kafka:3.8
+    container_name: opentrade-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft (no ZooKeeper)
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # dev-friendly defaults
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_NUM_PARTITIONS: "4"
+      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_CFG_MIN_INSYNC_REPLICAS: "1"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    volumes:
+      - kafka-data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  etcd:
+    image: bitnami/etcd:3.5
+    container_name: opentrade-etcd
+    ports:
+      - "2379:2379"
+    environment:
+      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://localhost:2379"
+      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+    volumes:
+      - etcd-data:/bitnami/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  mysql:
+    image: mysql:8.0
+    container_name: opentrade-mysql
+    command: --default-authentication-plugin=caching_sha2_password --sql-mode=STRICT_ALL_TABLES
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "root"
+      MYSQL_DATABASE: "opentrade"
+      MYSQL_USER: "opentrade"
+      MYSQL_PASSWORD: "opentrade"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: opentrade-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: "minioadmin"
+      MINIO_ROOT_PASSWORD: "minioadmin"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # Optional — browse Kafka topics in a web UI.
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: opentrade-kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "opentrade"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:9092"
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      - kafka
+    profiles:
+      - ui   # `docker compose --profile ui up -d` to include
+
+volumes:
+  kafka-data:
+  etcd-data:
+  mysql-data:
+  minio-data:

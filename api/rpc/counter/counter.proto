@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package opentrade.rpc.counter;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/rpc/counter;counterrpc";
+
+// -----------------------------------------------------------------------------
+// Counter gRPC service. Called by BFF (PlaceOrder / Cancel / Query) and by
+// privileged internal services (Transfer).
+// -----------------------------------------------------------------------------
+
+service CounterService {
+  // PlaceOrder accepts a new order. The response returns once the order has
+  // been persisted to counter-journal and dispatched to Match. The matching
+  // outcome is asynchronous — delivered via WS or Query (see ADR-0007).
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+
+  // CancelOrder requests cancellation of an existing order. The response
+  // returns once the cancel has been forwarded to Match; the final cancel
+  // confirmation is asynchronous.
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+
+  // Transfer is the unified entrypoint for non-trading asset movements
+  // (deposit / withdraw / freeze / unfreeze). See ADR-0011.
+  rpc Transfer(TransferRequest) returns (TransferResponse);
+
+  // Query an order by id (returns internal status; callers may project to
+  // external status). Returns NOT_FOUND if the order does not exist on this
+  // shard.
+  rpc QueryOrder(QueryOrderRequest) returns (QueryOrderResponse);
+
+  // Query balances for a user.
+  rpc QueryBalance(QueryBalanceRequest) returns (QueryBalanceResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Place / Cancel
+// -----------------------------------------------------------------------------
+
+message PlaceOrderRequest {
+  string user_id = 1;
+  string client_order_id = 2;                    // optional
+  string symbol = 3;
+  opentrade.event.Side side = 4;
+  opentrade.event.OrderType order_type = 5;
+  opentrade.event.TimeInForce tif = 6;
+  string price = 7;                              // empty for market
+  string qty = 8;
+}
+
+message PlaceOrderResponse {
+  uint64 order_id = 1;
+  string client_order_id = 2;
+  // Whether this is a new order (false means dedup hit — returning the
+  // existing active order, see ADR-0015).
+  bool accepted = 3;
+  int64 received_ts_unix_ms = 4;
+}
+
+message CancelOrderRequest {
+  string user_id = 1;
+  uint64 order_id = 2;
+}
+
+message CancelOrderResponse {
+  uint64 order_id = 1;
+  // True if the cancel was forwarded to Match. The final CANCELED/FILLED
+  // result arrives asynchronously.
+  bool accepted = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Transfer
+// -----------------------------------------------------------------------------
+
+enum TransferType {
+  TRANSFER_TYPE_UNSPECIFIED = 0;
+  TRANSFER_TYPE_DEPOSIT = 1;
+  TRANSFER_TYPE_WITHDRAW = 2;
+  TRANSFER_TYPE_FREEZE = 3;
+  TRANSFER_TYPE_UNFREEZE = 4;
+}
+
+enum TransferStatus {
+  TRANSFER_STATUS_UNSPECIFIED = 0;
+  TRANSFER_STATUS_CONFIRMED = 1;
+  TRANSFER_STATUS_REJECTED = 2;
+  TRANSFER_STATUS_DUPLICATED = 3; // dedup hit; result cached
+}
+
+message TransferRequest {
+  string user_id = 1;
+  string transfer_id = 2;  // idempotency key
+  string asset = 3;
+  string amount = 4;
+  TransferType type = 5;
+  string biz_ref_id = 6;
+  string memo = 7;
+}
+
+message TransferResponse {
+  string transfer_id = 1;
+  TransferStatus status = 2;
+  string reject_reason = 3;
+  string available_after = 4;
+  string frozen_after = 5;
+}
+
+// -----------------------------------------------------------------------------
+// Query
+// -----------------------------------------------------------------------------
+
+message QueryOrderRequest {
+  string user_id = 1;
+  uint64 order_id = 2;
+}
+
+message QueryOrderResponse {
+  uint64 order_id = 1;
+  string client_order_id = 2;
+  string symbol = 3;
+  opentrade.event.Side side = 4;
+  opentrade.event.OrderType order_type = 5;
+  opentrade.event.TimeInForce tif = 6;
+  string price = 7;
+  string qty = 8;
+  string filled_qty = 9;
+  string frozen_amt = 10;
+  opentrade.event.InternalOrderStatus status = 11;
+  int64 created_at_unix_ms = 12;
+  int64 updated_at_unix_ms = 13;
+}
+
+message QueryBalanceRequest {
+  string user_id = 1;
+  string asset = 2; // empty means return all assets
+}
+
+message QueryBalanceResponse {
+  repeated Balance balances = 1;
+}
+
+message Balance {
+  string asset = 1;
+  string available = 2;
+  string frozen = 3;
+}

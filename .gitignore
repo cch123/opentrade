@@ -1,0 +1,44 @@
+# Binaries
+bin/
+*.exe
+*.test
+*.out
+
+# Per-service stray binaries when running `go build` inside module dirs
+/bff/bff
+/counter/counter
+/match/match
+/push/push
+/quote/quote
+/trade-dump/trade-dump
+
+# Go
+/vendor/
+*.prof
+coverage.txt
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime
+*.log
+*.pid
+/data/
+/snapshots/
+/tmp/
+
+# Secrets
+.env
+.env.local
+*.secret.yaml
+
+# Claude artifacts
+.claude/

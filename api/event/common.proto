@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package opentrade.event;
+
+option go_package = "github.com/xargin/opentrade/api/gen/event;event";
+
+// -----------------------------------------------------------------------------
+// Common enums shared across events
+// -----------------------------------------------------------------------------
+
+// Side of an order.
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  SIDE_BUY = 1;
+  SIDE_SELL = 2;
+}
+
+// Order type.
+enum OrderType {
+  ORDER_TYPE_UNSPECIFIED = 0;
+  ORDER_TYPE_LIMIT = 1;
+  ORDER_TYPE_MARKET = 2;
+  ORDER_TYPE_STOP = 3;
+  ORDER_TYPE_STOP_LIMIT = 4;
+}
+
+// Time in force policy.
+enum TimeInForce {
+  TIME_IN_FORCE_UNSPECIFIED = 0;
+  TIME_IN_FORCE_GTC = 1;        // Good till cancel
+  TIME_IN_FORCE_IOC = 2;        // Immediate or cancel
+  TIME_IN_FORCE_FOK = 3;        // Fill or kill
+  TIME_IN_FORCE_POST_ONLY = 4;  // Reject if it would take liquidity
+}
+
+// Internal order status (8 states, recorded in journal; see ADR-0020).
+enum InternalOrderStatus {
+  INTERNAL_ORDER_STATUS_UNSPECIFIED = 0;
+  INTERNAL_ORDER_STATUS_PENDING_NEW = 1;
+  INTERNAL_ORDER_STATUS_NEW = 2;
+  INTERNAL_ORDER_STATUS_PARTIALLY_FILLED = 3;
+  INTERNAL_ORDER_STATUS_FILLED = 4;
+  INTERNAL_ORDER_STATUS_PENDING_CANCEL = 5;
+  INTERNAL_ORDER_STATUS_CANCELED = 6;
+  INTERNAL_ORDER_STATUS_REJECTED = 7;
+  INTERNAL_ORDER_STATUS_EXPIRED = 8;
+}
+
+// Rejection / expiration reasons emitted by Match.
+enum RejectReason {
+  REJECT_REASON_UNSPECIFIED = 0;
+  REJECT_REASON_INVALID_PRICE_TICK = 1;
+  REJECT_REASON_INVALID_LOT_SIZE = 2;
+  REJECT_REASON_POST_ONLY_WOULD_TAKE = 3;
+  REJECT_REASON_SELF_TRADE_PREVENTED = 4;
+  REJECT_REASON_SYMBOL_NOT_TRADING = 5;
+  REJECT_REASON_DUPLICATE_ORDER_ID = 6;
+  REJECT_REASON_FOK_NOT_FILLED = 7;
+  REJECT_REASON_INTERNAL = 99;
+}
+
+// Envelope metadata carried by every event. seq_id semantics vary by topic:
+//   - counter-journal: shard-level monotonic
+//   - trade-event:     per-symbol monotonic
+message EventMeta {
+  uint64 seq_id = 1;
+  int64 ts_unix_ms = 2;   // event generation time (wall clock, informational only)
+  string trace_id = 3;    // end-to-end request trace id
+  string producer_id = 4; // e.g. counter-shard-3-main, match-shard-0-main
+}

@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package opentrade.event;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/event;event";
+
+// -----------------------------------------------------------------------------
+// trade-event — Match → Counter / quote / trade-dump / push.
+//
+// Partition key: symbol.
+// See ADR-0003, 0020 (state transitions driven by this stream).
+// -----------------------------------------------------------------------------
+
+message TradeEvent {
+  EventMeta meta = 1;
+
+  oneof payload {
+    OrderAccepted  accepted  = 10;
+    OrderRejected  rejected  = 11;
+    Trade          trade     = 12;
+    OrderCancelled cancelled = 13;
+    OrderExpired   expired   = 14;
+  }
+}
+
+message OrderAccepted {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string symbol = 3;
+}
+
+message OrderRejected {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string symbol = 3;
+  RejectReason reason = 4;
+}
+
+// A trade produced when a taker matches a maker.
+message Trade {
+  string trade_id = 1;
+  string symbol = 2;
+  string price = 3;
+  string qty = 4;
+
+  // Maker side
+  string maker_user_id = 10;
+  uint64 maker_order_id = 11;
+
+  // Taker side
+  string taker_user_id = 20;
+  uint64 taker_order_id = 21;
+  Side   taker_side = 22;
+
+  // Post-trade order status (for both sides). These allow Counter / push to
+  // update order status without additional round-trips.
+  InternalOrderStatus maker_status_after = 30;
+  InternalOrderStatus taker_status_after = 31;
+  string maker_filled_qty_after = 32;
+  string taker_filled_qty_after = 33;
+}
+
+message OrderCancelled {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string symbol = 3;
+  string filled_qty = 4;  // how much was filled before cancel took effect
+}
+
+message OrderExpired {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string symbol = 3;
+  string filled_qty = 4;
+  RejectReason reason = 5;
+}

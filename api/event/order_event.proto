@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package opentrade.event;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/event;event";
+
+// -----------------------------------------------------------------------------
+// order-event — Counter → Match. See ADR-0003, 0004, 0005.
+//
+// Partition key: symbol.
+// Each event carries a counter_seq_id so Match can dedup (ADR-0015).
+// -----------------------------------------------------------------------------
+
+message OrderEvent {
+  EventMeta meta = 1;
+
+  oneof payload {
+    OrderPlaced placed = 10;
+    OrderCancel cancel = 11;
+  }
+}
+
+message OrderPlaced {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string client_order_id = 3;
+  string symbol = 4;
+  Side side = 5;
+  OrderType order_type = 6;
+  TimeInForce tif = 7;
+  string price = 8;    // empty for market
+  string qty = 9;
+
+  // For market / IOC etc. Counter may pre-freeze with an estimated cap;
+  // Match receives the actual cap so it can reject if mismatch.
+  string freeze_cap = 10;
+}
+
+message OrderCancel {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string symbol = 3;
+}

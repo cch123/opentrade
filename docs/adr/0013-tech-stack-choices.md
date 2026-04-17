@@ -12,7 +12,7 @@
 
 | 类别 | 选型 | 版本 |
 |---|---|---|
-| 语言 | Go | 1.22+ |
+| 语言 | Go | 1.26+ |
 | Kafka 客户端 | [twmb/franz-go](https://github.com/twmb/franz-go) | latest |
 | 配置/选主 | etcd v3 客户端 `go.etcd.io/etcd/client/v3` | latest |
 | RPC | gRPC (`google.golang.org/grpc`) | latest |
