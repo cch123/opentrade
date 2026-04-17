@@ -3,6 +3,8 @@
 版本：v0.1 (MVP 规划版)
 日期：2026-04-18
 
+> 本文档为总体架构概览；每一项具体技术决策（含备选方案、拒绝理由）记录在 [`docs/adr/`](./adr/README.md) 的独立 ADR 文件中。本文档变更应同时对应 ADR 更新。
+
 ---
 
 ## 1. 系统目标
@@ -59,6 +61,21 @@
 | **push** | WebSocket 连接维持；订阅关系管理；私有数据（订单/账户）+ 公共行情扇出 | 行情计算、业务状态 |
 | **quote**（旁路） | 消费 trade-event → 生成增量深度、逐笔、K 线 | 连接推送 |
 | **trade-dump**（旁路） | 消费 counter-journal + trade-event → 幂等写 MySQL | 在线查询 |
+
+### 4.1 定序组件（Sequencer）
+
+**Counter 和 Match 对定序有不同要求，采用差异化实现。** 详见 [ADR-0018](./adr/0018-counter-sequencer-fifo.md)、[ADR-0019](./adr/0019-match-sequencer-per-symbol-actor.md)。
+
+| 维度 | Counter Sequencer | Match Sequencer |
+|---|---|---|
+| 定序单元 | user_id | symbol |
+| 数量级 | 百万级（动态活跃） | <2000（静态配置） |
+| 实现 | 懒启动 per-user worker，30s idle 退出 | per-symbol 常驻 goroutine |
+| FIFO 保证 | Go channel | Go channel |
+| seq_id | shard 级单调（`atomic.Uint64`） | per-symbol 单调 |
+| 内存稳态 | 1-10 MB | ~16 MB |
+
+**关键原则**：**严格 FIFO 由 Go channel 语义保证；`sync.Mutex` 不是定序组件**（Go 的 mutex 允许新到 goroutine 在一定条件下插队，不能用作严格定序）。
 
 ## 5. 核心架构图
 
@@ -172,6 +189,23 @@
   - **Counter 主**：用 Kafka EOS 事务（`sendOffsetsToTransaction`）
   - **trade-dump**：MySQL UNIQUE 索引 + `INSERT ... ON DUPLICATE KEY UPDATE`
   - **Match**：按 `order_id` 业务去重（orderbook 自带）
+
+### 6.5 订单状态机
+
+采用 **Binance 风格：内部 8 态 + 外部 6 态**。详见 [ADR-0020](./adr/0020-order-state-machine.md)。
+
+**内部 8 态**（Counter 权威，写 journal）：
+`PENDING_NEW` / `NEW` / `PARTIALLY_FILLED` / `FILLED` / `PENDING_CANCEL` / `CANCELED` / `REJECTED` / `EXPIRED`
+
+**外部 6 态**（API / WS 对用户暴露）：
+`NEW` / `PARTIALLY_FILLED` / `FILLED` / `CANCELED` / `REJECTED` / `EXPIRED`
+
+PENDING_NEW 和 PENDING_CANCEL 仅在 Counter 内部可见（用于监控、排查、一致性校验），对外呈现为相邻的非 pending 态。
+
+**clientOrderId 幂等语义**（详见 [ADR-0015](./adr/0015-idempotency-at-counter.md)）：
+- 仅对**活跃订单**去重（NEW / PARTIALLY_FILLED / PENDING_* 期间占用）
+- 订单进入终态后，同一 clientOrderId 可复用（对齐 Binance/OKX）
+- 无需独立 dedup 表或 Redis TTL
 
 ## 7. Kafka Topic 设计
 
@@ -593,13 +627,27 @@ opentrade/
 
 ---
 
-## 附：核心决策摘要
+## 附：核心决策摘要（详细见 [`docs/adr/`](./adr/README.md)）
 
-1. **Kafka 即 Source of Truth**：不自建 WAL/Raft，复用 Kafka 的副本能力。
-2. **Counter 主备**：etcd lease 选主，不引入 Raft；Kafka 事务 + transactional.id 做 fencing。
-3. **下单路径**：BFF → Counter 主（Kafka 事务写 journal + order-event）→ Match 消费撮合 → 回流结算。
-4. **订单受理 vs 撮合结果**：下单 API 返回"已受理"（3-7ms P99），撮合结果走 WS 私推。
-5. **快照由备打**：主专注服务，备做快照零代价。
-6. **职责切分**：Counter 管账户/订单生命周期，Match 管 orderbook/撮合；两者通过事件流最终一致。
-7. **不引入 dispatcher**：Counter 主用 Kafka 事务原子写两个 topic。
-8. **代码组织**：Multi-module monorepo + Go workspace；api/pkg 为基础，各服务独立 go.mod。
+1. **Kafka 即 Source of Truth**（[ADR-0001](./adr/0001-kafka-as-source-of-truth.md)）：不自建 WAL/Raft，复用 Kafka 副本能力。
+2. **Counter HA**（[ADR-0002](./adr/0002-counter-ha-via-etcd-lease.md)）：etcd lease 选主，Kafka 事务 + transactional.id fencing。
+3. **Counter ↔ Match 走 Kafka**（[ADR-0003](./adr/0003-counter-match-via-kafka.md)）：不走同步 RPC，解耦 + 异步。
+4. **counter-journal 作为 Counter WAL**（[ADR-0004](./adr/0004-counter-journal-topic.md)）：备节点只 tail 这一个 topic。
+5. **Kafka 事务原子写**（[ADR-0005](./adr/0005-kafka-transactions-for-dual-writes.md)）：Counter 主同时写 journal + order-event；不引入 dispatcher。
+6. **快照由备打**（[ADR-0006](./adr/0006-snapshots-by-backup-node.md)）：主专注低延迟，备做快照零代价。
+7. **下单异步语义**（[ADR-0007](./adr/0007-async-matching-result.md)）：API 返回"已受理"（3-7ms P99），撮合结果走 WS。
+8. **trade-dump 旁路写 MySQL**（[ADR-0008](./adr/0008-sidecar-persistence-trade-dump.md)）：Counter/Match 不直写 MySQL。
+9. **Match 按 symbol 分片**（[ADR-0009](./adr/0009-match-sharding-by-symbol.md)）：etcd 配置驱动，支持停机迁移。
+10. **Counter 10 shard**（[ADR-0010](./adr/0010-counter-sharding-by-userid.md)）：按 user_id hash 固定分片。
+11. **Transfer 统一接口**（[ADR-0011](./adr/0011-counter-transfer-interface.md)）：deposit/withdraw/freeze/unfreeze 合一。
+12. **Multi-module monorepo**（[ADR-0012](./adr/0012-multi-module-monorepo.md)）：go.work 管理，各服务独立 go.mod。
+13. **技术选型**（[ADR-0013](./adr/0013-tech-stack-choices.md)）：franz-go、etcd-v3、shopspring/decimal、zap、Prometheus。
+14. **改单 = 撤 + 新建**（[ADR-0014](./adr/0014-order-modify-as-cancel-new.md)）：Match 不原生支持 replace。
+15. **clientOrderId 去重仅覆盖活跃订单**（[ADR-0015](./adr/0015-idempotency-at-counter.md)）：对齐 Binance/OKX。
+16. **per-symbol 单线程撮合**（[ADR-0016](./adr/0016-per-symbol-single-thread-matching.md)）：无锁，确定性。
+17. **Kafka transactional.id fencing**（[ADR-0017](./adr/0017-kafka-transactional-id-naming.md)）：按 shard 稳定命名。
+18. **Counter Sequencer**（[ADR-0018](./adr/0018-counter-sequencer-fifo.md)）：懒启动 per-user worker + channel FIFO。
+19. **Match Sequencer**（[ADR-0019](./adr/0019-match-sequencer-per-symbol-actor.md)）：per-symbol 常驻 goroutine + channel FIFO。
+20. **订单状态机**（[ADR-0020](./adr/0020-order-state-machine.md)）：内部 8 态 + 外部 6 态（Binance 风格）。
+21. **Quote + market-data fan-out**（[ADR-0021](./adr/0021-quote-service-and-market-data-fanout.md)）：Quote 独立服务，Kafka 扇出。
+22. **Push 分片 + sticky 路由**（[ADR-0022](./adr/0022-push-sharding-sticky-routing.md)）：按 user_id hash。

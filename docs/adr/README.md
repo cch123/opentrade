@@ -48,6 +48,11 @@
 | [0012](0012-multi-module-monorepo.md) | 采用 multi-module monorepo + Go workspace | Accepted | 2026-04-18 |
 | [0013](0013-tech-stack-choices.md) | 核心技术选型：franz-go、etcd-v3、shopspring/decimal、zap | Accepted | 2026-04-18 |
 | [0014](0014-order-modify-as-cancel-new.md) | 改单实现为"撤单 + 新建" | Accepted | 2026-04-18 |
-| [0015](0015-idempotency-at-counter.md) | clientOrderId 幂等在 Counter 层处理，Match 侧加业务防御 | Accepted | 2026-04-18 |
+| [0015](0015-idempotency-at-counter.md) | clientOrderId 幂等在 Counter 层处理，仅对活跃订单去重 | Accepted | 2026-04-18 |
 | [0016](0016-per-symbol-single-thread-matching.md) | 每个 symbol 在 Match 内单线程撮合 | Accepted | 2026-04-18 |
 | [0017](0017-kafka-transactional-id-naming.md) | Kafka transactional.id 按 shard 稳定命名，用于主备 fencing | Accepted | 2026-04-18 |
+| [0018](0018-counter-sequencer-fifo.md) | Counter Sequencer：懒启动 per-user worker + channel FIFO | Accepted | 2026-04-18 |
+| [0019](0019-match-sequencer-per-symbol-actor.md) | Match Sequencer：per-symbol 常驻 goroutine + channel FIFO | Accepted | 2026-04-18 |
+| [0020](0020-order-state-machine.md) | 订单状态机：内部 8 态 + 外部 6 态（Binance 风格） | Accepted | 2026-04-18 |
+| [0021](0021-quote-service-and-market-data-fanout.md) | Quote 作为独立服务；市场数据通过 Kafka topic 扇出 | Accepted | 2026-04-18 |
+| [0022](0022-push-sharding-sticky-routing.md) | Push 分片与 sticky WS 路由 | Accepted | 2026-04-18 |
