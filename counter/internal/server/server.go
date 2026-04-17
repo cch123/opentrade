@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/counter/internal/service"
@@ -30,6 +31,63 @@ type Server struct {
 // New creates a Server.
 func New(svc *service.Service, logger *zap.Logger) *Server {
 	return &Server{svc: svc, logger: logger}
+}
+
+// PlaceOrder implements CounterService.PlaceOrder (MVP-3).
+func (s *Server) PlaceOrder(ctx context.Context, req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+	internalReq, err := placeOrderFromProto(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	res, err := s.svc.PlaceOrder(ctx, internalReq)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	if !res.Accepted && res.RejectReason != "" && res.OrderID == 0 {
+		return nil, status.Error(codes.FailedPrecondition, res.RejectReason)
+	}
+	return &counterrpc.PlaceOrderResponse{
+		OrderId:         res.OrderID,
+		ClientOrderId:   res.ClientOrderID,
+		Accepted:        res.Accepted,
+		ReceivedTsUnixMs: res.ReceivedAtMS,
+	}, nil
+}
+
+// CancelOrder implements CounterService.CancelOrder (MVP-3).
+func (s *Server) CancelOrder(ctx context.Context, req *counterrpc.CancelOrderRequest) (*counterrpc.CancelOrderResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+	res, err := s.svc.CancelOrder(ctx, service.CancelOrderRequest{
+		UserID:  req.UserId,
+		OrderID: req.OrderId,
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	if !res.Accepted && res.RejectReason != "" {
+		return nil, status.Error(codes.FailedPrecondition, res.RejectReason)
+	}
+	return &counterrpc.CancelOrderResponse{
+		OrderId:  res.OrderID,
+		Accepted: res.Accepted,
+	}, nil
+}
+
+// QueryOrder implements CounterService.QueryOrder (MVP-3).
+func (s *Server) QueryOrder(_ context.Context, req *counterrpc.QueryOrderRequest) (*counterrpc.QueryOrderResponse, error) {
+	if req == nil || req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	o, err := s.svc.QueryOrder(req.UserId, req.OrderId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	return orderToProto(o), nil
 }
 
 // Transfer implements CounterService.Transfer.
@@ -141,8 +199,163 @@ func mapServiceError(err error) error {
 	switch {
 	case errors.Is(err, service.ErrMissingUserID),
 		errors.Is(err, service.ErrMissingTransferID),
-		errors.Is(err, service.ErrMissingAsset):
+		errors.Is(err, service.ErrMissingAsset),
+		errors.Is(err, service.ErrInvalidSymbol):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, service.ErrOrderDepsNotConfigured):
+		return status.Error(codes.Unavailable, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())
+}
+
+// ---------------------------------------------------------------------------
+// PlaceOrder / CancelOrder / QueryOrder helpers (MVP-3)
+// ---------------------------------------------------------------------------
+
+func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderRequest, error) {
+	side, err := sideFromProto(req.Side)
+	if err != nil {
+		return service.PlaceOrderRequest{}, err
+	}
+	ot, err := orderTypeFromProto(req.OrderType)
+	if err != nil {
+		return service.PlaceOrderRequest{}, err
+	}
+	tif, err := tifFromProto(req.Tif)
+	if err != nil {
+		return service.PlaceOrderRequest{}, err
+	}
+	var price dec.Decimal
+	if req.Price != "" {
+		p, perr := dec.Parse(req.Price)
+		if perr != nil {
+			return service.PlaceOrderRequest{}, fmt.Errorf("invalid price %q: %w", req.Price, perr)
+		}
+		price = p
+	}
+	qty, err := dec.Parse(req.Qty)
+	if err != nil {
+		return service.PlaceOrderRequest{}, fmt.Errorf("invalid qty %q: %w", req.Qty, err)
+	}
+	return service.PlaceOrderRequest{
+		UserID:        req.UserId,
+		ClientOrderID: req.ClientOrderId,
+		Symbol:        req.Symbol,
+		Side:          side,
+		OrderType:     ot,
+		TIF:           tif,
+		Price:         price,
+		Qty:           qty,
+	}, nil
+}
+
+func orderToProto(o *engine.Order) *counterrpc.QueryOrderResponse {
+	side, _ := sideToProto(o.Side)
+	ot, _ := orderTypeToProto(o.Type)
+	tif, _ := tifToProto(o.TIF)
+	return &counterrpc.QueryOrderResponse{
+		OrderId:         o.ID,
+		ClientOrderId:   o.ClientOrderID,
+		Symbol:          o.Symbol,
+		Side:            side,
+		OrderType:       ot,
+		Tif:             tif,
+		Price:           o.Price.String(),
+		Qty:             o.Qty.String(),
+		FilledQty:       o.FilledQty.String(),
+		FrozenAmt:       o.FrozenAmount.String(),
+		Status:          internalStatusToProto(o.Status),
+		CreatedAtUnixMs: o.CreatedAt,
+		UpdatedAtUnixMs: o.UpdatedAt,
+	}
+}
+
+func sideFromProto(s eventpb.Side) (engine.Side, error) {
+	switch s {
+	case eventpb.Side_SIDE_BUY:
+		return engine.SideBid, nil
+	case eventpb.Side_SIDE_SELL:
+		return engine.SideAsk, nil
+	}
+	return 0, fmt.Errorf("invalid side: %v", s)
+}
+
+func sideToProto(s engine.Side) (eventpb.Side, error) {
+	switch s {
+	case engine.SideBid:
+		return eventpb.Side_SIDE_BUY, nil
+	case engine.SideAsk:
+		return eventpb.Side_SIDE_SELL, nil
+	}
+	return eventpb.Side_SIDE_UNSPECIFIED, fmt.Errorf("invalid side: %d", s)
+}
+
+func orderTypeFromProto(t eventpb.OrderType) (engine.OrderType, error) {
+	switch t {
+	case eventpb.OrderType_ORDER_TYPE_LIMIT:
+		return engine.OrderTypeLimit, nil
+	case eventpb.OrderType_ORDER_TYPE_MARKET:
+		return engine.OrderTypeMarket, nil
+	}
+	return 0, fmt.Errorf("invalid order type: %v", t)
+}
+
+func orderTypeToProto(t engine.OrderType) (eventpb.OrderType, error) {
+	switch t {
+	case engine.OrderTypeLimit:
+		return eventpb.OrderType_ORDER_TYPE_LIMIT, nil
+	case engine.OrderTypeMarket:
+		return eventpb.OrderType_ORDER_TYPE_MARKET, nil
+	}
+	return eventpb.OrderType_ORDER_TYPE_UNSPECIFIED, fmt.Errorf("invalid order type: %d", t)
+}
+
+func tifFromProto(t eventpb.TimeInForce) (engine.TIF, error) {
+	switch t {
+	case eventpb.TimeInForce_TIME_IN_FORCE_GTC, eventpb.TimeInForce_TIME_IN_FORCE_UNSPECIFIED:
+		return engine.TIFGTC, nil
+	case eventpb.TimeInForce_TIME_IN_FORCE_IOC:
+		return engine.TIFIOC, nil
+	case eventpb.TimeInForce_TIME_IN_FORCE_FOK:
+		return engine.TIFFOK, nil
+	case eventpb.TimeInForce_TIME_IN_FORCE_POST_ONLY:
+		return engine.TIFPostOnly, nil
+	}
+	return 0, fmt.Errorf("invalid TIF: %v", t)
+}
+
+func tifToProto(t engine.TIF) (eventpb.TimeInForce, error) {
+	switch t {
+	case engine.TIFGTC:
+		return eventpb.TimeInForce_TIME_IN_FORCE_GTC, nil
+	case engine.TIFIOC:
+		return eventpb.TimeInForce_TIME_IN_FORCE_IOC, nil
+	case engine.TIFFOK:
+		return eventpb.TimeInForce_TIME_IN_FORCE_FOK, nil
+	case engine.TIFPostOnly:
+		return eventpb.TimeInForce_TIME_IN_FORCE_POST_ONLY, nil
+	}
+	return eventpb.TimeInForce_TIME_IN_FORCE_UNSPECIFIED, fmt.Errorf("invalid TIF: %d", t)
+}
+
+func internalStatusToProto(s engine.OrderStatus) eventpb.InternalOrderStatus {
+	switch s {
+	case engine.OrderStatusPendingNew:
+		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW
+	case engine.OrderStatusNew:
+		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW
+	case engine.OrderStatusPartiallyFilled:
+		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED
+	case engine.OrderStatusFilled:
+		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED
+	case engine.OrderStatusPendingCancel:
+		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL
+	case engine.OrderStatusCanceled:
+		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED
+	case engine.OrderStatusRejected:
+		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_REJECTED
+	case engine.OrderStatusExpired:
+		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_EXPIRED
+	}
+	return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_UNSPECIFIED
 }

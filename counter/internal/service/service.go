@@ -30,10 +30,27 @@ var (
 	ErrMissingAsset      = errors.New("service: asset is required")
 )
 
-// Publisher is the minimal Kafka interface Service depends on. Having an
-// interface here keeps Service unit-testable without a live Kafka.
+// Publisher is the minimal non-transactional Kafka interface used by the
+// Transfer path (single counter-journal produce).
 type Publisher interface {
 	Publish(ctx context.Context, partitionKey string, evt *eventpb.CounterJournalEvent) error
+}
+
+// TxnPublisher is the transactional interface used by PlaceOrder / CancelOrder
+// (atomic counter-journal + order-event, ADR-0005).
+type TxnPublisher interface {
+	PublishOrderPlacement(
+		ctx context.Context,
+		journalEvt *eventpb.CounterJournalEvent,
+		orderEvt *eventpb.OrderEvent,
+		journalKey string,
+		orderKey string,
+	) error
+}
+
+// IDGen generates monotonically increasing order ids (snowflake).
+type IDGen interface {
+	Next() uint64
 }
 
 // Config configures the Service.
@@ -49,10 +66,13 @@ type Service struct {
 	seq       *sequencer.UserSequencer
 	dedup     *dedup.Table
 	publisher Publisher
+	txn       TxnPublisher
+	idgen     IDGen
 	logger    *zap.Logger
 }
 
-// New wires a Service. All dependencies must be non-nil.
+// New wires a Service. All dependencies must be non-nil. txn / idgen may be
+// nil if PlaceOrder / CancelOrder are not used (legacy MVP-2 path).
 func New(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, publisher Publisher, logger *zap.Logger) *Service {
 	return &Service{
 		cfg:       cfg,
@@ -62,6 +82,13 @@ func New(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt 
 		publisher: publisher,
 		logger:    logger,
 	}
+}
+
+// SetOrderDeps configures the PlaceOrder / CancelOrder dependencies. Must be
+// called before serving requests in MVP-3.
+func (s *Service) SetOrderDeps(txn TxnPublisher, idgen IDGen) {
+	s.txn = txn
+	s.idgen = idgen
 }
 
 // Transfer is the unified deposit / withdraw / freeze / unfreeze entry point
@@ -153,6 +180,18 @@ func (s *Service) QueryBalance(userID, asset string) engine.Balance {
 // QueryAccount returns the full map of (asset -> balance) for a user.
 func (s *Service) QueryAccount(userID string) map[string]engine.Balance {
 	return s.state.Account(userID).Copy()
+}
+
+// QueryOrder returns a clone of the order if it exists and belongs to userID.
+func (s *Service) QueryOrder(userID string, orderID uint64) (*engine.Order, error) {
+	o := s.state.Orders().Get(orderID)
+	if o == nil {
+		return nil, engine.ErrOrderNotFound
+	}
+	if o.UserID != userID {
+		return nil, engine.ErrNotOrderOwner
+	}
+	return o.Clone(), nil
 }
 
 // ---------------------------------------------------------------------------

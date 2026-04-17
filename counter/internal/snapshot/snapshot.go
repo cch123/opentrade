@@ -46,6 +46,26 @@ type DedupEntrySnapshot struct {
 	ExpiresUnix int64  `json:"expires_unix_ms"`
 }
 
+// OrderSnapshot is the serialized form of engine.Order.
+type OrderSnapshot struct {
+	ID              uint64 `json:"id"`
+	ClientOrderID   string `json:"client_order_id,omitempty"`
+	UserID          string `json:"user_id"`
+	Symbol          string `json:"symbol"`
+	Side            uint8  `json:"side"`
+	OrderType       uint8  `json:"type"`
+	TIF             uint8  `json:"tif"`
+	Price           string `json:"price"`
+	Qty             string `json:"qty"`
+	FilledQty       string `json:"filled_qty"`
+	FrozenAsset     string `json:"frozen_asset,omitempty"`
+	FrozenAmount    string `json:"frozen_amount"`
+	Status          uint8  `json:"status"`
+	PreCancelStatus uint8  `json:"pre_cancel_status,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+}
+
 // ShardSnapshot is the on-disk representation of one Counter shard.
 type ShardSnapshot struct {
 	Version     int                  `json:"version"`
@@ -53,6 +73,7 @@ type ShardSnapshot struct {
 	ShardSeq    uint64               `json:"shard_seq"`
 	TimestampMS int64                `json:"ts_unix_ms"`
 	Accounts    []AccountSnapshot    `json:"accounts"`
+	Orders      []OrderSnapshot      `json:"orders,omitempty"`
 	Dedup       []DedupEntrySnapshot `json:"dedup,omitempty"`
 }
 
@@ -88,6 +109,26 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 		snap.Dedup = append(snap.Dedup, DedupEntrySnapshot{
 			Key:         e.Key,
 			ExpiresUnix: e.ExpiresAt.UnixMilli(),
+		})
+	}
+	for _, o := range state.Orders().All() {
+		snap.Orders = append(snap.Orders, OrderSnapshot{
+			ID:              o.ID,
+			ClientOrderID:   o.ClientOrderID,
+			UserID:          o.UserID,
+			Symbol:          o.Symbol,
+			Side:            uint8(o.Side),
+			OrderType:       uint8(o.Type),
+			TIF:             uint8(o.TIF),
+			Price:           o.Price.String(),
+			Qty:             o.Qty.String(),
+			FilledQty:       o.FilledQty.String(),
+			FrozenAsset:     o.FrozenAsset,
+			FrozenAmount:    o.FrozenAmount.String(),
+			Status:          uint8(o.Status),
+			PreCancelStatus: uint8(o.PreCancelStatus),
+			CreatedAt:       o.CreatedAt,
+			UpdatedAt:       o.UpdatedAt,
 		})
 	}
 	return snap
@@ -137,6 +178,42 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			})
 		}
 		dt.Restore(entries)
+	}
+	for _, os := range snap.Orders {
+		price, err := dec.Parse(os.Price)
+		if err != nil {
+			return fmt.Errorf("order %d price: %w", os.ID, err)
+		}
+		qty, err := dec.Parse(os.Qty)
+		if err != nil {
+			return fmt.Errorf("order %d qty: %w", os.ID, err)
+		}
+		filled, err := dec.Parse(os.FilledQty)
+		if err != nil {
+			return fmt.Errorf("order %d filled_qty: %w", os.ID, err)
+		}
+		frozen, err := dec.Parse(os.FrozenAmount)
+		if err != nil {
+			return fmt.Errorf("order %d frozen_amount: %w", os.ID, err)
+		}
+		state.Orders().RestoreInsert(&engine.Order{
+			ID:              os.ID,
+			ClientOrderID:   os.ClientOrderID,
+			UserID:          os.UserID,
+			Symbol:          os.Symbol,
+			Side:            engine.Side(os.Side),
+			Type:            engine.OrderType(os.OrderType),
+			TIF:             engine.TIF(os.TIF),
+			Price:           price,
+			Qty:             qty,
+			FilledQty:       filled,
+			FrozenAsset:     os.FrozenAsset,
+			FrozenAmount:    frozen,
+			Status:          engine.OrderStatus(os.Status),
+			PreCancelStatus: engine.OrderStatus(os.PreCancelStatus),
+			CreatedAt:       os.CreatedAt,
+			UpdatedAt:       os.UpdatedAt,
+		})
 	}
 	return nil
 }

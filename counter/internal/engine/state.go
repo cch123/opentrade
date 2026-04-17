@@ -89,12 +89,19 @@ type ShardState struct {
 	ShardID int
 
 	accounts sync.Map // user_id → *Account
+	orders   *OrderStore
 }
 
 // NewShardState constructs an empty state.
 func NewShardState(shardID int) *ShardState {
-	return &ShardState{ShardID: shardID}
+	return &ShardState{
+		ShardID: shardID,
+		orders:  newOrderStore(),
+	}
 }
+
+// Orders returns the in-memory order store.
+func (s *ShardState) Orders() *OrderStore { return s.orders }
 
 // Account returns the account for userID (creating on demand if it does not
 // exist). Always non-nil.

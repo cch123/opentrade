@@ -1,15 +1,18 @@
 // Command counter runs the OpenTrade Counter service.
 //
-// Responsibilities (MVP-2):
-//   - Serve the CounterService gRPC (Transfer / QueryBalance for now).
+// Responsibilities (MVP-3):
+//   - Serve the CounterService gRPC: PlaceOrder / CancelOrder / QueryOrder /
+//     Transfer / QueryBalance.
 //   - Serialize per-user work through the UserSequencer (ADR-0018).
 //   - Publish every state-mutating change to the counter-journal Kafka topic
-//     (ADR-0004) before committing it to memory (ADR-0001 write-ahead order).
-//   - Persist ShardState + dedup + shard seq to local snapshot on graceful
-//     shutdown; auto-restore on next start.
+//     (ADR-0004); PlaceOrder / CancelOrder use a Kafka transaction to
+//     atomically publish counter-journal + order-event (ADR-0005).
+//   - Consume trade-event from Match (at-least-once + idempotency) and apply
+//     settlement to accounts + orders.
+//   - Persist ShardState + orders + dedup + shard seq to local snapshot on
+//     graceful shutdown; auto-restore on next start.
 //
-// Configuration is via flags + OPENTRADE_* env vars. Later MVPs add etcd
-// lease election (MVP-8) and trade-event consumption (MVP-3).
+// Later MVPs add etcd lease election (MVP-8) and Kafka EOS consumer semantics.
 package main
 
 import (
@@ -36,19 +39,23 @@ import (
 	"github.com/xargin/opentrade/counter/internal/server"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/counter/internal/snapshot"
+	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
 )
 
 type Config struct {
-	ShardID     int
-	InstanceID  string // defaults to "counter-shard-<N>-main"
-	GRPCAddr    string // ":8081"
-	Brokers     []string
-	JournalTopic string
-	SnapshotDir string
-	DedupTTL    time.Duration
-	Env         string
-	LogLevel    string
+	ShardID         int
+	InstanceID      string // defaults to counter-shard-<N>-main
+	GRPCAddr        string
+	Brokers         []string
+	JournalTopic    string
+	OrderEventTopic string
+	TradeEventTopic string
+	ConsumerGroup   string // trade-event consumer group (default "counter-shard-<N>")
+	SnapshotDir     string
+	DedupTTL        time.Duration
+	Env             string
+	LogLevel        string
 }
 
 func main() {
@@ -75,7 +82,7 @@ func main() {
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// --- Build core components ----------------------------------------------
+	// --- Core components -----------------------------------------------------
 
 	state := engine.NewShardState(cfg.ShardID)
 	userSeq := sequencer.New()
@@ -85,23 +92,66 @@ func main() {
 		logger.Fatal("snapshot restore", zap.Error(err))
 	}
 
-	producer, err := journal.NewJournalProducer(journal.ProducerConfig{
+	// Non-transactional producer (Transfer path + Settlement events).
+	journalProducer, err := journal.NewJournalProducer(journal.ProducerConfig{
 		Brokers:    cfg.Brokers,
-		ClientID:   cfg.InstanceID,
+		ClientID:   cfg.InstanceID + "-journal",
 		ProducerID: cfg.InstanceID,
 		Topic:      cfg.JournalTopic,
 	}, logger)
 	if err != nil {
 		logger.Fatal("journal producer", zap.Error(err))
 	}
-	defer producer.Close()
+	defer journalProducer.Close()
+
+	// Transactional producer (PlaceOrder / CancelOrder path, ADR-0005/0017).
+	txnProducer, err := journal.NewTxnProducer(rootCtx, journal.TxnProducerConfig{
+		Brokers:         cfg.Brokers,
+		ClientID:        cfg.InstanceID + "-txn",
+		TransactionalID: cfg.InstanceID,
+		JournalTopic:    cfg.JournalTopic,
+		OrderEventTopic: cfg.OrderEventTopic,
+	}, logger)
+	if err != nil {
+		logger.Fatal("txn producer", zap.Error(err))
+	}
+	defer txnProducer.Close()
+
+	// Snowflake id generator for order ids; seeded with shard id as machine id.
+	idg, err := idgen.NewGenerator(cfg.ShardID)
+	if err != nil {
+		logger.Fatal("idgen", zap.Error(err))
+	}
 
 	svc := service.New(service.Config{
 		ShardID:    cfg.ShardID,
 		ProducerID: cfg.InstanceID,
-	}, state, userSeq, dt, producer, logger)
+	}, state, userSeq, dt, journalProducer, logger)
+	svc.SetOrderDeps(txnProducer, idg)
 
-	// --- gRPC server --------------------------------------------------------
+	// --- Trade consumer ------------------------------------------------------
+
+	tradeConsumer, err := journal.NewTradeConsumer(journal.TradeConsumerConfig{
+		Brokers:  cfg.Brokers,
+		ClientID: cfg.InstanceID + "-trade",
+		GroupID:  cfg.ConsumerGroup,
+		Topic:    cfg.TradeEventTopic,
+	}, svc, logger)
+	if err != nil {
+		logger.Fatal("trade consumer", zap.Error(err))
+	}
+	defer tradeConsumer.Close()
+
+	var tradeWG sync.WaitGroup
+	tradeWG.Add(1)
+	go func() {
+		defer tradeWG.Done()
+		if err := tradeConsumer.Run(rootCtx); err != nil && err != context.Canceled {
+			logger.Error("trade consumer exited", zap.Error(err))
+		}
+	}()
+
+	// --- gRPC server ---------------------------------------------------------
 
 	grpcServer := grpc.NewServer()
 	counterrpc.RegisterCounterServiceServer(grpcServer, server.New(svc, logger))
@@ -120,7 +170,7 @@ func main() {
 		}
 	}()
 
-	// --- Wait for shutdown --------------------------------------------------
+	// --- Shutdown ------------------------------------------------------------
 
 	<-rootCtx.Done()
 	logger.Info("shutdown initiated")
@@ -128,8 +178,10 @@ func main() {
 	grpcServer.GracefulStop()
 	grpcWG.Wait()
 
-	// Snapshot before exit. New gRPC requests are rejected (server stopped)
-	// but the UserSequencer may have in-flight tasks; we wait briefly.
+	tradeConsumer.Close()
+	tradeWG.Wait()
+
+	// Brief wait for in-flight sequencer tasks to drain before snapshotting.
 	time.Sleep(100 * time.Millisecond)
 
 	if err := writeSnapshot(cfg, state, userSeq, dt); err != nil {
@@ -147,12 +199,14 @@ func main() {
 
 func parseFlags() Config {
 	cfg := Config{
-		GRPCAddr:     ":8081",
-		JournalTopic: "counter-journal",
-		SnapshotDir:  "./data/counter",
-		DedupTTL:     24 * time.Hour,
-		Env:          "dev",
-		LogLevel:     "info",
+		GRPCAddr:        ":8081",
+		JournalTopic:    "counter-journal",
+		OrderEventTopic: "order-event",
+		TradeEventTopic: "trade-event",
+		SnapshotDir:     "./data/counter",
+		DedupTTL:        24 * time.Hour,
+		Env:             "dev",
+		LogLevel:        "info",
 	}
 	var brokersStr string
 	flag.IntVar(&cfg.ShardID, "shard-id", 0, "shard id (0..N-1)")
@@ -160,6 +214,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
 	flag.StringVar(&cfg.JournalTopic, "journal-topic", cfg.JournalTopic, "counter-journal topic name")
+	flag.StringVar(&cfg.OrderEventTopic, "order-topic", cfg.OrderEventTopic, "order-event topic name")
+	flag.StringVar(&cfg.TradeEventTopic, "trade-topic", cfg.TradeEventTopic, "trade-event topic name")
+	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default counter-shard-<N>)")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
 	flag.DurationVar(&cfg.DedupTTL, "dedup-ttl", cfg.DedupTTL, "transfer_id dedup TTL")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
@@ -169,6 +226,9 @@ func parseFlags() Config {
 	cfg.Brokers = splitCSV(brokersStr)
 	if cfg.InstanceID == "" {
 		cfg.InstanceID = fmt.Sprintf("counter-shard-%d-main", cfg.ShardID)
+	}
+	if cfg.ConsumerGroup == "" {
+		cfg.ConsumerGroup = fmt.Sprintf("counter-shard-%d", cfg.ShardID)
 	}
 	return cfg
 }
@@ -222,7 +282,8 @@ func tryRestoreSnapshot(cfg Config, state *engine.ShardState, seq *sequencer.Use
 	logger.Info("restored from snapshot",
 		zap.Int("shard_id", cfg.ShardID),
 		zap.Uint64("shard_seq", snap.ShardSeq),
-		zap.Int("accounts", len(snap.Accounts)))
+		zap.Int("accounts", len(snap.Accounts)),
+		zap.Int("orders", len(snap.Orders)))
 	return nil
 }
 

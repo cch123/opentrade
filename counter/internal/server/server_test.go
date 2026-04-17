@@ -98,17 +98,20 @@ func TestTransferInvalidType(t *testing.T) {
 	}
 }
 
-func TestUnimplementedRPCs(t *testing.T) {
+func TestPlaceOrderWithoutOrderDepsReturnsUnavailable(t *testing.T) {
 	s := newServer(t)
-	if _, err := s.PlaceOrder(context.Background(), &counterrpc.PlaceOrderRequest{}); err == nil {
-		t.Fatal("expected unimplemented")
-	} else if status.Code(err) != codes.Unimplemented {
-		t.Fatalf("code = %s", status.Code(err))
+	// newServer wires Transfer only; PlaceOrder requires SetOrderDeps.
+	_, err := s.PlaceOrder(context.Background(), &counterrpc.PlaceOrderRequest{
+		UserId: "u1", Symbol: "BTC-USDT",
+		Side:      eventpb.Side_SIDE_BUY,
+		OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
+		Tif:       eventpb.TimeInForce_TIME_IN_FORCE_GTC,
+		Price:     "100", Qty: "1",
+	})
+	if err == nil {
+		t.Fatal("expected Unavailable")
 	}
-	if _, err := s.CancelOrder(context.Background(), &counterrpc.CancelOrderRequest{}); err == nil {
-		t.Fatal("expected unimplemented")
-	}
-	if _, err := s.QueryOrder(context.Background(), &counterrpc.QueryOrderRequest{}); err == nil {
-		t.Fatal("expected unimplemented")
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %s, want Unavailable", status.Code(err))
 	}
 }
