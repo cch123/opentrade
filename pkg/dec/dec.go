@@ -53,3 +53,19 @@ func IsPositive(d Decimal) bool { return d.Sign() > 0 }
 
 // IsZero reports whether d == 0.
 func IsZero(d Decimal) bool { return d.Sign() == 0 }
+
+// Min returns the smaller of a and b.
+func Min(a, b Decimal) Decimal {
+	if a.Cmp(b) <= 0 {
+		return a
+	}
+	return b
+}
+
+// Max returns the larger of a and b.
+func Max(a, b Decimal) Decimal {
+	if a.Cmp(b) >= 0 {
+		return a
+	}
+	return b
+}
