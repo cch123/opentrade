@@ -56,22 +56,24 @@ type BalanceSnapshot struct {
 }
 
 // AccountSnapshot captures one user's balances, per-symbol match_seq guard
-// (ADR-0048 backlog: trade-event idempotency) and the user-level version
-// counter (ADR-0048 backlog: 双层 version 方案 B).
+// (ADR-0048 backlog item 2), the user-level version counter (ADR-0048
+// backlog item 1 / 方案 B), and the recent-transfer ring for dedup
+// (ADR-0048 backlog item 4 / 方案 A). RecentTransferIDs is stored in
+// insertion order (oldest → newest) so Restore can rebuild the ring.
 type AccountSnapshot struct {
-	UserID       string            `json:"user_id"`
-	Version      uint64            `json:"version,omitempty"`
-	Balances     []BalanceSnapshot `json:"balances"`
-	LastMatchSeq map[string]uint64 `json:"last_match_seq,omitempty"`
+	UserID             string            `json:"user_id"`
+	Version            uint64            `json:"version,omitempty"`
+	Balances           []BalanceSnapshot `json:"balances"`
+	LastMatchSeq       map[string]uint64 `json:"last_match_seq,omitempty"`
+	RecentTransferIDs  []string          `json:"recent_transfer_ids,omitempty"`
 }
 
-// DedupEntrySnapshot captures a single transfer_id dedup record. For MVP-2
-// we persist only the key + expiry; the cached response payload is rebuilt
-// as a tombstone result on restore (CONFIRMED with empty balance) since the
-// canonical truth is Kafka journal. If the caller re-hits the same
-// transfer_id after restart and we had previously answered it, a tombstone
-// reply is acceptable; the alternative would be encoding the result into the
-// snapshot blob.
+// DedupEntrySnapshot captured one transfer_id dedup record when Counter
+// still used the shard-wide dedup.Table for idempotency. ADR-0048 backlog
+// item 4 方案 A replaced that path with the per-user AccountSnapshot
+// .RecentTransferIDs ring, so new snapshots no longer write here. Kept
+// for loading pre-ring snapshots: entries in this slice are ignored at
+// Restore (the authoritative source is now AccountSnapshot).
 type DedupEntrySnapshot struct {
 	Key         string `json:"key"`
 	ExpiresUnix int64  `json:"expires_unix_ms"`
@@ -151,9 +153,10 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 		acc := state.Account(userID)
 		balances := acc.Copy()
 		as := AccountSnapshot{
-			UserID:       userID,
-			Version:      acc.Version(),
-			LastMatchSeq: acc.MatchSeqSnapshot(),
+			UserID:            userID,
+			Version:           acc.Version(),
+			LastMatchSeq:      acc.MatchSeqSnapshot(),
+			RecentTransferIDs: acc.RecentTransferIDsSnapshot(),
 		}
 		for asset, bal := range balances {
 			as.Balances = append(as.Balances, BalanceSnapshot{
@@ -165,6 +168,13 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 		}
 		snap.Accounts = append(snap.Accounts, as)
 	}
+	// Legacy dedup.Table is no longer the source of truth for Transfer
+	// idempotency (ADR-0048 backlog item 4 方案 A moved to per-user ring
+	// stored in AccountSnapshot). We still drain whatever entries happen
+	// to be in dt — Service.Transfer no longer writes to it, so on steady
+	// state this slice is empty, but older snapshots / tests may seed it.
+	// Writing is kept so operators can mix pre-/post-ring builds without
+	// losing audit entries mid-migration.
 	for _, e := range dt.Snapshot() {
 		snap.Dedup = append(snap.Dedup, DedupEntrySnapshot{
 			Key:         e.Key,
@@ -255,9 +265,17 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 		// Restore the user-level version counter. Same semantics as above:
 		// missing field decodes as 0.
 		acc.RestoreVersion(as.Version)
+		// Restore the recent-transfer ring (ADR-0048 backlog item 4).
+		// Missing / empty slice in older snapshots yields an empty ring,
+		// at which point any never-seen transfer_id flows through.
+		acc.RestoreRecentTransferIDs(as.RecentTransferIDs)
 	}
 	seq.SetShardSeq(snap.ShardSeq)
 
+	// Restore the legacy dedup.Table only so pre-ring snapshots still load
+	// without losing their entries in case operators re-export. Service is
+	// no longer reading from dt for Transfer idempotency (ADR-0048 backlog
+	// item 4 方案 A).
 	if len(snap.Dedup) > 0 {
 		entries := make([]dedup.Entry, 0, len(snap.Dedup))
 		for _, e := range snap.Dedup {

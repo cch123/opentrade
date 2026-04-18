@@ -21,12 +21,19 @@ var (
 // serialized by the UserSequencer (ADR-0018); callers must not touch it from
 // outside that context, except via Copy which takes an internal lock for
 // snapshotting.
+// TransferRingCapacity caps how many recent transfer_ids each account
+// retains for dedup (ADR-0048 backlog item 4 方案 A). Crossing the cap
+// evicts the oldest id — replays older than the window produce a fresh
+// execution attempt (state.ApplyTransfer + idempotency guards in the event
+// chain still prevent double-apply in normal operation).
+const TransferRingCapacity = 256
+
 type Account struct {
 	UserID string
 
-	// mu guards balances, matchSeq and version. In the common path the
-	// UserSequencer already serializes per-user access and mu is
-	// uncontended; mu exists so that snapshot readers can obtain a
+	// mu guards balances, matchSeq, version and the transfer ring. In the
+	// common path the UserSequencer already serializes per-user access and
+	// mu is uncontended; mu exists so that snapshot readers can obtain a
 	// consistent per-user view without going through the sequencer.
 	mu       sync.RWMutex
 	balances map[string]*Balance
@@ -42,6 +49,13 @@ type Account struct {
 	// cache-invalidation handle; trade-dump mirrors it to the accounts
 	// projection.
 	version uint64
+	// recentTransferIDs is a fixed-capacity ring of the most-recent
+	// transfer_ids this user has completed. Paired with recentTransferSet
+	// for O(1) lookup. Lazily allocated. See ADR-0048 backlog item 4.
+	recentTransferIDs  []string
+	recentTransferSet  map[string]struct{}
+	recentTransferHead int // next insert slot when the ring is full
+	recentTransferSize int // 0..TransferRingCapacity
 }
 
 func newAccount(userID string) *Account {
@@ -142,6 +156,103 @@ func (a *Account) RestoreVersion(v uint64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.version = v
+}
+
+// TransferSeen reports whether id is still in the user's recent-transfer
+// ring. Callers use this as the primary idempotency guard for the
+// Transfer RPC (ADR-0048 backlog item 4 方案 A, replaces the legacy
+// dedup.Table for this path). Empty id returns false.
+func (a *Account) TransferSeen(id string) bool {
+	if id == "" {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	_, ok := a.recentTransferSet[id]
+	return ok
+}
+
+// RememberTransfer inserts id into the ring. If the ring is full, evicts
+// the oldest id. Duplicate ids are a no-op (caller should have checked
+// with TransferSeen first). Empty id is a no-op.
+func (a *Account) RememberTransfer(id string) {
+	if id == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.recentTransferSet == nil {
+		a.recentTransferIDs = make([]string, TransferRingCapacity)
+		a.recentTransferSet = make(map[string]struct{}, TransferRingCapacity)
+	}
+	if _, exists := a.recentTransferSet[id]; exists {
+		return
+	}
+	if a.recentTransferSize < TransferRingCapacity {
+		a.recentTransferIDs[a.recentTransferSize] = id
+		a.recentTransferSize++
+	} else {
+		old := a.recentTransferIDs[a.recentTransferHead]
+		delete(a.recentTransferSet, old)
+		a.recentTransferIDs[a.recentTransferHead] = id
+		a.recentTransferHead = (a.recentTransferHead + 1) % TransferRingCapacity
+	}
+	a.recentTransferSet[id] = struct{}{}
+}
+
+// RecentTransferIDsSnapshot returns the ring contents in insertion order
+// (oldest → newest). Used by snapshot.Capture so restart restores the
+// full dedup window.
+func (a *Account) RecentTransferIDsSnapshot() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.recentTransferSize == 0 {
+		return nil
+	}
+	out := make([]string, 0, a.recentTransferSize)
+	if a.recentTransferSize < TransferRingCapacity {
+		out = append(out, a.recentTransferIDs[:a.recentTransferSize]...)
+	} else {
+		// Full: start at head (oldest slot), wrap around.
+		for i := 0; i < TransferRingCapacity; i++ {
+			out = append(out, a.recentTransferIDs[(a.recentTransferHead+i)%TransferRingCapacity])
+		}
+	}
+	return out
+}
+
+// RestoreRecentTransferIDs rebuilds the ring from an ordered slice
+// (oldest → newest). If ids exceeds TransferRingCapacity, only the
+// tail (most recent) is kept. Restore-only; same contract as PutForRestore.
+func (a *Account) RestoreRecentTransferIDs(ids []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(ids) == 0 {
+		a.recentTransferIDs = nil
+		a.recentTransferSet = nil
+		a.recentTransferHead = 0
+		a.recentTransferSize = 0
+		return
+	}
+	if len(ids) > TransferRingCapacity {
+		ids = ids[len(ids)-TransferRingCapacity:]
+	}
+	n := len(ids)
+	a.recentTransferIDs = make([]string, TransferRingCapacity)
+	a.recentTransferSet = make(map[string]struct{}, n)
+	for i, id := range ids {
+		a.recentTransferIDs[i] = id
+		a.recentTransferSet[id] = struct{}{}
+	}
+	a.recentTransferSize = n
+	if n == TransferRingCapacity {
+		// Full: head is the oldest slot, which sits at index 0 since we
+		// just packed oldest → newest into slots 0..cap-1.
+		a.recentTransferHead = 0
+	} else {
+		// Not yet full: head is unused (we keep appending at size index).
+		a.recentTransferHead = 0
+	}
 }
 
 // LastMatchSeq returns the highest trade-event seq already applied for this

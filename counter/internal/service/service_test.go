@@ -118,8 +118,14 @@ func TestTransferIdempotent(t *testing.T) {
 	if second.Status != engine.TransferStatusDuplicated {
 		t.Fatalf("second: status = %d, want Duplicated", second.Status)
 	}
-	if second.BalanceAfter.Available.String() != "10" {
-		t.Fatalf("second: cached balance lost: %+v", second.BalanceAfter)
+	// ADR-0048 backlog item 4 方案 A: ring only remembers the id, not the
+	// cached response — dedup hits return a bare DUPLICATED with empty
+	// balance / seq. Callers fetch balance_after via QueryBalance.
+	if !second.BalanceAfter.IsEmpty() {
+		t.Fatalf("second: expected empty balance, got %+v", second.BalanceAfter)
+	}
+	if second.SeqID != 0 {
+		t.Fatalf("second: expected zero seq id, got %d", second.SeqID)
 	}
 	if len(pub.Events()) != 1 {
 		t.Fatalf("dedup hit wrote Kafka event: %d total", len(pub.Events()))

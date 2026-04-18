@@ -196,22 +196,27 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 		return nil, ErrWrongShard
 	}
 
-	// Fast-path: return cached response without entering the sequencer.
-	if cached := s.dedupHit(req.TransferID); cached != nil {
-		return cached, nil
+	// Fast-path: skip the sequencer if this transfer_id was recently applied.
+	// ADR-0048 backlog item 4 方案 A — the response lacks balance_after /
+	// seq_id (see dedupResult). Callers that need the post-transfer balance
+	// must follow up with QueryBalance.
+	if s.state.Account(req.UserID).TransferSeen(req.TransferID) {
+		return dedupResult(req.TransferID), nil
 	}
 
 	v, err := s.seq.Execute(req.UserID, func(seq uint64) (any, error) {
-		// Re-check dedup in case two concurrent requests raced into the queue.
-		if cached := s.dedupHit(req.TransferID); cached != nil {
-			return cached, nil
+		acc := s.state.Account(req.UserID)
+		// Re-check inside the sequencer so concurrent arrivals of the same
+		// transfer_id collapse to one CONFIRMED + (N-1) DUPLICATED.
+		if acc.TransferSeen(req.TransferID) {
+			return dedupResult(req.TransferID), nil
 		}
 
 		// Compute.
 		newBalance, cerr := s.state.ComputeTransfer(req)
 		if cerr != nil {
-			// Business rejection — no Kafka write, no dedup cache. The caller
-			// may retry with fixed params.
+			// Business rejection — no Kafka write, no ring remember. The
+			// caller may retry with fixed params.
 			return &engine.TransferResult{
 				TransferID:   req.TransferID,
 				Status:       engine.TransferStatusRejected,
@@ -223,7 +228,6 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 		// Project post-commit versions so the journal event matches what
 		// state will look like after CommitBalance below (ADR-0048 backlog:
 		// 双层 version). setBalance always bumps both, so "+1" is exact.
-		acc := s.state.Account(req.UserID)
 		currentBal := acc.Balance(req.Asset)
 		newBalance.Version = currentBal.Version + 1
 		expectedAccVer := acc.Version() + 1
@@ -241,20 +245,22 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 		}
 		if err := s.publisher.Publish(ctx, req.UserID, evt); err != nil {
 			// Kafka failed — state untouched, caller may retry with same
-			// transfer_id.
+			// transfer_id. We deliberately do NOT remember the id here:
+			// a partial (published-but-not-committed) state would keep the
+			// retry from running, and we want the next retry to finish the
+			// idempotent re-publish via Kafka's own dedup on transfer_id.
 			return nil, fmt.Errorf("publish: %w", err)
 		}
 
-		// Commit.
+		// Commit + remember.
 		s.state.CommitBalance(req.UserID, req.Asset, newBalance)
-		result := &engine.TransferResult{
+		acc.RememberTransfer(req.TransferID)
+		return &engine.TransferResult{
 			TransferID:   req.TransferID,
 			Status:       engine.TransferStatusConfirmed,
 			BalanceAfter: acc.Balance(req.Asset), // read back to pick up bumped version
 			SeqID:        seq,
-		}
-		s.dedup.Set(req.TransferID, result)
-		return result, nil
+		}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -314,15 +320,14 @@ func validateTransfer(req engine.TransferRequest) error {
 	return nil
 }
 
-func (s *Service) dedupHit(transferID string) *engine.TransferResult {
-	if v, ok := s.dedup.Get(transferID); ok {
-		if r, ok := v.(*engine.TransferResult); ok && r != nil {
-			// Surface status as DUPLICATED so the caller can distinguish an
-			// idempotent hit from a fresh CONFIRMED.
-			dup := *r
-			dup.Status = engine.TransferStatusDuplicated
-			return &dup
-		}
+// dedupResult is the ADR-0048-era canonical duplicate response. The ring
+// only remembers the id, not the cached response payload; callers that
+// need the balance_after must follow up with QueryBalance. This is a
+// deliberate breaking simplification (see ADR-0048 backlog item 4, 方案 A
+// + documented drawbacks).
+func dedupResult(transferID string) *engine.TransferResult {
+	return &engine.TransferResult{
+		TransferID: transferID,
+		Status:     engine.TransferStatusDuplicated,
 	}
-	return nil
 }
