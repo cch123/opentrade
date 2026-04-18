@@ -188,21 +188,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		return
 	}
 
-	journalProducer, err := journal.NewJournalProducer(journal.ProducerConfig{
-		Brokers:    cfg.Brokers,
-		ClientID:   cfg.InstanceID + "-journal",
-		ProducerID: cfg.InstanceID,
-		Topic:      cfg.JournalTopic,
-	}, logger)
-	if err != nil {
-		logger.Error("journal producer", zap.Error(err))
-		return
-	}
-	defer journalProducer.Close()
-
-	// TxnProducer carries the shard's stable transactional.id. Opening the
-	// client initializes the producer epoch and fences any previous primary
-	// that held the same id (ADR-0017).
+	// Single transactional producer feeds every counter-journal write so
+	// that Transfer, Settlement, PlaceOrder and CancelOrder all benefit from
+	// the shard's stable transactional.id fencing (ADR-0017, ADR-0031).
+	// Opening the client also implicitly calls InitProducerID on the first
+	// BeginTransaction, fencing any previous primary.
 	txnProducer, err := journal.NewTxnProducer(ctx, journal.TxnProducerConfig{
 		Brokers:         cfg.Brokers,
 		ClientID:        cfg.InstanceID + "-txn",
@@ -226,7 +216,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		ShardID:     cfg.ShardID,
 		TotalShards: cfg.TotalShards,
 		ProducerID:  cfg.InstanceID,
-	}, state, userSeq, dt, journalProducer, logger)
+	}, state, userSeq, dt, txnProducer, logger)
 	svc.SetOrderDeps(txnProducer, idg)
 
 	tradeConsumer, err := journal.NewTradeConsumer(journal.TradeConsumerConfig{

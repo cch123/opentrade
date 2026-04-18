@@ -86,14 +86,16 @@ func (p *TxnProducer) PublishOrderPlacement(
 	})
 }
 
-// PublishJournalOnly writes a single CounterJournalEvent inside its own
-// transaction. Used for standalone Transfer-style paths that only need
-// atomicity between producing the journal event and committing the txn (or
-// rejecting it).
-func (p *TxnProducer) PublishJournalOnly(
+// Publish writes a single CounterJournalEvent inside its own Kafka
+// transaction. Used for every single-topic counter-journal write
+// (Transfer, settlement, order status) so they benefit from the same
+// transactional.id fencing as PlaceOrder / CancelOrder (ADR-0017).
+// Signature matches service.Publisher so Service can depend on one
+// interface for both dual-write and single-write paths.
+func (p *TxnProducer) Publish(
 	ctx context.Context,
-	evt *eventpb.CounterJournalEvent,
 	partitionKey string,
+	evt *eventpb.CounterJournalEvent,
 ) error {
 	return p.runTxn(ctx, func() error {
 		return p.produce(ctx, p.cfg.JournalTopic, partitionKey, evt)

@@ -35,8 +35,8 @@
 - **K 线 gap 填充** — 两笔 trade 跨多个 interval 时填 empty bar（[ADR-0025 未来工作](./adr/0025-quote-engine-state-and-offset-strategy.md)）
 - **Push coalescing / rate-limit** — K 线 / 深度合并、连接级消息速率限制（[ADR-0022 实施约束](./adr/0022-push-sharding-sticky-routing.md) / [ADR-0026](./adr/0026-push-ws-protocol-and-mvp-scope.md)）
 - **Push 重连快照补齐** — 客户端重连后拉 BFF 补齐期间遗漏（[ADR-0026](./adr/0026-push-ws-protocol-and-mvp-scope.md)）
-- **Counter 事务双写 review** — 过一遍 `counter/internal/journal/txn_producer.go` 确认真的是 Kafka transactional（[ADR-0005](./adr/0005-kafka-transactions-for-dual-writes.md)）
-- **集成冒烟脚本** — `docker-compose up` 起全部依赖 + 下一单端到端 smoke（[architecture.md §18.2](./architecture.md)）
+- ~~**Counter 事务双写 review**~~ — ✅ review 发现 Transfer/Settlement 走非事务 producer（HA 下 fencing 失效），已合并到 TxnProducer（见 ADR-0031 §2 补充）
+- ~~**集成冒烟脚本**~~ — ✅ [docs/smoke.md](./smoke.md) + [deploy/scripts/smoke.sh](../deploy/scripts/smoke.sh)
 - **Counter 对账** — 每小时余额对比内存 vs MySQL 聚合（[ADR-0008 实施约束](./adr/0008-sidecar-persistence-trade-dump.md)）
 - **Quote state snapshot** — 重启冷启动改从 snapshot + 增量（[ADR-0025 未来工作](./adr/0025-quote-engine-state-and-offset-strategy.md)）
 - **Counter re-shard 工具** — 未来扩容 10→20 shard 用（[ADR-0010](./adr/0010-counter-sharding-by-userid.md)、[ADR-0027](./adr/0027-counter-sharding-rollout.md)）
