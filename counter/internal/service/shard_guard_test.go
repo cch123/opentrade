@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
@@ -82,6 +83,56 @@ func TestQueryBalance_WrongShardReturnsError(t *testing.T) {
 	}
 	if _, err := svc.QueryOrder(otherUser, 1); !errors.Is(err, ErrWrongShard) {
 		t.Errorf("QueryOrder: got %v want ErrWrongShard", err)
+	}
+}
+
+// TestHandleTradeEvent_ForeignShardSkipped verifies that when the consumer
+// sees a trade-event whose parties are not owned by this shard, each handler
+// returns nil without entering the user sequencer or publishing a journal
+// event. The guard lets every Counter instance consume the full trade-event
+// topic safely (MVP-8 implicit filter → explicit per-party filter).
+func TestHandleTradeEvent_ForeignShardSkipped(t *testing.T) {
+	total := 10
+	shardID := 0
+	svc := newShardedFixture(t, shardID, total)
+	pub := svc.publisher.(*mockPublisher)
+	foreign := userForOtherShard(shardID, total)
+
+	cases := []struct {
+		name    string
+		payload *eventpb.TradeEvent
+	}{
+		{"accepted", &eventpb.TradeEvent{Payload: &eventpb.TradeEvent_Accepted{
+			Accepted: &eventpb.OrderAccepted{UserId: foreign, OrderId: 1},
+		}}},
+		{"rejected", &eventpb.TradeEvent{Payload: &eventpb.TradeEvent_Rejected{
+			Rejected: &eventpb.OrderRejected{UserId: foreign, OrderId: 1},
+		}}},
+		{"cancelled", &eventpb.TradeEvent{Payload: &eventpb.TradeEvent_Cancelled{
+			Cancelled: &eventpb.OrderCancelled{UserId: foreign, OrderId: 1},
+		}}},
+		{"expired", &eventpb.TradeEvent{Payload: &eventpb.TradeEvent_Expired{
+			Expired: &eventpb.OrderExpired{UserId: foreign, OrderId: 1},
+		}}},
+		{"trade", &eventpb.TradeEvent{Payload: &eventpb.TradeEvent_Trade{
+			Trade: &eventpb.Trade{
+				TradeId: "t1", Symbol: "BTC-USDT", Price: "100", Qty: "1",
+				MakerUserId: foreign, MakerOrderId: 1,
+				TakerUserId: foreign, TakerOrderId: 2,
+				MakerFilledQtyAfter: "1", TakerFilledQtyAfter: "1",
+				TakerSide: eventpb.Side_SIDE_BUY,
+			},
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := svc.HandleTradeEvent(context.Background(), tc.payload); err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+		})
+	}
+	if got := len(pub.Events()); got != 0 {
+		t.Errorf("publisher saw %d events; want 0 for foreign-shard inputs", got)
 	}
 }
 

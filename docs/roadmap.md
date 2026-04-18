@@ -41,7 +41,7 @@
 - **Counter 对账** — 每小时余额对比内存 vs MySQL 聚合（[ADR-0008 实施约束](./adr/0008-sidecar-persistence-trade-dump.md)）
 - **Quote state snapshot** — 重启冷启动改从 snapshot + 增量（[ADR-0025 未来工作](./adr/0025-quote-engine-state-and-offset-strategy.md)）
 - **Counter re-shard 工具** — 未来扩容 10→20 shard 用（[ADR-0010](./adr/0010-counter-sharding-by-userid.md)、[ADR-0027](./adr/0027-counter-sharding-rollout.md)）
-- **trade-event consumer 的显式 shard filter** — 目前靠 `Orders().Get` miss 隐式过滤（[ADR-0027 备选方案 D](./adr/0027-counter-sharding-rollout.md)）
+- ~~**trade-event consumer 的显式 shard filter**~~ — ✅ Counter 每个 trade-event handler 在进 sequencer 之前 `OwnsUser` 判定，非 owned 走 debug 日志 skip（[ADR-0027 备选方案 D](./adr/0027-counter-sharding-rollout.md)）
 - **BFF auth 升级到 JWT / API-Key** — 目前 `X-User-Id` 弱 auth（[bff/internal/auth](../bff/internal/auth)）
 - **Match / Counter 延迟 + 吞吐 benchmark** — 验证是否接近 20w TPS / 10ms P99（[architecture.md §18.3](./architecture.md)）
 

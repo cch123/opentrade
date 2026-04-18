@@ -47,6 +47,10 @@ func (s *Service) HandleTradeEvent(ctx context.Context, evt *eventpb.TradeEvent)
 // -----------------------------------------------------------------------------
 
 func (s *Service) handleAccepted(ctx context.Context, a *eventpb.OrderAccepted) error {
+	if !s.OwnsUser(a.UserId) {
+		s.logForeignSkip("accepted", a.UserId, a.OrderId)
+		return nil
+	}
 	_, err := s.seq.Execute(a.UserId, func(seqID uint64) (any, error) {
 		o := s.state.Orders().Get(a.OrderId)
 		if o == nil || o.Status != engine.OrderStatusPendingNew {
@@ -62,6 +66,10 @@ func (s *Service) handleAccepted(ctx context.Context, a *eventpb.OrderAccepted) 
 }
 
 func (s *Service) handleRejected(ctx context.Context, r *eventpb.OrderRejected) error {
+	if !s.OwnsUser(r.UserId) {
+		s.logForeignSkip("rejected", r.UserId, r.OrderId)
+		return nil
+	}
 	_, err := s.seq.Execute(r.UserId, func(seqID uint64) (any, error) {
 		o := s.state.Orders().Get(r.OrderId)
 		if o == nil || o.Status.IsTerminal() {
@@ -112,6 +120,9 @@ func (s *Service) handleTrade(ctx context.Context, t *eventpb.Trade) error {
 
 	// Apply maker side, then taker side. Each goes through its own user
 	// sequencer so concurrent order flow for that user is serialized.
+	// Per-party shard ownership is checked inside applyPartyViaSequencer so
+	// that mixed-shard trades (maker on shard A, taker on shard B) still
+	// work: each Counter shard settles only its own user.
 	if err := s.applyPartyViaSequencer(ctx, ti, true); err != nil {
 		return fmt.Errorf("maker settlement: %w", err)
 	}
@@ -122,6 +133,10 @@ func (s *Service) handleTrade(ctx context.Context, t *eventpb.Trade) error {
 }
 
 func (s *Service) handleCancelled(ctx context.Context, c *eventpb.OrderCancelled) error {
+	if !s.OwnsUser(c.UserId) {
+		s.logForeignSkip("cancelled", c.UserId, c.OrderId)
+		return nil
+	}
 	_, err := s.seq.Execute(c.UserId, func(seqID uint64) (any, error) {
 		o := s.state.Orders().Get(c.OrderId)
 		if o == nil || o.Status.IsTerminal() {
@@ -140,6 +155,10 @@ func (s *Service) handleCancelled(ctx context.Context, c *eventpb.OrderCancelled
 }
 
 func (s *Service) handleExpired(ctx context.Context, e *eventpb.OrderExpired) error {
+	if !s.OwnsUser(e.UserId) {
+		s.logForeignSkip("expired", e.UserId, e.OrderId)
+		return nil
+	}
 	_, err := s.seq.Execute(e.UserId, func(seqID uint64) (any, error) {
 		o := s.state.Orders().Get(e.OrderId)
 		if o == nil || o.Status.IsTerminal() {
@@ -166,18 +185,22 @@ func (s *Service) handleExpired(ctx context.Context, e *eventpb.OrderExpired) er
 // the event's FilledQtyAfter, assume the update was applied earlier and skip.
 func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInput, maker bool) error {
 	userID := ti.TakerUserID
+	orderID := ti.TakerOrderID
+	kind := "trade-taker"
 	if maker {
 		userID = ti.MakerUserID
+		orderID = ti.MakerOrderID
+		kind = "trade-maker"
+	}
+	if !s.OwnsUser(userID) {
+		s.logForeignSkip(kind, userID, orderID)
+		return nil
 	}
 	_, err := s.seq.Execute(userID, func(seqID uint64) (any, error) {
-		orderID := ti.TakerOrderID
-		if maker {
-			orderID = ti.MakerOrderID
-		}
 		o := s.state.Orders().Get(orderID)
 		if o == nil {
-			// Shouldn't happen in normal flow — Match only produces Trade for
-			// orders we placed. Skip silently (can log at higher level).
+			// Defensive: OwnsUser claims this user but we have no record of the
+			// order. Can happen mid-rollout or if upstream shard routing drifts.
 			return nil, nil
 		}
 		// Idempotency: compare stored FilledQty with the event's after-value.
@@ -257,6 +280,19 @@ func (s *Service) unfreezeResidual(o *engine.Order) error {
 	}
 	acc.PutForRestore(o.FrozenAsset, b)
 	return nil
+}
+
+// logForeignSkip records a trade-event record that belongs to another shard
+// (MVP-8: every Counter instance consumes the full trade-event topic and
+// filters by user_id ownership here). Debug level — foreign traffic is the
+// common case for any single shard so routine info-level logs would be spam.
+func (s *Service) logForeignSkip(kind, userID string, orderID uint64) {
+	s.logger.Debug("skip foreign trade-event",
+		zap.String("kind", kind),
+		zap.String("user_id", userID),
+		zap.Uint64("order_id", orderID),
+		zap.Int("shard_id", s.cfg.ShardID),
+		zap.Int("total_shards", s.cfg.TotalShards))
 }
 
 // emitStatus publishes an OrderStatusEvent for downstream observers.
