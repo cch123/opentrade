@@ -74,6 +74,10 @@ func (s *UserSequencer) SetShardSeq(seq uint64) { s.shardSeq.Store(seq) }
 // fn MUST NOT block indefinitely: it holds the user's serializer until it
 // returns. All I/O inside fn (Kafka produce, etc.) should have a finite
 // timeout.
+//
+// Ordering matters: we send on uq.tasks first, then CAS(Idle→Running).
+// This sequence is required by the worker handoff protocol documented
+// on drain — reversing it can orphan a task.
 func (s *UserSequencer) Execute(userID string, fn func(seqID uint64) (any, error)) (any, error) {
 	uq := s.getOrCreate(userID)
 	t := &task{fn: fn, resp: make(chan taskResult, 1)}
@@ -133,8 +137,110 @@ func (s *UserSequencer) getOrCreate(userID string) *userQueue {
 	return actual.(*userQueue)
 }
 
-// drain is the worker goroutine. Exits after idleTimeout has elapsed without
-// any new tasks, releasing the user's seat in the goroutine pool.
+// drain is the per-user worker goroutine. It exits after idleTimeout
+// without any new tasks — but the *userQueue entry stays in s.users
+// (no churn on re-entry); only the goroutine is reclaimed.
+//
+// Producer / worker handoff (subtle — read before touching the state
+// transitions below).
+//
+// Invariant: when drain returns, uq.state is one of
+//
+//	(A) stateIdle    — the next Execute's CAS(Idle→Running) will
+//	                   succeed and spawn a replacement via `go drain`.
+//	(B) stateRunning — a producer's CAS already won and has already
+//	                   spawned a replacement.
+//
+// The invariant holds because drain stores stateIdle BEFORE inspecting
+// len(uq.tasks). That store publishes "I am about to exit"; any
+// producer that enqueues after this store will observe stateIdle on
+// its own CAS and take responsibility for the replacement worker.
+//
+// Every interesting interleaving (T = the producer's task, sent via
+// `uq.tasks <- T`; "✓ T drained by X" means worker X eventually runs T).
+// The diagrams below show timelines as two columns: worker events on the
+// left, producer events on the right.
+//
+// S1. Worker is actively running; not yet in the <-idle.C branch.
+//
+//	worker (state=Running)         producer
+//	----------------------------   ----------------------------
+//	                               uq.tasks <- T
+//	                               CAS(Idle→Running)  FAILS
+//	                               (relies on current worker)
+//	next select iteration:
+//	<-uq.tasks reads T
+//	✓ T drained by current worker
+//
+// S2. Another producer already flipped state to Running.
+//
+//	producer A                     producer B
+//	----------------------------   ----------------------------
+//	uq.tasks <- tA
+//	CAS(Idle→Running)  OK
+//	go drain   ─► spawns W         uq.tasks <- tB
+//	                               CAS(Idle→Running)  FAILS
+//	                               (relies on W)
+//	✓ tA, tB both drained by W
+//
+// S3. Path B: worker sits between Store(Idle) and the len check; producer enqueues, but the worker's reclaim CAS wins.
+//
+//	worker                         producer
+//	----------------------------   ----------------------------
+//	<-idle.C fires
+//	state.Store(Idle)
+//	                               uq.tasks <- T
+//	len(uq.tasks)==0 ?  false
+//	CAS(Idle→Running)  OK
+//	idle.Reset; continue
+//	                               CAS(Idle→Running)  FAILS
+//	                               (relies on reclaimed worker)
+//	✓ T drained by reclaimed worker
+//
+// S4. Path C: same as S3, but the producer's CAS wins first.
+//
+//	worker                         producer
+//	----------------------------   ----------------------------
+//	<-idle.C fires
+//	state.Store(Idle)
+//	                               uq.tasks <- T
+//	                               CAS(Idle→Running)  OK
+//	                               go drain   ─► spawns W'
+//	len(uq.tasks)==0 ?  false
+//	CAS(Idle→Running)  FAILS    (state is Running, set by producer)
+//	return (Path C)    -- old worker exits
+//	✓ T drained by W'
+//
+// S5. Path A: worker sees the queue empty and exits cleanly; the producer arrives afterwards.
+//
+//	worker                         producer
+//	----------------------------   ----------------------------
+//	<-idle.C fires
+//	state.Store(Idle)
+//	len(uq.tasks)==0 ?  true
+//	return (Path A)    -- state still Idle, worker gone
+//	                               uq.tasks <- T
+//	                               CAS(Idle→Running)  OK
+//	                               go drain   ─► spawns W'
+//	✓ T drained by W'
+//
+// --------------------------------------------------------------------
+// What cannot happen
+// --------------------------------------------------------------------
+//
+// "T sits in uq.tasks, no worker is alive, and producer's CAS failed."
+//
+// That would require producer's CAS to see state=Running while no
+// worker exists. state=Running is set only by:
+//
+//	(i)   the original `go drain` on first enqueue;
+//	(ii)  the worker's own Path B reclaim CAS;
+//	(iii) another producer's successful CAS.
+//
+// In (i) and (ii) the worker is still in its select loop and has not
+// returned. In (iii) the other producer already issued `go drain`
+// before this producer could observe Running. So whenever any
+// producer's CAS sees Running, some worker is alive to drain T.
 func (uq *userQueue) drain(s *UserSequencer) {
 	idle := time.NewTimer(s.idleTimeout)
 	defer idle.Stop()
@@ -142,7 +248,7 @@ func (uq *userQueue) drain(s *UserSequencer) {
 		select {
 		case t, ok := <-uq.tasks:
 			if !ok {
-				return
+				return // defensive: nothing closes uq.tasks today.
 			}
 			seq := s.shardSeq.Add(1)
 			v, err := t.fn(seq)
@@ -156,16 +262,30 @@ func (uq *userQueue) drain(s *UserSequencer) {
 			idle.Reset(s.idleTimeout)
 
 		case <-idle.C:
-			// Mark idle; verify the channel is actually empty before exit.
+			// Publish "I am about to exit" BEFORE inspecting the
+			// queue. This atomic store is what makes the handoff
+			// invariant hold — see scenarios S3/S4/S5 above.
 			uq.state.Store(stateIdle)
+
 			if len(uq.tasks) == 0 {
+				// Path A (scenario S5): queue empty at this load.
+				// Any producer that enqueues later sees stateIdle
+				// on its CAS and spawns a replacement. Safe to exit.
 				return
 			}
-			// A producer raced; reclaim the worker and continue.
+
 			if uq.state.CompareAndSwap(stateIdle, stateRunning) {
+				// Path B (scenario S3): a producer raced in between
+				// our Store(Idle) and the len check, but we still
+				// hold the worker seat — reclaim it and keep draining.
 				idle.Reset(s.idleTimeout)
 				continue
 			}
+
+			// Path C (scenario S4): CAS failed ⇒ a producer's CAS
+			// already flipped state to Running and has already
+			// spawned a fresh `go drain`. Safe to exit; the
+			// replacement will drain the queue.
 			return
 		}
 	}
