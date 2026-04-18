@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package opentrade.snapshot;
+
+option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
+
+// -----------------------------------------------------------------------------
+// Counter shard snapshot — protobuf form. See ADR-0049.
+//
+// Wire mirror of counter/internal/snapshot.ShardSnapshot. Numeric fields are
+// proto-native; decimal amounts stay on-wire as decimal strings (pkg/dec
+// parse/stringify round-trip preserves precision, identical to the JSON
+// form). Enums (Side / OrderType / TIF / OrderStatus / TransferType) are
+// uint32 containers carrying the service-internal uint8 value; the service
+// layer handles the cast.
+//
+// Version field is the snapshot format logical version (ADR-0048 bumped it
+// to 2 for offsets; ADR-0049 does not bump it again — the proto format just
+// serializes whatever version the service chooses).
+// -----------------------------------------------------------------------------
+
+message CounterShardSnapshot {
+  uint32 version = 1;
+  int32  shard_id = 2;
+  uint64 shard_seq = 3;
+  int64  timestamp_ms = 4;
+
+  repeated CounterAccount accounts = 5;
+  repeated CounterOrder orders = 6;
+  repeated CounterDedupEntry dedup = 7;          // legacy pre-ring, ADR-0048 #4
+  repeated CounterReservation reservations = 8;
+  repeated CounterKafkaOffset offsets = 9;
+}
+
+message CounterAccount {
+  string user_id = 1;
+  uint64 version = 2;                            // ADR-0048 #1 user-level version
+  repeated CounterBalance balances = 3;
+  map<string, uint64> last_match_seq = 4;        // ADR-0048 #2
+  repeated string recent_transfer_ids = 5;       // ADR-0048 #4, oldest → newest
+}
+
+message CounterBalance {
+  string asset = 1;
+  string available = 2;                          // decimal string
+  string frozen = 3;                             // decimal string
+  uint64 version = 4;                            // ADR-0048 #1 per-asset version
+}
+
+message CounterOrder {
+  uint64 id = 1;
+  string client_order_id = 2;
+  string user_id = 3;
+  string symbol = 4;
+  uint32 side = 5;                               // engine.Side (uint8)
+  uint32 type = 6;                               // engine.OrderType (uint8)
+  uint32 tif = 7;                                // engine.TIF (uint8)
+  string price = 8;
+  string qty = 9;
+  string quote_qty = 10;                         // ADR-0035 market buy budget
+  string filled_qty = 11;
+  string frozen_asset = 12;
+  string frozen_amount = 13;
+  string frozen_spent = 14;                      // ADR-0035 consumed freeze
+  uint32 status = 15;                            // engine.OrderStatus (uint8)
+  uint32 pre_cancel_status = 16;
+  int64  created_at = 17;
+  int64  updated_at = 18;
+}
+
+message CounterDedupEntry {
+  string key = 1;
+  int64  expires_unix_ms = 2;
+}
+
+message CounterReservation {
+  string user_id = 1;
+  string ref_id = 2;
+  string asset = 3;
+  string amount = 4;
+  int64  created_at_ms = 5;
+}
+
+message CounterKafkaOffset {
+  string topic = 1;
+  int32  partition = 2;
+  int64  offset = 3;
+}

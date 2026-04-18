@@ -1,22 +1,75 @@
 // Package snapshot serializes Counter's ShardState + Dedup + UserSequencer
 // shard seq id to local disk and restores it on startup.
 //
-// MVP-2 scope: single-file JSON per shard, atomic write (tmp + rename). S3
-// upload + periodic capture from the backup node land in MVP-8 (ADR-0006).
+// ADR-0049: default on-disk format is protobuf (.pb); JSON (.json) stays
+// available as a debug fallback selected by --snapshot-format=json. Load
+// probes .pb first, then .json, so in-place upgrades just work.
 package snapshot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
+	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )
+
+// Format names the on-disk encoding. ADR-0049.
+type Format int
+
+const (
+	// FormatProto is the default binary encoding (file extension .pb).
+	FormatProto Format = iota
+	// FormatJSON is the debug-friendly text encoding (file extension .json).
+	FormatJSON
+)
+
+// String returns the canonical CLI token ("proto" / "json").
+func (f Format) String() string {
+	switch f {
+	case FormatProto:
+		return "proto"
+	case FormatJSON:
+		return "json"
+	default:
+		return "unknown"
+	}
+}
+
+// ext returns the file extension (including the leading dot).
+func (f Format) ext() string {
+	switch f {
+	case FormatProto:
+		return ".pb"
+	case FormatJSON:
+		return ".json"
+	default:
+		return ""
+	}
+}
+
+// ParseFormat parses a CLI token back to Format. Empty / unrecognised input
+// returns an error; the caller is expected to surface it as an invalid-flag
+// error at startup.
+func ParseFormat(s string) (Format, error) {
+	switch s {
+	case "proto", "pb", "protobuf":
+		return FormatProto, nil
+	case "json":
+		return FormatJSON, nil
+	default:
+		return 0, fmt.Errorf("snapshot: unknown format %q (want proto|json)", s)
+	}
+}
 
 // Version of the snapshot format.
 //
@@ -393,22 +446,57 @@ func OffsetsSliceToMap(s []KafkaOffset) map[int32]int64 {
 // Disk I/O
 // -----------------------------------------------------------------------------
 
-// Save writes snap to path atomically (tmp + rename + fsync).
-func Save(path string, snap *ShardSnapshot) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// Save writes snap to disk atomically. basePath is the filename without
+// extension; the target path becomes basePath + format.ext(). ADR-0049.
+func Save(basePath string, snap *ShardSnapshot, format Format) error {
+	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
+	data, err := encode(snap, format)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", format, err)
+	}
+	path := basePath + format.ext()
 	tmp := path + ".tmp"
+	if err := writeAtomic(tmp, path, data); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Load reads a snapshot from disk. basePath is the filename without
+// extension; Load probes .pb first, then .json, returning os.ErrNotExist
+// only when neither exists (callers treat that as cold start).
+func Load(basePath string) (*ShardSnapshot, error) {
+	// Probe in fallback order (ADR-0049): proto → json.
+	for _, format := range []Format{FormatProto, FormatJSON} {
+		path := basePath + format.ext()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		snap, err := decode(data, format)
+		if err != nil {
+			return nil, fmt.Errorf("decode %s: %w", path, err)
+		}
+		return snap, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+// writeAtomic stages data into tmp, fsyncs + renames onto path.
+func writeAtomic(tmp, path string, data []byte) error {
 	f, err := os.Create(tmp)
 	if err != nil {
 		return fmt.Errorf("create tmp: %w", err)
 	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(snap); err != nil {
+	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return fmt.Errorf("encode: %w", err)
+		return fmt.Errorf("write: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -426,16 +514,253 @@ func Save(path string, snap *ShardSnapshot) error {
 	return nil
 }
 
-// Load reads a snapshot from path.
-func Load(path string) (*ShardSnapshot, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+// encode dispatches to the format-specific encoder.
+func encode(snap *ShardSnapshot, format Format) ([]byte, error) {
+	switch format {
+	case FormatProto:
+		return proto.Marshal(toProto(snap))
+	case FormatJSON:
+		return json.MarshalIndent(snap, "", "  ")
+	default:
+		return nil, fmt.Errorf("snapshot: unknown format %d", format)
 	}
-	defer f.Close()
-	var snap ShardSnapshot
-	if err := json.NewDecoder(f).Decode(&snap); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
+}
+
+// decode dispatches to the format-specific decoder.
+func decode(data []byte, format Format) (*ShardSnapshot, error) {
+	switch format {
+	case FormatProto:
+		var pb snapshotpb.CounterShardSnapshot
+		if err := proto.Unmarshal(data, &pb); err != nil {
+			return nil, err
+		}
+		return fromProto(&pb), nil
+	case FormatJSON:
+		var snap ShardSnapshot
+		if err := json.Unmarshal(data, &snap); err != nil {
+			return nil, err
+		}
+		return &snap, nil
+	default:
+		return nil, fmt.Errorf("snapshot: unknown format %d", format)
 	}
-	return &snap, nil
+}
+
+// -----------------------------------------------------------------------------
+// Proto <-> ShardSnapshot mapping (ADR-0049)
+// -----------------------------------------------------------------------------
+
+func toProto(s *ShardSnapshot) *snapshotpb.CounterShardSnapshot {
+	if s == nil {
+		return nil
+	}
+	pb := &snapshotpb.CounterShardSnapshot{
+		Version:     uint32(s.Version),
+		ShardId:     int32(s.ShardID),
+		ShardSeq:    s.ShardSeq,
+		TimestampMs: s.TimestampMS,
+	}
+	if len(s.Accounts) > 0 {
+		pb.Accounts = make([]*snapshotpb.CounterAccount, 0, len(s.Accounts))
+		for i := range s.Accounts {
+			pb.Accounts = append(pb.Accounts, accountToProto(&s.Accounts[i]))
+		}
+	}
+	if len(s.Orders) > 0 {
+		pb.Orders = make([]*snapshotpb.CounterOrder, 0, len(s.Orders))
+		for i := range s.Orders {
+			pb.Orders = append(pb.Orders, orderToProto(&s.Orders[i]))
+		}
+	}
+	if len(s.Dedup) > 0 {
+		pb.Dedup = make([]*snapshotpb.CounterDedupEntry, 0, len(s.Dedup))
+		for _, d := range s.Dedup {
+			pb.Dedup = append(pb.Dedup, &snapshotpb.CounterDedupEntry{
+				Key: d.Key, ExpiresUnixMs: d.ExpiresUnix,
+			})
+		}
+	}
+	if len(s.Reservations) > 0 {
+		pb.Reservations = make([]*snapshotpb.CounterReservation, 0, len(s.Reservations))
+		for _, r := range s.Reservations {
+			pb.Reservations = append(pb.Reservations, &snapshotpb.CounterReservation{
+				UserId: r.UserID, RefId: r.RefID, Asset: r.Asset,
+				Amount: r.Amount, CreatedAtMs: r.CreatedAtMs,
+			})
+		}
+	}
+	if len(s.Offsets) > 0 {
+		pb.Offsets = make([]*snapshotpb.CounterKafkaOffset, 0, len(s.Offsets))
+		for _, o := range s.Offsets {
+			pb.Offsets = append(pb.Offsets, &snapshotpb.CounterKafkaOffset{
+				Topic: o.Topic, Partition: o.Partition, Offset: o.Offset,
+			})
+		}
+	}
+	return pb
+}
+
+func accountToProto(a *AccountSnapshot) *snapshotpb.CounterAccount {
+	out := &snapshotpb.CounterAccount{
+		UserId:            a.UserID,
+		Version:           a.Version,
+		LastMatchSeq:      a.LastMatchSeq,
+		RecentTransferIds: a.RecentTransferIDs,
+	}
+	if len(a.Balances) > 0 {
+		out.Balances = make([]*snapshotpb.CounterBalance, 0, len(a.Balances))
+		for _, b := range a.Balances {
+			out.Balances = append(out.Balances, &snapshotpb.CounterBalance{
+				Asset:     b.Asset,
+				Available: b.Available,
+				Frozen:    b.Frozen,
+				Version:   b.Version,
+			})
+		}
+	}
+	return out
+}
+
+func orderToProto(o *OrderSnapshot) *snapshotpb.CounterOrder {
+	return &snapshotpb.CounterOrder{
+		Id:              o.ID,
+		ClientOrderId:   o.ClientOrderID,
+		UserId:          o.UserID,
+		Symbol:          o.Symbol,
+		Side:            uint32(o.Side),
+		Type:            uint32(o.OrderType),
+		Tif:             uint32(o.TIF),
+		Price:           o.Price,
+		Qty:             o.Qty,
+		QuoteQty:        o.QuoteQty,
+		FilledQty:       o.FilledQty,
+		FrozenAsset:     o.FrozenAsset,
+		FrozenAmount:    o.FrozenAmount,
+		FrozenSpent:     o.FrozenSpent,
+		Status:          uint32(o.Status),
+		PreCancelStatus: uint32(o.PreCancelStatus),
+		CreatedAt:       o.CreatedAt,
+		UpdatedAt:       o.UpdatedAt,
+	}
+}
+
+func fromProto(pb *snapshotpb.CounterShardSnapshot) *ShardSnapshot {
+	if pb == nil {
+		return nil
+	}
+	s := &ShardSnapshot{
+		Version:     int(pb.Version),
+		ShardID:     int(pb.ShardId),
+		ShardSeq:    pb.ShardSeq,
+		TimestampMS: pb.TimestampMs,
+	}
+	if n := len(pb.Accounts); n > 0 {
+		s.Accounts = make([]AccountSnapshot, 0, n)
+		for _, a := range pb.Accounts {
+			s.Accounts = append(s.Accounts, accountFromProto(a))
+		}
+	}
+	if n := len(pb.Orders); n > 0 {
+		s.Orders = make([]OrderSnapshot, 0, n)
+		for _, o := range pb.Orders {
+			s.Orders = append(s.Orders, orderFromProto(o))
+		}
+	}
+	if n := len(pb.Dedup); n > 0 {
+		s.Dedup = make([]DedupEntrySnapshot, 0, n)
+		for _, d := range pb.Dedup {
+			s.Dedup = append(s.Dedup, DedupEntrySnapshot{
+				Key:         d.Key,
+				ExpiresUnix: d.ExpiresUnixMs,
+			})
+		}
+	}
+	if n := len(pb.Reservations); n > 0 {
+		s.Reservations = make([]ReservationSnapshot, 0, n)
+		for _, r := range pb.Reservations {
+			s.Reservations = append(s.Reservations, ReservationSnapshot{
+				UserID:      r.UserId,
+				RefID:       r.RefId,
+				Asset:       r.Asset,
+				Amount:      r.Amount,
+				CreatedAtMs: r.CreatedAtMs,
+			})
+		}
+	}
+	if n := len(pb.Offsets); n > 0 {
+		s.Offsets = make([]KafkaOffset, 0, n)
+		for _, o := range pb.Offsets {
+			s.Offsets = append(s.Offsets, KafkaOffset{
+				Topic: o.Topic, Partition: o.Partition, Offset: o.Offset,
+			})
+		}
+	}
+	return s
+}
+
+func accountFromProto(a *snapshotpb.CounterAccount) AccountSnapshot {
+	out := AccountSnapshot{
+		UserID:            a.UserId,
+		Version:           a.Version,
+		LastMatchSeq:      a.LastMatchSeq,
+		RecentTransferIDs: a.RecentTransferIds,
+	}
+	if n := len(a.Balances); n > 0 {
+		out.Balances = make([]BalanceSnapshot, 0, n)
+		for _, b := range a.Balances {
+			out.Balances = append(out.Balances, BalanceSnapshot{
+				Asset:     b.Asset,
+				Available: b.Available,
+				Frozen:    b.Frozen,
+				Version:   b.Version,
+			})
+		}
+	}
+	return out
+}
+
+func orderFromProto(o *snapshotpb.CounterOrder) OrderSnapshot {
+	return OrderSnapshot{
+		ID:              o.Id,
+		ClientOrderID:   o.ClientOrderId,
+		UserID:          o.UserId,
+		Symbol:          o.Symbol,
+		Side:            uint8(o.Side),
+		OrderType:       uint8(o.Type),
+		TIF:             uint8(o.Tif),
+		Price:           o.Price,
+		Qty:             o.Qty,
+		QuoteQty:        o.QuoteQty,
+		FilledQty:       o.FilledQty,
+		FrozenAsset:     o.FrozenAsset,
+		FrozenAmount:    o.FrozenAmount,
+		FrozenSpent:     o.FrozenSpent,
+		Status:          uint8(o.Status),
+		PreCancelStatus: uint8(o.PreCancelStatus),
+		CreatedAt:       o.CreatedAt,
+		UpdatedAt:       o.UpdatedAt,
+	}
+}
+
+// LoadPath preserves the original single-path semantics for tools that
+// already pass an explicit path with extension (counter-reshard etc.).
+// If path ends in .pb or .json, only that format is attempted; otherwise
+// fall through to Load(basePath) which probes both.
+func LoadPath(path string) (*ShardSnapshot, error) {
+	switch filepath.Ext(path) {
+	case ".pb":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		return decode(data, FormatProto)
+	case ".json":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		return decode(data, FormatJSON)
+	default:
+		return Load(path)
+	}
 }

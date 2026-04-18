@@ -66,6 +66,7 @@ type Config struct {
 	ConsumerGroup    string
 	SnapshotDir      string
 	SnapshotInterval time.Duration
+	SnapshotFormat   snapshot.Format // ADR-0049
 	DedupTTL         time.Duration
 
 	// HA (MVP-12).
@@ -410,6 +411,7 @@ func parseFlags() Config {
 		TradeEventTopic:  "trade-event",
 		SnapshotDir:      "./data/counter",
 		SnapshotInterval: 60 * time.Second,
+		SnapshotFormat:   snapshot.FormatProto, // ADR-0049
 		DedupTTL:         24 * time.Hour,
 		HAMode:           "disabled",
 		LeaseTTL:         10,
@@ -419,7 +421,7 @@ func parseFlags() Config {
 		Env:              "dev",
 		LogLevel:         "info",
 	}
-	var brokersStr, etcdStr string
+	var brokersStr, etcdStr, snapshotFormatStr string
 	flag.IntVar(&cfg.ShardID, "shard-id", 0, "shard id (0..total-shards-1)")
 	flag.IntVar(&cfg.TotalShards, "total-shards", 10, "total shard count for user→shard routing (0 disables guard)")
 	flag.StringVar(&cfg.InstanceID, "instance-id", "", "instance id (default counter-shard-<N>-main)")
@@ -431,6 +433,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default counter-shard-<N>)")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "periodic snapshot cadence while primary (0 disables; only final shutdown snapshot runs)")
+	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "snapshot on-disk encoding: proto (default) | json (debug). ADR-0049. Env OPENTRADE_SNAPSHOT_FORMAT overrides.")
 	flag.DurationVar(&cfg.DedupTTL, "dedup-ttl", cfg.DedupTTL, "transfer_id dedup TTL")
 	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0031)")
 	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto)")
@@ -446,6 +449,18 @@ func parseFlags() Config {
 
 	cfg.Brokers = splitCSV(brokersStr)
 	cfg.EtcdEndpoints = splitCSV(etcdStr)
+	// --snapshot-format + OPENTRADE_SNAPSHOT_FORMAT env override (ADR-0049).
+	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
+		snapshotFormatStr = envFmt
+	}
+	if snapshotFormatStr != "" {
+		f, err := snapshot.ParseFormat(snapshotFormatStr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		cfg.SnapshotFormat = f
+	}
 	if cfg.InstanceID == "" {
 		cfg.InstanceID = fmt.Sprintf("counter-shard-%d-main", cfg.ShardID)
 	}
@@ -501,8 +516,11 @@ func splitCSV(s string) []string {
 // Snapshot helpers
 // ---------------------------------------------------------------------------
 
+// snapshotPath returns the base path for this shard's snapshot WITHOUT the
+// format extension. snapshot.Save appends the extension from
+// cfg.SnapshotFormat; snapshot.Load probes both .pb and .json (ADR-0049).
 func snapshotPath(cfg Config) string {
-	return filepath.Join(cfg.SnapshotDir, fmt.Sprintf("shard-%d.json", cfg.ShardID))
+	return filepath.Join(cfg.SnapshotDir, fmt.Sprintf("shard-%d", cfg.ShardID))
 }
 
 // tryRestoreSnapshot loads state + per-partition offsets from disk. Returns
@@ -541,5 +559,5 @@ func writeSnapshot(ctx context.Context, cfg Config, state *engine.ShardState, se
 		return fmt.Errorf("flush before snapshot: %w", err)
 	}
 	snap := snapshot.Capture(cfg.ShardID, state, seq, dt, svc.Offsets(), time.Now().UnixMilli())
-	return snapshot.Save(snapshotPath(cfg), snap)
+	return snapshot.Save(snapshotPath(cfg), snap, cfg.SnapshotFormat)
 }

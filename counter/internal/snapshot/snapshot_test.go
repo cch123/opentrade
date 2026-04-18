@@ -11,8 +11,16 @@ import (
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-func TestSaveLoadRoundTrip(t *testing.T) {
-	tmp := filepath.Join(t.TempDir(), "counter-shard-0.json")
+func TestSaveLoadRoundTrip_Proto(t *testing.T) {
+	testSaveLoadRoundTrip(t, FormatProto)
+}
+
+func TestSaveLoadRoundTrip_JSON(t *testing.T) {
+	testSaveLoadRoundTrip(t, FormatJSON)
+}
+
+func testSaveLoadRoundTrip(t *testing.T, format Format) {
+	base := filepath.Join(t.TempDir(), "counter-shard-0")
 	snap := &ShardSnapshot{
 		Version:     Version,
 		ShardID:     0,
@@ -25,15 +33,53 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 			},
 		}},
 	}
-	if err := Save(tmp, snap); err != nil {
+	if err := Save(base, snap, format); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(tmp)
+	got, err := Load(base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.ShardID != 0 || got.ShardSeq != 99 || len(got.Accounts) != 1 {
 		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+// TestSaveLoadRoundTrip_ProtoPreferredOverJSON verifies that when both
+// formats live on disk, Load prefers the proto file (ADR-0049 probe order).
+func TestSaveLoadRoundTrip_ProtoPreferredOverJSON(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "counter-shard-0")
+	protoSnap := &ShardSnapshot{Version: Version, ShardID: 0, ShardSeq: 7}
+	jsonSnap := &ShardSnapshot{Version: Version, ShardID: 0, ShardSeq: 42}
+	if err := Save(base, protoSnap, FormatProto); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(base, jsonSnap, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ShardSeq != 7 {
+		t.Fatalf("expected proto (seq=7) to win over json (seq=42), got %d", got.ShardSeq)
+	}
+}
+
+// TestLoad_JSONOnlyMigration covers the upgrade path: only .json on disk,
+// Load still returns it so the first-start-after-upgrade works.
+func TestLoad_JSONOnlyMigration(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "counter-shard-0")
+	snap := &ShardSnapshot{Version: Version, ShardID: 0, ShardSeq: 42}
+	if err := Save(base, snap, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ShardSeq != 42 {
+		t.Fatalf("json-only load: got seq=%d", got.ShardSeq)
 	}
 }
 
@@ -62,12 +108,12 @@ func TestCaptureRestore(t *testing.T) {
 	offsets := map[int32]int64{0: 100, 2: 55}
 	snap := Capture(3, state, seq, dt, offsets, 0)
 
-	// Persist and reload.
-	tmp := filepath.Join(t.TempDir(), "shard-3.json")
-	if err := Save(tmp, snap); err != nil {
+	// Persist and reload (default proto format, ADR-0049).
+	base := filepath.Join(t.TempDir(), "shard-3")
+	if err := Save(base, snap, FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(tmp)
+	loaded, err := Load(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,11 +188,11 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tmp := filepath.Join(t.TempDir(), "shard-0.json")
-	if err := Save(tmp, Capture(0, state, seq, dt, nil, 0)); err != nil {
+	base := filepath.Join(t.TempDir(), "shard-0")
+	if err := Save(base, Capture(0, state, seq, dt, nil, 0), FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(tmp)
+	loaded, err := Load(base)
 	if err != nil {
 		t.Fatal(err)
 	}

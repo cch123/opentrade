@@ -27,7 +27,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -39,24 +38,35 @@ import (
 )
 
 type config struct {
-	inDir    string
-	outDir   string
-	fromN    int
-	toM      int
-	dryRun   bool
-	timeUnix int64
+	inDir        string
+	outDir       string
+	fromN        int
+	toM          int
+	dryRun       bool
+	outputFormat snapshot.Format
+	timeUnix     int64
 }
 
 func parseFlags() config {
 	cfg := config{
-		timeUnix: time.Now().UnixMilli(),
+		timeUnix:     time.Now().UnixMilli(),
+		outputFormat: snapshot.FormatProto, // ADR-0049 default
 	}
-	flag.StringVar(&cfg.inDir, "in", "", "directory holding shard-*.json snapshots from the OLD topology")
+	var outputFormatStr string
+	flag.StringVar(&cfg.inDir, "in", "", "directory holding shard-* snapshots from the OLD topology (.pb or .json)")
 	flag.StringVar(&cfg.outDir, "out", "", "directory to write NEW snapshots into (created if missing)")
 	flag.IntVar(&cfg.fromN, "from", 0, "OLD total-shards count (number of input files)")
 	flag.IntVar(&cfg.toM, "to", 0, "NEW total-shards count (number of output files)")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "compute + report routing without writing output")
+	flag.StringVar(&outputFormatStr, "output-format", cfg.outputFormat.String(), "output encoding: proto (default) | json (ADR-0049)")
 	flag.Parse()
+	if outputFormatStr != "" {
+		f, err := snapshot.ParseFormat(outputFormatStr)
+		if err != nil {
+			die(err)
+		}
+		cfg.outputFormat = f
+	}
 	return cfg
 }
 
@@ -106,9 +116,9 @@ func main() {
 		die(err)
 	}
 	for _, o := range outputs {
-		path := filepath.Join(cfg.outDir, fmt.Sprintf("shard-%d.json", o.ShardID))
-		if err := snapshot.Save(path, o); err != nil {
-			die(fmt.Errorf("save %s: %w", path, err))
+		basePath := filepath.Join(cfg.outDir, fmt.Sprintf("shard-%d", o.ShardID))
+		if err := snapshot.Save(basePath, o, cfg.outputFormat); err != nil {
+			die(fmt.Errorf("save %s: %w", basePath, err))
 		}
 	}
 }
@@ -166,30 +176,26 @@ func reshard(inputs []*snapshot.ShardSnapshot, toM int, nowMs int64) ([]*snapsho
 // I/O
 // -----------------------------------------------------------------------------
 
-// loadInputs reads every `shard-<i>.json` under dir for i in [0, n). Returns
-// one snapshot per shard in shard-id order; missing files are treated as
-// empty shards (we still produce outputs, just without contributions from
-// the missing input — matches "that shard was empty").
+// loadInputs reads every `shard-<i>` snapshot under dir for i in [0, n).
+// Probes the .pb form first, then .json (ADR-0049 migration window).
+// Missing files are treated as empty shards — we still produce outputs,
+// just without contributions from the missing input.
 func loadInputs(dir string, n int) ([]*snapshot.ShardSnapshot, error) {
 	out := make([]*snapshot.ShardSnapshot, n)
 	for i := 0; i < n; i++ {
-		path := filepath.Join(dir, fmt.Sprintf("shard-%d.json", i))
-		data, err := os.ReadFile(path)
+		basePath := filepath.Join(dir, fmt.Sprintf("shard-%d", i))
+		snap, err := snapshot.Load(basePath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "warning: %s missing, treating as empty\n", path)
+				fmt.Fprintf(os.Stderr, "warning: %s(.pb|.json) missing, treating as empty\n", basePath)
 				continue
 			}
-			return nil, fmt.Errorf("read %s: %w", path, err)
-		}
-		var snap snapshot.ShardSnapshot
-		if err := json.Unmarshal(data, &snap); err != nil {
-			return nil, fmt.Errorf("decode %s: %w", path, err)
+			return nil, fmt.Errorf("load %s: %w", basePath, err)
 		}
 		if snap.ShardID != i {
-			return nil, fmt.Errorf("%s: shard_id=%d but file name expects %d", path, snap.ShardID, i)
+			return nil, fmt.Errorf("%s: shard_id=%d but file name expects %d", basePath, snap.ShardID, i)
 		}
-		out[i] = &snap
+		out[i] = snap
 	}
 	return out, nil
 }

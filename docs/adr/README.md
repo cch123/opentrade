@@ -65,6 +65,7 @@
 | [0031](0031-ha-cold-standby-rollout.md) | MVP-12 Counter/Match HA — etcd lease + cold standby | Accepted |
 | [0032](0032-match-transactional-producer.md) | MVP-12b Match TradeProducer 升级为 transactional (fencing) | Accepted |
 | [0048](0048-snapshot-offset-atomicity.md) | counter/match snapshot 绑 Kafka offset + output flush barrier | Accepted |
+| [0049](0049-snapshot-protobuf-with-json-debug.md) | snapshot 默认 protobuf, debug 可选 JSON | Accepted |
 
 ### 并发与 Sequencer
 
