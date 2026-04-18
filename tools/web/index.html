@@ -634,6 +634,24 @@ async function submitTransfer() {
 }
 
 // ---------- Polling ----------
+// seedOrderbook pulls the current depth snapshot from BFF once at startup.
+// Quote only pushes depth@ via WS when there's a change (+ a periodic 5s
+// snapshot), so a fresh page load would show an empty book until the next
+// tick. REST /v1/depth is served from BFF's in-memory cache (ADR-0038) when
+// BFF has --market-brokers wired; 503 means the cache is disabled and we
+// fall back to waiting for WS frames.
+async function seedOrderbook() {
+  try {
+    const snap = await api('GET', `/v1/depth/${encodeURIComponent(state.symbol)}`);
+    if (!snap) return;
+    state.book.bids.clear();
+    state.book.asks.clear();
+    applyDepth(snap);
+    renderOrderbook();
+    renderTicker();
+  } catch {}
+}
+
 async function pollAccount() {
   try {
     const bal = await api('GET', '/v1/account');
@@ -697,7 +715,7 @@ function reconnectAll() {
   // blank book while waiting for the next depth snapshot.
   state.orders = []; state.balances = [];
   renderBalances(); renderOrders();
-  connectWS(); pollAccount();
+  connectWS(); seedOrderbook(); pollAccount();
 }
 
 function wire() {
@@ -750,6 +768,7 @@ function boot() {
   renderOrders();
   renderStream();
   connectWS();
+  seedOrderbook();
   pollAccount();
   schedulePoll();
 }

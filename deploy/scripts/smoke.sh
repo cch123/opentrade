@@ -64,6 +64,7 @@ PUSH_PID=$!
   --http-addr=:8080 \
   --counter-shards=localhost:8081 \
   --push-ws=ws://localhost:8090/ws \
+  --market-brokers=localhost:9092 \
   > "$LOGS/bff.log" 2>&1 &
 BFF_PID=$!
 
