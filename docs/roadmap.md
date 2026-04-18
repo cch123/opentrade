@@ -124,7 +124,7 @@
 
 ### MVP-9  trade-dump 其它表  {#mvp-9-trade-dump-projections}
 
-- **commit** pending · **ADR** [0028](./adr/0028-trade-dump-journal-projection.md)
+- **commit** [`45d2c22`](../) · **ADR** [0028](./adr/0028-trade-dump-journal-projection.md)
 - 新增 journal consumer（与 trade-event consumer 并行）消费 `counter-journal`
 - 投影到 `orders` / `accounts` / `account_logs`；单 tx 三表写入；`accounts` 带 seq_id guard 防乱序
 - schema 调整：`account_logs` PK `(shard_id, seq_id, asset)`（SettlementEvent 一事件两 asset 行）
@@ -132,7 +132,7 @@
 
 ### MVP-10  BFF WebSocket 网关  {#mvp-10-bff-ws}
 
-- **commit** pending · **ADR** [0029](./adr/0029-bff-ws-reverse-proxy.md)
+- **commit** [`1e40e9f`](../) · **ADR** [0029](./adr/0029-bff-ws-reverse-proxy.md)
 - BFF `/ws` 接受客户端连接 → 对上游 push 发起独立 WS，双向透传帧
 - auth 在 handshake 层（`bff/internal/auth.Middleware` 读 `X-User-Id`），转发时 re-inject 到上游
 - 单 upstream（`--push-ws=ws://push:8081/ws`）；多实例 sticky 留给 MVP-13
@@ -140,7 +140,7 @@
 
 ### MVP-11  Match 多实例 + symbol 迁移  {#mvp-11-match-sharding}
 
-- **commit** pending · **ADR** [0030](./adr/0030-match-etcd-sharding-rollout.md)
+- **commit** [`8fb001a`](../) · **ADR** [0030](./adr/0030-match-etcd-sharding-rollout.md)
 - 新 `pkg/etcdcfg`：`Source` 接口 + `EtcdSource`（clientv3）+ `MemorySource`（测试）；List → revision → Watch
 - 新 `match/internal/registry`：线程安全的 symbol 生命周期管理（Factory + Restore + Snapshot 回调 + Dispatcher 注册/注销）
 - match main 重写：etcd 启动 List + 后续 Watch 驱动 AddSymbol/RemoveSymbol；`--etcd` 空时 fallback 到 `--symbols` 静态模式
@@ -148,21 +148,21 @@
 
 ### MVP-12  Counter / Match HA  {#mvp-12-ha}
 
-- **commit** pending · **ADR** [0031](./adr/0031-ha-cold-standby-rollout.md)
+- **commit** [`7355304`](../) · **ADR** [0031](./adr/0031-ha-cold-standby-rollout.md)
 - 新 `pkg/election`：etcd `concurrency.Election` 封装（Campaign / Resign / LostCh / Observe）
 - Counter / Match main 分出 `runPrimary`，外层 `runElectionLoop` cold-standby
 - `--ha-mode=auto` 走选举；`disabled` 保留单机模式（向后兼容）
 - Counter fencing 自然走 Kafka `TransactionalID`（ADR-0017）；Match MVP-12b 起同款 fencing（[ADR-0032](./adr/0032-match-transactional-producer.md)）
 - backup 不消费 Kafka、不打快照；snapshot 共享目录 MVP 假设本地 EFS/NFS mount
 
-**MVP-12b**（实现于同一轮迭代）：**ADR** [0032](./adr/0032-match-transactional-producer.md)
+**MVP-12b**（commit [`7f53424`](../)）：**ADR** [0032](./adr/0032-match-transactional-producer.md)
 - `TradeProducer` 增加 `TransactionalID`；`Pump` 按 `BatchSize=32 / FlushInterval=10ms` 攒批写单事务
 - `--ha-mode=auto` 时启用，`disabled` 仍走 idempotent
 - 关闭 ADR-0031 遗留的 Match split-brain 窗口；Counter 和 Match 达成对等 fencing 模型
 
 ### MVP-13  Push 多实例 sticky  {#mvp-13-push-sharding}
 
-- **commit** pending · **ADR** [0033](./adr/0033-push-sticky-user-filter.md)
+- **commit** [`2480005`](../) · **ADR** [0033](./adr/0033-push-sticky-user-filter.md)
 - 新 flag `--instance-ordinal` / `--total-instances`；`TotalInstances=1` 默认（单实例模式）
 - `PrivateConsumer` 按 `shard.Index(userID, total)` 过滤非 owned 事件
 - WS handshake 非 owner 的 `X-User-Id` 返回 `403` + `X-Correct-Instance`；匿名连接 bypass
@@ -170,7 +170,7 @@
 
 ### MVP-14a  条件单（stop-loss / take-profit）  {#mvp-14a-conditional}
 
-- **commit** pending · **ADR** [0040](./adr/0040-conditional-order-service.md)
+- **commit** [`773569d`](../) · **ADR** [0040](./adr/0040-conditional-order-service.md)
 - 新 `conditional/` 模块 + `ConditionalService` gRPC（Place / Cancel / Query / List）
 - 订 Quote `market-data`（PublicTrade）；触发按 side × type 矩阵 —— sell/buy × STOP_LOSS/TAKE_PROFIT（±_LIMIT）
 - 触发时调 Counter `PlaceOrder`（`client_order_id = "cond-<id>"` 天然 dedup + replay 幂等）
@@ -179,7 +179,7 @@
 
 ### MVP-14b  条件单资金预留  {#mvp-14b-reservations}
 
-- **commit** pending · **ADR** [0041](./adr/0041-counter-reservations.md)
+- **commit** [`c2c52e6`](../) · **ADR** [0041](./adr/0041-counter-reservations.md)
 - Counter 新 RPC：`Reserve` / `ReleaseReservation`；`PlaceOrderRequest` 加 `reservation_id` 字段
 - Counter engine：`reservations[ref_id] → {user, asset, amount}` 副表，Available/Frozen 移动通过 `CreateReservation` / `ReleaseReservationByRef` / `ConsumeReservationForOrder` 操作
 - Snapshot 持久化 reservations（graceful restart 恢复）；非 graceful crash 下 reservation + balance 一起回到 pre-Reserve 状态，语义一致
@@ -189,7 +189,7 @@
 
 ### MVP-14c  条件单 HA（cold standby）  {#mvp-14c-conditional-ha}
 
-- **commit** pending · **ADR** [0042](./adr/0042-conditional-ha.md)
+- **commit** [`9ee1473`](../) · **ADR** [0042](./adr/0042-conditional-ha.md)
 - `conditional/cmd/conditional` 拆分 `runPrimary` + `runElectionLoop`，复刻 ADR-0031 Counter/Match 的 cold-standby 模型
 - `--ha-mode=auto` + `--etcd`：双实例共享 `/cex/conditional/leader` etcd key + `--snapshot-dir` 共享 mount
 - Split-brain 失败半径退化为"少量重复 PlaceOrder"：Counter 的 `reservation_id` / `client_order_id` dedup 吸收，无业务错误
@@ -197,7 +197,7 @@
 
 ### MVP-14d  条件单过期（TTL）  {#mvp-14d-conditional-expiry}
 
-- **commit** pending · **ADR** [0043](./adr/0043-conditional-expiry.md)
+- **commit** [`7e6827a`](../) · **ADR** [0043](./adr/0043-conditional-expiry.md)
 - proto: `PlaceConditionalRequest.expires_at_unix_ms` + `Conditional.expires_at_unix_ms`，`ConditionalStatus.EXPIRED = 5`
 - engine: `SweepExpired(ctx) int` 扫 pending 里到期的条目 → EXPIRED + best-effort Release reservation
 - main: `--expiry-sweep=5s` 起 sweeper goroutine（primary only，HA 切换后 backup 接管）
@@ -205,7 +205,7 @@
 
 ### MVP-14e  条件单 OCO  {#mvp-14e-conditional-oco}
 
-- **commit** pending · **ADR** [0044](./adr/0044-conditional-oco.md)
+- **commit** [`64ceec8`](../) · **ADR** [0044](./adr/0044-conditional-oco.md)
 - proto: 新 RPC `PlaceOCO(PlaceOCORequest)`；`Conditional.oco_group_id = 18`；N ≥ 2 腿共享 user/symbol/side
 - engine: `PlaceOCO` Reserve 每腿失败回滚；`cascadeOCOCancelLocked` 统一级联，在 Cancel / tryFire / SweepExpired 后触发
 - `ocoByClient map[string]string` 做 group-level 幂等；snapshot 持久化 + restore
@@ -213,7 +213,7 @@
 
 ### MVP-14f  条件单 Trailing Stop  {#mvp-14f-conditional-trailing}
 
-- **commit** pending · **ADR** [0045](./adr/0045-conditional-trailing-stop.md)
+- **commit** [`fb7f6b6`](../) · **ADR** [0045](./adr/0045-conditional-trailing-stop.md)
 - proto: `CONDITIONAL_TYPE_TRAILING_STOP_LOSS = 5`；`trailing_delta_bps` + `activation_price` 入参；observable 字段 `trailing_watermark` / `trailing_active`
 - engine: `updateTrailingLocked(c, price)` 在 handleLocked 内分叉：activation gate → watermark 推进 → effective_stop 比较；mutating 写进 Conditional 由引擎锁保护，snapshot 捕获
 - Reservations 走既有 MARKET 逻辑（Reserve 按 qty/quote_qty 一次算好，不依赖触发价）
@@ -221,7 +221,7 @@
 
 ### MVP-15  history / query 服务  {#mvp-15-history}
 
-- **commit** pending · **ADR** [0046](./adr/0046-history-service.md)
+- **commit** [`ea224a0`](../) · **ADR** [0046](./adr/0046-history-service.md)
 - 新 `history/` 模块 + `HistoryService` gRPC：`GetOrder` / `ListOrders` / `ListTrades` / `ListAccountLogs`；数据源为 trade-dump 已有的 MySQL 投影（ADR-0023 / 0028），纯只读、无 Kafka
 - `history/internal/cursor` opaque cursor（base64(JSON)）；orders 按 `(created_at, order_id)` 严格 < 游标，trades 按 `(ts, trade_id)`，account_logs 按 `(ts, shard_id, seq_id, asset)`
 - `history/internal/mysqlstore` 存储层；`ListOrders` 接收 `scope=OPEN|TERMINAL|ALL`（fallback，`statuses` 非空时后者胜），trades 表用 maker/taker 两 index UNION ALL 合流；limit 默认 100 / clamp 500
@@ -232,7 +232,7 @@
 
 ### MVP-16  条件单长期历史  {#mvp-16-conditional-history}
 
-- **commit** pending · **ADR** [0047](./adr/0047-conditional-long-term-history.md)
+- **commit** [`e5133de`](../) · **ADR** [0047](./adr/0047-conditional-long-term-history.md)
 - 新 proto `api/event/conditional_event.proto` + `ConditionalUpdate`（post-change full snapshot + `meta.ts_unix_ms` 守卫），`ConditionalEventType` / `ConditionalEventStatus` 与 rpc/conditional 枚举同值
 - 新 Kafka topic `conditional-event`（默认），key=user_id；conditional 服务 `internal/journal/journal.go` 起非事务 producer + 4096 槽 buffer，drain goroutine async 落盘；队列满 WARN 丢弃
 - engine `JournalSink` 接口 + `SetJournal`；Place / PlaceOCO / Cancel / tryFire / SweepExpired / cascadeOCOCancelLocked 全部在锁里 capture snapshot，锁外 emit
