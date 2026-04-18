@@ -61,3 +61,4 @@
 | [0025](0025-quote-engine-state-and-offset-strategy.md) | Quote 内部结构与 offset 回放策略 | Accepted | 2026-04-18 |
 | [0026](0026-push-ws-protocol-and-mvp-scope.md) | Push WS 协议与 MVP-7 单实例范围 | Accepted | 2026-04-18 |
 | [0027](0027-counter-sharding-rollout.md) | MVP-8 Counter 10-shard 路由落地 | Accepted | 2026-04-18 |
+| [0028](0028-trade-dump-journal-projection.md) | trade-dump 投影 counter-journal 到 orders / accounts / account_logs | Accepted | 2026-04-18 |

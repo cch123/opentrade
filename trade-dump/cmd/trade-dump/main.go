@@ -1,9 +1,9 @@
 // Command trade-dump runs the OpenTrade persistence sidecar (ADR-0008),
-// consuming trade-event from Kafka and idempotently writing Trade payloads to
-// MySQL.
+// consuming trade-event + counter-journal from Kafka and idempotently
+// projecting them onto MySQL (trades / orders / accounts / account_logs).
 //
-// MVP-5 scope: trade-event only, single trades table. counter-journal
-// projection (orders / account_logs) is deferred to a later MVP.
+//   - trade-event     → trades                       (ADR-0023, MVP-5)
+//   - counter-journal → orders / accounts / account_logs (ADR-0028, MVP-9)
 package main
 
 import (
@@ -26,10 +26,13 @@ import (
 )
 
 type Config struct {
-	InstanceID    string
-	Brokers       []string
-	TradeTopic    string
-	ConsumerGroup string
+	InstanceID string
+	Brokers    []string
+
+	TradeTopic      string
+	TradeGroup      string
+	JournalTopic    string
+	JournalGroup    string
 
 	MySQLDSN            string
 	MySQLMaxOpenConns   int
@@ -58,8 +61,10 @@ func main() {
 	logger.Info("trade-dump starting",
 		zap.String("instance", cfg.InstanceID),
 		zap.Strings("brokers", cfg.Brokers),
-		zap.String("topic", cfg.TradeTopic),
-		zap.String("group", cfg.ConsumerGroup))
+		zap.String("trade_topic", cfg.TradeTopic),
+		zap.String("trade_group", cfg.TradeGroup),
+		zap.String("journal_topic", cfg.JournalTopic),
+		zap.String("journal_group", cfg.JournalGroup))
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -76,30 +81,49 @@ func main() {
 	}
 	defer func() { _ = mysql.Close() }()
 
-	c, err := consumer.New(consumer.Config{
+	tradeCons, err := consumer.New(consumer.Config{
 		Brokers:  cfg.Brokers,
-		ClientID: cfg.InstanceID,
-		GroupID:  cfg.ConsumerGroup,
+		ClientID: cfg.InstanceID + "-trade",
+		GroupID:  cfg.TradeGroup,
 		Topic:    cfg.TradeTopic,
 	}, mysql, logger)
 	if err != nil {
-		logger.Fatal("consumer init", zap.Error(err))
+		logger.Fatal("trade consumer init", zap.Error(err))
 	}
-	defer c.Close()
+	defer tradeCons.Close()
+
+	journalCons, err := consumer.NewJournal(consumer.JournalConfig{
+		Brokers:  cfg.Brokers,
+		ClientID: cfg.InstanceID + "-journal",
+		GroupID:  cfg.JournalGroup,
+		Topic:    cfg.JournalTopic,
+	}, mysql, logger)
+	if err != nil {
+		logger.Fatal("journal consumer init", zap.Error(err))
+	}
+	defer journalCons.Close()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := c.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("consumer exited", zap.Error(err))
-			stop() // trigger overall shutdown — supervisor will restart us
+		if err := tradeCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("trade consumer exited", zap.Error(err))
+			stop()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := journalCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("journal consumer exited", zap.Error(err))
+			stop()
 		}
 	}()
 
 	<-rootCtx.Done()
 	logger.Info("shutdown initiated")
-	c.Close()
+	tradeCons.Close()
+	journalCons.Close()
 	wg.Wait()
 	logger.Info("trade-dump shutdown complete")
 }
@@ -108,6 +132,7 @@ func parseFlags() Config {
 	cfg := Config{
 		InstanceID:        "trade-dump-0",
 		TradeTopic:        "trade-event",
+		JournalTopic:      "counter-journal",
 		MySQLDSN:          "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
 		MySQLMaxOpenConns: 16,
 		MySQLMaxIdleConns: 4,
@@ -116,10 +141,12 @@ func parseFlags() Config {
 		LogLevel:          "info",
 	}
 	var brokersStr string
-	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (client id / consumer group suffix)")
+	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (client id prefix)")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
-	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default trade-dump-{instance-id})")
+	flag.StringVar(&cfg.TradeGroup, "trade-group", "", "trade-event consumer group (default trade-dump-trade-{instance-id})")
+	flag.StringVar(&cfg.JournalTopic, "journal-topic", cfg.JournalTopic, "counter-journal topic name")
+	flag.StringVar(&cfg.JournalGroup, "journal-group", "", "counter-journal consumer group (default trade-dump-journal-{instance-id})")
 	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", cfg.MySQLDSN, "MySQL DSN")
 	flag.IntVar(&cfg.MySQLMaxOpenConns, "mysql-max-open", cfg.MySQLMaxOpenConns, "MySQL max open connections")
 	flag.IntVar(&cfg.MySQLMaxIdleConns, "mysql-max-idle", cfg.MySQLMaxIdleConns, "MySQL max idle connections")
@@ -130,8 +157,11 @@ func parseFlags() Config {
 	flag.Parse()
 
 	cfg.Brokers = splitCSV(brokersStr)
-	if cfg.ConsumerGroup == "" {
-		cfg.ConsumerGroup = "trade-dump-" + cfg.InstanceID
+	if cfg.TradeGroup == "" {
+		cfg.TradeGroup = "trade-dump-trade-" + cfg.InstanceID
+	}
+	if cfg.JournalGroup == "" {
+		cfg.JournalGroup = "trade-dump-journal-" + cfg.InstanceID
 	}
 	return cfg
 }

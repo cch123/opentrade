@@ -54,11 +54,15 @@ CREATE TABLE IF NOT EXISTS trades (
     KEY idx_user2 (taker_user_id, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- account_logs — per-asset journal mirror. One CounterJournalEvent may
+-- generate multiple rows (SettlementEvent touches both base and quote), so
+-- the PK includes `asset` to keep the (shard, seq) → multi-row expansion
+-- idempotent.
 CREATE TABLE IF NOT EXISTS account_logs (
     shard_id     INT             NOT NULL,
     seq_id       BIGINT UNSIGNED NOT NULL,
-    user_id      VARCHAR(64)     NOT NULL,
     asset        VARCHAR(32)     NOT NULL,
+    user_id      VARCHAR(64)     NOT NULL,
     delta_avail  DECIMAL(36, 18) NOT NULL,
     delta_frozen DECIMAL(36, 18) NOT NULL,
     avail_after  DECIMAL(36, 18) NOT NULL,
@@ -66,6 +70,6 @@ CREATE TABLE IF NOT EXISTS account_logs (
     biz_type     VARCHAR(32)     NOT NULL,
     biz_ref_id   VARCHAR(128)    NOT NULL DEFAULT '',
     ts           BIGINT          NOT NULL,
-    PRIMARY KEY (shard_id, seq_id),
+    PRIMARY KEY (shard_id, seq_id, asset),
     KEY idx_user_ts (user_id, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

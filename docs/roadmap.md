@@ -18,7 +18,7 @@
 | [MVP-6](#mvp-6-quote) | Quote 行情 | ✅ | PublicTrade / Kline / Depth → market-data |
 | [MVP-7](#mvp-7-push) | Push WS 单实例 | ✅ | WS gateway + market-data / counter-journal fan-out |
 | [MVP-8](#mvp-8-counter-sharding) | Counter 10-shard | ✅ | `pkg/shard` + BFF 路由 + ownership guard |
-| [MVP-9](#mvp-9-trade-dump-projections) | trade-dump 其它表 | ⏳ 计划中 | orders / account_logs / accounts projection |
+| [MVP-9](#mvp-9-trade-dump-projections) | trade-dump 其它表 | ✅ | orders / account_logs / accounts projection |
 | [MVP-10](#mvp-10-bff-ws) | BFF WebSocket 网关 | ⏳ 计划中 | 客户端走 BFF 而非直连 push |
 | [MVP-11](#mvp-11-match-sharding) | Match 多实例 + symbol 迁移 | ⏳ 计划中 | etcd 配置驱动 |
 | [MVP-12](#mvp-12-ha) | Counter/Match HA | ⏳ 计划中 | etcd lease 选主 + txn.id fencing + 备节点快照 |
@@ -106,19 +106,15 @@
 - BFF `ShardedCounter` 实现 `Counter` 接口，按 `user_id` 路由到 N 个 shard client
 - Counter `service.Config.TotalShards` + `OwnsUser` guard；`ErrWrongShard` → gRPC `FailedPrecondition`
 
-## 计划中
-
 ### MVP-9  trade-dump 其它表  {#mvp-9-trade-dump-projections}
 
-- **范围**：
-  - 消费 `counter-journal` → `orders`（OrderStatusEvent 驱动）、`account_logs`（Freeze/Unfreeze/Settlement/Transfer 流水镜像）、`accounts`（balance projection，upsert）
-  - 每个表独立 writer，复用 MVP-5 的批 + 幂等模式
-- **依赖**：MVP-5 的 consumer 骨架；schema 已在 [deploy/docker/mysql-init/01-schema.sql](../deploy/docker/mysql-init/01-schema.sql) 建好
-- **预期 ADR**：0028
-- **关键点**：
-  - `accounts` 表用 `(user_id, asset)` PK + `seq_id` 单调递增 guard（out-of-order 消息丢弃）
-  - `account_logs` 主键 `(shard_id, seq_id)` 已经是幂等键
-  - `orders` 主键 `order_id`，状态用 `UPDATE ... WHERE seq_id < ?` 防止旧事件覆盖新状态
+- **commit** pending · **ADR** [0028](./adr/0028-trade-dump-journal-projection.md)
+- 新增 journal consumer（与 trade-event consumer 并行）消费 `counter-journal`
+- 投影到 `orders` / `accounts` / `account_logs`；单 tx 三表写入；`accounts` 带 seq_id guard 防乱序
+- schema 调整：`account_logs` PK `(shard_id, seq_id, asset)`（SettlementEvent 一事件两 asset 行）
+- shard_id 从 `EventMeta.producer_id`（`counter-shard-N-main`）parse 而来
+
+## 计划中
 
 ### MVP-10  BFF WebSocket 网关  {#mvp-10-bff-ws}
 
