@@ -122,6 +122,36 @@ func TestOutputToTradeEvent_Trade(t *testing.T) {
 	}
 }
 
+func TestOutputToTradeEvent_Accepted(t *testing.T) {
+	out := &sequencer.Output{
+		Kind:           sequencer.OutputOrderAccepted,
+		SeqID:          9,
+		Symbol:         "BTC-USDT",
+		UserID:         "u1",
+		OrderID:        42,
+		Side:           orderbook.Ask,
+		Price:          dec.New("101.25"),
+		TakerRemaining: dec.New("0.75"),
+	}
+	te, err := OutputToTradeEvent(out, "match-shard-0-main")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	acc := te.GetAccepted()
+	if acc == nil {
+		t.Fatalf("expected Accepted payload, got %+v", te.Payload)
+	}
+	if acc.OrderId != 42 || acc.Symbol != "BTC-USDT" || acc.UserId != "u1" {
+		t.Fatalf("accepted identity: %+v", acc)
+	}
+	if acc.Side != eventpb.Side_SIDE_SELL {
+		t.Fatalf("accepted side: %v", acc.Side)
+	}
+	if acc.Price != "101.25" || acc.RemainingQty != "0.75" {
+		t.Fatalf("accepted price/remaining: %+v", acc)
+	}
+}
+
 func TestOutputToTradeEvent_Rejected(t *testing.T) {
 	out := &sequencer.Output{
 		Kind:         sequencer.OutputOrderRejected,

@@ -160,10 +160,17 @@ func (*TradeEvent_Cancelled) isTradeEvent_Payload() {}
 func (*TradeEvent_Expired) isTradeEvent_Payload() {}
 
 type OrderAccepted struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	OrderId       uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
-	Symbol        string                 `protobuf:"bytes,3,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	UserId  string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrderId uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Symbol  string                 `protobuf:"bytes,3,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	// Resting state of the order after any taker-side fills. These fields are
+	// required for Quote to maintain an order-book projection from trade-event
+	// alone (see ADR-0024). For market orders that never rest this message is
+	// not emitted.
+	Side          Side   `protobuf:"varint,10,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
+	Price         string `protobuf:"bytes,11,opt,name=price,proto3" json:"price,omitempty"`                                   // decimal, limit price of the resting order
+	RemainingQty  string `protobuf:"bytes,12,opt,name=remaining_qty,json=remainingQty,proto3" json:"remaining_qty,omitempty"` // decimal, qty still live on the book at rest time
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -215,6 +222,27 @@ func (x *OrderAccepted) GetOrderId() uint64 {
 func (x *OrderAccepted) GetSymbol() string {
 	if x != nil {
 		return x.Symbol
+	}
+	return ""
+}
+
+func (x *OrderAccepted) GetSide() Side {
+	if x != nil {
+		return x.Side
+	}
+	return Side_SIDE_UNSPECIFIED
+}
+
+func (x *OrderAccepted) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *OrderAccepted) GetRemainingQty() string {
+	if x != nil {
+		return x.RemainingQty
 	}
 	return ""
 }
@@ -590,11 +618,15 @@ const file_event_trade_event_proto_rawDesc = "" +
 	"\x05trade\x18\f \x01(\v2\x16.opentrade.event.TradeH\x00R\x05trade\x12?\n" +
 	"\tcancelled\x18\r \x01(\v2\x1f.opentrade.event.OrderCancelledH\x00R\tcancelled\x129\n" +
 	"\aexpired\x18\x0e \x01(\v2\x1d.opentrade.event.OrderExpiredH\x00R\aexpiredB\t\n" +
-	"\apayload\"[\n" +
+	"\apayload\"\xc1\x01\n" +
 	"\rOrderAccepted\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
-	"\x06symbol\x18\x03 \x01(\tR\x06symbol\"\x92\x01\n" +
+	"\x06symbol\x18\x03 \x01(\tR\x06symbol\x12)\n" +
+	"\x04side\x18\n" +
+	" \x01(\x0e2\x15.opentrade.event.SideR\x04side\x12\x14\n" +
+	"\x05price\x18\v \x01(\tR\x05price\x12#\n" +
+	"\rremaining_qty\x18\f \x01(\tR\fremainingQty\"\x92\x01\n" +
 	"\rOrderRejected\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
@@ -651,8 +683,8 @@ var file_event_trade_event_proto_goTypes = []any{
 	(*OrderCancelled)(nil),   // 4: opentrade.event.OrderCancelled
 	(*OrderExpired)(nil),     // 5: opentrade.event.OrderExpired
 	(*EventMeta)(nil),        // 6: opentrade.event.EventMeta
-	(RejectReason)(0),        // 7: opentrade.event.RejectReason
-	(Side)(0),                // 8: opentrade.event.Side
+	(Side)(0),                // 7: opentrade.event.Side
+	(RejectReason)(0),        // 8: opentrade.event.RejectReason
 	(InternalOrderStatus)(0), // 9: opentrade.event.InternalOrderStatus
 }
 var file_event_trade_event_proto_depIdxs = []int32{
@@ -662,16 +694,17 @@ var file_event_trade_event_proto_depIdxs = []int32{
 	3,  // 3: opentrade.event.TradeEvent.trade:type_name -> opentrade.event.Trade
 	4,  // 4: opentrade.event.TradeEvent.cancelled:type_name -> opentrade.event.OrderCancelled
 	5,  // 5: opentrade.event.TradeEvent.expired:type_name -> opentrade.event.OrderExpired
-	7,  // 6: opentrade.event.OrderRejected.reason:type_name -> opentrade.event.RejectReason
-	8,  // 7: opentrade.event.Trade.taker_side:type_name -> opentrade.event.Side
-	9,  // 8: opentrade.event.Trade.maker_status_after:type_name -> opentrade.event.InternalOrderStatus
-	9,  // 9: opentrade.event.Trade.taker_status_after:type_name -> opentrade.event.InternalOrderStatus
-	7,  // 10: opentrade.event.OrderExpired.reason:type_name -> opentrade.event.RejectReason
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	7,  // 6: opentrade.event.OrderAccepted.side:type_name -> opentrade.event.Side
+	8,  // 7: opentrade.event.OrderRejected.reason:type_name -> opentrade.event.RejectReason
+	7,  // 8: opentrade.event.Trade.taker_side:type_name -> opentrade.event.Side
+	9,  // 9: opentrade.event.Trade.maker_status_after:type_name -> opentrade.event.InternalOrderStatus
+	9,  // 10: opentrade.event.Trade.taker_status_after:type_name -> opentrade.event.InternalOrderStatus
+	8,  // 11: opentrade.event.OrderExpired.reason:type_name -> opentrade.event.RejectReason
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_event_trade_event_proto_init() }

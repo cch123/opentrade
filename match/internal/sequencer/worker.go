@@ -176,12 +176,14 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 	switch res.Status {
 	case engine.TakerAcceptedOnBook, engine.TakerPartialOnBook:
 		w.emit(&Output{
-			Kind:         OutputOrderAccepted,
-			Symbol:       w.symbol,
-			UserID:       o.UserID,
-			OrderID:      o.ID,
-			Side:         o.Side,
-			SourceOffset: evt.Source,
+			Kind:           OutputOrderAccepted,
+			Symbol:         w.symbol,
+			UserID:         o.UserID,
+			OrderID:        o.ID,
+			Side:           o.Side,
+			Price:          o.Price,
+			TakerRemaining: o.Remaining,
+			SourceOffset:   evt.Source,
 		})
 	case engine.TakerFilled:
 		// Nothing extra — the last Trade carries TakerRemaining=0.

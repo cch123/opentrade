@@ -57,3 +57,5 @@
 | [0021](0021-quote-service-and-market-data-fanout.md) | Quote 作为独立服务；市场数据通过 Kafka topic 扇出 | Accepted | 2026-04-18 |
 | [0022](0022-push-sharding-sticky-routing.md) | Push 分片与 sticky WS 路由 | Accepted | 2026-04-18 |
 | [0023](0023-trade-dump-batching-and-commit-order.md) | trade-dump 批量写入与 offset 提交顺序 | Accepted | 2026-04-18 |
+| [0024](0024-trade-event-order-accepted-extension.md) | 扩展 trade-event.OrderAccepted 以支持行情重建 | Accepted | 2026-04-18 |
+| [0025](0025-quote-engine-state-and-offset-strategy.md) | Quote 内部结构与 offset 回放策略 | Accepted | 2026-04-18 |

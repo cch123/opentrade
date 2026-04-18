@@ -29,6 +29,14 @@ message OrderAccepted {
   string user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
+
+  // Resting state of the order after any taker-side fills. These fields are
+  // required for Quote to maintain an order-book projection from trade-event
+  // alone (see ADR-0024). For market orders that never rest this message is
+  // not emitted.
+  Side side = 10;
+  string price = 11;          // decimal, limit price of the resting order
+  string remaining_qty = 12;  // decimal, qty still live on the book at rest time
 }
 
 message OrderRejected {

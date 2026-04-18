@@ -69,13 +69,17 @@ type Output struct {
 	OrderID uint64
 	Side    orderbook.Side
 
-	// OutputTrade fields.
-	Price          dec.Decimal
+	// Populated for OutputTrade (trade price) and OutputOrderAccepted (the
+	// resting limit price of the order that just entered the book).
+	Price dec.Decimal
+	// OutputTrade only: qty filled by this trade.
 	Qty            dec.Decimal
 	MakerUserID    string
 	MakerOrderID   uint64
 	MakerSide      orderbook.Side
 	MakerRemaining dec.Decimal
+	// OutputTrade: remaining qty of the taker after this fill.
+	// OutputOrderAccepted: qty still live on the book once the order rests.
 	TakerRemaining dec.Decimal
 
 	// OutputOrderRejected / OutputOrderExpired.

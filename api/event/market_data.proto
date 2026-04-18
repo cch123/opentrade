@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package opentrade.event;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/event;event";
+
+// -----------------------------------------------------------------------------
+// market-data — Quote → Push / BFF clients / analytics subscribers.
+//
+// Partition key: symbol (aligned with trade-event partitioning).
+// See ADR-0021 (Quote as standalone service) and ADR-0025 (internal split
+// into trades / kline / depth sub-engines).
+// -----------------------------------------------------------------------------
+
+message MarketDataEvent {
+  EventMeta meta = 1;
+  string symbol = 2;
+
+  oneof payload {
+    PublicTrade   public_trade   = 10;
+    KlineUpdate   kline_update   = 11;  // current (open) bar, updated on every trade
+    KlineClosed   kline_closed   = 12;  // bar has closed — value is final
+    DepthUpdate   depth_update   = 13;  // incremental level changes
+    DepthSnapshot depth_snapshot = 14;  // periodic full picture for alignment
+  }
+}
+
+// Public trade — a trade stripped of private identities. Direct forward from
+// trade-event.Trade with maker/taker user ids removed.
+message PublicTrade {
+  string trade_id = 1;
+  string symbol = 2;
+  string price = 3;
+  string qty = 4;
+  Side taker_side = 5;
+  int64 ts_unix_ms = 6;
+}
+
+// Kline interval — the windows Quote aggregates.
+enum KlineInterval {
+  KLINE_INTERVAL_UNSPECIFIED = 0;
+  KLINE_INTERVAL_1M  = 1;
+  KLINE_INTERVAL_5M  = 2;
+  KLINE_INTERVAL_15M = 3;
+  KLINE_INTERVAL_1H  = 4;
+  KLINE_INTERVAL_1D  = 5;
+}
+
+// A single candlestick. open_time_ms / close_time_ms are the interval bounds;
+// for an update they are the bounds of the current open bar.
+message Kline {
+  string symbol = 1;
+  KlineInterval interval = 2;
+  int64 open_time_ms = 3;   // inclusive
+  int64 close_time_ms = 4;  // exclusive (i.e. open_time + interval)
+  string open = 5;
+  string high = 6;
+  string low = 7;
+  string close = 8;
+  string volume = 9;        // sum of qty
+  string quote_volume = 10; // sum of qty * price
+  uint64 trade_count = 11;
+}
+
+message KlineUpdate { Kline kline = 1; }
+message KlineClosed { Kline kline = 1; }
+
+// A single price level.
+message DepthLevel {
+  string price = 1;
+  string qty = 2; // 0 means delete (for DepthUpdate; DepthSnapshot never has 0)
+}
+
+// DepthUpdate — incremental change since last update/snapshot. Consumers
+// that missed depth events between two snapshots should re-seed from the
+// latest DepthSnapshot.
+message DepthUpdate {
+  string symbol = 1;
+  repeated DepthLevel bids = 2;
+  repeated DepthLevel asks = 3;
+}
+
+// DepthSnapshot — full state of the top of the book at the time of emission.
+// Emitted periodically (see quote config) so new subscribers can align.
+message DepthSnapshot {
+  string symbol = 1;
+  repeated DepthLevel bids = 2;
+  repeated DepthLevel asks = 3;
+}

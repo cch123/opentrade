@@ -106,9 +106,12 @@ func OutputToTradeEvent(out *sequencer.Output, producerID string) (*eventpb.Trad
 	case sequencer.OutputOrderAccepted:
 		te.Payload = &eventpb.TradeEvent_Accepted{
 			Accepted: &eventpb.OrderAccepted{
-				UserId:  out.UserID,
-				OrderId: out.OrderID,
-				Symbol:  out.Symbol,
+				UserId:       out.UserID,
+				OrderId:      out.OrderID,
+				Symbol:       out.Symbol,
+				Side:         sideToProto(out.Side),
+				Price:        out.Price.String(),
+				RemainingQty: out.TakerRemaining.String(),
 			},
 		}
 	case sequencer.OutputOrderRejected:
