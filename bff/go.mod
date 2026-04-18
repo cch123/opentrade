@@ -3,6 +3,7 @@ module github.com/xargin/opentrade/bff
 go 1.26
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/xargin/opentrade/api v0.0.0-00010101000000-000000000000
 	github.com/xargin/opentrade/pkg v0.0.0-00010101000000-000000000000
 	go.uber.org/zap v1.27.0

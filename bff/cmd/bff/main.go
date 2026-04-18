@@ -23,14 +23,18 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	"github.com/xargin/opentrade/bff/internal/auth"
 	"github.com/xargin/opentrade/bff/internal/client"
 	"github.com/xargin/opentrade/bff/internal/rest"
+	bffws "github.com/xargin/opentrade/bff/internal/ws"
 	"github.com/xargin/opentrade/pkg/logx"
 )
 
 type Config struct {
 	HTTPAddr          string
 	CounterShards     []string
+	PushWSURL         string // upstream push /ws endpoint; empty disables the WS proxy
+	WSProxyDialTimeout time.Duration
 	UserRateLimit     int
 	UserRateWindow    time.Duration
 	IPRateLimit       int
@@ -87,9 +91,23 @@ func main() {
 		IPRateWindow:   cfg.IPRateWindow,
 	}, counter, logger)
 
+	outer := http.NewServeMux()
+	if cfg.PushWSURL != "" {
+		proxy, err := bffws.New(bffws.Config{
+			UpstreamURL: cfg.PushWSURL,
+			DialTimeout: cfg.WSProxyDialTimeout,
+		}, logger)
+		if err != nil {
+			logger.Fatal("ws proxy init", zap.Error(err))
+		}
+		outer.Handle("/ws", auth.Middleware(proxy.Handler()))
+		logger.Info("ws reverse-proxy enabled", zap.String("upstream", cfg.PushWSURL))
+	}
+	outer.Handle("/", srv.Handler())
+
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           srv.Handler(),
+		Handler:           outer,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 	}
 
@@ -137,15 +155,16 @@ func dialAllShards(ctx context.Context, endpoints []string) ([]*grpc.ClientConn,
 
 func parseFlags() Config {
 	cfg := Config{
-		HTTPAddr:          ":8080",
-		UserRateLimit:     50,
-		UserRateWindow:    time.Second,
-		IPRateLimit:       200,
-		IPRateWindow:      time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		ShutdownGrace:     5 * time.Second,
-		Env:               "dev",
-		LogLevel:          "info",
+		HTTPAddr:           ":8080",
+		WSProxyDialTimeout: 5 * time.Second,
+		UserRateLimit:      50,
+		UserRateWindow:     time.Second,
+		IPRateLimit:        200,
+		IPRateWindow:       time.Second,
+		ReadHeaderTimeout:  5 * time.Second,
+		ShutdownGrace:      5 * time.Second,
+		Env:                "dev",
+		LogLevel:           "info",
 	}
 	var (
 		shardsCSV string
@@ -157,6 +176,8 @@ func parseFlags() Config {
 		"comma-separated Counter gRPC shard endpoints, in shard-id order (shard 0, shard 1, ...)")
 	flag.StringVar(&legacyCounter, "counter", "localhost:8081",
 		"single-shard convenience: used when --counter-shards is empty")
+	flag.StringVar(&cfg.PushWSURL, "push-ws", "", "push /ws endpoint to reverse-proxy (e.g. ws://push:8081/ws); empty disables /ws")
+	flag.DurationVar(&cfg.WSProxyDialTimeout, "ws-dial-timeout", cfg.WSProxyDialTimeout, "WS proxy upstream dial timeout")
 	flag.IntVar(&cfg.UserRateLimit, "user-rate", cfg.UserRateLimit, "requests per user per window")
 	flag.DurationVar(&cfg.UserRateWindow, "user-window", cfg.UserRateWindow, "user rate window")
 	flag.IntVar(&cfg.IPRateLimit, "ip-rate", cfg.IPRateLimit, "requests per IP per window")

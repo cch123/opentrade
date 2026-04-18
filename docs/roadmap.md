@@ -19,7 +19,7 @@
 | [MVP-7](#mvp-7-push) | Push WS 单实例 | ✅ | WS gateway + market-data / counter-journal fan-out |
 | [MVP-8](#mvp-8-counter-sharding) | Counter 10-shard | ✅ | `pkg/shard` + BFF 路由 + ownership guard |
 | [MVP-9](#mvp-9-trade-dump-projections) | trade-dump 其它表 | ✅ | orders / account_logs / accounts projection |
-| [MVP-10](#mvp-10-bff-ws) | BFF WebSocket 网关 | ⏳ 计划中 | 客户端走 BFF 而非直连 push |
+| [MVP-10](#mvp-10-bff-ws) | BFF WebSocket 网关 | ✅ | 客户端走 BFF 而非直连 push |
 | [MVP-11](#mvp-11-match-sharding) | Match 多实例 + symbol 迁移 | ⏳ 计划中 | etcd 配置驱动 |
 | [MVP-12](#mvp-12-ha) | Counter/Match HA | ⏳ 计划中 | etcd lease 选主 + txn.id fencing + 备节点快照 |
 | [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ⏳ 计划中 | LB hash 与 partition 订阅对齐 |
@@ -114,15 +114,15 @@
 - schema 调整：`account_logs` PK `(shard_id, seq_id, asset)`（SettlementEvent 一事件两 asset 行）
 - shard_id 从 `EventMeta.producer_id`（`counter-shard-N-main`）parse 而来
 
-## 计划中
-
 ### MVP-10  BFF WebSocket 网关  {#mvp-10-bff-ws}
 
-- **范围**：BFF 加 `/ws` 端点，反代 push 的 WS
-  - 选型 A（本轮）：反代模式 — BFF 做 auth + inject `X-User-Id`，透传帧到后端 push
-  - 客户端只需要知道 BFF 地址，不用感知 push 实例
-- **依赖**：MVP-7 push
-- **预期 ADR**：0029 (反代 vs BFF 独立订阅的取舍)
+- **commit** pending · **ADR** [0029](./adr/0029-bff-ws-reverse-proxy.md)
+- BFF `/ws` 接受客户端连接 → 对上游 push 发起独立 WS，双向透传帧
+- auth 在 handshake 层（`bff/internal/auth.Middleware` 读 `X-User-Id`），转发时 re-inject 到上游
+- 单 upstream（`--push-ws=ws://push:8081/ws`）；多实例 sticky 留给 MVP-13
+- BFF 不解析载荷，对 push 协议变化免疫
+
+## 计划中
 
 ### MVP-11  Match 多实例 + symbol 迁移  {#mvp-11-match-sharding}
 
