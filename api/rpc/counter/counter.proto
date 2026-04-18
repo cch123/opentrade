@@ -47,7 +47,10 @@ message PlaceOrderRequest {
   opentrade.event.OrderType order_type = 5;
   opentrade.event.TimeInForce tif = 6;
   string price = 7;                              // empty for market
-  string qty = 8;
+  string qty = 8;                                // base qty; empty for market buy with quote_qty
+  // Market buy by quote budget (BN-style quoteOrderQty, ADR-0035).
+  // Mutually exclusive with qty for market buy.
+  string quote_qty = 9;
 }
 
 message PlaceOrderResponse {

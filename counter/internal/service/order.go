@@ -30,6 +30,9 @@ type PlaceOrderRequest struct {
 	TIF           engine.TIF
 	Price         dec.Decimal
 	Qty           dec.Decimal
+	// QuoteQty is only set for BN-style market buy with quoteOrderQty
+	// (ADR-0035). Zero for every other shape.
+	QuoteQty dec.Decimal
 }
 
 // PlaceOrderResult is the response payload.
@@ -72,7 +75,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 	}
 
 	// Validate shape + compute freeze outside the sequencer.
-	freezeAsset, freezeAmount, err := engine.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty)
+	freezeAsset, freezeAmount, err := engine.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty)
 	if err != nil {
 		return &PlaceOrderResult{
 			ClientOrderID: req.ClientOrderID,
@@ -128,6 +131,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 			TIF:           req.TIF,
 			Price:         req.Price,
 			Qty:           req.Qty,
+			QuoteQty:      req.QuoteQty,
 			FilledQty:     dec.Zero,
 			FrozenAsset:   freezeAsset,
 			FrozenAmount:  freezeAmount,

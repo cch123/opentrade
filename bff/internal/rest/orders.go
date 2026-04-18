@@ -1,9 +1,11 @@
 package rest
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
+	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -12,14 +14,56 @@ import (
 	"github.com/xargin/opentrade/bff/internal/auth"
 )
 
+// applySlippage adjusts lastPrice by slippageBps for the given side:
+//
+//	buy  → price × (1 + bps/10000)  (willing to pay up to this much)
+//	sell → price × (1 - bps/10000)  (willing to sell down to this much)
+//
+// Rounded to 8 decimals, plenty for every listed symbol today. Returns
+// the decimal string so caller can forward it verbatim.
+func applySlippage(lastPrice string, bps int, side eventpb.Side) (string, error) {
+	last, err := decimal.NewFromString(lastPrice)
+	if err != nil {
+		return "", fmt.Errorf("invalid last_price %q: %w", lastPrice, err)
+	}
+	if last.Sign() <= 0 {
+		return "", fmt.Errorf("last_price must be > 0")
+	}
+	if bps <= 0 || bps > 10_000 {
+		return "", fmt.Errorf("slippage_bps must be in (0, 10000]")
+	}
+	delta := last.Mul(decimal.NewFromInt(int64(bps))).Div(decimal.NewFromInt(10_000))
+	var out decimal.Decimal
+	switch side {
+	case eventpb.Side_SIDE_BUY:
+		out = last.Add(delta)
+	case eventpb.Side_SIDE_SELL:
+		out = last.Sub(delta)
+	default:
+		return "", fmt.Errorf("invalid side for slippage")
+	}
+	if out.Sign() <= 0 {
+		return "", fmt.Errorf("protected price went non-positive")
+	}
+	return out.Truncate(8).String(), nil
+}
+
 type placeOrderBody struct {
 	ClientOrderID string `json:"client_order_id,omitempty"`
 	Symbol        string `json:"symbol"`
 	Side          string `json:"side"`       // "buy" / "sell"
 	OrderType     string `json:"order_type"` // "limit" / "market"
-	TIF           string `json:"tif"`        // "gtc" / "ioc" / "fok" / "post_only"
+	TIF           string `json:"tif"`        // "gtc" / "ioc" / "fok" / "post_only"; ignored for market
 	Price         string `json:"price,omitempty"`
-	Qty           string `json:"qty"`
+	Qty           string `json:"qty,omitempty"`        // base qty; empty for market buy with quote_qty
+	QuoteQty      string `json:"quote_qty,omitempty"`  // market buy quote budget (BN quoteOrderQty, ADR-0035)
+
+	// Optional slippage protection for market orders (ADR-0035 §路径 B).
+	// When SlippageBps > 0 the client MUST also supply LastPrice; BFF
+	// rewrites the order to LIMIT+IOC with price = LastPrice × (1 ± slippage)
+	// before forwarding to counter. Not a server-side concern beyond BFF.
+	LastPrice   string `json:"last_price,omitempty"`
+	SlippageBps int    `json:"slippage_bps,omitempty"`
 }
 
 func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
@@ -43,24 +87,66 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if ot == eventpb.OrderType_ORDER_TYPE_MARKET {
-		// OpenTrade does not host MARKET on the server side (ADR-0034).
-		// The client must compute a protective price from the latest ticker
-		// and submit a LIMIT order with tif=ioc. Returning a clear error
-		// points the caller at the right shape instead of silently
-		// forwarding a request the matching engine will reject.
-		writeError(w, http.StatusBadRequest,
-			"market orders are not supported server-side; submit as "+
-				"{order_type:\"limit\", tif:\"ioc\", price:<slippage-bounded>} — see ADR-0034")
+	if body.Symbol == "" {
+		writeError(w, http.StatusBadRequest, "symbol is required")
 		return
 	}
+
+	// Translate MARKET + slippage_bps into LIMIT + IOC with a protective
+	// price (ADR-0035 §路径 B). When slippage_bps is 0/absent we forward
+	// the MARKET straight through for the server-side native path.
+	if ot == eventpb.OrderType_ORDER_TYPE_MARKET && body.SlippageBps > 0 {
+		if body.LastPrice == "" {
+			writeError(w, http.StatusBadRequest,
+				"slippage_bps requires last_price from the client (ADR-0035)")
+			return
+		}
+		if body.QuoteQty != "" {
+			writeError(w, http.StatusBadRequest,
+				"slippage_bps with quote_qty is ambiguous; drop one or the other (ADR-0035)")
+			return
+		}
+		protectedPrice, perr := applySlippage(body.LastPrice, body.SlippageBps, side)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, perr.Error())
+			return
+		}
+		body.Price = protectedPrice
+		body.TIF = "ioc"
+		ot = eventpb.OrderType_ORDER_TYPE_LIMIT
+	}
+
+	// Validate the shape now that translation (if any) settled.
+	switch ot {
+	case eventpb.OrderType_ORDER_TYPE_LIMIT:
+		if body.Qty == "" || body.Price == "" {
+			writeError(w, http.StatusBadRequest, "limit orders require qty and price")
+			return
+		}
+	case eventpb.OrderType_ORDER_TYPE_MARKET:
+		if side == eventpb.Side_SIDE_BUY {
+			if body.QuoteQty == "" {
+				writeError(w, http.StatusBadRequest,
+					"market buy requires quote_qty (ADR-0035); for qty-based market buy, "+
+						"translate client-side via last_price + slippage_bps")
+				return
+			}
+			if body.Qty != "" {
+				writeError(w, http.StatusBadRequest,
+					"market buy: pass either qty (with slippage_bps + last_price) or quote_qty, not both")
+				return
+			}
+		} else {
+			if body.Qty == "" {
+				writeError(w, http.StatusBadRequest, "market sell requires qty")
+				return
+			}
+		}
+	}
+
 	tif, err := parseTIF(body.TIF)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if body.Qty == "" || body.Symbol == "" {
-		writeError(w, http.StatusBadRequest, "symbol and qty are required")
 		return
 	}
 
@@ -73,6 +159,7 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		Tif:           tif,
 		Price:         body.Price,
 		Qty:           body.Qty,
+		QuoteQty:      body.QuoteQty,
 	})
 	if err != nil {
 		writeGRPCError(w, err)

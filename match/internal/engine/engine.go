@@ -16,15 +16,17 @@ type Trade struct {
 	Price dec.Decimal // maker's price (taker may receive price improvement)
 	Qty   dec.Decimal
 
-	MakerUserID    string
-	MakerOrderID   uint64
-	MakerSide      orderbook.Side
-	MakerRemaining dec.Decimal // after this fill
+	MakerUserID      string
+	MakerOrderID     uint64
+	MakerSide        orderbook.Side
+	MakerRemaining   dec.Decimal // after this fill
+	MakerFilledAfter dec.Decimal // cumulative base filled after this trade
 
-	TakerUserID    string
-	TakerOrderID   uint64
-	TakerSide      orderbook.Side
-	TakerRemaining dec.Decimal // after this fill
+	TakerUserID      string
+	TakerOrderID     uint64
+	TakerSide        orderbook.Side
+	TakerRemaining   dec.Decimal // after this fill
+	TakerFilledAfter dec.Decimal // cumulative base filled after this trade
 }
 
 // TakerStatus is the terminal disposition of a taker order after matching.
@@ -70,10 +72,15 @@ type Result struct {
 //     been inserted into the book.
 //   - otherwise the taker is NOT on the book.
 //
-// Caller should pass taker with Remaining == Qty; Match will reset it
-// defensively.
+// Caller should pass taker with Remaining == Qty (or, for BN-style market
+// buy submitted with QuoteQty, RemainingQuote == QuoteQty). Match resets
+// whichever applies defensively.
 func Match(book *orderbook.Book, taker *orderbook.Order, stp STPMode) Result {
-	if !taker.Remaining.Equal(taker.Qty) {
+	if taker.IsQuoteDriven() {
+		if !taker.RemainingQuote.Equal(taker.QuoteQty) {
+			taker.RemainingQuote = taker.QuoteQty
+		}
+	} else if !taker.Remaining.Equal(taker.Qty) {
 		taker.Remaining = taker.Qty
 	}
 
@@ -101,8 +108,9 @@ func Match(book *orderbook.Book, taker *orderbook.Order, stp STPMode) Result {
 
 	oppSide := taker.Side.Opposite()
 	var trades []Trade
+	takerFilledBase := dec.Zero
 
-	for dec.IsPositive(taker.Remaining) {
+	for taker.IsLive() {
 		best, ok := book.Best(oppSide)
 		if !ok {
 			break
@@ -111,7 +119,19 @@ func Match(book *orderbook.Book, taker *orderbook.Order, stp STPMode) Result {
 			break
 		}
 
-		matchQty := dec.Min(taker.Remaining, best.Remaining)
+		var matchQty dec.Decimal
+		if taker.IsQuoteDriven() {
+			// How much base at this price level the remaining quote budget
+			// can afford. Truncate to 18 decimals so matchQty × price stays
+			// <= RemainingQuote (keeps us from under-funding a fill).
+			maxByBudget := taker.RemainingQuote.Div(best.Price).Truncate(18)
+			matchQty = dec.Min(best.Remaining, maxByBudget)
+			if !dec.IsPositive(matchQty) {
+				break
+			}
+		} else {
+			matchQty = dec.Min(taker.Remaining, best.Remaining)
+		}
 		matchPrice := best.Price
 
 		maker, _, err := book.Fill(best.ID, matchQty)
@@ -119,20 +139,27 @@ func Match(book *orderbook.Book, taker *orderbook.Order, stp STPMode) Result {
 			// This shouldn't happen — defensive.
 			break
 		}
-		taker.Remaining = taker.Remaining.Sub(matchQty)
+		if taker.IsQuoteDriven() {
+			taker.RemainingQuote = taker.RemainingQuote.Sub(matchPrice.Mul(matchQty))
+		} else {
+			taker.Remaining = taker.Remaining.Sub(matchQty)
+		}
+		takerFilledBase = takerFilledBase.Add(matchQty)
 
 		trades = append(trades, Trade{
-			Symbol:         taker.Symbol,
-			Price:          matchPrice,
-			Qty:            matchQty,
-			MakerUserID:    maker.UserID,
-			MakerOrderID:   maker.ID,
-			MakerSide:      maker.Side,
-			MakerRemaining: maker.Remaining,
-			TakerUserID:    taker.UserID,
-			TakerOrderID:   taker.ID,
-			TakerSide:      taker.Side,
-			TakerRemaining: taker.Remaining,
+			Symbol:           taker.Symbol,
+			Price:            matchPrice,
+			Qty:              matchQty,
+			MakerUserID:      maker.UserID,
+			MakerOrderID:     maker.ID,
+			MakerSide:        maker.Side,
+			MakerRemaining:   maker.Remaining,
+			MakerFilledAfter: maker.Qty.Sub(maker.Remaining),
+			TakerUserID:      taker.UserID,
+			TakerOrderID:     taker.ID,
+			TakerSide:        taker.Side,
+			TakerRemaining:   taker.Remaining,
+			TakerFilledAfter: takerFilledBase,
 		})
 	}
 
@@ -140,8 +167,14 @@ func Match(book *orderbook.Book, taker *orderbook.Order, stp STPMode) Result {
 }
 
 func finalize(book *orderbook.Book, taker *orderbook.Order, trades []Trade) Result {
-	filled := dec.IsPositive(taker.Qty.Sub(taker.Remaining))
-	hasRemainder := dec.IsPositive(taker.Remaining)
+	var filled, hasRemainder bool
+	if taker.IsQuoteDriven() {
+		filled = len(trades) > 0
+		hasRemainder = dec.IsPositive(taker.RemainingQuote)
+	} else {
+		filled = dec.IsPositive(taker.Qty.Sub(taker.Remaining))
+		hasRemainder = dec.IsPositive(taker.Remaining)
+	}
 
 	if !hasRemainder {
 		return Result{Status: TakerFilled, Trades: trades}

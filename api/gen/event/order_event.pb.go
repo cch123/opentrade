@@ -121,10 +121,15 @@ type OrderPlaced struct {
 	OrderType     OrderType              `protobuf:"varint,6,opt,name=order_type,json=orderType,proto3,enum=opentrade.event.OrderType" json:"order_type,omitempty"`
 	Tif           TimeInForce            `protobuf:"varint,7,opt,name=tif,proto3,enum=opentrade.event.TimeInForce" json:"tif,omitempty"`
 	Price         string                 `protobuf:"bytes,8,opt,name=price,proto3" json:"price,omitempty"` // empty for market
-	Qty           string                 `protobuf:"bytes,9,opt,name=qty,proto3" json:"qty,omitempty"`
+	Qty           string                 `protobuf:"bytes,9,opt,name=qty,proto3" json:"qty,omitempty"`     // base asset qty; empty for market buy with quote_qty
 	// For market / IOC etc. Counter may pre-freeze with an estimated cap;
 	// Match receives the actual cap so it can reject if mismatch.
-	FreezeCap     string `protobuf:"bytes,10,opt,name=freeze_cap,json=freezeCap,proto3" json:"freeze_cap,omitempty"`
+	FreezeCap string `protobuf:"bytes,10,opt,name=freeze_cap,json=freezeCap,proto3" json:"freeze_cap,omitempty"`
+	// Market buy by quote budget (BN-style quoteOrderQty, ADR-0035). Non-empty
+	// means: market buy that consumes ask-side liquidity until at most this
+	// many quote units have been spent. Mutually exclusive with qty for
+	// market buy. Ignored for every other shape.
+	QuoteQty      string `protobuf:"bytes,11,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -229,6 +234,13 @@ func (x *OrderPlaced) GetFreezeCap() string {
 	return ""
 }
 
+func (x *OrderPlaced) GetQuoteQty() string {
+	if x != nil {
+		return x.QuoteQty
+	}
+	return ""
+}
+
 type OrderCancel struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -300,7 +312,7 @@ const file_event_order_event_proto_rawDesc = "" +
 	"\x06placed\x18\n" +
 	" \x01(\v2\x1c.opentrade.event.OrderPlacedH\x00R\x06placed\x126\n" +
 	"\x06cancel\x18\v \x01(\v2\x1c.opentrade.event.OrderCancelH\x00R\x06cancelB\t\n" +
-	"\apayload\"\xde\x02\n" +
+	"\apayload\"\xfb\x02\n" +
 	"\vOrderPlaced\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12&\n" +
@@ -314,7 +326,8 @@ const file_event_order_event_proto_rawDesc = "" +
 	"\x03qty\x18\t \x01(\tR\x03qty\x12\x1d\n" +
 	"\n" +
 	"freeze_cap\x18\n" +
-	" \x01(\tR\tfreezeCap\"Y\n" +
+	" \x01(\tR\tfreezeCap\x12\x1b\n" +
+	"\tquote_qty\x18\v \x01(\tR\bquoteQty\"Y\n" +
 	"\vOrderCancel\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +

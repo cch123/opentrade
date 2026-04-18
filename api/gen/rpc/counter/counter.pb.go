@@ -138,7 +138,10 @@ type PlaceOrderRequest struct {
 	OrderType     event.OrderType        `protobuf:"varint,5,opt,name=order_type,json=orderType,proto3,enum=opentrade.event.OrderType" json:"order_type,omitempty"`
 	Tif           event.TimeInForce      `protobuf:"varint,6,opt,name=tif,proto3,enum=opentrade.event.TimeInForce" json:"tif,omitempty"`
 	Price         string                 `protobuf:"bytes,7,opt,name=price,proto3" json:"price,omitempty"` // empty for market
-	Qty           string                 `protobuf:"bytes,8,opt,name=qty,proto3" json:"qty,omitempty"`
+	Qty           string                 `protobuf:"bytes,8,opt,name=qty,proto3" json:"qty,omitempty"`     // base qty; empty for market buy with quote_qty
+	// Market buy by quote budget (BN-style quoteOrderQty, ADR-0035).
+	// Mutually exclusive with qty for market buy.
+	QuoteQty      string `protobuf:"bytes,9,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -225,6 +228,13 @@ func (x *PlaceOrderRequest) GetPrice() string {
 func (x *PlaceOrderRequest) GetQty() string {
 	if x != nil {
 		return x.Qty
+	}
+	return ""
+}
+
+func (x *PlaceOrderRequest) GetQuoteQty() string {
+	if x != nil {
+		return x.QuoteQty
 	}
 	return ""
 }
@@ -925,7 +935,7 @@ var File_rpc_counter_counter_proto protoreflect.FileDescriptor
 
 const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\n" +
-	"\x19rpc/counter/counter.proto\x12\x15opentrade.rpc.counter\x1a\x12event/common.proto\"\xaa\x02\n" +
+	"\x19rpc/counter/counter.proto\x12\x15opentrade.rpc.counter\x1a\x12event/common.proto\"\xc7\x02\n" +
 	"\x11PlaceOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x16\n" +
@@ -935,7 +945,8 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"order_type\x18\x05 \x01(\x0e2\x1a.opentrade.event.OrderTypeR\torderType\x12.\n" +
 	"\x03tif\x18\x06 \x01(\x0e2\x1c.opentrade.event.TimeInForceR\x03tif\x12\x14\n" +
 	"\x05price\x18\a \x01(\tR\x05price\x12\x10\n" +
-	"\x03qty\x18\b \x01(\tR\x03qty\"\xa2\x01\n" +
+	"\x03qty\x18\b \x01(\tR\x03qty\x12\x1b\n" +
+	"\tquote_qty\x18\t \x01(\tR\bquoteQty\"\xa2\x01\n" +
 	"\x12PlaceOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x1a\n" +

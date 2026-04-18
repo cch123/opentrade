@@ -230,24 +230,23 @@ func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInp
 }
 
 // unfreezeResidual releases the still-frozen funds of a terminal order
-// (cancel / reject / expire). For buy limit: residual = price * (qty -
-// filled). For sell limit: residual = qty - filled.
+// (cancel / reject / expire). Residual = FrozenAmount − FrozenSpent, where
+// FrozenSpent is accumulated by settlement per fill (see engine.ApplyPartySettlement).
+// The formula is uniform across:
+//
+//	limit buy:            Price * Qty    − Price * FilledQty
+//	limit sell:           Qty            − FilledQty
+//	market sell:          Qty            − FilledQty
+//	market buy by quote:  QuoteQty       − Σ matchPrice * matchQty
+//
+// ADR-0035.
 func (s *Service) unfreezeResidual(o *engine.Order) error {
 	if o.FrozenAsset == "" {
 		return nil
 	}
-	remaining := o.RemainingQty()
-	if !dec.IsPositive(remaining) {
+	residual := o.FrozenAmount.Sub(o.FrozenSpent)
+	if residual.Sign() <= 0 {
 		return nil
-	}
-	var residual dec.Decimal
-	switch o.Side {
-	case engine.SideBid:
-		residual = o.Price.Mul(remaining)
-	case engine.SideAsk:
-		residual = remaining
-	default:
-		return fmt.Errorf("unfreeze: invalid side")
 	}
 	acc := s.state.Account(o.UserID)
 	b := acc.Balance(o.FrozenAsset)

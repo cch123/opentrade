@@ -49,7 +49,15 @@ func OrderEventToInternal(pb *eventpb.OrderEvent, src sequencer.SourceMeta) (*se
 		if err != nil {
 			return nil, fmt.Errorf("bad qty: %w", err)
 		}
-		if !dec.IsPositive(qty) {
+		quoteQty, err := dec.Parse(placed.QuoteQty)
+		if err != nil {
+			return nil, fmt.Errorf("bad quote_qty: %w", err)
+		}
+		// Market buy with quote_qty (ADR-0035) drives matching by budget, so
+		// base qty is allowed to be zero. Every other shape still requires
+		// a positive qty.
+		isQuoteBuy := typ == orderbook.Market && side == orderbook.Bid && dec.IsPositive(quoteQty)
+		if !isQuoteBuy && !dec.IsPositive(qty) {
 			return nil, fmt.Errorf("qty must be positive: %s", placed.Qty)
 		}
 		var createdAt int64
@@ -57,17 +65,19 @@ func OrderEventToInternal(pb *eventpb.OrderEvent, src sequencer.SourceMeta) (*se
 			createdAt = pb.Meta.TsUnixMs * int64(time.Millisecond)
 		}
 		o := &orderbook.Order{
-			ID:        placed.OrderId,
-			UserID:    placed.UserId,
-			ClientID:  placed.ClientOrderId,
-			Symbol:    placed.Symbol,
-			Side:      side,
-			Type:      typ,
-			TIF:       tif,
-			Price:     price,
-			Qty:       qty,
-			Remaining: qty,
-			CreatedAt: createdAt,
+			ID:             placed.OrderId,
+			UserID:         placed.UserId,
+			ClientID:       placed.ClientOrderId,
+			Symbol:         placed.Symbol,
+			Side:           side,
+			Type:           typ,
+			TIF:            tif,
+			Price:          price,
+			Qty:            qty,
+			Remaining:      qty,
+			QuoteQty:       quoteQty,
+			RemainingQuote: quoteQty,
+			CreatedAt:      createdAt,
 		}
 		return &sequencer.Event{
 			Kind:   sequencer.EventOrderPlaced,
@@ -126,17 +136,17 @@ func OutputToTradeEvent(out *sequencer.Output, producerID string) (*eventpb.Trad
 	case sequencer.OutputTrade:
 		te.Payload = &eventpb.TradeEvent_Trade{
 			Trade: &eventpb.Trade{
-				TradeId:              fmt.Sprintf("%s:%d", out.Symbol, out.SeqID),
-				Symbol:               out.Symbol,
-				Price:                out.Price.String(),
-				Qty:                  out.Qty.String(),
-				MakerUserId:          out.MakerUserID,
-				MakerOrderId:         out.MakerOrderID,
-				TakerUserId:          out.UserID,
-				TakerOrderId:         out.OrderID,
-				TakerSide:            sideToProto(out.Side),
-				MakerFilledQtyAfter:  "",
-				TakerFilledQtyAfter:  "",
+				TradeId:             fmt.Sprintf("%s:%d", out.Symbol, out.SeqID),
+				Symbol:              out.Symbol,
+				Price:               out.Price.String(),
+				Qty:                 out.Qty.String(),
+				MakerUserId:         out.MakerUserID,
+				MakerOrderId:        out.MakerOrderID,
+				TakerUserId:         out.UserID,
+				TakerOrderId:        out.OrderID,
+				TakerSide:           sideToProto(out.Side),
+				MakerFilledQtyAfter: out.MakerFilledAfter.String(),
+				TakerFilledQtyAfter: out.TakerFilledAfter.String(),
 			},
 		}
 	case sequencer.OutputOrderCancelled:

@@ -105,13 +105,22 @@ func settleTaker(o *Order, ti TradeInput, base, quote string) PartySettlement {
 	}
 	switch o.Side {
 	case SideBid: // taker bought: frozen at taker's price, receives base
-		// Reservation for this slice = o.Price * ti.Qty (taker's price).
-		reserved := o.Price.Mul(ti.Qty)
-		s.FrozenQuoteDelta = reserved.Neg()
-		// Refund the price-improvement difference back to available quote.
-		if o.Price.Cmp(ti.Price) > 0 {
-			refund := o.Price.Sub(ti.Price).Mul(ti.Qty)
-			s.QuoteDelta = refund
+		if o.IsMarketBuyByQuote() {
+			// Market buy by quote: reservation is a budget in quote, per-trade
+			// it consumes exactly matchQuote from frozen. No price-improvement
+			// refund — the taker never specified a price.
+			s.FrozenQuoteDelta = matchQuote.Neg()
+		} else {
+			// Limit buy: reservation for this slice = o.Price * ti.Qty (taker's
+			// price); refund the price-improvement difference back to available
+			// quote so the user gets back the overreservation at the better
+			// maker price.
+			reserved := o.Price.Mul(ti.Qty)
+			s.FrozenQuoteDelta = reserved.Neg()
+			if o.Price.Cmp(ti.Price) > 0 {
+				refund := o.Price.Sub(ti.Price).Mul(ti.Qty)
+				s.QuoteDelta = refund
+			}
 		}
 		s.BaseDelta = ti.Qty
 	case SideAsk: // taker sold: frozen in base, receives quote at match price
@@ -127,7 +136,19 @@ func settleTaker(o *Order, ti TradeInput, base, quote string) PartySettlement {
 // statusAfterFill chooses the new internal status for an order given its
 // post-fill cumulative qty. Fully-filled orders become FILLED; otherwise
 // PARTIALLY_FILLED (or PENDING_CANCEL stays the same — caller handles that).
+//
+// Market buy by quote (ADR-0035) has Qty == 0 so the Cmp comparison would
+// spuriously flag every fill as FILLED. For that shape we stay partial on
+// per-trade updates and rely on the OrderExpired terminal event (emitted by
+// match even on TakerFilled when IsQuoteDriven) to transition to a terminal
+// state + run unfreezeResidual.
 func statusAfterFill(o *Order, filledAfter dec.Decimal) OrderStatus {
+	if o.IsMarketBuyByQuote() {
+		if o.Status == OrderStatusPendingCancel {
+			return OrderStatusPendingCancel
+		}
+		return OrderStatusPartiallyFilled
+	}
 	if filledAfter.Cmp(o.Qty) >= 0 {
 		return OrderStatusFilled
 	}
@@ -177,6 +198,25 @@ func (s *ShardState) ApplyPartySettlement(symbol string, p PartySettlement) erro
 	}
 	if _, err := s.Orders().SetFilledQty(p.OrderID, p.FilledQtyAfter, 0); err != nil {
 		return err
+	}
+	// Track how much of this order's frozen reservation was consumed by this
+	// fill. For base-frozen orders (limit sell / market sell) that's
+	// |FrozenBaseDelta|; for quote-frozen orders (limit buy / market buy) it's
+	// |FrozenQuoteDelta|. unfreezeResidual on terminal transition reads
+	// FrozenAmount − FrozenSpent to credit the residual back (ADR-0035).
+	consumed := dec.Zero
+	if p.FrozenBaseDelta.Sign() < 0 {
+		consumed = p.FrozenBaseDelta.Neg()
+	}
+	if p.FrozenQuoteDelta.Sign() < 0 {
+		// A taker limit buy also refunds the price-improvement portion via
+		// QuoteDelta, but the reservation it consumes is still |FrozenQuoteDelta|.
+		consumed = consumed.Add(p.FrozenQuoteDelta.Neg())
+	}
+	if dec.IsPositive(consumed) {
+		if _, err := s.Orders().AddFrozenSpent(p.OrderID, consumed); err != nil {
+			return err
+		}
 	}
 	if _, err := s.Orders().UpdateStatus(p.OrderID, p.StatusAfter, 0); err != nil {
 		return err

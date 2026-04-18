@@ -156,6 +156,7 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 				Tif:           tif,
 				Price:         o.Price.String(),
 				Qty:           o.Qty.String(),
+				QuoteQty:      o.QuoteQty.String(),
 				FreezeCap:     o.FrozenAmount.String(),
 			},
 		},

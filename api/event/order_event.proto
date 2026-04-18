@@ -31,11 +31,17 @@ message OrderPlaced {
   OrderType order_type = 6;
   TimeInForce tif = 7;
   string price = 8;    // empty for market
-  string qty = 9;
+  string qty = 9;      // base asset qty; empty for market buy with quote_qty
 
   // For market / IOC etc. Counter may pre-freeze with an estimated cap;
   // Match receives the actual cap so it can reject if mismatch.
   string freeze_cap = 10;
+
+  // Market buy by quote budget (BN-style quoteOrderQty, ADR-0035). Non-empty
+  // means: market buy that consumes ask-side liquidity until at most this
+  // many quote units have been spent. Mutually exclusive with qty for
+  // market buy. Ignored for every other shape.
+  string quote_qty = 11;
 }
 
 message OrderCancel {

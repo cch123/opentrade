@@ -108,6 +108,20 @@ func (s *OrderStore) SetFilledQty(id uint64, filledQty dec.Decimal, updatedAtMS 
 	return o, nil
 }
 
+// AddFrozenSpent increments o.FrozenSpent by delta. Settlement uses it so
+// unfreezeResidual can compute residual = FrozenAmount − FrozenSpent
+// uniformly across limit / market-sell / market-buy-by-quote (ADR-0035).
+func (s *OrderStore) AddFrozenSpent(id uint64, delta dec.Decimal) (*Order, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	o, ok := s.byID[id]
+	if !ok {
+		return nil, ErrOrderNotFound
+	}
+	o.FrozenSpent = o.FrozenSpent.Add(delta)
+	return o, nil
+}
+
 // All returns a snapshot slice of all stored orders (deep copies, safe to
 // read outside the sequencer — used for snapshotting).
 func (s *OrderStore) All() []*Order {

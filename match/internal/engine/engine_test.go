@@ -181,6 +181,96 @@ func TestMarketExpiresWhenBookExhausted(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// MARKET BUY with quoteOrderQty (ADR-0035)
+// -----------------------------------------------------------------------------
+
+// newQuoteBuy constructs a quote-driven market buy taker.
+func newQuoteBuy(id uint64, user, quoteQty string) *orderbook.Order {
+	q := dec.New(quoteQty)
+	return &orderbook.Order{
+		ID:             id,
+		UserID:         user,
+		Symbol:         "BTC-USDT",
+		Side:           orderbook.Bid,
+		Type:           orderbook.Market,
+		TIF:            orderbook.GTC,
+		QuoteQty:       q,
+		RemainingQuote: q,
+	}
+}
+
+func TestMarketBuyByQuoteBudget_WalksLevels(t *testing.T) {
+	// Ask book: 0.3 @ 50000 (15000), 0.2 @ 50100 (10020). Budget 25000
+	// crosses both levels; last trade is bounded by the remaining quote
+	// which doesn't divide evenly into 50100, so a sub-atom of quote
+	// (≈1e-14 USDT) gets stuck on the taker and the status comes back as
+	// TakerExpired. That's the same shape BN reports as "basically filled":
+	// user view is "got 0.4996 BTC, spent ~25000 USDT", Counter refunds the
+	// residual freeze. The important invariant is no trade overspends.
+	b := orderbook.NewBook("BTC-USDT")
+	insertRested(t, b, []orderSpec{
+		{id: 1, user: "m1", side: orderbook.Ask, price: "50000", qty: "0.3"},
+		{id: 2, user: "m2", side: orderbook.Ask, price: "50100", qty: "0.2"},
+	})
+	taker := newQuoteBuy(100, "t1", "25000")
+	r := Match(b, taker, STPNone)
+	if r.Status != TakerFilled && r.Status != TakerExpired {
+		t.Fatalf("status = %d, want Filled or Expired", r.Status)
+	}
+	if len(r.Trades) != 2 {
+		t.Fatalf("trades = %d, want 2", len(r.Trades))
+	}
+	if r.Trades[0].Qty.String() != "0.3" || r.Trades[0].Price.String() != "50000" {
+		t.Errorf("trade[0]: %+v", r.Trades[0])
+	}
+	total := dec.Zero
+	for _, tr := range r.Trades {
+		total = total.Add(tr.Price.Mul(tr.Qty))
+	}
+	if total.GreaterThan(dec.New("25000")) {
+		t.Errorf("total spend %s > budget 25000", total)
+	}
+	// Residual budget should be at most rounding dust (below 1e-8 USDT).
+	if taker.RemainingQuote.GreaterThan(dec.New("0.00000001")) {
+		t.Errorf("residual quote = %s, want near zero", taker.RemainingQuote)
+	}
+}
+
+func TestMarketBuyByQuoteBudget_ExpiresWhenBookExhausted(t *testing.T) {
+	b := orderbook.NewBook("BTC-USDT")
+	insertRested(t, b, []orderSpec{
+		{id: 1, user: "m1", side: orderbook.Ask, price: "50000", qty: "0.1"},
+	})
+	taker := newQuoteBuy(100, "t1", "25000") // budget far exceeds depth
+	r := Match(b, taker, STPNone)
+	if r.Status != TakerExpired {
+		t.Fatalf("status = %d, want TakerExpired", r.Status)
+	}
+	if len(r.Trades) != 1 {
+		t.Fatalf("trades = %d, want 1", len(r.Trades))
+	}
+	// Spent 5000 USDT, 20000 left.
+	if taker.RemainingQuote.String() != "20000" {
+		t.Errorf("RemainingQuote = %s, want 20000", taker.RemainingQuote)
+	}
+	if b.Has(taker.ID) {
+		t.Fatal("market quote taker must not rest on book")
+	}
+}
+
+func TestMarketBuyByQuoteBudget_NoCrossExpires(t *testing.T) {
+	b := orderbook.NewBook("BTC-USDT") // empty ask side
+	taker := newQuoteBuy(100, "t1", "100")
+	r := Match(b, taker, STPNone)
+	if r.Status != TakerExpired {
+		t.Fatalf("status = %d, want TakerExpired", r.Status)
+	}
+	if len(r.Trades) != 0 {
+		t.Fatalf("trades = %d, want 0", len(r.Trades))
+	}
+}
+
+// -----------------------------------------------------------------------------
 // IOC
 // -----------------------------------------------------------------------------
 

@@ -73,14 +73,16 @@ type Output struct {
 	// resting limit price of the order that just entered the book).
 	Price dec.Decimal
 	// OutputTrade only: qty filled by this trade.
-	Qty            dec.Decimal
-	MakerUserID    string
-	MakerOrderID   uint64
-	MakerSide      orderbook.Side
-	MakerRemaining dec.Decimal
+	Qty              dec.Decimal
+	MakerUserID      string
+	MakerOrderID     uint64
+	MakerSide        orderbook.Side
+	MakerRemaining   dec.Decimal
+	MakerFilledAfter dec.Decimal // cumulative base filled for the maker after this trade
 	// OutputTrade: remaining qty of the taker after this fill.
 	// OutputOrderAccepted: qty still live on the book once the order rests.
-	TakerRemaining dec.Decimal
+	TakerRemaining   dec.Decimal
+	TakerFilledAfter dec.Decimal // cumulative base filled for the taker after this trade
 
 	// OutputOrderRejected / OutputOrderExpired.
 	RejectReason orderbook.RejectReason

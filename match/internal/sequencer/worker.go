@@ -156,19 +156,21 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 	for i := range res.Trades {
 		tr := res.Trades[i]
 		w.emit(&Output{
-			Kind:           OutputTrade,
-			Symbol:         w.symbol,
-			UserID:         tr.TakerUserID,
-			OrderID:        tr.TakerOrderID,
-			Side:           tr.TakerSide,
-			Price:          tr.Price,
-			Qty:            tr.Qty,
-			MakerUserID:    tr.MakerUserID,
-			MakerOrderID:   tr.MakerOrderID,
-			MakerSide:      tr.MakerSide,
-			MakerRemaining: tr.MakerRemaining,
-			TakerRemaining: tr.TakerRemaining,
-			SourceOffset:   evt.Source,
+			Kind:             OutputTrade,
+			Symbol:           w.symbol,
+			UserID:           tr.TakerUserID,
+			OrderID:          tr.TakerOrderID,
+			Side:             tr.TakerSide,
+			Price:            tr.Price,
+			Qty:              tr.Qty,
+			MakerUserID:      tr.MakerUserID,
+			MakerOrderID:     tr.MakerOrderID,
+			MakerSide:        tr.MakerSide,
+			MakerRemaining:   tr.MakerRemaining,
+			MakerFilledAfter: tr.MakerFilledAfter,
+			TakerRemaining:   tr.TakerRemaining,
+			TakerFilledAfter: tr.TakerFilledAfter,
+			SourceOffset:     evt.Source,
 		})
 	}
 
@@ -186,7 +188,23 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 			SourceOffset:   evt.Source,
 		})
 	case engine.TakerFilled:
-		// Nothing extra — the last Trade carries TakerRemaining=0.
+		// Base-driven orders (limit / market sell) reach Filled when the last
+		// trade brings Remaining to zero; Counter's settleTaker infers FILLED
+		// via filledAfter >= Qty. Quote-driven market buys have Qty == 0, so
+		// we need an explicit terminal signal — emit OrderExpired, and Counter
+		// will refund residual = FrozenAmount − FrozenSpent (≈0 when budget
+		// fully consumed).
+		if o.IsQuoteDriven() {
+			w.emit(&Output{
+				Kind:         OutputOrderExpired,
+				Symbol:       w.symbol,
+				UserID:       o.UserID,
+				OrderID:      o.ID,
+				Side:         o.Side,
+				FilledQty:    o.Qty.Sub(o.Remaining),
+				SourceOffset: evt.Source,
+			})
+		}
 	case engine.TakerExpired:
 		w.emit(&Output{
 			Kind:         OutputOrderExpired,

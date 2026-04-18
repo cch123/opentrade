@@ -75,10 +75,31 @@ type Order struct {
 	Qty       dec.Decimal
 	Remaining dec.Decimal // starts equal to Qty, decreases as the order fills
 	CreatedAt int64       // nanoseconds (used for monitoring/log; priority is by list position)
+
+	// QuoteQty / RemainingQuote are populated **only** for BN-style market
+	// buy orders submitted with quoteOrderQty (ADR-0035). The taker caps
+	// how much quote currency it is willing to spend, not how many base
+	// units it wants; the engine consumes ask-side liquidity until
+	// RemainingQuote reaches zero (or the book is exhausted). Zero for
+	// every other shape — matching then drives off Remaining as before.
+	QuoteQty       dec.Decimal
+	RemainingQuote dec.Decimal
+}
+
+// IsQuoteDriven reports whether matching should consume quote currency
+// rather than base qty. True only for market buys submitted with
+// quoteOrderQty (ADR-0035).
+func (o *Order) IsQuoteDriven() bool {
+	return o.Type == Market && o.Side == Bid && dec.IsPositive(o.QuoteQty)
 }
 
 // IsLive reports whether the order still has unfilled quantity.
-func (o *Order) IsLive() bool { return dec.IsPositive(o.Remaining) }
+func (o *Order) IsLive() bool {
+	if o.IsQuoteDriven() {
+		return dec.IsPositive(o.RemainingQuote)
+	}
+	return dec.IsPositive(o.Remaining)
+}
 
 // Reject reasons used by the engine (see ADR-0020).
 type RejectReason uint8

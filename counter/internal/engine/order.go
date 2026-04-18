@@ -113,9 +113,21 @@ type Order struct {
 	Qty           dec.Decimal
 	FilledQty     dec.Decimal
 
+	// QuoteQty is the client-supplied quote budget for BN-style market buy
+	// (ADR-0035). Non-zero only for market-buy orders submitted via
+	// quoteOrderQty. Used by unfreezeResidual on terminal transitions to
+	// refund the unused quote.
+	QuoteQty dec.Decimal
+
 	// Funds reserved for this order.
 	FrozenAsset  string
 	FrozenAmount dec.Decimal
+	// FrozenSpent tracks how much of FrozenAmount has been consumed by
+	// fills so far. Settlement adds to it per trade; unfreezeResidual on
+	// a terminal transition credits back FrozenAmount − FrozenSpent.
+	// Works uniformly for limit / market-sell / market-buy-by-quote
+	// (ADR-0035).
+	FrozenSpent dec.Decimal
 
 	Status OrderStatus
 	// PreCancelStatus captures the status before transitioning to PENDING_CANCEL;
@@ -125,6 +137,13 @@ type Order struct {
 
 	CreatedAt int64
 	UpdatedAt int64
+}
+
+// IsMarketBuyByQuote reports whether this is a BN-style quote-budget market
+// buy. Settlement / freeze refund uses this to pick the right residual
+// formula.
+func (o *Order) IsMarketBuyByQuote() bool {
+	return o.Type == OrderTypeMarket && o.Side == SideBid && dec.IsPositive(o.QuoteQty)
 }
 
 // Clone returns a deep copy suitable for snapshotting or returning to API

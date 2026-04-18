@@ -67,4 +67,5 @@
 | [0031](0031-ha-cold-standby-rollout.md) | MVP-12 Counter/Match HA — etcd lease + cold standby | Accepted | 2026-04-18 |
 | [0032](0032-match-transactional-producer.md) | MVP-12b Match TradeProducer 升级为 transactional (fencing) | Accepted | 2026-04-18 |
 | [0033](0033-push-sticky-user-filter.md) | MVP-13 Push 多实例 sticky 路由(user 过滤版) | Accepted | 2026-04-18 |
-| [0034](0034-market-orders-client-side-translation.md) | MARKET 单由客户端翻译为 LIMIT+IOC，后端不承载 | Accepted | 2026-04-18 |
+| [0034](0034-market-orders-client-side-translation.md) | MARKET 单由客户端翻译为 LIMIT+IOC，后端不承载 | Superseded by 0035 | 2026-04-18 |
+| [0035](0035-market-orders-native-server-side.md) | MARKET 单服务端原生支持 + 可选 BFF 滑点保护翻译 | Accepted | 2026-04-18 |

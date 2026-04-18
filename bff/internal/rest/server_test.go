@@ -118,10 +118,11 @@ func TestPlaceOrderInvalidSide(t *testing.T) {
 	}
 }
 
-func TestPlaceOrderMarketRejected(t *testing.T) {
-	// Server-side MARKET is not supported (ADR-0034). BFF rejects it at
-	// the REST layer so the caller gets a clear hint to submit LIMIT+IOC.
-	// Ensures we don't accidentally forward a MARKET to counter.
+func TestPlaceOrder_MarketBuyNeedsQuoteQty(t *testing.T) {
+	// Market buy without quote_qty and without slippage-translation params
+	// is ambiguous — ADR-0035 requires the quoteOrderQty shape (or a
+	// client-translated LIMIT+IOC). BFF refuses at the REST layer so we
+	// don't forward junk to counter.
 	fc := &fakeCounter{
 		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
 			t.Fatalf("counter should not be called: %+v", req)
@@ -129,15 +130,104 @@ func TestPlaceOrderMarketRejected(t *testing.T) {
 		},
 	}
 	srv := newServer(fc)
-	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(`{"symbol":"BTC-USDT","side":"buy","order_type":"market","tif":"gtc","qty":"1"}`))
+	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"1"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
 	req.Header.Set(auth.HeaderUserID, "u1")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
 	}
-	if !bytes.Contains(rr.Body.Bytes(), []byte("market")) {
-		t.Errorf("error body should mention market: %s", rr.Body.String())
+}
+
+func TestPlaceOrder_MarketBuyByQuoteQtyForwarded(t *testing.T) {
+	var seen *counterrpc.PlaceOrderRequest
+	fc := &fakeCounter{
+		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			seen = req
+			return &counterrpc.PlaceOrderResponse{OrderId: 1, Accepted: true}, nil
+		},
+	}
+	srv := newServer(fc)
+	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","quote_qty":"100"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if seen == nil || seen.OrderType != eventpb.OrderType_ORDER_TYPE_MARKET {
+		t.Fatalf("counter didn't see market: %+v", seen)
+	}
+	if seen.QuoteQty != "100" || seen.Qty != "" {
+		t.Errorf("forwarded fields: qty=%q quote_qty=%q", seen.Qty, seen.QuoteQty)
+	}
+}
+
+func TestPlaceOrder_MarketSellForwarded(t *testing.T) {
+	var seen *counterrpc.PlaceOrderRequest
+	fc := &fakeCounter{
+		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			seen = req
+			return &counterrpc.PlaceOrderResponse{OrderId: 1, Accepted: true}, nil
+		},
+	}
+	srv := newServer(fc)
+	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if seen.OrderType != eventpb.OrderType_ORDER_TYPE_MARKET || seen.Side != eventpb.Side_SIDE_SELL {
+		t.Fatalf("wrong shape: %+v", seen)
+	}
+	if seen.Qty != "0.5" {
+		t.Errorf("qty forwarded = %q", seen.Qty)
+	}
+}
+
+func TestPlaceOrder_MarketBuyWithSlippageTranslatesToLimitIOC(t *testing.T) {
+	var seen *counterrpc.PlaceOrderRequest
+	fc := &fakeCounter{
+		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			seen = req
+			return &counterrpc.PlaceOrderResponse{OrderId: 1, Accepted: true}, nil
+		},
+	}
+	srv := newServer(fc)
+	// buy @ last=50000 + 50 bps slippage → protected price = 50250
+	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"0.5","last_price":"50000","slippage_bps":50}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if seen.OrderType != eventpb.OrderType_ORDER_TYPE_LIMIT {
+		t.Fatalf("should be translated to LIMIT: %+v", seen)
+	}
+	if seen.Tif != eventpb.TimeInForce_TIME_IN_FORCE_IOC {
+		t.Errorf("tif = %v, want IOC", seen.Tif)
+	}
+	if seen.Price != "50250" {
+		t.Errorf("price = %q, want 50250", seen.Price)
+	}
+}
+
+func TestPlaceOrder_MarketWithSlippageButNoLastPrice(t *testing.T) {
+	srv := newServer(&fakeCounter{})
+	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"0.5","slippage_bps":50}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
 	}
 }
 

@@ -1,9 +1,17 @@
 # ADR-0034: MARKET 单由客户端翻译为 LIMIT+IOC，后端不承载
 
-- 状态: Accepted
+- 状态: Superseded by [ADR-0035](./0035-market-orders-native-server-side.md)
 - 日期: 2026-04-18
 - 决策者: xargin, Claude
-- 相关 ADR: 0020, 0021
+- 相关 ADR: 0020, 0021, 0035
+
+> **⚠️ 本 ADR 的结论是错的。** 写作时把 BN 的"滑点容差"FAQ 误当成 BN 的
+> 唯一 MARKET 形态；核对 BN REST API 后发现 `type=MARKET + quantity /
+> quoteOrderQty` 服务端原生支持，滑点容差只是可选的前端 UI 糖。修正决策见
+> [ADR-0035](./0035-market-orders-native-server-side.md)，保留本 ADR 的
+> 讨论过程作为历史。
+
+---
 
 ## 背景 (Context)
 

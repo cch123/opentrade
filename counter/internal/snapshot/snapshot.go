@@ -57,9 +57,11 @@ type OrderSnapshot struct {
 	TIF             uint8  `json:"tif"`
 	Price           string `json:"price"`
 	Qty             string `json:"qty"`
+	QuoteQty        string `json:"quote_qty,omitempty"` // ADR-0035 market buy budget
 	FilledQty       string `json:"filled_qty"`
 	FrozenAsset     string `json:"frozen_asset,omitempty"`
 	FrozenAmount    string `json:"frozen_amount"`
+	FrozenSpent     string `json:"frozen_spent,omitempty"` // ADR-0035 consumed freeze
 	Status          uint8  `json:"status"`
 	PreCancelStatus uint8  `json:"pre_cancel_status,omitempty"`
 	CreatedAt       int64  `json:"created_at"`
@@ -122,9 +124,11 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			TIF:             uint8(o.TIF),
 			Price:           o.Price.String(),
 			Qty:             o.Qty.String(),
+			QuoteQty:        o.QuoteQty.String(),
 			FilledQty:       o.FilledQty.String(),
 			FrozenAsset:     o.FrozenAsset,
 			FrozenAmount:    o.FrozenAmount.String(),
+			FrozenSpent:     o.FrozenSpent.String(),
 			Status:          uint8(o.Status),
 			PreCancelStatus: uint8(o.PreCancelStatus),
 			CreatedAt:       o.CreatedAt,
@@ -188,6 +192,10 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 		if err != nil {
 			return fmt.Errorf("order %d qty: %w", os.ID, err)
 		}
+		quoteQty, err := dec.Parse(os.QuoteQty)
+		if err != nil {
+			return fmt.Errorf("order %d quote_qty: %w", os.ID, err)
+		}
 		filled, err := dec.Parse(os.FilledQty)
 		if err != nil {
 			return fmt.Errorf("order %d filled_qty: %w", os.ID, err)
@@ -195,6 +203,10 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 		frozen, err := dec.Parse(os.FrozenAmount)
 		if err != nil {
 			return fmt.Errorf("order %d frozen_amount: %w", os.ID, err)
+		}
+		frozenSpent, err := dec.Parse(os.FrozenSpent)
+		if err != nil {
+			return fmt.Errorf("order %d frozen_spent: %w", os.ID, err)
 		}
 		state.Orders().RestoreInsert(&engine.Order{
 			ID:              os.ID,
@@ -206,9 +218,11 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			TIF:             engine.TIF(os.TIF),
 			Price:           price,
 			Qty:             qty,
+			QuoteQty:        quoteQty,
 			FilledQty:       filled,
 			FrozenAsset:     os.FrozenAsset,
 			FrozenAmount:    frozen,
+			FrozenSpent:     frozenSpent,
 			Status:          engine.OrderStatus(os.Status),
 			PreCancelStatus: engine.OrderStatus(os.PreCancelStatus),
 			CreatedAt:       os.CreatedAt,

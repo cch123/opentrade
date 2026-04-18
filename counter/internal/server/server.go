@@ -246,6 +246,10 @@ func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderR
 	if err != nil {
 		return service.PlaceOrderRequest{}, fmt.Errorf("invalid qty %q: %w", req.Qty, err)
 	}
+	quoteQty, err := dec.Parse(req.QuoteQty)
+	if err != nil {
+		return service.PlaceOrderRequest{}, fmt.Errorf("invalid quote_qty %q: %w", req.QuoteQty, err)
+	}
 	return service.PlaceOrderRequest{
 		UserID:        req.UserId,
 		ClientOrderID: req.ClientOrderId,
@@ -255,6 +259,7 @@ func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderR
 		TIF:           tif,
 		Price:         price,
 		Qty:           qty,
+		QuoteQty:      quoteQty,
 	}, nil
 }
 

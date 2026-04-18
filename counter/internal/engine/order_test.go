@@ -25,7 +25,7 @@ func TestComputeFreeze_Limit(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			asset, amount, err := ComputeFreeze(c.symbol, c.side, OrderTypeLimit, dec.New(c.price), dec.New(c.qty))
+			asset, amount, err := ComputeFreeze(c.symbol, c.side, OrderTypeLimit, dec.New(c.price), dec.New(c.qty), dec.Zero)
 			if c.err {
 				if err == nil {
 					t.Fatalf("expected error, got (%s,%s)", asset, amount)
@@ -42,10 +42,34 @@ func TestComputeFreeze_Limit(t *testing.T) {
 	}
 }
 
-func TestComputeFreeze_MarketRejected(t *testing.T) {
-	_, _, err := ComputeFreeze("BTC-USDT", SideBid, OrderTypeMarket, dec.Zero, dec.New("1"))
+func TestComputeFreeze_MarketSell(t *testing.T) {
+	// Market sell freezes base qty (same as limit sell; no price needed).
+	asset, amount, err := ComputeFreeze("BTC-USDT", SideAsk, OrderTypeMarket, dec.Zero, dec.New("0.5"), dec.Zero)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if asset != "BTC" || amount.String() != "0.5" {
+		t.Fatalf("got (%s,%s), want (BTC,0.5)", asset, amount)
+	}
+}
+
+func TestComputeFreeze_MarketBuyByQuote(t *testing.T) {
+	// BN-style quoteOrderQty: freeze quote_qty in quote currency.
+	asset, amount, err := ComputeFreeze("BTC-USDT", SideBid, OrderTypeMarket, dec.Zero, dec.Zero, dec.New("100"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if asset != "USDT" || amount.String() != "100" {
+		t.Fatalf("got (%s,%s), want (USDT,100)", asset, amount)
+	}
+}
+
+func TestComputeFreeze_MarketBuyWithoutQuoteRejected(t *testing.T) {
+	// Market buy without quote_qty is explicitly refused (would require
+	// Counter to estimate freeze from last price — ADR-0035 §备选方案 Z).
+	_, _, err := ComputeFreeze("BTC-USDT", SideBid, OrderTypeMarket, dec.Zero, dec.New("1"), dec.Zero)
 	if err == nil {
-		t.Fatal("expected error for market order in MVP-3")
+		t.Fatal("expected error for market buy without quote_qty")
 	}
 }
 
