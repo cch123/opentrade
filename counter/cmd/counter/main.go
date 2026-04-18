@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -35,6 +36,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -42,6 +44,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/counter/internal/journal"
+	"github.com/xargin/opentrade/counter/internal/reconcile"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/server"
 	"github.com/xargin/opentrade/counter/internal/service"
@@ -71,6 +74,12 @@ type Config struct {
 	ElectionPath   string
 	LeaseTTL       int    // seconds; default 10
 	CampaignBackoff time.Duration // wait between failed Campaigns
+
+	// Reconciliation (ADR-0008 §对账). When MySQLDSN is empty the audit loop
+	// is disabled and Counter runs as before.
+	MySQLDSN        string
+	ReconInterval   time.Duration
+	ReconBatchSize  int
 
 	Env      string
 	LogLevel string
@@ -253,6 +262,17 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		periodicSnapshot(snapCtx, cfg, state, userSeq, dt, logger)
 	}()
 
+	// Hourly balance audit against MySQL projection (ADR-0008 §对账). Only
+	// the primary runs this — backups have stale state by design. Opens its
+	// own DB pool so a MySQL outage can't stall the gRPC path.
+	reconCancel, reconDone := startReconcile(ctx, cfg, state, logger)
+	defer func() {
+		if reconCancel != nil {
+			reconCancel()
+			<-reconDone
+		}
+	}()
+
 	grpcServer := grpc.NewServer()
 	counterrpc.RegisterCounterServiceServer(grpcServer, server.New(svc, logger))
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -293,6 +313,42 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	logger.Info("primary stopped")
 }
 
+// startReconcile opens the MySQL pool + spawns the audit loop on a derived
+// context. Returns (cancel, done) so the caller can tear it down. When the
+// DSN is empty or the pool fails to open we log and return (nil, nil) so
+// the primary continues without auditing.
+func startReconcile(parent context.Context, cfg Config, state *engine.ShardState, logger *zap.Logger) (context.CancelFunc, <-chan struct{}) {
+	if cfg.MySQLDSN == "" {
+		logger.Info("reconcile disabled (no --mysql-dsn)")
+		return nil, nil
+	}
+	db, err := sql.Open("mysql", cfg.MySQLDSN)
+	if err != nil {
+		logger.Error("reconcile: open mysql", zap.Error(err))
+		return nil, nil
+	}
+	pingCtx, cancelPing := context.WithTimeout(parent, 5*time.Second)
+	defer cancelPing()
+	if err := db.PingContext(pingCtx); err != nil {
+		logger.Error("reconcile: ping mysql", zap.Error(err))
+		_ = db.Close()
+		return nil, nil
+	}
+	rec := reconcile.New(reconcile.Config{
+		ShardID:   cfg.ShardID,
+		Interval:  cfg.ReconInterval,
+		BatchSize: cfg.ReconBatchSize,
+	}, state, db, logger)
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = db.Close() }()
+		_ = rec.Run(ctx)
+	}()
+	return cancel, done
+}
+
 // periodicSnapshot writes a full shard snapshot to SnapshotDir on each tick.
 // SnapshotInterval <= 0 disables the loop (only the shutdown-time snapshot
 // runs, matching pre-MVP-12b behaviour).
@@ -330,6 +386,8 @@ func parseFlags() Config {
 		HAMode:           "disabled",
 		LeaseTTL:         10,
 		CampaignBackoff:  2 * time.Second,
+		ReconInterval:    time.Hour,
+		ReconBatchSize:   200,
 		Env:              "dev",
 		LogLevel:         "info",
 	}
@@ -351,6 +409,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ElectionPath, "election-path", "", "etcd election key (default /cex/counter/shard-<N>/leader)")
 	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "etcd session TTL seconds")
 	flag.DurationVar(&cfg.CampaignBackoff, "campaign-backoff", cfg.CampaignBackoff, "wait between failed Campaigns")
+	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", "", "MySQL DSN for hourly balance reconcile (empty disables; ADR-0008)")
+	flag.DurationVar(&cfg.ReconInterval, "recon-interval", cfg.ReconInterval, "balance audit cadence (primary only; 0 disables even when DSN set)")
+	flag.IntVar(&cfg.ReconBatchSize, "recon-batch", cfg.ReconBatchSize, "user ids per reconcile SELECT batch")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
