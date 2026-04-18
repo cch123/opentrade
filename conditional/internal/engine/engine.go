@@ -54,6 +54,7 @@ var (
 	ErrQtyRequired         = errors.New("conditional: qty required")
 	ErrQuoteQtyShape       = errors.New("conditional: quote_qty only allowed for MARKET buy")
 	ErrBothQtyAndQuoteQty  = errors.New("conditional: provide either qty or quote_qty for market buy, not both")
+	ErrExpiryInPast        = errors.New("conditional: expires_at_unix_ms must be in the future")
 	ErrNotFound            = errors.New("conditional: not found")
 	ErrNotOwner            = errors.New("conditional: user does not own this conditional")
 	ErrNotActive           = errors.New("conditional: already terminal")
@@ -109,6 +110,9 @@ type Conditional struct {
 	TriggeredAtMs  int64
 	PlacedOrderID  uint64
 	RejectReason   string
+	// ExpiresAtMs, when > 0, is the absolute wall-clock ms at which a
+	// PENDING conditional flips to EXPIRED via SweepExpired (ADR-0043).
+	ExpiresAtMs int64
 }
 
 // -----------------------------------------------------------------------------
@@ -178,7 +182,11 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceConditionalRequest
 	if err != nil {
 		return 0, 0, false, err
 	}
-	c.CreatedAtMs = e.cfg.Clock().UnixMilli()
+	nowMs := e.cfg.Clock().UnixMilli()
+	if c.ExpiresAtMs > 0 && c.ExpiresAtMs <= nowMs {
+		return 0, 0, false, ErrExpiryInPast
+	}
+	c.CreatedAtMs = nowMs
 	c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING
 
 	// Fast-path dedup: return prior record without reserving anew.
@@ -581,6 +589,7 @@ func buildConditional(req *condrpc.PlaceConditionalRequest) (*Conditional, error
 		Qty:          qty,
 		QuoteQty:     quoteQty,
 		TIF:          req.Tif,
+		ExpiresAtMs:  req.ExpiresAtUnixMs,
 	}, nil
 }
 
@@ -624,6 +633,38 @@ func validateShape(side eventpb.Side, typ condrpc.ConditionalType, qty, quoteQty
 		return ErrQuoteQtyShape
 	}
 	return nil
+}
+
+// SweepExpired marks every PENDING conditional whose ExpiresAtMs has
+// passed as EXPIRED, and best-effort releases its reservation. Called on
+// a background ticker from main. Returns the number of conditionals
+// flipped so callers / tests can assert (ADR-0043).
+func (e *Engine) SweepExpired(ctx context.Context) int {
+	nowMs := e.cfg.Clock().UnixMilli()
+	type expired struct {
+		id     uint64
+		userID string
+	}
+	var victims []expired
+	e.mu.Lock()
+	for id, c := range e.pending {
+		if c.ExpiresAtMs > 0 && c.ExpiresAtMs <= nowMs {
+			c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED
+			c.TriggeredAtMs = nowMs
+			victims = append(victims, expired{id: id, userID: c.UserID})
+			e.graduateLocked(c)
+		}
+	}
+	e.mu.Unlock()
+	for _, v := range victims {
+		e.bestEffortRelease(ctx, v.userID, e.refIDFor(v.id))
+		if e.logger != nil {
+			e.logger.Info("conditional expired",
+				zap.Uint64("id", v.id),
+				zap.String("user_id", v.userID))
+		}
+	}
+	return len(victims)
 }
 
 // nextID is a thin wrapper so tests / callers can override via idgen.

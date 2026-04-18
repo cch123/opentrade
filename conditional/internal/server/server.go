@@ -84,7 +84,8 @@ func toGRPCErr(err error) error {
 		errors.Is(err, engine.ErrLimitPriceForbidden),
 		errors.Is(err, engine.ErrQtyRequired),
 		errors.Is(err, engine.ErrQuoteQtyShape),
-		errors.Is(err, engine.ErrBothQtyAndQuoteQty):
+		errors.Is(err, engine.ErrBothQtyAndQuoteQty),
+		errors.Is(err, engine.ErrExpiryInPast):
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())

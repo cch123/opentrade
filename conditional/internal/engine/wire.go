@@ -29,6 +29,7 @@ func ToProto(c *Conditional) *condrpc.Conditional {
 		TriggeredAtUnixMs:   c.TriggeredAtMs,
 		PlacedOrderId:       c.PlacedOrderID,
 		RejectReason:        c.RejectReason,
+		ExpiresAtUnixMs:     c.ExpiresAtMs,
 	}
 }
 

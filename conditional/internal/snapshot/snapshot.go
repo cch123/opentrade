@@ -51,6 +51,7 @@ type ConditionalSnap struct {
 	TriggeredAtMs int64  `json:"triggered_at_ms,omitempty"`
 	PlacedOrderID uint64 `json:"placed_order_id,omitempty"`
 	RejectReason  string `json:"reject_reason,omitempty"`
+	ExpiresAtMs   int64  `json:"expires_at_ms,omitempty"` // ADR-0043
 }
 
 // Capture builds a Snapshot from the engine. Caller stamps TakenAtMs.
@@ -169,6 +170,7 @@ func toSnapSlice(in []*engine.Conditional) []ConditionalSnap {
 			TriggeredAtMs: c.TriggeredAtMs,
 			PlacedOrderID: c.PlacedOrderID,
 			RejectReason:  c.RejectReason,
+			ExpiresAtMs:   c.ExpiresAtMs,
 		}
 	}
 	return out
@@ -213,6 +215,7 @@ func fromSnapSlice(in []ConditionalSnap) ([]*engine.Conditional, error) {
 			TriggeredAtMs: s.TriggeredAtMs,
 			PlacedOrderID: s.PlacedOrderID,
 			RejectReason:  s.RejectReason,
+			ExpiresAtMs:   s.ExpiresAtMs,
 		})
 	}
 	return out, nil

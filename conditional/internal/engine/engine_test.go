@@ -511,6 +511,98 @@ func TestTrigger_RejectionReleasesReservation(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Expiry (MVP-14d / ADR-0043)
+// ---------------------------------------------------------------------------
+
+// withClock constructs an engine whose clock returns a controllable time.
+func withClock(placer OrderPlacer, res Reservations, now *time.Time) *Engine {
+	return New(Config{
+		TerminalHistoryLimit: 100,
+		Clock:                func() time.Time { return *now },
+	}, &counterSeq{}, placer, res, zap.NewNop())
+}
+
+func TestPlace_ExpiryInPastRejected(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	e := withClock(&fakePlacer{}, nil, &now)
+	req := goodReq()
+	req.ExpiresAtUnixMs = now.Add(-time.Minute).UnixMilli()
+	if _, _, _, err := e.Place(context.Background(), req); !errors.Is(err, ErrExpiryInPast) {
+		t.Errorf("err = %v, want ErrExpiryInPast", err)
+	}
+}
+
+func TestPlace_ExpiryInFutureStored(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	e := withClock(&fakePlacer{}, nil, &now)
+	req := goodReq()
+	req.ExpiresAtUnixMs = now.Add(10 * time.Minute).UnixMilli()
+	id, _, _, err := e.Place(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.Get("u1", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAtMs != req.ExpiresAtUnixMs {
+		t.Errorf("expires: got %d want %d", got.ExpiresAtMs, req.ExpiresAtUnixMs)
+	}
+}
+
+func TestSweepExpired_FlipsOverdue(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	reserver := &fakeReserver{}
+	e := withClock(&fakePlacer{}, reserver, &now)
+
+	// One expires at now+1m, another at now+10m, a third with no expiry.
+	mk := func(client string, exp time.Duration) uint64 {
+		req := goodReq()
+		req.ClientConditionalId = client
+		if exp > 0 {
+			req.ExpiresAtUnixMs = now.Add(exp).UnixMilli()
+		}
+		id, _, _, err := e.Place(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	soonID := mk("soon", time.Minute)
+	lateID := mk("late", 10*time.Minute)
+	foreverID := mk("forever", 0)
+
+	// Advance clock past the 'soon' expiry.
+	now = now.Add(2 * time.Minute)
+	n := e.SweepExpired(context.Background())
+	if n != 1 {
+		t.Fatalf("sweep flipped %d, want 1", n)
+	}
+
+	if got, _ := e.Get("u1", soonID); got.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED {
+		t.Errorf("soon status = %v", got.Status)
+	}
+	if got, _ := e.Get("u1", lateID); got.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING {
+		t.Errorf("late should still be pending: %v", got.Status)
+	}
+	if got, _ := e.Get("u1", foreverID); got.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING {
+		t.Errorf("forever should still be pending: %v", got.Status)
+	}
+	// Expired reservation was best-effort released.
+	if reserver.releaseCount() != 1 {
+		t.Errorf("release count = %d, want 1", reserver.releaseCount())
+	}
+}
+
+func TestSweepExpired_NoopOnEmpty(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	e := withClock(&fakePlacer{}, nil, &now)
+	if n := e.SweepExpired(context.Background()); n != 0 {
+		t.Errorf("sweep on empty = %d", n)
+	}
+}
+
 func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	placer := &fakePlacer{}
 	src := newEngine(placer)

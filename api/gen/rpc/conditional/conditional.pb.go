@@ -98,6 +98,9 @@ const (
 	// REJECTED: trigger fired but Counter rejected the inner order
 	// (balance, wrong shard, …). reject_reason carries the detail.
 	ConditionalStatus_CONDITIONAL_STATUS_REJECTED ConditionalStatus = 4
+	// EXPIRED: expires_at_unix_ms passed before any trigger (ADR-0043).
+	// Terminal; reservation (if any) was released by the expiry sweeper.
+	ConditionalStatus_CONDITIONAL_STATUS_EXPIRED ConditionalStatus = 5
 )
 
 // Enum value maps for ConditionalStatus.
@@ -108,6 +111,7 @@ var (
 		2: "CONDITIONAL_STATUS_TRIGGERED",
 		3: "CONDITIONAL_STATUS_CANCELED",
 		4: "CONDITIONAL_STATUS_REJECTED",
+		5: "CONDITIONAL_STATUS_EXPIRED",
 	}
 	ConditionalStatus_value = map[string]int32{
 		"CONDITIONAL_STATUS_UNSPECIFIED": 0,
@@ -115,6 +119,7 @@ var (
 		"CONDITIONAL_STATUS_TRIGGERED":   2,
 		"CONDITIONAL_STATUS_CANCELED":    3,
 		"CONDITIONAL_STATUS_REJECTED":    4,
+		"CONDITIONAL_STATUS_EXPIRED":     5,
 	}
 )
 
@@ -157,8 +162,13 @@ type PlaceConditionalRequest struct {
 	Qty                 string                 `protobuf:"bytes,8,opt,name=qty,proto3" json:"qty,omitempty"`                                    // base qty; empty for market buy with quote_qty
 	QuoteQty            string                 `protobuf:"bytes,9,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`          // market buy budget (BN quoteOrderQty)
 	Tif                 event.TimeInForce      `protobuf:"varint,10,opt,name=tif,proto3,enum=opentrade.event.TimeInForce" json:"tif,omitempty"` // used for LIMIT variants
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Optional absolute expiry (unix ms). 0 = never expires. A PENDING
+	// conditional that reaches this wall-clock instant without triggering
+	// is moved to EXPIRED by the service's sweeper (ADR-0043). Must be
+	// strictly in the future when non-zero.
+	ExpiresAtUnixMs int64 `protobuf:"varint,11,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PlaceConditionalRequest) Reset() {
@@ -259,6 +269,13 @@ func (x *PlaceConditionalRequest) GetTif() event.TimeInForce {
 		return x.Tif
 	}
 	return event.TimeInForce(0)
+}
+
+func (x *PlaceConditionalRequest) GetExpiresAtUnixMs() int64 {
+	if x != nil {
+		return x.ExpiresAtUnixMs
+	}
+	return 0
 }
 
 type PlaceConditionalResponse struct {
@@ -653,8 +670,9 @@ type Conditional struct {
 	Status              ConditionalStatus      `protobuf:"varint,12,opt,name=status,proto3,enum=opentrade.rpc.conditional.ConditionalStatus" json:"status,omitempty"`
 	CreatedAtUnixMs     int64                  `protobuf:"varint,13,opt,name=created_at_unix_ms,json=createdAtUnixMs,proto3" json:"created_at_unix_ms,omitempty"`
 	TriggeredAtUnixMs   int64                  `protobuf:"varint,14,opt,name=triggered_at_unix_ms,json=triggeredAtUnixMs,proto3" json:"triggered_at_unix_ms,omitempty"`
-	PlacedOrderId       uint64                 `protobuf:"varint,15,opt,name=placed_order_id,json=placedOrderId,proto3" json:"placed_order_id,omitempty"` // populated after TRIGGERED
-	RejectReason        string                 `protobuf:"bytes,16,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`       // populated on REJECTED
+	PlacedOrderId       uint64                 `protobuf:"varint,15,opt,name=placed_order_id,json=placedOrderId,proto3" json:"placed_order_id,omitempty"`         // populated after TRIGGERED
+	RejectReason        string                 `protobuf:"bytes,16,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`               // populated on REJECTED
+	ExpiresAtUnixMs     int64                  `protobuf:"varint,17,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"` // 0 = never expires
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -801,11 +819,18 @@ func (x *Conditional) GetRejectReason() string {
 	return ""
 }
 
+func (x *Conditional) GetExpiresAtUnixMs() int64 {
+	if x != nil {
+		return x.ExpiresAtUnixMs
+	}
+	return 0
+}
+
 var File_rpc_conditional_conditional_proto protoreflect.FileDescriptor
 
 const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\n" +
-	"!rpc/conditional/conditional.proto\x12\x19opentrade.rpc.conditional\x1a\x12event/common.proto\"\x88\x03\n" +
+	"!rpc/conditional/conditional.proto\x12\x19opentrade.rpc.conditional\x1a\x12event/common.proto\"\xb5\x03\n" +
 	"\x17PlaceConditionalRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x122\n" +
 	"\x15client_conditional_id\x18\x02 \x01(\tR\x13clientConditionalId\x12\x16\n" +
@@ -819,7 +844,8 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\x03qty\x18\b \x01(\tR\x03qty\x12\x1b\n" +
 	"\tquote_qty\x18\t \x01(\tR\bquoteQty\x12.\n" +
 	"\x03tif\x18\n" +
-	" \x01(\x0e2\x1c.opentrade.event.TimeInForceR\x03tif\"\xbb\x01\n" +
+	" \x01(\x0e2\x1c.opentrade.event.TimeInForceR\x03tif\x12+\n" +
+	"\x12expires_at_unix_ms\x18\v \x01(\x03R\x0fexpiresAtUnixMs\"\xbb\x01\n" +
 	"\x18PlaceConditionalResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12D\n" +
 	"\x06status\x18\x02 \x01(\x0e2,.opentrade.rpc.conditional.ConditionalStatusR\x06status\x12\x1a\n" +
@@ -841,7 +867,7 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12)\n" +
 	"\x10include_inactive\x18\x02 \x01(\bR\x0fincludeInactive\"f\n" +
 	"\x18ListConditionalsResponse\x12J\n" +
-	"\fconditionals\x18\x01 \x03(\v2&.opentrade.rpc.conditional.ConditionalR\fconditionals\"\xfd\x04\n" +
+	"\fconditionals\x18\x01 \x03(\v2&.opentrade.rpc.conditional.ConditionalR\fconditionals\"\xaa\x05\n" +
 	"\vConditional\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x122\n" +
 	"\x15client_conditional_id\x18\x02 \x01(\tR\x13clientConditionalId\x12\x17\n" +
@@ -861,19 +887,21 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\x12created_at_unix_ms\x18\r \x01(\x03R\x0fcreatedAtUnixMs\x12/\n" +
 	"\x14triggered_at_unix_ms\x18\x0e \x01(\x03R\x11triggeredAtUnixMs\x12&\n" +
 	"\x0fplaced_order_id\x18\x0f \x01(\x04R\rplacedOrderId\x12#\n" +
-	"\rreject_reason\x18\x10 \x01(\tR\frejectReason*\xc3\x01\n" +
+	"\rreject_reason\x18\x10 \x01(\tR\frejectReason\x12+\n" +
+	"\x12expires_at_unix_ms\x18\x11 \x01(\x03R\x0fexpiresAtUnixMs*\xc3\x01\n" +
 	"\x0fConditionalType\x12 \n" +
 	"\x1cCONDITIONAL_TYPE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCONDITIONAL_TYPE_STOP_LOSS\x10\x01\x12$\n" +
 	" CONDITIONAL_TYPE_STOP_LOSS_LIMIT\x10\x02\x12 \n" +
 	"\x1cCONDITIONAL_TYPE_TAKE_PROFIT\x10\x03\x12&\n" +
-	"\"CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT\x10\x04*\xbb\x01\n" +
+	"\"CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT\x10\x04*\xdb\x01\n" +
 	"\x11ConditionalStatus\x12\"\n" +
 	"\x1eCONDITIONAL_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCONDITIONAL_STATUS_PENDING\x10\x01\x12 \n" +
 	"\x1cCONDITIONAL_STATUS_TRIGGERED\x10\x02\x12\x1f\n" +
 	"\x1bCONDITIONAL_STATUS_CANCELED\x10\x03\x12\x1f\n" +
-	"\x1bCONDITIONAL_STATUS_REJECTED\x10\x042\x8b\x04\n" +
+	"\x1bCONDITIONAL_STATUS_REJECTED\x10\x04\x12\x1e\n" +
+	"\x1aCONDITIONAL_STATUS_EXPIRED\x10\x052\x8b\x04\n" +
 	"\x12ConditionalService\x12{\n" +
 	"\x10PlaceConditional\x122.opentrade.rpc.conditional.PlaceConditionalRequest\x1a3.opentrade.rpc.conditional.PlaceConditionalResponse\x12~\n" +
 	"\x11CancelConditional\x123.opentrade.rpc.conditional.CancelConditionalRequest\x1a4.opentrade.rpc.conditional.CancelConditionalResponse\x12{\n" +

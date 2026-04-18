@@ -75,6 +75,9 @@ enum ConditionalStatus {
   // REJECTED: trigger fired but Counter rejected the inner order
   // (balance, wrong shard, …). reject_reason carries the detail.
   CONDITIONAL_STATUS_REJECTED = 4;
+  // EXPIRED: expires_at_unix_ms passed before any trigger (ADR-0043).
+  // Terminal; reservation (if any) was released by the expiry sweeper.
+  CONDITIONAL_STATUS_EXPIRED = 5;
 }
 
 // -----------------------------------------------------------------------------
@@ -92,6 +95,11 @@ message PlaceConditionalRequest {
   string qty = 8;                                   // base qty; empty for market buy with quote_qty
   string quote_qty = 9;                             // market buy budget (BN quoteOrderQty)
   opentrade.event.TimeInForce tif = 10;             // used for LIMIT variants
+  // Optional absolute expiry (unix ms). 0 = never expires. A PENDING
+  // conditional that reaches this wall-clock instant without triggering
+  // is moved to EXPIRED by the service's sweeper (ADR-0043). Must be
+  // strictly in the future when non-zero.
+  int64 expires_at_unix_ms = 11;
 }
 
 message PlaceConditionalResponse {
@@ -155,4 +163,5 @@ message Conditional {
   int64 triggered_at_unix_ms = 14;
   uint64 placed_order_id = 15;                      // populated after TRIGGERED
   string reject_reason = 16;                        // populated on REJECTED
+  int64 expires_at_unix_ms = 17;                    // 0 = never expires
 }

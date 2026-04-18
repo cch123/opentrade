@@ -53,6 +53,9 @@ type Config struct {
 	SnapshotDir          string
 	SnapshotInterval     time.Duration
 	TerminalHistoryLimit int
+	// ExpirySweepInterval tunes how often the primary scans pending
+	// conditionals for expired ones (ADR-0043). 0 disables.
+	ExpirySweepInterval time.Duration
 
 	// idgen shard id — snowflake layout (ADR: counter/cmd/counter uses
 	// ShardID for this). For conditional we give it its own shard id
@@ -237,6 +240,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		defer wg.Done()
 		runSnapshotTicker(snapCtx, cfg, eng, logger)
 	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runExpirySweeper(ctx, cfg, eng, logger)
+	}()
 
 	svc := service.New(eng)
 	grpcSrv := grpc.NewServer()
@@ -313,6 +321,28 @@ func writeSnapshot(cfg Config, eng *engine.Engine) error {
 	return snapshot.Save(snapshotPath(cfg), snap)
 }
 
+// runExpirySweeper sweeps PENDING conditionals whose ExpiresAtMs has
+// passed, flipping them to EXPIRED and releasing their reservations.
+// Interval 0 disables entirely (matches --expiry-sweep=0; useful for
+// deterministic tests that drive SweepExpired manually).
+func runExpirySweeper(ctx context.Context, cfg Config, eng *engine.Engine, logger *zap.Logger) {
+	if cfg.ExpirySweepInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(cfg.ExpirySweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n := eng.SweepExpired(ctx); n > 0 && logger != nil {
+				logger.Info("expiry sweep", zap.Int("expired", n))
+			}
+		}
+	}
+}
+
 func runSnapshotTicker(ctx context.Context, cfg Config, eng *engine.Engine, logger *zap.Logger) {
 	if cfg.SnapshotDir == "" || cfg.SnapshotInterval <= 0 {
 		return
@@ -364,6 +394,7 @@ func parseFlags() Config {
 		SnapshotDir:          "./data/conditional",
 		SnapshotInterval:     30 * time.Second,
 		TerminalHistoryLimit: 1000,
+		ExpirySweepInterval:  5 * time.Second,
 		IDGenShard:           900, // deliberately out of counter's 0..99 range
 		HAMode:               "disabled",
 		LeaseTTL:             10,
@@ -382,6 +413,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "directory for engine-state snapshots (empty disables)")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "snapshot cadence; 0 disables the ticker (still writes on shutdown)")
 	flag.IntVar(&cfg.TerminalHistoryLimit, "terminal-history", cfg.TerminalHistoryLimit, "max retained terminal records per engine for ListConditionals(include_inactive)")
+	flag.DurationVar(&cfg.ExpirySweepInterval, "expiry-sweep", cfg.ExpirySweepInterval, "cadence for sweeping expired PENDING conditionals (ADR-0043); 0 disables")
 	flag.IntVar(&cfg.IDGenShard, "idgen-shard", cfg.IDGenShard, "snowflake shard id for conditional ids (avoid collisions with counter)")
 	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0042)")
 	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto)")

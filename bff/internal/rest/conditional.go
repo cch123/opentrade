@@ -19,6 +19,8 @@ type placeConditionalBody struct {
 	Qty                 string `json:"qty,omitempty"`
 	QuoteQty            string `json:"quote_qty,omitempty"`
 	TIF                 string `json:"tif,omitempty"`
+	// Optional absolute expiry (unix ms); 0 = never expires. ADR-0043.
+	ExpiresAtUnixMs int64 `json:"expires_at_unix_ms,omitempty"`
 }
 
 // handlePlaceConditional POST /v1/conditional — forwards to the
@@ -69,6 +71,7 @@ func (s *Server) handlePlaceConditional(w http.ResponseWriter, r *http.Request) 
 		Qty:                 body.Qty,
 		QuoteQty:            body.QuoteQty,
 		Tif:                 tif,
+		ExpiresAtUnixMs:     body.ExpiresAtUnixMs,
 	})
 	if err != nil {
 		writeGRPCError(w, err)
@@ -188,6 +191,7 @@ func conditionalToJSON(c *condrpc.Conditional) map[string]any {
 		"triggered_at_unix_ms":  c.TriggeredAtUnixMs,
 		"placed_order_id":       c.PlacedOrderId,
 		"reject_reason":         c.RejectReason,
+		"expires_at_unix_ms":    c.ExpiresAtUnixMs,
 	}
 }
 
@@ -229,6 +233,8 @@ func conditionalStatusLabel(s condrpc.ConditionalStatus) string {
 		return "canceled"
 	case condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED:
 		return "rejected"
+	case condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED:
+		return "expired"
 	}
 	return "unknown"
 }

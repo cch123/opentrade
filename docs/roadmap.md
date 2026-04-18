@@ -27,6 +27,7 @@
 | [MVP-14a](#mvp-14a-conditional) | 条件单（stop-loss / take-profit） | ✅ | 独立 `conditional` 服务订 market-data，触发时通过 Counter.PlaceOrder 下真实单；无资金预留，MVP-14b 补 |
 | [MVP-14b](#mvp-14b-reservations) | 条件单资金预留 | ✅ | Counter 新 `Reserve` / `ReleaseReservation` + `PlaceOrder(reservation_id)`；conditional 下发即锁资金，触发原子消费 |
 | [MVP-14c](#mvp-14c-conditional-ha) | 条件单 HA（cold standby） | ✅ | etcd 选主复刻 ADR-0031；`--ha-mode=auto` 双实例，primary crash 10~15s 内新 primary 接管 |
+| [MVP-14d](#mvp-14d-conditional-expiry) | 条件单过期（TTL） | ✅ | `expires_at_unix_ms` + `EXPIRED` 状态 + primary 侧 sweeper；到期自动释放 reservation |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
 
@@ -49,7 +50,9 @@
 - **Match / Counter 延迟 + 吞吐 benchmark** — 验证是否接近 20w TPS / 10ms P99（[architecture.md §18.3](./architecture.md)）
 - ~~**MVP-14b 条件单资金预留**~~ — ✅ Counter `Reserve` / `ReleaseReservation` RPC + `PlaceOrder(reservation_id)` 原子消费；snapshot 持久化；触发不再因余额不足 reject（[ADR-0041](./adr/0041-counter-reservations.md)）
 - ~~**MVP-14c 条件单 HA**~~ — ✅ `pkg/election` cold standby 复刻 ADR-0031；`--ha-mode=auto` + `--etcd` 双实例（[ADR-0042](./adr/0042-conditional-ha.md)）
-- **OCO / Trailing stop / expiry** — 条件单进阶类型，MVP-14a 之上迭代（[ADR-0040 §Future Work](./adr/0040-conditional-order-service.md)）
+- ~~**MVP-14d 条件单过期**~~ — ✅ `expires_at_unix_ms` 字段 + EXPIRED 终态 + primary 侧 5s sweeper；到期释放 reservation（[ADR-0043](./adr/0043-conditional-expiry.md)）
+- **MVP-14e OCO**（One-Cancels-Other）—— 两条挂钩条件单互斥
+- **MVP-14f Trailing stop** —— stop_price 按 last_price 水印浮动
 
 ## 已完成
 
@@ -187,6 +190,14 @@
 - `--ha-mode=auto` + `--etcd`：双实例共享 `/cex/conditional/leader` etcd key + `--snapshot-dir` 共享 mount
 - Split-brain 失败半径退化为"少量重复 PlaceOrder"：Counter 的 `reservation_id` / `client_order_id` dedup 吸收，无业务错误
 - `--ha-mode=disabled` 保留 MVP-14a/b 单机行为，CI / 本地开发零 etcd 依赖
+
+### MVP-14d  条件单过期（TTL）  {#mvp-14d-conditional-expiry}
+
+- **commit** pending · **ADR** [0043](./adr/0043-conditional-expiry.md)
+- proto: `PlaceConditionalRequest.expires_at_unix_ms` + `Conditional.expires_at_unix_ms`，`ConditionalStatus.EXPIRED = 5`
+- engine: `SweepExpired(ctx) int` 扫 pending 里到期的条目 → EXPIRED + best-effort Release reservation
+- main: `--expiry-sweep=5s` 起 sweeper goroutine（primary only，HA 切换后 backup 接管）
+- BFF REST: `expires_at_unix_ms` 透传；状态 label 增加 `"expired"`；`0 = never` 保持向后兼容
 
 ---
 
