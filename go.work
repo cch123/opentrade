@@ -10,4 +10,5 @@ use (
 	./quote
 	./trade-dump
 	./conditional
+	./history
 )

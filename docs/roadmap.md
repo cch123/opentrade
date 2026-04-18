@@ -30,7 +30,7 @@
 | [MVP-14d](#mvp-14d-conditional-expiry) | 条件单过期（TTL） | ✅ | `expires_at_unix_ms` + `EXPIRED` 状态 + primary 侧 sweeper；到期自动释放 reservation |
 | [MVP-14e](#mvp-14e-conditional-oco) | 条件单 OCO（One-Cancels-Other） | ✅ | `PlaceOCO` 接 N 腿；任一腿到 terminal → 兄弟 CANCELED；client_oco_id 幂等 |
 | [MVP-14f](#mvp-14f-conditional-trailing) | 条件单 Trailing Stop | ✅ | `TRAILING_STOP_LOSS` + `trailing_delta_bps` + 可选 `activation_price`；引擎实时追 watermark |
-| [MVP-15](#mvp-15-history) | history / query 服务 | ⏳ | 独立只读服务读 trade-dump 的 MySQL 投影（orders / trades / account_logs），BFF 历史接口改走它 |
+| [MVP-15](#mvp-15-history) | history / query 服务 | ✅ | 独立只读服务读 trade-dump 的 MySQL 投影（orders / trades / account_logs），BFF 历史接口改走它 |
 | [MVP-16](#mvp-16-conditional-history) | 条件单长期历史 | ⏳ | `conditional-event` topic + trade-dump 投影 `conditional_events`；history 新增 `ListConditionals` |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
@@ -59,29 +59,6 @@
 - ~~**MVP-14f Trailing stop**~~ — ✅ `TRAILING_STOP_LOSS` 类型 + bps retracement + 可选 activation_price；引擎维护 watermark（[ADR-0045](./adr/0045-conditional-trailing-stop.md)）
 
 ## 规划中
-
-### MVP-15  history / query 服务  {#mvp-15-history}
-
-- **动机**：当前查询散落多处 —— BFF 的 `GET /v1/order/:id` 直连 Counter（只能查活跃单），列表 / 成交明细 / 资金流水没有统一入口；把 BFF 写成 MySQL 读客户端又会让网关反向耦合 schema。独立出一个只读服务，BFF 继续当薄网关。
-- **范围**：
-  - 新 `history/` 模块 + `HistoryService` gRPC：`GetOrder` / `ListOrders` / `ListTrades` / `ListAccountLogs`
-  - 数据源：trade-dump 已写入的 `orders` / `trades` / `account_logs` 三张 MySQL 表（ADR-0023 / ADR-0028），纯只读，无 Kafka 消费
-  - Cursor 分页 + `[since_ms, until_ms)` 时间窗口；`ListOrders` 用 `scope=OPEN|TERMINAL|ALL` 区分"挂单 / 已完结"两种 UI tab，`statuses` 细粒度 filter 二选一；其它接口按 symbol / asset / biz_type 过滤
-  - 默认 limit=100、clamp 500
-  - BFF REST：新增 `GET /v1/orders?scope=open|terminal|all` / `GET /v1/trades` / `GET /v1/account-logs`；`GET /v1/order/:id` 改由 history 兜底终态，实时成交进度继续走 WS `user` 流（ADR-0007）
-  - 无状态：MySQL DSN 指向只读副本即可横向扩；Counter 仍保留 `QueryOrder` 作为活跃单 hot path
-- **条件单查询路径**：条件单是 `conditional/` 服务的独立领域，状态机和字段都和常规订单不同（`stop_price` / `trailing_delta_bps` / `oco_group_id` 等）。查询继续走 `ConditionalService.ListConditionals` / `QueryConditional`，不塞进 `HistoryService`；理由：(a) 条件单 pending 态不存 MySQL（见 ADR-0040，只有本地 snapshot），history 读 MySQL 也读不到；(b) 塞进 `orders` 表会污染"正在撮合的订单"语义。条件单触发后产生的真实订单（`client_order_id="cond-<id>"`）落 `orders` 表，在 `ListOrders` 里正常返回，BFF 可以基于前缀给个 `source="conditional"` 标记（MVP-15 不做，留给后续）
-- **条件单长期历史**（缺口）：当前 `conditional` 只内存保留 `TerminalHistoryLimit` 轮终态，重启或滚动后就没了。长期存档需要新增 `conditional-event` topic → trade-dump 投影 `conditional_events` 表 → history 新 `ListConditionals` 接口；列为 MVP-16 候选，不在 MVP-15 内
-- **proto 草稿**：[api/rpc/history/history.proto](../api/rpc/history/history.proto)（含 HistoryService + Order / Trade / AccountLog + Cursor 分页约定）
-- **ADR**：0046（待写）—— 独立服务的取舍、Cursor 分页选择、lag 语义（trade-dump 批提交导致 ≤ 一批延迟）、冷热分层预留（orders/account_logs 长期可切 ClickHouse，trades 可切 S3+parquet）
-- **边界问题**：
-  - 对账：history 只读 trade-dump 输出，不绕开 ADR-0028 投影路径；Counter 对账（ADR-0008）继续由 `counter/internal/reconcile` 独立覆盖
-  - 权限：BFF 把 `X-User-Id` / JWT 解出的 user_id 透传；history 在 RPC 层用 user_id 当必填 where 条件（跨用户查询走内部管理面，不走这条 RPC）
-  - 查询效率：`trades` 表 maker/taker 两个 index 需要 UNION ALL，MVP 可接受；若成为热点再单独建 `user_id` 合并索引
-- **不做**：
-  - 管理面 / 运营 dashboard 的跨用户查询（单独走内部 RPC，不混进面向客户端的 HistoryService）
-  - 实时订阅（history 是轮询接口；实时推送仍是 Push 职责）
-  - 写路径（任何写操作都要走 Counter → trade-dump 投影，history 不反向回写）
 
 ### MVP-16  条件单长期历史  {#mvp-16-conditional-history}
 
@@ -257,6 +234,17 @@
 - engine: `updateTrailingLocked(c, price)` 在 handleLocked 内分叉：activation gate → watermark 推进 → effective_stop 比较；mutating 写进 Conditional 由引擎锁保护，snapshot 捕获
 - Reservations 走既有 MARKET 逻辑（Reserve 按 qty/quote_qty 一次算好，不依赖触发价）
 - BFF REST: 类型字符串 `"trailing_stop_loss"`；conditionalToJSON 暴露 watermark + active
+
+### MVP-15  history / query 服务  {#mvp-15-history}
+
+- **commit** pending · **ADR** [0046](./adr/0046-history-service.md)
+- 新 `history/` 模块 + `HistoryService` gRPC：`GetOrder` / `ListOrders` / `ListTrades` / `ListAccountLogs`；数据源为 trade-dump 已有的 MySQL 投影（ADR-0023 / 0028），纯只读、无 Kafka
+- `history/internal/cursor` opaque cursor（base64(JSON)）；orders 按 `(created_at, order_id)` 严格 < 游标，trades 按 `(ts, trade_id)`，account_logs 按 `(ts, shard_id, seq_id, asset)`
+- `history/internal/mysqlstore` 存储层；`ListOrders` 接收 `scope=OPEN|TERMINAL|ALL`（fallback，`statuses` 非空时后者胜），trades 表用 maker/taker 两 index UNION ALL 合流；limit 默认 100 / clamp 500
+- `history/cmd/history` main：`--grpc :8085` / `--mysql-dsn ...` / `--query-timeout 2s`；启动 pings MySQL，失败即退出
+- BFF：新增 `client.History` 接口 + `DialHistory`；`--history` flag 空时 `/v1/orders` / `/v1/trades` / `/v1/account-logs` 返回 503；`GET /v1/order/:id` 保持 Counter hot path 不变（单笔终态查询改走列表）
+- `orderToJSON` 加 `source=conditional|user` 标记（基于 `client_order_id` 是否以 `cond-` 开头，ADR-0040 条件单触发单识别）
+- 测试：cursor 编解码 + boundary、sqlmock 驱动的 GetOrder / ListOrders 分页 / NotFound / scope → statuses 展开 / invalid cursor 错误映射；BFF 既有测试全绿
 
 ---
 

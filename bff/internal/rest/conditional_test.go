@@ -45,14 +45,14 @@ func newCondServer(fc *fakeConditional) *Server {
 	return NewServer(Config{
 		UserRateLimit: 1000, UserRateWindow: time.Second,
 		IPRateLimit: 1000, IPRateWindow: time.Second,
-	}, &fakeCounter{}, nil, fc, zap.NewNop())
+	}, &fakeCounter{}, nil, fc, nil, zap.NewNop())
 }
 
 func TestPlaceConditional_503WhenUnconfigured(t *testing.T) {
 	srv := NewServer(Config{
 		UserRateLimit: 1000, UserRateWindow: time.Second,
 		IPRateLimit: 1000, IPRateWindow: time.Second,
-	}, &fakeCounter{}, nil, nil, zap.NewNop())
+	}, &fakeCounter{}, nil, nil, nil, zap.NewNop())
 	req := httptest.NewRequest(http.MethodPost, "/v1/conditional",
 		bytes.NewBufferString(`{"symbol":"BTC-USDT","side":"sell","type":"stop_loss","stop_price":"100","qty":"0.5"}`))
 	req.Header.Set(auth.HeaderUserID, "u1")

@@ -72,6 +72,7 @@
 | **quote**（旁路） | 消费 trade-event → 生成增量深度、逐笔、K 线（含 gap 填充）；发布 market-data；state snapshot 热重启（ADR-0036） | 连接推送 |
 | **conditional**（旁路） | 订阅 market-data → 维护 pending 条件单状态（含 trailing watermark / OCO 组 / TTL）→ 触发时调 counter.PlaceOrder；单实例 + cold-standby HA（ADR-0040~0045） | 行情产出、订单撮合 |
 | **trade-dump**（旁路） | 消费 counter-journal + trade-event → 幂等写 MySQL | 在线查询 |
+| **history**（只读） | 读 trade-dump 的 MySQL 投影，对外提供 `GetOrder` / `ListOrders` (scope=OPEN/TERMINAL/ALL) / `ListTrades` / `ListAccountLogs` gRPC；cursor 分页；BFF 的列表类 REST 走这里（ADR-0046） | 写、Kafka 消费、业务状态 |
 
 ### 4.1 定序组件（Sequencer）
 
@@ -126,13 +127,24 @@
      └──────┬──────────────────────┤         │                        │
             │                      │         │                        │
   ┌─ quote ─┼────────┐  ┌── trade-dump ─┐     │                        │
-  │ 深度/K线│        │  │ 幂等写 MySQL  │     │                        │
-  │ state   │        │  └───────────────┘     │                        │
-  │ snapshot│        │                        │                        │
-  └────┬────┘        │                        │                        │
-       │ market-data │                        │                        │
-       └─────────────┴────────────────────────┴────────────────────────┘
+  │ 深度/K线│        │  │ 幂等写 MySQL  │──┐  │                        │
+  │ state   │        │  └───────────────┘  │  │                        │
+  │ snapshot│        │                     ▼  │                        │
+  └────┬────┘        │              ┌─ history (N, 只读) ─┐            │
+       │ market-data │              │ BFF: GET /v1/orders │◀── BFF     │
+       └─────────────┴──────────────┤      /v1/trades     │            │
+                                    │      /v1/account-logs│            │
+                                    │ 读 MySQL read-replica │            │
+                                    └──────────────────────┘            │
+       ─────────────────────────────────────────────────────────────────┘
 ```
+
+> **读路径（ADR-0046）**：BFF 的列表类 REST 不直接读 MySQL —— 走
+> `history` gRPC。history 是无状态只读服务，订阅 trade-dump 投影的
+> `orders` / `trades` / `account_logs` 三张表，对上提供 cursor 分页 +
+> 时间窗口 + (symbol / status / asset / biz_type) 过滤。延迟受 trade-dump
+> 批提交语义影响（ADR-0023，≤ 一批），实时成交进度仍走 Push 的
+> `user` 流（ADR-0007）。活跃单按 id 查询 (`GET /v1/order/:id`) 保留 Counter hot path。
 
 ## 6. 核心数据流
 
@@ -393,13 +405,18 @@ counter-journal，工作量大，留 backlog。
 
 ### 10.3 读路径
 
-| 查询 | 来源 | 延迟 |
-|---|---|---|
-| 当前余额 | Counter 内存（gRPC） | ms 级 |
-| 活跃订单 | Counter 内存 | ms 级 |
-| 历史订单（>24h） | MySQL | 10-100ms |
-| 成交历史 | MySQL | 10-100ms |
-| K 线 / 深度 | quote 内存 + Redis 缓存 | ms 级 |
+| 查询 | 来源 | 延迟 | 入口 |
+|---|---|---|---|
+| 当前余额 | Counter 内存（gRPC） | ms 级 | BFF → counter.QueryBalance |
+| 活跃订单按 id | Counter 内存 | ms 级 | BFF → counter.QueryOrder |
+| 订单列表 (open / terminal) | MySQL（trade-dump 投影） | 10-100ms | BFF → history.ListOrders |
+| 成交历史 | MySQL | 10-100ms | BFF → history.ListTrades |
+| 资金流水 | MySQL | 10-100ms | BFF → history.ListAccountLogs |
+| 条件单列表 | conditional 内存 + snapshot | ms 级 | BFF → conditional.ListConditionals |
+| K 线 / 深度 | BFF 本地 market-data cache（ADR-0038） | ms 级 | BFF REST 直答 |
+
+所有走 MySQL 的查询都通过独立的 `history` 只读服务（ADR-0046）完成，
+BFF 不持 MySQL 连接。history 建议指向只读副本，和主写 DB 隔离。
 
 ## 11. 快照机制
 
@@ -637,6 +654,14 @@ opentrade/
 │       ├── consumer/
 │       └── writer/                   # MySQL 幂等写入
 │
+├── history/                          # module: 只读查询聚合 (ADR-0046)
+│   ├── go.mod
+│   ├── cmd/history/main.go
+│   └── internal/
+│       ├── cursor/                   # opaque 分页游标 (base64(JSON))
+│       ├── mysqlstore/               # orders / trades / account_logs 读层
+│       └── server/                   # gRPC server + scope→statuses 展开
+│
 ├── deploy/
 │   ├── docker/
 │   │   └── docker-compose.yml        # 本地: kafka + etcd + mysql + minio
@@ -652,6 +677,7 @@ opentrade/
 - `api`、`pkg` 为基础模块，不依赖其他内部 module
 - 各服务 module 依赖 `api` + `pkg`，**不互相依赖**（module 边界）
 - `conditional` 运行时通过 gRPC 调 Counter（和 BFF 一样，不引入代码依赖）
+- `history` 只读 MySQL，不消费 Kafka、不调其他服务；BFF 通过 gRPC 调 history
 - `go.work` 本地 replace，发布时用版本锁定
 
 ### 16.3 技术选型

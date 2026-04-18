@@ -63,6 +63,10 @@ type Config struct {
 	// /v1/conditional endpoints with 503.
 	ConditionalAddr string
 
+	// History service endpoint (ADR-0046). Empty disables the
+	// /v1/orders, /v1/trades, /v1/account-logs endpoints with 503.
+	HistoryAddr string
+
 	Env               string
 	LogLevel          string
 }
@@ -130,6 +134,16 @@ func main() {
 		}
 	}()
 
+	histConn, histClient, err := maybeDialHistory(rootCtx, cfg.HistoryAddr, logger)
+	if err != nil {
+		logger.Fatal("dial history", zap.Error(err))
+	}
+	defer func() {
+		if histConn != nil {
+			_ = histConn.Close()
+		}
+	}()
+
 	srv := rest.NewServer(rest.Config{
 		Addr:           cfg.HTTPAddr,
 		UserRateLimit:  cfg.UserRateLimit,
@@ -137,7 +151,7 @@ func main() {
 		IPRateLimit:    cfg.IPRateLimit,
 		IPRateWindow:   cfg.IPRateWindow,
 		AuthMiddleware: authMW,
-	}, counter, mdCache, condClient, logger)
+	}, counter, mdCache, condClient, histClient, logger)
 
 	outer := http.NewServeMux()
 	if cfg.PushWSURL != "" {
@@ -203,6 +217,22 @@ func maybeDialConditional(ctx context.Context, addr string, logger *zap.Logger) 
 		return nil, nil, fmt.Errorf("conditional dial %s: %w", addr, err)
 	}
 	logger.Info("conditional endpoint configured", zap.String("addr", addr))
+	return conn, c, nil
+}
+
+// maybeDialHistory dials the history service when addr is set. Returns
+// (nil, nil, nil) when disabled; the REST layer then 503s on
+// /v1/orders, /v1/trades, /v1/account-logs (ADR-0046).
+func maybeDialHistory(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.History, error) {
+	if addr == "" {
+		logger.Info("history endpoint disabled (empty --history)")
+		return nil, nil, nil
+	}
+	conn, c, err := client.DialHistory(ctx, addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("history dial %s: %w", addr, err)
+	}
+	logger.Info("history endpoint configured", zap.String("addr", addr))
 	return conn, c, nil
 }
 
@@ -325,6 +355,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.JWTSecret, "jwt-secret", "", "HS256 secret for --auth-mode=jwt|mixed (empty = jwt disabled in mixed mode)")
 	flag.StringVar(&cfg.APIKeysFile, "api-keys-file", "", "JSON file listing {key,secret,user_id} entries for --auth-mode=api-key|mixed")
 	flag.StringVar(&cfg.ConditionalAddr, "conditional", "", "Conditional service gRPC endpoint (empty disables /v1/conditional; ADR-0040)")
+	flag.StringVar(&cfg.HistoryAddr, "history", "", "History service gRPC endpoint (empty disables /v1/orders,/v1/trades,/v1/account-logs; ADR-0046)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()

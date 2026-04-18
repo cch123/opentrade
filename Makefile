@@ -3,7 +3,7 @@
 GO ?= go
 PROTOC ?= protoc
 
-MODULES := api pkg counter match bff push quote trade-dump conditional
+MODULES := api pkg counter match bff push quote trade-dump conditional history
 
 # ---------------------------------------------------------------------------
 # Proto generation

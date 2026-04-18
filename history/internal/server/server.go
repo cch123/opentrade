@@ -1,0 +1,122 @@
+// Package server wraps the MySQL store as a historypb.HistoryServiceServer.
+// Translation between external enums and the store's internal codes lives
+// here; the store speaks int8 status codes, the wire speaks external
+// history.OrderStatus.
+package server
+
+import (
+	"context"
+	"errors"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
+	"github.com/xargin/opentrade/history/internal/cursor"
+	"github.com/xargin/opentrade/history/internal/mysqlstore"
+)
+
+// Server is the HistoryService gRPC handler.
+type Server struct {
+	historypb.UnimplementedHistoryServiceServer
+	store *mysqlstore.Store
+}
+
+// New wires a handler over the given store.
+func New(store *mysqlstore.Store) *Server {
+	return &Server{store: store}
+}
+
+// GetOrder fetches one order by id scoped to user_id.
+func (s *Server) GetOrder(ctx context.Context, req *historypb.GetOrderRequest) (*historypb.GetOrderResponse, error) {
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	if req.GetOrderId() == 0 {
+		return nil, status.Error(codes.InvalidArgument, "order_id required")
+	}
+	o, err := s.store.GetOrder(ctx, req.UserId, req.OrderId)
+	if err != nil {
+		if errors.Is(err, mysqlstore.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "order not found")
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &historypb.GetOrderResponse{Order: o}, nil
+}
+
+// ListOrders folds scope → statuses, then delegates to the store.
+func (s *Server) ListOrders(ctx context.Context, req *historypb.ListOrdersRequest) (*historypb.ListOrdersResponse, error) {
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	// Pick statuses: explicit list wins; else fall back to scope.
+	var external []historypb.OrderStatus
+	switch {
+	case len(req.GetStatuses()) > 0:
+		external = req.GetStatuses()
+	default:
+		external = mysqlstore.StatusesForScope(req.GetScope())
+	}
+
+	rows, next, err := s.store.ListOrders(ctx,
+		mysqlstore.OrdersFilter{
+			UserID:   req.UserId,
+			Symbol:   req.Symbol,
+			Statuses: mysqlstore.InternalStatusesForFilters(external),
+			SinceMs:  req.SinceMs,
+			UntilMs:  req.UntilMs,
+		},
+		req.Cursor, int(req.Limit))
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return &historypb.ListOrdersResponse{Orders: rows, NextCursor: next}, nil
+}
+
+// ListTrades pages user fills (maker + taker).
+func (s *Server) ListTrades(ctx context.Context, req *historypb.ListTradesRequest) (*historypb.ListTradesResponse, error) {
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	rows, next, err := s.store.ListTrades(ctx,
+		mysqlstore.TradesFilter{
+			UserID:  req.UserId,
+			Symbol:  req.Symbol,
+			SinceMs: req.SinceMs,
+			UntilMs: req.UntilMs,
+		},
+		req.Cursor, int(req.Limit))
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return &historypb.ListTradesResponse{Trades: rows, NextCursor: next}, nil
+}
+
+// ListAccountLogs pages the user's funds-flow journal.
+func (s *Server) ListAccountLogs(ctx context.Context, req *historypb.ListAccountLogsRequest) (*historypb.ListAccountLogsResponse, error) {
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	rows, next, err := s.store.ListAccountLogs(ctx,
+		mysqlstore.AccountLogsFilter{
+			UserID:   req.UserId,
+			Asset:    req.Asset,
+			BizTypes: req.BizTypes,
+			SinceMs:  req.SinceMs,
+			UntilMs:  req.UntilMs,
+		},
+		req.Cursor, int(req.Limit))
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return &historypb.ListAccountLogsResponse{Logs: rows, NextCursor: next}, nil
+}
+
+func translateErr(err error) error {
+	switch {
+	case errors.Is(err, cursor.ErrInvalid):
+		return status.Error(codes.InvalidArgument, "invalid cursor")
+	}
+	return status.Error(codes.Internal, err.Error())
+}

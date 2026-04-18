@@ -36,6 +36,7 @@ type Server struct {
 	cfg         Config
 	counter     client.Counter
 	conditional client.Conditional
+	history     client.History
 	market      *marketcache.Cache
 	logger      *zap.Logger
 
@@ -44,13 +45,15 @@ type Server struct {
 }
 
 // NewServer wires handlers. counter may be nil during tests that substitute
-// a fake via a dedicated helper. market and conditional are optional: nil
-// disables their endpoints with 503 (ADR-0038 / ADR-0040).
-func NewServer(cfg Config, counter client.Counter, market *marketcache.Cache, conditional client.Conditional, logger *zap.Logger) *Server {
+// a fake via a dedicated helper. market, conditional and history are
+// optional: nil disables their endpoints with 503 (ADR-0038 / ADR-0040 /
+// ADR-0046).
+func NewServer(cfg Config, counter client.Counter, market *marketcache.Cache, conditional client.Conditional, history client.History, logger *zap.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		counter:     counter,
 		conditional: conditional,
+		history:     history,
 		market:      market,
 		logger:      logger,
 		userLimiter: ratelimit.New(cfg.UserRateLimit, cfg.UserRateWindow),
@@ -73,6 +76,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/conditional/{id}", s.handleCancelConditional)
 	mux.HandleFunc("GET /v1/conditional/{id}", s.handleQueryConditional)
 	mux.HandleFunc("GET /v1/conditional", s.handleListConditionals)
+	mux.HandleFunc("GET /v1/orders", s.handleListOrders)
+	mux.HandleFunc("GET /v1/trades", s.handleListTrades)
+	mux.HandleFunc("GET /v1/account-logs", s.handleListAccountLogs)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

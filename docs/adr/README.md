@@ -109,6 +109,7 @@
 | [0029](0029-bff-ws-reverse-proxy.md) | BFF WebSocket 反代模式 | Accepted |
 | [0038](0038-bff-reconnect-snapshot.md) | BFF 重连补齐快照 | Accepted |
 | [0039](0039-bff-auth-jwt-apikey.md) | BFF 认证升级到 JWT + API-Key | Accepted |
+| [0046](0046-history-service.md) | History 服务 — 只读查询聚合 | Accepted |
 
 ### 条件单
 
