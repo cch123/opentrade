@@ -2,9 +2,14 @@
 //
 // The aggregator is single-threaded per symbol. It maintains one open bar per
 // configured interval and emits KlineUpdate on every trade plus KlineClosed
-// when a bar rolls to the next bucket. Gap bars (intervals with no trades)
-// are not backfilled — consumers that need dense series should fill on the
-// client side from the closed bars they receive.
+// when a bar rolls to the next bucket. When trades skip one or more interval
+// buckets entirely the aggregator also emits empty KlineClosed events for
+// every intermediate bucket (O=H=L=C = previous close, volume = 0, count =
+// 0) so downstream kline streams stay dense. This is the "gap fill" behaviour.
+//
+// Gap filling scales with the duration of the gap and the interval size: a
+// trade arriving one week after the last one produces 10 080 empty 1m bars.
+// The cost is bounded by the gap; there is no internal cap in this revision.
 package kline
 
 import (
@@ -90,8 +95,8 @@ func (a *Aggregator) OnTrade(priceStr, qtyStr string, tsUnixMs int64) ([]*eventp
 	var out []*eventpb.MarketDataEvent
 	for _, spec := range a.intervals {
 		closed, updated := a.stepOne(spec, price, qty, tsUnixMs)
-		if closed != nil {
-			out = append(out, a.wrapClosed(spec, closed))
+		for _, c := range closed {
+			out = append(out, a.wrapClosed(spec, c))
 		}
 		if updated != nil {
 			out = append(out, a.wrapUpdate(spec, updated))
@@ -100,7 +105,11 @@ func (a *Aggregator) OnTrade(priceStr, qtyStr string, tsUnixMs int64) ([]*eventp
 	return out, nil
 }
 
-func (a *Aggregator) stepOne(spec IntervalSpec, price, qty dec.Decimal, ts int64) (closed *bar, updated *bar) {
+// stepOne folds the current trade into one interval. It returns the set of
+// bars that just closed (typically one; more than one if gap filling fired)
+// and the open bar that is now tracking the current price. Either return can
+// be nil for "nothing to emit" (first-ever trade; out-of-order skip).
+func (a *Aggregator) stepOne(spec IntervalSpec, price, qty dec.Decimal, ts int64) (closed []*bar, updated *bar) {
 	bucket := (ts / spec.Millis) * spec.Millis
 	current, ok := a.bars[spec.Interval]
 	switch {
@@ -118,11 +127,15 @@ func (a *Aggregator) stepOne(spec IntervalSpec, price, qty dec.Decimal, ts int64
 		current.update(price, qty)
 		return nil, current
 	default:
-		// ts advanced into a later bucket: close current, open new.
-		closedBar := current
+		// ts advanced into a later bucket: close current, fill any empty
+		// intermediate buckets, then open the new bar.
+		closed = []*bar{current}
+		for fill := current.openTime + spec.Millis; fill < bucket; fill += spec.Millis {
+			closed = append(closed, newEmptyBar(fill, spec.Millis, current.close))
+		}
 		nb := newBar(bucket, spec.Millis, price, qty)
 		a.bars[spec.Interval] = nb
-		return closedBar, nb
+		return closed, nb
 	}
 }
 
@@ -137,6 +150,23 @@ func newBar(openTime, millis int64, price, qty dec.Decimal) *bar {
 		volume:      qty,
 		quoteVolume: price.Mul(qty),
 		count:       1,
+	}
+}
+
+// newEmptyBar builds a zero-volume gap-fill bar carrying the previous bar's
+// close as open/high/low/close. This matches Binance's behaviour: a bucket
+// with no trades still has a bar, and its price fields equal the last print.
+func newEmptyBar(openTime, millis int64, lastClose dec.Decimal) *bar {
+	return &bar{
+		openTime:    openTime,
+		closeTime:   openTime + millis,
+		open:        lastClose,
+		high:        lastClose,
+		low:         lastClose,
+		close:       lastClose,
+		volume:      dec.Zero,
+		quoteVolume: dec.Zero,
+		count:       0,
 	}
 }
 

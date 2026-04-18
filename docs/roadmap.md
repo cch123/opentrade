@@ -32,7 +32,7 @@
 从已合 MVP 里明确推迟的项，没有单独升到 MVP 级，但都要做：
 
 - ~~**Counter 周期性 snapshot**~~ — ✅ MVP-12 落地（`--snapshot-interval=60s` 默认，可调）
-- **K 线 gap 填充** — 两笔 trade 跨多个 interval 时填 empty bar（[ADR-0025 未来工作](./adr/0025-quote-engine-state-and-offset-strategy.md)）
+- ~~**K 线 gap 填充**~~ — ✅ 跨 bucket 的 trade 会 emit 中间 empty bar（O=H=L=C=上一收盘，volume=0，count=0）；Kline 流保持致密（[ADR-0025 未来工作](./adr/0025-quote-engine-state-and-offset-strategy.md)）
 - **Push coalescing / rate-limit** — K 线 / 深度合并、连接级消息速率限制（[ADR-0022 实施约束](./adr/0022-push-sharding-sticky-routing.md) / [ADR-0026](./adr/0026-push-ws-protocol-and-mvp-scope.md)）
 - **Push 重连快照补齐** — 客户端重连后拉 BFF 补齐期间遗漏（[ADR-0026](./adr/0026-push-ws-protocol-and-mvp-scope.md)）
 - ~~**Counter 事务双写 review**~~ — ✅ review 发现 Transfer/Settlement 走非事务 producer（HA 下 fencing 失效），已合并到 TxnProducer（见 ADR-0031 §2 补充）
