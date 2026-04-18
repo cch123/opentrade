@@ -4,13 +4,19 @@
 --   seq_id = monotonic event id attached to the source Kafka event
 --   All monetary values stored as DECIMAL(36, 18) (string at the API boundary)
 
+-- account_version / balance_version are the ADR-0048 backlog "双层 version"
+-- counters (方案 B): account-level bumps on any of the user's balance
+-- mutations, balance-level bumps only on this (user, asset) mutation.
+-- Both are guarded by seq_id on upsert so replays don't rewind them.
 CREATE TABLE IF NOT EXISTS accounts (
-    user_id      VARCHAR(64)     NOT NULL,
-    asset        VARCHAR(32)     NOT NULL,
-    available    DECIMAL(36, 18) NOT NULL DEFAULT 0,
-    frozen       DECIMAL(36, 18) NOT NULL DEFAULT 0,
-    seq_id       BIGINT UNSIGNED NOT NULL,
-    updated_at   DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    user_id          VARCHAR(64)     NOT NULL,
+    asset            VARCHAR(32)     NOT NULL,
+    available        DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    frozen           DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    seq_id           BIGINT UNSIGNED NOT NULL,
+    account_version  BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    balance_version  BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at       DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (user_id, asset)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

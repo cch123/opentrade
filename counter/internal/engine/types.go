@@ -12,15 +12,27 @@ package engine
 import "github.com/xargin/opentrade/pkg/dec"
 
 // Balance represents a user's holdings of a single asset.
+//
+// Version is a monotonic counter bumped every time THIS (user, asset)
+// balance mutates. It is the per-asset component of the double-layer
+// optimistic versioning scheme (ADR-0048 backlog: "account/balance 双层
+// version, 方案 B"). Pair with Account.Version for the user-level
+// counterpart. Version is NOT bumped by snapshot restore — the restored
+// value is kept as-is so every downstream guard keeps working across
+// process restarts.
 type Balance struct {
 	Available dec.Decimal
 	Frozen    dec.Decimal
+	Version   uint64
 }
 
 // Total returns available + frozen.
 func (b Balance) Total() dec.Decimal { return b.Available.Add(b.Frozen) }
 
 // IsEmpty reports whether the balance is zero (both available and frozen).
+// Version is intentionally ignored — a zero-value balance with a non-zero
+// Version is still "no holdings," and computeTransfer etc. treat it that
+// way.
 func (b Balance) IsEmpty() bool { return b.Available.Sign() == 0 && b.Frozen.Sign() == 0 }
 
 // TransferType classifies a Transfer request.

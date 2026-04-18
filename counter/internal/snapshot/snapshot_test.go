@@ -107,6 +107,22 @@ func TestCaptureRestore(t *testing.T) {
 	if got := state2.Account("u2").LastMatchSeq("BTC-USDT"); got != 0 {
 		t.Errorf("u2 BTC-USDT match_seq after restore = %d, want 0", got)
 	}
+	// Double-layer version round-trip (ADR-0048 backlog item 1).
+	// u1 ran two transfers on USDT → account version=2, USDT version=2.
+	// u2 ran one BTC deposit → account version=1, BTC version=1.
+	u1Acc := state2.Account("u1")
+	if got := u1Acc.Version(); got != 2 {
+		t.Errorf("u1 account version after restore = %d, want 2", got)
+	}
+	if got := u1Acc.Balance("USDT").Version; got != 2 {
+		t.Errorf("u1 USDT version after restore = %d, want 2", got)
+	}
+	if got := state2.Account("u2").Version(); got != 1 {
+		t.Errorf("u2 account version after restore = %d, want 1", got)
+	}
+	if got := state2.Account("u2").Balance("BTC").Version; got != 1 {
+		t.Errorf("u2 BTC version after restore = %d, want 1", got)
+	}
 }
 
 // TestCaptureRestore_Reservations verifies reservations survive snapshot

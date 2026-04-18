@@ -24,10 +24,10 @@ var (
 type Account struct {
 	UserID string
 
-	// mu guards balances and matchSeq. In the common path the UserSequencer
-	// already serializes per-user access and mu is uncontended; mu exists so
-	// that snapshot readers can obtain a consistent per-user view without
-	// going through the sequencer.
+	// mu guards balances, matchSeq and version. In the common path the
+	// UserSequencer already serializes per-user access and mu is
+	// uncontended; mu exists so that snapshot readers can obtain a
+	// consistent per-user view without going through the sequencer.
 	mu       sync.RWMutex
 	balances map[string]*Balance
 	// matchSeq tracks the highest trade-event Meta.SeqId this user has seen
@@ -35,6 +35,13 @@ type Account struct {
 	// records after a snapshot-restore (ADR-0048 backlog: trade-event
 	// idempotency, user × symbol match_seq guard).
 	matchSeq map[string]uint64
+	// version is the user-level monotonic counter bumped on every balance
+	// mutation (any asset). Paired with per-asset Balance.Version, this
+	// forms the double-layer versioning scheme (ADR-0048 backlog: "双层
+	// version 方案 B"). Clients can use version as an optimistic-lock /
+	// cache-invalidation handle; trade-dump mirrors it to the accounts
+	// projection.
+	version uint64
 }
 
 func newAccount(userID string) *Account {
@@ -67,10 +74,42 @@ func (a *Account) Copy() map[string]Balance {
 
 // setBalance writes the given asset's balance. Caller must hold per-user
 // serialization (UserSequencer) or be doing a restore before traffic starts.
+//
+// This is the single entry point for production balance mutations and so
+// owns the double-layer version bump: the asset's own Balance.Version +1
+// and the user's Account.version +1. Callers MUST NOT pre-set b.Version
+// themselves — any value they put there is ignored; the function always
+// derives the new version from the stored current balance. For restore
+// paths that need to preserve on-disk versions, use putBalanceForRestore.
 func (a *Account) setBalance(asset string, b Balance) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.bumpAccountVersionLocked()
 	if b.IsEmpty() {
+		delete(a.balances, asset)
+		return
+	}
+	cur, ok := a.balances[asset]
+	if !ok {
+		cur = &Balance{}
+		a.balances[asset] = cur
+	}
+	prevVersion := cur.Version
+	*cur = b
+	cur.Version = prevVersion + 1
+}
+
+// bumpAccountVersionLocked bumps the user-level version. Caller MUST hold
+// a.mu.
+func (a *Account) bumpAccountVersionLocked() { a.version++ }
+
+// putBalanceForRestore writes b verbatim — including b.Version — WITHOUT
+// bumping any counters. Only used by snapshot.Restore before the shard
+// starts serving traffic.
+func (a *Account) putBalanceForRestore(asset string, b Balance) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if b.IsEmpty() && b.Version == 0 {
 		delete(a.balances, asset)
 		return
 	}
@@ -86,7 +125,23 @@ func (a *Account) setBalance(asset string, b Balance) {
 // a balance bypassing the normal transfer validation. Callers MUST ensure
 // this runs before the shard starts serving traffic.
 func (a *Account) PutForRestore(asset string, b Balance) {
-	a.setBalance(asset, b)
+	a.putBalanceForRestore(asset, b)
+}
+
+// Version returns the user-level version counter. Bumped on every balance
+// mutation; stable across snapshot roundtrip.
+func (a *Account) Version() uint64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.version
+}
+
+// RestoreVersion replaces the user-level version counter. Restore-only,
+// same contract as PutForRestore.
+func (a *Account) RestoreVersion(v uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.version = v
 }
 
 // LastMatchSeq returns the highest trade-event seq already applied for this

@@ -14,11 +14,17 @@ import (
 )
 
 // TransferEventInput is the internal input used to build a journal envelope.
+//
+// AccountVersion is the user's post-mutation Account.version (ADR-0048
+// backlog: 双层 version 方案 B). Callers read it AFTER committing the
+// balance so the emitted event reflects the new authoritative state.
+// BalanceAfter.Version likewise carries the per-asset counter.
 type TransferEventInput struct {
-	SeqID      uint64
-	TsUnixMS   int64
-	TraceID    string
-	ProducerID string
+	SeqID          uint64
+	TsUnixMS       int64
+	TraceID        string
+	ProducerID     string
+	AccountVersion uint64
 
 	Req          engine.TransferRequest
 	BalanceAfter engine.Balance
@@ -41,6 +47,7 @@ func BuildTransferEvent(in TransferEventInput) (*eventpb.CounterJournalEvent, er
 			TraceId:    in.TraceID,
 			ProducerId: in.ProducerID,
 		},
+		AccountVersion: in.AccountVersion,
 		Payload: &eventpb.CounterJournalEvent_Transfer{
 			Transfer: &eventpb.TransferEvent{
 				UserId:     in.Req.UserID,
@@ -55,6 +62,7 @@ func BuildTransferEvent(in TransferEventInput) (*eventpb.CounterJournalEvent, er
 					Asset:     in.Req.Asset,
 					Available: in.BalanceAfter.Available.String(),
 					Frozen:    in.BalanceAfter.Frozen.String(),
+					Version:   in.BalanceAfter.Version,
 				},
 			},
 		},
@@ -84,10 +92,11 @@ func transferTypeToProto(t engine.TransferType) (eventpb.TransferEvent_TransferT
 
 // PlaceOrderEventInput is the input to BuildPlaceOrderEvents.
 type PlaceOrderEventInput struct {
-	SeqID      uint64
-	TsUnixMS   int64
-	TraceID    string
-	ProducerID string
+	SeqID          uint64
+	TsUnixMS       int64
+	TraceID        string
+	ProducerID     string
+	AccountVersion uint64
 
 	Order        *engine.Order
 	BalanceAfter engine.Balance
@@ -118,6 +127,7 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 		Meta: &eventpb.EventMeta{
 			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
+		AccountVersion: in.AccountVersion,
 		Payload: &eventpb.CounterJournalEvent_Freeze{
 			Freeze: &eventpb.FreezeEvent{
 				UserId:        o.UserID,
@@ -136,6 +146,7 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 					Asset:     o.FrozenAsset,
 					Available: in.BalanceAfter.Available.String(),
 					Frozen:    in.BalanceAfter.Frozen.String(),
+					Version:   in.BalanceAfter.Version,
 				},
 			},
 		},
@@ -166,10 +177,11 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 
 // CancelOrderEventInput is the input to BuildCancelEvents.
 type CancelOrderEventInput struct {
-	SeqID      uint64
-	TsUnixMS   int64
-	TraceID    string
-	ProducerID string
+	SeqID          uint64
+	TsUnixMS       int64
+	TraceID        string
+	ProducerID     string
+	AccountVersion uint64
 
 	Order *engine.Order
 }
@@ -186,6 +198,7 @@ func BuildCancelEvents(in CancelOrderEventInput) (*eventpb.CounterJournalEvent, 
 		Meta: &eventpb.EventMeta{
 			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
+		AccountVersion: in.AccountVersion,
 		Payload: &eventpb.CounterJournalEvent_CancelReq{
 			CancelReq: &eventpb.CancelRequested{
 				UserId:  o.UserID,
@@ -211,17 +224,18 @@ func BuildCancelEvents(in CancelOrderEventInput) (*eventpb.CounterJournalEvent, 
 
 // SettlementEventInput is the input to BuildSettlementEvent.
 type SettlementEventInput struct {
-	SeqID      uint64
-	TsUnixMS   int64
-	TraceID    string
-	ProducerID string
+	SeqID          uint64
+	TsUnixMS       int64
+	TraceID        string
+	ProducerID     string
+	AccountVersion uint64
 
-	Symbol string
-	Party  engine.PartySettlement
+	Symbol  string
+	Party   engine.PartySettlement
 	TradeID string
 
 	// Snapshot of the (base, quote) balances for the party AFTER applying the
-	// settlement.
+	// settlement. Balance.Version is propagated to BalanceSnapshot.Version.
 	BaseAfter  engine.Balance
 	QuoteAfter engine.Balance
 }
@@ -241,30 +255,33 @@ func BuildSettlementEvent(in SettlementEventInput) (*eventpb.CounterJournalEvent
 		Meta: &eventpb.EventMeta{
 			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
+		AccountVersion: in.AccountVersion,
 		Payload: &eventpb.CounterJournalEvent_Settlement{
 			Settlement: &eventpb.SettlementEvent{
-				UserId:          in.Party.UserID,
-				OrderId:         in.Party.OrderID,
-				TradeId:         in.TradeID,
-				Symbol:          in.Symbol,
-				DeltaBase:       in.Party.BaseDelta.String(),
-				DeltaQuote:      in.Party.QuoteDelta.String(),
-				UnfreezeBase:    in.Party.FrozenBaseDelta.Neg().String(),
-				UnfreezeQuote:   in.Party.FrozenQuoteDelta.Neg().String(),
-				FeeAmount:       "0",
-				Qty:             "",
-				Price:           "",
+				UserId:        in.Party.UserID,
+				OrderId:       in.Party.OrderID,
+				TradeId:       in.TradeID,
+				Symbol:        in.Symbol,
+				DeltaBase:     in.Party.BaseDelta.String(),
+				DeltaQuote:    in.Party.QuoteDelta.String(),
+				UnfreezeBase:  in.Party.FrozenBaseDelta.Neg().String(),
+				UnfreezeQuote: in.Party.FrozenQuoteDelta.Neg().String(),
+				FeeAmount:     "0",
+				Qty:           "",
+				Price:         "",
 				BaseBalanceAfter: &eventpb.BalanceSnapshot{
 					UserId:    in.Party.UserID,
 					Asset:     base,
 					Available: in.BaseAfter.Available.String(),
 					Frozen:    in.BaseAfter.Frozen.String(),
+					Version:   in.BaseAfter.Version,
 				},
 				QuoteBalanceAfter: &eventpb.BalanceSnapshot{
 					UserId:    in.Party.UserID,
 					Asset:     quote,
 					Available: in.QuoteAfter.Available.String(),
 					Frozen:    in.QuoteAfter.Frozen.String(),
+					Version:   in.QuoteAfter.Version,
 				},
 			},
 		},
@@ -272,11 +289,17 @@ func BuildSettlementEvent(in SettlementEventInput) (*eventpb.CounterJournalEvent
 }
 
 // OrderStatusEventInput is the input to BuildOrderStatusEvent.
+//
+// AccountVersion is the CURRENT version at emit time (not a post-mutation
+// bump): status transitions do not touch balances, so the counter stays
+// where it was — consumers using it as a cache handle see the value as a
+// stable witness of the account's state at this moment.
 type OrderStatusEventInput struct {
-	SeqID      uint64
-	TsUnixMS   int64
-	TraceID    string
-	ProducerID string
+	SeqID          uint64
+	TsUnixMS       int64
+	TraceID        string
+	ProducerID     string
+	AccountVersion uint64
 
 	UserID    string
 	OrderID   uint64
@@ -297,6 +320,7 @@ func BuildOrderStatusEvent(in OrderStatusEventInput) *eventpb.CounterJournalEven
 		Meta: &eventpb.EventMeta{
 			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
+		AccountVersion: in.AccountVersion,
 		Payload: &eventpb.CounterJournalEvent_OrderStatus{
 			OrderStatus: &eventpb.OrderStatusEvent{
 				UserId:       in.UserID,

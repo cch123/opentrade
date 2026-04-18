@@ -181,7 +181,7 @@ func (s *ShardState) ApplyPartySettlement(symbol string, p PartySettlement) erro
 		if b.Available.Sign() < 0 || b.Frozen.Sign() < 0 {
 			return fmt.Errorf("settlement produced negative balance for %s %s: %+v", p.UserID, base, b)
 		}
-		acc.PutForRestore(base, b)
+		acc.setBalance(base, b) // bump version; business path
 	}
 	if !dec.IsZero(p.QuoteDelta) || !dec.IsZero(p.FrozenQuoteDelta) {
 		b := acc.Balance(quote)
@@ -194,7 +194,7 @@ func (s *ShardState) ApplyPartySettlement(symbol string, p PartySettlement) erro
 		if b.Available.Sign() < 0 || b.Frozen.Sign() < 0 {
 			return fmt.Errorf("settlement produced negative balance for %s %s: %+v", p.UserID, quote, b)
 		}
-		acc.PutForRestore(quote, b)
+		acc.setBalance(quote, b)
 	}
 	if _, err := s.Orders().SetFilledQty(p.OrderID, p.FilledQtyAfter, 0); err != nil {
 		return err
@@ -248,6 +248,6 @@ func (s *ShardState) UnfreezeOnTerminal(o *Order, consumedFromFrozen dec.Decimal
 	if b.Frozen.Sign() < 0 {
 		return errors.New("UnfreezeOnTerminal: frozen would be negative")
 	}
-	acc.PutForRestore(o.FrozenAsset, b)
+	acc.setBalance(o.FrozenAsset, b)
 	return nil
 }

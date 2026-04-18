@@ -54,12 +54,19 @@ const (
 // CounterJournalEvent payload carries a BalanceSnapshot. seq_id is the
 // shard-monotonic id at event emission; writer uses it to guard against
 // out-of-order replays.
+//
+// AccountVersion / BalanceVersion are the ADR-0048 backlog "双层 version"
+// counters (方案 B). Mirrored to the accounts projection so downstream
+// readers (BFF cache, reconciliation) can observe them as optimistic-lock
+// / cache-invalidation handles.
 type AccountRow struct {
-	UserID    string
-	Asset     string
-	Available string
-	Frozen    string
-	SeqID     uint64
+	UserID         string
+	Asset          string
+	Available      string
+	Frozen         string
+	SeqID          uint64
+	AccountVersion uint64
+	BalanceVersion uint64
 }
 
 // AccountLogRow mirrors the `account_logs` table — one row per (shard, seq,
@@ -121,15 +128,16 @@ func BuildJournalBatch(events []*eventpb.CounterJournalEvent) JournalBatch {
 		seq, ts := metaFor(evt.Meta)
 		shardID, hasShard := shardIDFromProducer(evt.Meta.GetProducerId())
 
+		accVer := evt.AccountVersion
 		switch p := evt.Payload.(type) {
 		case *eventpb.CounterJournalEvent_Freeze:
-			appendFromFreeze(&batch, p.Freeze, seq, ts, shardID, hasShard)
+			appendFromFreeze(&batch, p.Freeze, seq, ts, shardID, hasShard, accVer)
 		case *eventpb.CounterJournalEvent_Unfreeze:
-			appendFromUnfreeze(&batch, p.Unfreeze, seq, ts, shardID, hasShard)
+			appendFromUnfreeze(&batch, p.Unfreeze, seq, ts, shardID, hasShard, accVer)
 		case *eventpb.CounterJournalEvent_Settlement:
-			appendFromSettlement(&batch, p.Settlement, seq, ts, shardID, hasShard)
+			appendFromSettlement(&batch, p.Settlement, seq, ts, shardID, hasShard, accVer)
 		case *eventpb.CounterJournalEvent_Transfer:
-			appendFromTransfer(&batch, p.Transfer, seq, ts, shardID, hasShard)
+			appendFromTransfer(&batch, p.Transfer, seq, ts, shardID, hasShard, accVer)
 		case *eventpb.CounterJournalEvent_OrderStatus:
 			appendFromOrderStatus(&batch, p.OrderStatus, ts)
 		case *eventpb.CounterJournalEvent_CancelReq:
@@ -174,7 +182,7 @@ func shardIDFromProducer(producerID string) (int32, bool) {
 	return int32(n), true
 }
 
-func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, seq uint64, ts int64, shardID int32, hasShard bool) {
+func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, seq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
 	if e == nil {
 		return
 	}
@@ -196,7 +204,7 @@ func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, seq uint64, ts in
 		Kind:          OrderRowInsert,
 	})
 	if snap := e.BalanceAfter; snap != nil {
-		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq))
+		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
 				ShardID:     shardID,
@@ -215,12 +223,12 @@ func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, seq uint64, ts in
 	}
 }
 
-func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, seq uint64, ts int64, shardID int32, hasShard bool) {
+func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, seq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
 	if e == nil {
 		return
 	}
 	if snap := e.BalanceAfter; snap != nil {
-		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq))
+		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
 				ShardID:     shardID,
@@ -239,13 +247,13 @@ func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, seq uint64, t
 	}
 }
 
-func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, seq uint64, ts int64, shardID int32, hasShard bool) {
+func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, seq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
 	if e == nil {
 		return
 	}
 	// base leg
 	if snap := e.BaseBalanceAfter; snap != nil {
-		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq))
+		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
 				ShardID:     shardID,
@@ -264,7 +272,7 @@ func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, seq uint6
 	}
 	// quote leg
 	if snap := e.QuoteBalanceAfter; snap != nil {
-		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq))
+		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
 				ShardID:     shardID,
@@ -283,7 +291,7 @@ func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, seq uint6
 	}
 }
 
-func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, seq uint64, ts int64, shardID int32, hasShard bool) {
+func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, seq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
 	if e == nil {
 		return
 	}
@@ -291,7 +299,7 @@ func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, seq uint64, t
 	if snap == nil {
 		return
 	}
-	b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq))
+	b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
 	if !hasShard {
 		return
 	}
@@ -326,13 +334,15 @@ func appendFromOrderStatus(b *JournalBatch, e *eventpb.OrderStatusEvent, ts int6
 	})
 }
 
-func accountRowFromSnap(snap *eventpb.BalanceSnapshot, seq uint64) AccountRow {
+func accountRowFromSnap(snap *eventpb.BalanceSnapshot, seq uint64, accVer uint64) AccountRow {
 	return AccountRow{
-		UserID:    snap.UserId,
-		Asset:     snap.Asset,
-		Available: snap.Available,
-		Frozen:    snap.Frozen,
-		SeqID:     seq,
+		UserID:         snap.UserId,
+		Asset:          snap.Asset,
+		Available:      snap.Available,
+		Frozen:         snap.Frozen,
+		SeqID:          seq,
+		AccountVersion: accVer,
+		BalanceVersion: snap.Version,
 	}
 }
 

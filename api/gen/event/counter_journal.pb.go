@@ -78,12 +78,18 @@ func (TransferEvent_TransferType) EnumDescriptor() ([]byte, []int) {
 
 // Snapshot of a balance for a given (user, asset) pair. Included in every
 // journal event so that replay / audit can be done without cross-referencing.
+//
+// Version is the per-(user, asset) monotonic counter (ADR-0048 backlog:
+// 双层 version 方案 B). Mirrored by trade-dump to the `accounts` projection
+// so downstream readers (BFF cache, reconciliation) can use it as an
+// optimistic-lock / cache-invalidation handle.
 type BalanceSnapshot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Asset         string                 `protobuf:"bytes,2,opt,name=asset,proto3" json:"asset,omitempty"`
 	Available     string                 `protobuf:"bytes,3,opt,name=available,proto3" json:"available,omitempty"` // decimal string
 	Frozen        string                 `protobuf:"bytes,4,opt,name=frozen,proto3" json:"frozen,omitempty"`       // decimal string
+	Version       uint64                 `protobuf:"varint,5,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -146,10 +152,24 @@ func (x *BalanceSnapshot) GetFrozen() string {
 	return ""
 }
 
+func (x *BalanceSnapshot) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
 // Event envelope for counter-journal.
+//
+// account_version is the user-level monotonic counter (bumped on any of
+// this user's balance mutations, ADR-0048 backlog: 双层 version 方案 B).
+// Sent on every event; unchanged on OrderStatus / CancelRequested which
+// don't mutate balances (consumers observe the value but don't advance
+// their cached version on such events).
 type CounterJournalEvent struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Meta  *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Meta           *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	AccountVersion uint64                 `protobuf:"varint,2,opt,name=account_version,json=accountVersion,proto3" json:"account_version,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*CounterJournalEvent_Freeze
@@ -198,6 +218,13 @@ func (x *CounterJournalEvent) GetMeta() *EventMeta {
 		return x.Meta
 	}
 	return nil
+}
+
+func (x *CounterJournalEvent) GetAccountVersion() uint64 {
+	if x != nil {
+		return x.AccountVersion
+	}
+	return 0
 }
 
 func (x *CounterJournalEvent) GetPayload() isCounterJournalEvent_Payload {
@@ -926,14 +953,16 @@ var File_event_counter_journal_proto protoreflect.FileDescriptor
 
 const file_event_counter_journal_proto_rawDesc = "" +
 	"\n" +
-	"\x1bevent/counter_journal.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"v\n" +
+	"\x1bevent/counter_journal.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\x90\x01\n" +
 	"\x0fBalanceSnapshot\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05asset\x18\x02 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x03 \x01(\tR\tavailable\x12\x16\n" +
-	"\x06frozen\x18\x04 \x01(\tR\x06frozen\"\xd3\x03\n" +
+	"\x06frozen\x18\x04 \x01(\tR\x06frozen\x12\x18\n" +
+	"\aversion\x18\x05 \x01(\x04R\aversion\"\xfc\x03\n" +
 	"\x13CounterJournalEvent\x12.\n" +
-	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x126\n" +
+	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12'\n" +
+	"\x0faccount_version\x18\x02 \x01(\x04R\x0eaccountVersion\x126\n" +
 	"\x06freeze\x18\n" +
 	" \x01(\v2\x1c.opentrade.event.FreezeEventH\x00R\x06freeze\x12<\n" +
 	"\bunfreeze\x18\v \x01(\v2\x1e.opentrade.event.UnfreezeEventH\x00R\bunfreeze\x12B\n" +

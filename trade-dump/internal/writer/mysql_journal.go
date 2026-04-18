@@ -162,23 +162,30 @@ func (m *MySQL) applyAccounts(ctx context.Context, tx *sql.Tx, rows []AccountRow
 
 func upsertAccountsChunk(ctx context.Context, tx *sql.Tx, rows []AccountRow) error {
 	placeholders := make([]string, len(rows))
-	args := make([]any, 0, len(rows)*5)
+	args := make([]any, 0, len(rows)*7)
 	for i, r := range rows {
-		placeholders[i] = "(?, ?, ?, ?, ?)"
+		placeholders[i] = "(?, ?, ?, ?, ?, ?, ?)"
 		args = append(args,
 			r.UserID,
 			r.Asset,
 			zeroIfEmpty(r.Available),
 			zeroIfEmpty(r.Frozen),
 			r.SeqID,
+			r.AccountVersion,
+			r.BalanceVersion,
 		)
 	}
 	// seq_id guard: older events must not overwrite newer state on replay.
+	// account_version / balance_version follow the same guard so the
+	// double-layer counters (ADR-0048 backlog 方案 B) stay monotonic in
+	// the projection.
 	const updateClause = "" +
-		"available = IF(VALUES(seq_id) >= seq_id, VALUES(available), available), " +
-		"frozen    = IF(VALUES(seq_id) >= seq_id, VALUES(frozen), frozen), " +
-		"seq_id    = IF(VALUES(seq_id) >= seq_id, VALUES(seq_id), seq_id)"
-	q := "INSERT INTO accounts (user_id, asset, available, frozen, seq_id) VALUES " +
+		"available       = IF(VALUES(seq_id) >= seq_id, VALUES(available), available), " +
+		"frozen          = IF(VALUES(seq_id) >= seq_id, VALUES(frozen), frozen), " +
+		"account_version = IF(VALUES(seq_id) >= seq_id, VALUES(account_version), account_version), " +
+		"balance_version = IF(VALUES(seq_id) >= seq_id, VALUES(balance_version), balance_version), " +
+		"seq_id          = IF(VALUES(seq_id) >= seq_id, VALUES(seq_id), seq_id)"
+	q := "INSERT INTO accounts (user_id, asset, available, frozen, seq_id, account_version, balance_version) VALUES " +
 		strings.Join(placeholders, ", ") +
 		" ON DUPLICATE KEY UPDATE " + updateClause
 	if _, err := tx.ExecContext(ctx, q, args...); err != nil {

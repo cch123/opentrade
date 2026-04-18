@@ -220,12 +220,21 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 			}, nil
 		}
 
+		// Project post-commit versions so the journal event matches what
+		// state will look like after CommitBalance below (ADR-0048 backlog:
+		// 双层 version). setBalance always bumps both, so "+1" is exact.
+		acc := s.state.Account(req.UserID)
+		currentBal := acc.Balance(req.Asset)
+		newBalance.Version = currentBal.Version + 1
+		expectedAccVer := acc.Version() + 1
+
 		// Build + publish counter-journal event.
 		evt, err := journal.BuildTransferEvent(journal.TransferEventInput{
-			SeqID:        seq,
-			ProducerID:   s.cfg.ProducerID,
-			Req:          req,
-			BalanceAfter: newBalance,
+			SeqID:          seq,
+			ProducerID:     s.cfg.ProducerID,
+			AccountVersion: expectedAccVer,
+			Req:            req,
+			BalanceAfter:   newBalance,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("build event: %w", err)
@@ -241,7 +250,7 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 		result := &engine.TransferResult{
 			TransferID:   req.TransferID,
 			Status:       engine.TransferStatusConfirmed,
-			BalanceAfter: newBalance,
+			BalanceAfter: acc.Balance(req.Asset), // read back to pick up bumped version
 			SeqID:        seq,
 		}
 		s.dedup.Set(req.TransferID, result)

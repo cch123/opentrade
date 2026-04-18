@@ -182,7 +182,7 @@ func (s *ShardState) CreateReservation(userID, asset, refID string, amount dec.D
 	}
 	bal.Available = bal.Available.Sub(amount)
 	bal.Frozen = bal.Frozen.Add(amount)
-	acc.PutForRestore(asset, bal)
+	acc.setBalance(asset, bal) // bump version; this is business, not restore
 	r := &Reservation{
 		UserID: userID,
 		RefID:  refID,
@@ -217,7 +217,7 @@ func (s *ShardState) ReleaseReservationByRef(userID, refID string) (*Reservation
 	}
 	bal.Frozen = bal.Frozen.Sub(existing.Amount)
 	bal.Available = bal.Available.Add(existing.Amount)
-	acc.PutForRestore(existing.Asset, bal)
+	acc.setBalance(existing.Asset, bal) // bump version
 	_, _ = s.reservations.remove(refID)
 	return existing, true, nil
 }

@@ -43,17 +43,24 @@ type KafkaOffset struct {
 	Offset    int64  `json:"offset"`
 }
 
-// BalanceSnapshot is the serialized form of engine.Balance.
+// BalanceSnapshot is the serialized form of engine.Balance. Version is the
+// per-(user, asset) monotonic counter (ADR-0048 backlog: 双层 version 方案
+// B). Persisted and restored verbatim so clients using Balance.Version as
+// a cache-invalidation handle / optimistic lock don't see it reset across
+// process restarts.
 type BalanceSnapshot struct {
 	Asset     string `json:"asset"`
 	Available string `json:"available"`
 	Frozen    string `json:"frozen"`
+	Version   uint64 `json:"version,omitempty"`
 }
 
-// AccountSnapshot captures one user's balances and per-symbol match_seq
-// guard (ADR-0048 backlog: trade-event idempotency).
+// AccountSnapshot captures one user's balances, per-symbol match_seq guard
+// (ADR-0048 backlog: trade-event idempotency) and the user-level version
+// counter (ADR-0048 backlog: 双层 version 方案 B).
 type AccountSnapshot struct {
 	UserID       string            `json:"user_id"`
+	Version      uint64            `json:"version,omitempty"`
 	Balances     []BalanceSnapshot `json:"balances"`
 	LastMatchSeq map[string]uint64 `json:"last_match_seq,omitempty"`
 }
@@ -145,6 +152,7 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 		balances := acc.Copy()
 		as := AccountSnapshot{
 			UserID:       userID,
+			Version:      acc.Version(),
 			LastMatchSeq: acc.MatchSeqSnapshot(),
 		}
 		for asset, bal := range balances {
@@ -152,6 +160,7 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 				Asset:     asset,
 				Available: bal.Available.String(),
 				Frozen:    bal.Frozen.String(),
+				Version:   bal.Version,
 			})
 		}
 		snap.Accounts = append(snap.Accounts, as)
@@ -229,13 +238,23 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			}
 			// Apply a synthetic deposit-like write directly through Account.
 			// We intentionally bypass ApplyTransfer since this is restore, not
-			// a normal state transition.
-			putBalance(acc, bs.Asset, engine.Balance{Available: available, Frozen: frozen})
+			// a normal state transition. Pass through Version so the
+			// per-asset counter survives restart (ADR-0048 backlog: 双层
+			// version 方案 B). Missing Version in an older snapshot file
+			// decodes as 0, which is the correct cold-start value.
+			putBalance(acc, bs.Asset, engine.Balance{
+				Available: available,
+				Frozen:    frozen,
+				Version:   bs.Version,
+			})
 		}
 		// Restore the per-symbol match_seq guard. Empty map for v1 snapshots
 		// and for brand-new accounts — handlers treat missing entries as
 		// zero, which lets the first event through and primes the guard.
 		acc.RestoreMatchSeq(as.LastMatchSeq)
+		// Restore the user-level version counter. Same semantics as above:
+		// missing field decodes as 0.
+		acc.RestoreVersion(as.Version)
 	}
 	seq.SetShardSeq(snap.ShardSeq)
 

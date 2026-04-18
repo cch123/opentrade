@@ -287,17 +287,20 @@ func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInp
 		}
 
 		// Emit settlement event to counter-journal (best-effort, non-txn).
+		// ApplyPartySettlement above has already bumped versions through
+		// setBalance, so reading back picks up the post-commit values.
 		base, quote, _ := engine.SymbolAssets(ti.Symbol)
 		baseAfter := s.state.Balance(party.UserID, base)
 		quoteAfter := s.state.Balance(party.UserID, quote)
 		evt, err := journal.BuildSettlementEvent(journal.SettlementEventInput{
-			SeqID:      seqID,
-			ProducerID: s.cfg.ProducerID,
-			Symbol:     ti.Symbol,
-			TradeID:    ti.TradeID,
-			Party:      party,
-			BaseAfter:  baseAfter,
-			QuoteAfter: quoteAfter,
+			SeqID:          seqID,
+			ProducerID:     s.cfg.ProducerID,
+			AccountVersion: acc.Version(),
+			Symbol:         ti.Symbol,
+			TradeID:        ti.TradeID,
+			Party:          party,
+			BaseAfter:      baseAfter,
+			QuoteAfter:     quoteAfter,
 		})
 		if err != nil {
 			return nil, err
@@ -334,14 +337,14 @@ func (s *Service) unfreezeResidual(o *engine.Order) error {
 	if residual.Sign() <= 0 {
 		return nil
 	}
-	acc := s.state.Account(o.UserID)
-	b := acc.Balance(o.FrozenAsset)
+	b := s.state.Balance(o.UserID, o.FrozenAsset)
 	b.Frozen = b.Frozen.Sub(residual)
 	b.Available = b.Available.Add(residual)
 	if b.Frozen.Sign() < 0 {
 		return fmt.Errorf("unfreeze: frozen would be negative for %s %s", o.UserID, o.FrozenAsset)
 	}
-	acc.PutForRestore(o.FrozenAsset, b)
+	// CommitBalance goes through setBalance → version bumps on both layers.
+	s.state.CommitBalance(o.UserID, o.FrozenAsset, b)
 	return nil
 }
 
@@ -359,16 +362,21 @@ func (s *Service) logForeignSkip(kind, userID string, orderID uint64) {
 }
 
 // emitStatus publishes an OrderStatusEvent for downstream observers.
+//
+// AccountVersion is read AT emit time. Callers that just called
+// unfreezeResidual will see the bumped value; pure-status transitions
+// (PENDING_NEW → NEW) emit the still-stable pre-call value.
 func (s *Service) emitStatus(ctx context.Context, seqID uint64, o *engine.Order, oldStatus, newStatus engine.OrderStatus, reason eventpb.RejectReason) error {
 	evt := journal.BuildOrderStatusEvent(journal.OrderStatusEventInput{
-		SeqID:      seqID,
-		ProducerID: s.cfg.ProducerID,
-		UserID:     o.UserID,
-		OrderID:    o.ID,
-		OldStatus:  oldStatus,
-		NewStatus:  newStatus,
-		FilledQty:  o.FilledQty.String(),
-		Reject:     reason,
+		SeqID:          seqID,
+		ProducerID:     s.cfg.ProducerID,
+		AccountVersion: s.state.Account(o.UserID).Version(),
+		UserID:         o.UserID,
+		OrderID:        o.ID,
+		OldStatus:      oldStatus,
+		NewStatus:      newStatus,
+		FilledQty:      o.FilledQty.String(),
+		Reject:         reason,
 	})
 	return s.publisher.Publish(ctx, o.UserID, evt)
 }

@@ -165,12 +165,18 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 			UpdatedAt:     now,
 		}
 
+		// Project post-commit versions (setBalance bumps both by 1).
+		acc := s.state.Account(req.UserID)
+		balAfter.Version = acc.Balance(freezeAsset).Version + 1
+		expectedAccVer := acc.Version() + 1
+
 		journalEvt, orderEvt, err := journal.BuildPlaceOrderEvents(journal.PlaceOrderEventInput{
-			SeqID:        seqID,
-			TsUnixMS:     now,
-			ProducerID:   s.cfg.ProducerID,
-			Order:        order,
-			BalanceAfter: balAfter,
+			SeqID:          seqID,
+			TsUnixMS:       now,
+			ProducerID:     s.cfg.ProducerID,
+			AccountVersion: expectedAccVer,
+			Order:          order,
+			BalanceAfter:   balAfter,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("build events: %w", err)
@@ -179,9 +185,10 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 			return nil, fmt.Errorf("publish: %w", err)
 		}
 
-		// Commit state now that Kafka accepted the events.
-		acc := s.state.Account(req.UserID)
-		acc.PutForRestore(freezeAsset, balAfter)
+		// Commit state now that Kafka accepted the events. CommitBalance
+		// routes through setBalance and bumps both Account.Version and
+		// Balance.Version (ADR-0048 backlog: 双层 version).
+		s.state.CommitBalance(req.UserID, freezeAsset, balAfter)
 		if err := s.state.Orders().Insert(order); err != nil {
 			// Extremely unlikely (idgen collision); we've already committed
 			// to Kafka, so best we can do is log and return the error.
@@ -247,11 +254,14 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 			}, nil
 		}
 
+		// Cancel doesn't touch balances, so AccountVersion is the current
+		// value — a stable witness, not a post-mutation projection.
 		journalEvt, orderEvt := journal.BuildCancelEvents(journal.CancelOrderEventInput{
-			SeqID:      seqID,
-			TsUnixMS:   time.Now().UnixMilli(),
-			ProducerID: s.cfg.ProducerID,
-			Order:      o,
+			SeqID:          seqID,
+			TsUnixMS:       time.Now().UnixMilli(),
+			ProducerID:     s.cfg.ProducerID,
+			AccountVersion: s.state.Account(req.UserID).Version(),
+			Order:          o,
 		})
 		if err := s.txn.PublishOrderPlacement(ctx, journalEvt, orderEvt, req.UserID, o.Symbol); err != nil {
 			return nil, fmt.Errorf("publish: %w", err)

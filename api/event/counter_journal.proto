@@ -16,16 +16,29 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 
 // Snapshot of a balance for a given (user, asset) pair. Included in every
 // journal event so that replay / audit can be done without cross-referencing.
+//
+// Version is the per-(user, asset) monotonic counter (ADR-0048 backlog:
+// 双层 version 方案 B). Mirrored by trade-dump to the `accounts` projection
+// so downstream readers (BFF cache, reconciliation) can use it as an
+// optimistic-lock / cache-invalidation handle.
 message BalanceSnapshot {
   string user_id = 1;
   string asset = 2;
   string available = 3;  // decimal string
   string frozen = 4;     // decimal string
+  uint64 version = 5;
 }
 
 // Event envelope for counter-journal.
+//
+// account_version is the user-level monotonic counter (bumped on any of
+// this user's balance mutations, ADR-0048 backlog: 双层 version 方案 B).
+// Sent on every event; unchanged on OrderStatus / CancelRequested which
+// don't mutate balances (consumers observe the value but don't advance
+// their cached version on such events).
 message CounterJournalEvent {
   EventMeta meta = 1;
+  uint64 account_version = 2;
 
   oneof payload {
     FreezeEvent       freeze        = 10;
