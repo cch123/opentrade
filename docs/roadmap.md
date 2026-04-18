@@ -20,7 +20,7 @@
 | [MVP-8](#mvp-8-counter-sharding) | Counter 10-shard | ✅ | `pkg/shard` + BFF 路由 + ownership guard |
 | [MVP-9](#mvp-9-trade-dump-projections) | trade-dump 其它表 | ✅ | orders / account_logs / accounts projection |
 | [MVP-10](#mvp-10-bff-ws) | BFF WebSocket 网关 | ✅ | 客户端走 BFF 而非直连 push |
-| [MVP-11](#mvp-11-match-sharding) | Match 多实例 + symbol 迁移 | ⏳ 计划中 | etcd 配置驱动 |
+| [MVP-11](#mvp-11-match-sharding) | Match 多实例 + symbol 迁移 | ✅ | etcd 配置驱动 + 热加减 symbol |
 | [MVP-12](#mvp-12-ha) | Counter/Match HA | ⏳ 计划中 | etcd lease 选主 + txn.id fencing + 备节点快照 |
 | [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ⏳ 计划中 | LB hash 与 partition 订阅对齐 |
 
@@ -126,12 +126,11 @@
 
 ### MVP-11  Match 多实例 + symbol 迁移  {#mvp-11-match-sharding}
 
-- **范围**：
-  - etcd 配置驱动 `symbol → match_instance` 映射（[ADR-0009](./adr/0009-match-sharding-by-symbol.md)）
-  - match 启动时从 etcd 拉 owned symbols，watch 变更
-  - 停机迁移脚本（架构已定义，[architecture.md §12.2](./architecture.md)）
-- **依赖**：MVP-1
-- **预期 ADR**：0030
+- **commit** pending · **ADR** [0030](./adr/0030-match-etcd-sharding-rollout.md)
+- 新 `pkg/etcdcfg`：`Source` 接口 + `EtcdSource`（clientv3）+ `MemorySource`（测试）；List → revision → Watch
+- 新 `match/internal/registry`：线程安全的 symbol 生命周期管理（Factory + Restore + Snapshot 回调 + Dispatcher 注册/注销）
+- match main 重写：etcd 启动 List + 后续 Watch 驱动 AddSymbol/RemoveSymbol；`--etcd` 空时 fallback 到 `--symbols` 静态模式
+- ADR-0009 里的"trading:false 在线撤单"简化为"drain + final snapshot"；operator 配合先停新单
 
 ### MVP-12  Counter / Match HA  {#mvp-12-ha}
 

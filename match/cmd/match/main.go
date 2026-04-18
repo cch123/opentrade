@@ -1,17 +1,21 @@
 // Command match runs the OpenTrade matching engine.
 //
-// Responsibilities (MVP-1):
-//   - For each configured symbol, spin up a SymbolWorker (per-symbol goroutine).
-//   - Attempt to restore each worker from its latest on-disk snapshot.
-//   - Consume order-event Kafka topic and dispatch to workers by symbol.
-//   - Publish sequencer outputs to trade-event topic.
-//   - Periodically snapshot each worker to local disk (S3 in later MVPs).
-//
-// Configuration is supplied via flags and environment variables (OPENTRADE_*).
+// Responsibilities:
+//   - Read symbol → shard mapping from etcd (ADR-0009 / ADR-0030) and
+//     dynamically add or remove per-symbol workers as operators rewrite the
+//     config. Legacy --symbols flag is retained as a fallback when --etcd is
+//     empty (dev one-liners and tests).
+//   - For each active symbol: restore from the latest on-disk snapshot,
+//     start a SymbolWorker, register with the journal Dispatcher.
+//   - Consume order-event from Kafka, dispatch to per-symbol workers.
+//   - Publish sequencer outputs to trade-event.
+//   - Periodically snapshot every live worker; write a final snapshot when
+//     a symbol is removed (migration runbook, see ADR-0030).
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -26,22 +30,34 @@ import (
 
 	"github.com/xargin/opentrade/match/internal/engine"
 	"github.com/xargin/opentrade/match/internal/journal"
+	"github.com/xargin/opentrade/match/internal/registry"
 	"github.com/xargin/opentrade/match/internal/sequencer"
 	"github.com/xargin/opentrade/match/internal/snapshot"
+	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
 )
 
 type Config struct {
-	InstanceID       string        // "match-0"
-	Brokers          []string      // Kafka broker list
-	Symbols          []string      // symbols owned by this instance
-	OrderTopic       string        // default "order-event"
-	TradeTopic       string        // default "trade-event"
-	ConsumerGroup    string        // default "match-{InstanceID}"
-	SnapshotDir      string        // ./data/match by default
-	SnapshotInterval time.Duration // default 60s
-	Env              string        // dev / prod
-	LogLevel         string        // info / debug / warn / error
+	InstanceID string // e.g. "match-0"
+	ShardID    string // matches SymbolConfig.Shard in etcd; defaults to InstanceID
+
+	Brokers          []string
+	OrderTopic       string
+	TradeTopic       string
+	ConsumerGroup    string
+	SnapshotDir      string
+	SnapshotInterval time.Duration
+
+	// etcd-driven symbol ownership (preferred).
+	EtcdEndpoints   []string
+	EtcdPrefix      string
+	EtcdDialTimeout time.Duration
+
+	// Static symbol list (fallback when --etcd is empty).
+	Symbols []string
+
+	Env      string
+	LogLevel string
 }
 
 func main() {
@@ -60,46 +76,48 @@ func main() {
 
 	logger.Info("match starting",
 		zap.String("instance", cfg.InstanceID),
-		zap.Strings("symbols", cfg.Symbols),
+		zap.String("shard_id", cfg.ShardID),
 		zap.Strings("brokers", cfg.Brokers),
+		zap.Strings("etcd", cfg.EtcdEndpoints),
+		zap.Strings("static_symbols", cfg.Symbols),
 		zap.String("snapshot_dir", cfg.SnapshotDir))
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// --- Build workers + outbox ---------------------------------------------
+	// --- Shared pipeline --------------------------------------------------
 
 	dispatcher := journal.NewDispatcher()
 	outbox := make(chan *sequencer.Output, 4096)
 
-	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	workersCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 
-	var workerWG sync.WaitGroup
-	workers := make([]*sequencer.SymbolWorker, 0, len(cfg.Symbols))
-	for _, sym := range cfg.Symbols {
-		w := sequencer.NewSymbolWorker(sequencer.Config{
-			Symbol:  sym,
-			Inbox:   2048,
-			STPMode: engine.STPNone,
-		}, outbox)
-
-		// Try restore from snapshot.
-		if err := tryRestoreSnapshot(w, cfg, logger); err != nil {
-			logger.Fatal("snapshot restore", zap.String("symbol", sym), zap.Error(err))
-		}
-
-		dispatcher.Register(w)
-		workerWG.Add(1)
-		go func(w *sequencer.SymbolWorker) {
-			defer workerWG.Done()
-			w.Run(workerCtx)
-		}(w)
-		workers = append(workers, w)
-		logger.Info("worker started", zap.String("symbol", sym), zap.Uint64("seq_id", w.SeqID()))
+	reg, err := registry.New(workersCtx, registry.Config{
+		Dispatcher: dispatcher,
+		Factory: func(symbol string) *sequencer.SymbolWorker {
+			return sequencer.NewSymbolWorker(sequencer.Config{
+				Symbol:  symbol,
+				Inbox:   2048,
+				STPMode: engine.STPNone,
+			}, outbox)
+		},
+		Restore: func(w *sequencer.SymbolWorker) error {
+			return tryRestoreSnapshot(w, cfg, logger)
+		},
+		Snapshot: func(w *sequencer.SymbolWorker) {
+			if err := writeSnapshot(w, cfg, time.Now().UnixMilli()); err != nil {
+				logger.Error("final snapshot",
+					zap.String("symbol", w.Symbol()), zap.Error(err))
+			}
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		logger.Fatal("registry", zap.Error(err))
 	}
 
-	// --- Producer pump -------------------------------------------------------
+	// --- Producer pump ----------------------------------------------------
 
 	producer, err := journal.NewTradeProducer(journal.ProducerConfig{
 		Brokers:    cfg.Brokers,
@@ -121,7 +139,61 @@ func main() {
 		producer.Pump(pumpCtx, outbox)
 	}()
 
-	// --- Consumer ------------------------------------------------------------
+	// --- Symbol ownership: etcd or static flag ----------------------------
+
+	var (
+		etcdSrc     *etcdcfg.EtcdSource
+		watchCancel context.CancelFunc
+		watchWG     sync.WaitGroup
+	)
+	if len(cfg.EtcdEndpoints) > 0 {
+		etcdSrc, err = etcdcfg.NewEtcdSource(etcdcfg.EtcdConfig{
+			Endpoints:   cfg.EtcdEndpoints,
+			DialTimeout: cfg.EtcdDialTimeout,
+			Prefix:      cfg.EtcdPrefix,
+		})
+		if err != nil {
+			logger.Fatal("etcd source", zap.Error(err))
+		}
+		defer func() { _ = etcdSrc.Close() }()
+
+		listCtx, listCancel := context.WithTimeout(rootCtx, 10*time.Second)
+		snap, rev, err := etcdSrc.List(listCtx)
+		listCancel()
+		if err != nil {
+			logger.Fatal("etcd list", zap.Error(err))
+		}
+		for sym, sc := range snap {
+			if !sc.Owned(cfg.ShardID) {
+				continue
+			}
+			if err := reg.AddSymbol(sym); err != nil {
+				logger.Error("add symbol at startup",
+					zap.String("symbol", sym), zap.Error(err))
+			}
+		}
+
+		watchCtx, cancel := context.WithCancel(rootCtx)
+		watchCancel = cancel
+		watchCh, err := etcdSrc.Watch(watchCtx, rev+1)
+		if err != nil {
+			logger.Fatal("etcd watch", zap.Error(err))
+		}
+		watchWG.Add(1)
+		go func() {
+			defer watchWG.Done()
+			applyWatch(watchCtx, watchCh, reg, cfg.ShardID, logger)
+		}()
+	} else {
+		for _, s := range cfg.Symbols {
+			if err := reg.AddSymbol(s); err != nil {
+				logger.Error("add static symbol",
+					zap.String("symbol", s), zap.Error(err))
+			}
+		}
+	}
+
+	// --- Consumer ---------------------------------------------------------
 
 	consumer, err := journal.NewOrderConsumer(journal.ConsumerConfig{
 		Brokers:  cfg.Brokers,
@@ -138,43 +210,81 @@ func main() {
 	consumerWG.Add(1)
 	go func() {
 		defer consumerWG.Done()
-		if err := consumer.Run(rootCtx); err != nil && err != context.Canceled {
+		if err := consumer.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("consumer exited", zap.Error(err))
 		}
 	}()
 
-	// --- Periodic snapshot ---------------------------------------------------
+	// --- Periodic snapshot ------------------------------------------------
 
 	snapCtx, cancelSnap := context.WithCancel(context.Background())
 	defer cancelSnap()
-	go periodicSnapshot(snapCtx, workers, cfg, logger)
+	go periodicSnapshot(snapCtx, reg, cfg, logger)
 
-	// --- Wait for shutdown signal --------------------------------------------
+	// --- Wait for shutdown signal -----------------------------------------
 
 	<-rootCtx.Done()
 	logger.Info("shutdown initiated")
 
-	// Order: stop consumer → drain workers → stop pump → snapshot.
+	if watchCancel != nil {
+		watchCancel()
+	}
+	watchWG.Wait()
+
 	consumer.Close()
 	consumerWG.Wait()
 
-	for _, w := range workers {
-		w.Close()
-	}
-	workerWG.Wait()
+	// RemoveSymbol drains workers and writes a final snapshot. Close() does
+	// the same for every remaining symbol.
+	reg.Close()
 	close(outbox)
 
 	pumpWG.Wait()
 	cancelSnap()
 
-	// Final snapshot before exit.
-	for _, w := range workers {
-		if err := writeSnapshot(w, cfg, time.Now().UnixMilli()); err != nil {
-			logger.Error("final snapshot", zap.String("symbol", w.Symbol()), zap.Error(err))
+	logger.Info("match shutdown complete")
+}
+
+// applyWatch consumes etcd events and tells the registry what to do.
+// Ownership rules (ADR-0030):
+//
+//	Put    && Owned(shard) && !active   → AddSymbol
+//	Put    && !Owned && active          → RemoveSymbol (trading: false or shard moved)
+//	Delete && active                    → RemoveSymbol
+func applyWatch(ctx context.Context, watchCh <-chan etcdcfg.Event, reg *registry.Registry, shardID string, logger *zap.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-watchCh:
+			if !ok {
+				logger.Warn("etcd watch channel closed")
+				return
+			}
+			switch ev.Type {
+			case etcdcfg.EventPut:
+				switch {
+				case ev.Config.Owned(shardID) && !reg.HasSymbol(ev.Symbol):
+					if err := reg.AddSymbol(ev.Symbol); err != nil {
+						logger.Error("watch add symbol",
+							zap.String("symbol", ev.Symbol), zap.Error(err))
+					}
+				case !ev.Config.Owned(shardID) && reg.HasSymbol(ev.Symbol):
+					if err := reg.RemoveSymbol(ev.Symbol); err != nil {
+						logger.Error("watch remove symbol",
+							zap.String("symbol", ev.Symbol), zap.Error(err))
+					}
+				}
+			case etcdcfg.EventDelete:
+				if reg.HasSymbol(ev.Symbol) {
+					if err := reg.RemoveSymbol(ev.Symbol); err != nil {
+						logger.Error("watch delete symbol",
+							zap.String("symbol", ev.Symbol), zap.Error(err))
+					}
+				}
+			}
 		}
 	}
-
-	logger.Info("match shutdown complete")
 }
 
 // ---------------------------------------------------------------------------
@@ -187,16 +297,23 @@ func parseFlags() Config {
 		TradeTopic:       "trade-event",
 		SnapshotDir:      "./data/match",
 		SnapshotInterval: 60 * time.Second,
+		EtcdPrefix:       etcdcfg.DefaultPrefix,
+		EtcdDialTimeout:  5 * time.Second,
 		Env:              "dev",
 		LogLevel:         "info",
 	}
 	var (
 		brokersStr string
+		etcdStr    string
 		symbolsStr string
 	)
-	flag.StringVar(&cfg.InstanceID, "instance-id", "match-0", "instance id (used as client id / consumer group / producer id)")
+	flag.StringVar(&cfg.InstanceID, "instance-id", "match-0", "instance id (client id / consumer group suffix / producer id)")
+	flag.StringVar(&cfg.ShardID, "shard-id", "", "shard id (match etcd SymbolConfig.Shard); defaults to --instance-id")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
-	flag.StringVar(&symbolsStr, "symbols", "BTC-USDT", "comma-separated symbols owned by this instance")
+	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints; empty falls back to --symbols")
+	flag.StringVar(&cfg.EtcdPrefix, "etcd-prefix", cfg.EtcdPrefix, "etcd key prefix for symbol configs")
+	flag.DurationVar(&cfg.EtcdDialTimeout, "etcd-dial-timeout", cfg.EtcdDialTimeout, "etcd dial timeout")
+	flag.StringVar(&symbolsStr, "symbols", "", "comma-separated static symbol list (used when --etcd is empty)")
 	flag.StringVar(&cfg.OrderTopic, "order-topic", cfg.OrderTopic, "order-event topic name")
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default match-{instance-id})")
@@ -207,7 +324,11 @@ func parseFlags() Config {
 	flag.Parse()
 
 	cfg.Brokers = splitCSV(brokersStr)
+	cfg.EtcdEndpoints = splitCSV(etcdStr)
 	cfg.Symbols = splitCSV(symbolsStr)
+	if cfg.ShardID == "" {
+		cfg.ShardID = cfg.InstanceID
+	}
 	if cfg.ConsumerGroup == "" {
 		cfg.ConsumerGroup = "match-" + cfg.InstanceID
 	}
@@ -221,8 +342,8 @@ func (c *Config) validate() error {
 	if len(c.Brokers) == 0 {
 		return fmt.Errorf("at least one broker required")
 	}
-	if len(c.Symbols) == 0 {
-		return fmt.Errorf("at least one symbol required")
+	if len(c.EtcdEndpoints) == 0 && len(c.Symbols) == 0 {
+		return fmt.Errorf("either --etcd or --symbols is required")
 	}
 	return nil
 }
@@ -248,7 +369,6 @@ func snapshotPath(cfg Config, symbol string) string {
 }
 
 func sanitize(s string) string {
-	// Replace characters not friendly to filesystems.
 	return strings.NewReplacer("/", "_", ":", "_").Replace(s)
 }
 
@@ -277,7 +397,7 @@ func writeSnapshot(w *sequencer.SymbolWorker, cfg Config, ts int64) error {
 	return snapshot.Save(snapshotPath(cfg, w.Symbol()), snap)
 }
 
-func periodicSnapshot(ctx context.Context, workers []*sequencer.SymbolWorker, cfg Config, logger *zap.Logger) {
+func periodicSnapshot(ctx context.Context, reg *registry.Registry, cfg Config, logger *zap.Logger) {
 	if cfg.SnapshotInterval <= 0 {
 		return
 	}
@@ -288,9 +408,10 @@ func periodicSnapshot(ctx context.Context, workers []*sequencer.SymbolWorker, cf
 		case <-ctx.Done():
 			return
 		case t := <-ticker.C:
-			for _, w := range workers {
+			for _, w := range reg.Workers() {
 				if err := writeSnapshot(w, cfg, t.UnixMilli()); err != nil {
-					logger.Error("periodic snapshot", zap.String("symbol", w.Symbol()), zap.Error(err))
+					logger.Error("periodic snapshot",
+						zap.String("symbol", w.Symbol()), zap.Error(err))
 				}
 			}
 		}
