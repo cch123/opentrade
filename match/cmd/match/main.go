@@ -206,11 +206,20 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		return
 	}
 
+	// HA auto → use a stable TransactionalID so the shard's Kafka producer
+	// epoch fences any older primary still alive under the same id
+	// (ADR-0031 §Match fencing). Disabled mode keeps the legacy idempotent
+	// producer for dev / single-node tests.
+	txnID := ""
+	if cfg.HAMode == "auto" {
+		txnID = cfg.InstanceID
+	}
 	producer, err := journal.NewTradeProducer(journal.ProducerConfig{
-		Brokers:    cfg.Brokers,
-		ClientID:   cfg.InstanceID,
-		ProducerID: cfg.InstanceID,
-		Topic:      cfg.TradeTopic,
+		Brokers:         cfg.Brokers,
+		ClientID:        cfg.InstanceID,
+		ProducerID:      cfg.InstanceID,
+		Topic:           cfg.TradeTopic,
+		TransactionalID: txnID,
 	}, logger)
 	if err != nil {
 		logger.Error("trade producer", zap.Error(err))

@@ -22,6 +22,7 @@
 | [MVP-10](#mvp-10-bff-ws) | BFF WebSocket 网关 | ✅ | 客户端走 BFF 而非直连 push |
 | [MVP-11](#mvp-11-match-sharding) | Match 多实例 + symbol 迁移 | ✅ | etcd 配置驱动 + 热加减 symbol |
 | [MVP-12](#mvp-12-ha) | Counter/Match HA | ✅ | etcd lease 选主 + cold standby |
+| MVP-12b | Match transactional producer (fencing) | ✅ | 消除 split-brain 写 trade-event 窗口 |
 | [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ⏳ 计划中 | LB hash 与 partition 订阅对齐 |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
@@ -138,8 +139,13 @@
 - 新 `pkg/election`：etcd `concurrency.Election` 封装（Campaign / Resign / LostCh / Observe）
 - Counter / Match main 分出 `runPrimary`，外层 `runElectionLoop` cold-standby
 - `--ha-mode=auto` 走选举；`disabled` 保留单机模式（向后兼容）
-- Counter fencing 自然走 Kafka `TransactionalID`（ADR-0017）；Match 暂依赖 etcd lease + 自觉退出（split-brain 窗口 10s，明确留 MVP-12b）
+- Counter fencing 自然走 Kafka `TransactionalID`（ADR-0017）；Match MVP-12b 起同款 fencing（[ADR-0032](./adr/0032-match-transactional-producer.md)）
 - backup 不消费 Kafka、不打快照；snapshot 共享目录 MVP 假设本地 EFS/NFS mount
+
+**MVP-12b**（实现于同一轮迭代）：**ADR** [0032](./adr/0032-match-transactional-producer.md)
+- `TradeProducer` 增加 `TransactionalID`；`Pump` 按 `BatchSize=32 / FlushInterval=10ms` 攒批写单事务
+- `--ha-mode=auto` 时启用，`disabled` 仍走 idempotent
+- 关闭 ADR-0031 遗留的 Match split-brain 窗口；Counter 和 Match 达成对等 fencing 模型
 
 ### MVP-13  Push 多实例 sticky  {#mvp-13-push-sharding}
 
