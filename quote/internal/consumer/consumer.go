@@ -1,10 +1,15 @@
 // Package consumer drives the trade-event → engine → market-data pipeline.
 //
-// Quote keeps all per-symbol state (orderbook, kline bars) in memory. To make
-// restarts deterministic we configure the consumer to rewind to the earliest
-// trade-event offset and never commit offsets — every restart re-derives
-// state from the full topic history. ADR-0025 captures this constraint and
-// the future move to snapshots.
+// Quote keeps all per-symbol state (orderbook, kline bars) in memory.
+// ADR-0036 pairs that state with a local snapshot file: on restart we load
+// the snapshot, start the consumer from the saved per-partition offsets,
+// and resume. When no snapshot is present (cold start) we fall back to the
+// old "rescan from earliest" behaviour (ADR-0025).
+//
+// Offset bookkeeping: the engine tracks the next-to-consume offset per
+// partition atomically with state mutation (engine.HandleRecord). The
+// consumer does NOT commit to Kafka — the snapshot file is the source of
+// truth for "how far we got."
 package consumer
 
 import (
@@ -19,8 +24,11 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
-// Handler turns a trade-event into the market-data events to publish.
-type Handler func(*eventpb.TradeEvent) []*eventpb.MarketDataEvent
+// RecordHandler applies one trade-event at the given partition+offset and
+// returns the market-data events to publish. The implementation (the
+// engine) is responsible for serialising state and offset advance under
+// its own lock.
+type RecordHandler func(evt *eventpb.TradeEvent, partition int32, offset int64) []*eventpb.MarketDataEvent
 
 // Publisher is the market-data producer contract (kept narrow for tests).
 type Publisher interface {
@@ -33,21 +41,29 @@ type Config struct {
 	ClientID string
 	GroupID  string // used only for metadata; Quote does not commit offsets
 	Topic    string // default "trade-event"
+
+	// InitialOffsets sets the per-partition starting offset (next-to-consume)
+	// when restoring from a snapshot. Partitions missing from the map default
+	// to AtStart so newly-added partitions are backfilled. Nil means cold
+	// start: every partition begins at AtStart.
+	InitialOffsets map[int32]int64
 }
 
-// TradeEventConsumer reads trade-event from the beginning on every start,
-// dispatches to Handler, and publishes the result to Publisher.
+// TradeEventConsumer reads trade-event (from saved offsets or from the
+// beginning), dispatches to the engine handler, and publishes the result.
 type TradeEventConsumer struct {
 	cli     *kgo.Client
-	handler Handler
+	handler RecordHandler
 	pub     Publisher
 	logger  *zap.Logger
 	topic   string
 }
 
-// New constructs a consumer bound to group with its offset reset at the
-// start of the topic. Quote does not commit offsets — see package doc.
-func New(cfg Config, handler Handler, pub Publisher, logger *zap.Logger) (*TradeEventConsumer, error) {
+// New constructs a consumer bound to a group. When InitialOffsets is
+// non-empty the consumer uses AdjustFetchOffsetsFn to start each partition
+// at the saved offset, falling back to AtStart for any partition not
+// present in the map (e.g. added after the snapshot was taken).
+func New(cfg Config, handler RecordHandler, pub Publisher, logger *zap.Logger) (*TradeEventConsumer, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, errors.New("consumer: at least one broker required")
 	}
@@ -70,6 +86,24 @@ func New(cfg Config, handler Handler, pub Publisher, logger *zap.Logger) (*Trade
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
 		kgo.DisableAutoCommit(),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	}
+	if len(cfg.InitialOffsets) > 0 {
+		saved := cfg.InitialOffsets
+		opts = append(opts, kgo.AdjustFetchOffsetsFn(func(_ context.Context, current map[string]map[int32]kgo.Offset) (map[string]map[int32]kgo.Offset, error) {
+			out := make(map[string]map[int32]kgo.Offset, len(current))
+			for topic, parts := range current {
+				outParts := make(map[int32]kgo.Offset, len(parts))
+				for p := range parts {
+					if off, ok := saved[p]; ok {
+						outParts[p] = kgo.NewOffset().At(off)
+					} else {
+						outParts[p] = kgo.NewOffset().AtStart()
+					}
+				}
+				out[topic] = outParts
+			}
+			return out, nil
+		}))
 	}
 	if cfg.ClientID != "" {
 		opts = append(opts, kgo.ClientID(cfg.ClientID))
@@ -122,7 +156,7 @@ func (c *TradeEventConsumer) Run(ctx context.Context) error {
 					zap.Error(err))
 				continue
 			}
-			mdEvts := c.handler(&evt)
+			mdEvts := c.handler(&evt, rec.Partition, rec.Offset)
 			if len(mdEvts) == 0 {
 				continue
 			}

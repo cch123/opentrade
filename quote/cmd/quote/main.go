@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 	"github.com/xargin/opentrade/quote/internal/engine"
 	"github.com/xargin/opentrade/quote/internal/kline"
 	"github.com/xargin/opentrade/quote/internal/producer"
+	"github.com/xargin/opentrade/quote/internal/snapshot"
 )
 
 type Config struct {
@@ -35,8 +37,15 @@ type Config struct {
 	MarketDataTopic  string
 	ConsumerGroup    string
 	SnapshotInterval time.Duration
-	Env              string
-	LogLevel         string
+
+	// Engine-state snapshot (ADR-0036). Separate cadence from the public
+	// DepthSnapshot ticker: we want disk writes to be less frequent than
+	// the wire-level snapshots Push consumers rely on.
+	StateSnapshotDir      string
+	StateSnapshotInterval time.Duration
+
+	Env      string
+	LogLevel string
 }
 
 func main() {
@@ -68,6 +77,13 @@ func main() {
 		Intervals:  kline.DefaultIntervals(),
 	}, logger)
 
+	// Restore engine state if a snapshot exists (ADR-0036). Absence is not
+	// an error — cold start rescans trade-event from earliest.
+	initialOffsets, err := tryRestore(cfg, eng, logger)
+	if err != nil {
+		logger.Fatal("snapshot restore", zap.Error(err))
+	}
+
 	prod, err := producer.New(producer.Config{
 		Brokers:  cfg.Brokers,
 		ClientID: cfg.InstanceID,
@@ -79,11 +95,12 @@ func main() {
 	defer prod.Close()
 
 	cons, err := consumer.New(consumer.Config{
-		Brokers:  cfg.Brokers,
-		ClientID: cfg.InstanceID,
-		GroupID:  cfg.ConsumerGroup,
-		Topic:    cfg.TradeTopic,
-	}, eng.Handle, prod, logger)
+		Brokers:        cfg.Brokers,
+		ClientID:       cfg.InstanceID,
+		GroupID:        cfg.ConsumerGroup,
+		Topic:          cfg.TradeTopic,
+		InitialOffsets: initialOffsets,
+	}, eng.HandleRecord, prod, logger)
 	if err != nil {
 		logger.Fatal("consumer init", zap.Error(err))
 	}
@@ -105,10 +122,26 @@ func main() {
 		runSnapshotTicker(rootCtx, cfg.SnapshotInterval, eng, prod, logger)
 	}()
 
+	// Engine-state persistence ticker (ADR-0036). Cancelled with a separate
+	// context so we can still write a final snapshot on shutdown after the
+	// rest of the pipeline has stopped.
+	stateCtx, cancelState := context.WithCancel(context.Background())
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runStateSnapshotTicker(stateCtx, cfg, eng, logger)
+	}()
+
 	<-rootCtx.Done()
 	logger.Info("shutdown initiated")
 	cons.Close()
+	cancelState()
 	wg.Wait()
+	if err := writeStateSnapshot(cfg, eng); err != nil {
+		logger.Error("final state snapshot", zap.Error(err))
+	} else if cfg.StateSnapshotDir != "" {
+		logger.Info("final state snapshot written", zap.String("path", stateSnapshotPath(cfg)))
+	}
 	logger.Info("quote shutdown complete")
 }
 
@@ -134,14 +167,80 @@ func runSnapshotTicker(ctx context.Context, interval time.Duration, eng *engine.
 	}
 }
 
+// stateSnapshotPath is the absolute path of the engine-state file.
+func stateSnapshotPath(cfg Config) string {
+	return filepath.Join(cfg.StateSnapshotDir, cfg.InstanceID+".json")
+}
+
+// tryRestore loads the engine-state snapshot (if any) and returns the
+// per-partition offsets the consumer should start from. A missing file
+// yields (nil, nil) and the consumer falls back to AtStart.
+func tryRestore(cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
+	if cfg.StateSnapshotDir == "" {
+		logger.Info("state snapshot disabled (empty --state-snapshot-dir); cold start")
+		return nil, nil
+	}
+	path := stateSnapshotPath(cfg)
+	snap, err := snapshot.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("load %s: %w", path, err)
+	}
+	if snap == nil {
+		logger.Info("no state snapshot found; cold start", zap.String("path", path))
+		return nil, nil
+	}
+	if err := eng.Restore(snap); err != nil {
+		return nil, fmt.Errorf("engine restore: %w", err)
+	}
+	logger.Info("engine state restored",
+		zap.String("path", path),
+		zap.Int64("taken_at_ms", snap.TakenAtMs),
+		zap.Int("symbols", len(snap.Symbols)),
+		zap.Int("partitions", len(snap.Offsets)))
+	return snap.Offsets, nil
+}
+
+// writeStateSnapshot persists the engine's current state to disk atomically.
+// No-op when the feature is disabled or the engine is empty.
+func writeStateSnapshot(cfg Config, eng *engine.Engine) error {
+	if cfg.StateSnapshotDir == "" {
+		return nil
+	}
+	snap := eng.Capture()
+	snap.TakenAtMs = time.Now().UnixMilli()
+	return snapshot.Save(stateSnapshotPath(cfg), snap)
+}
+
+// runStateSnapshotTicker persists engine state on a cadence. Interval <=0
+// disables, leaving only the final shutdown write.
+func runStateSnapshotTicker(ctx context.Context, cfg Config, eng *engine.Engine, logger *zap.Logger) {
+	if cfg.StateSnapshotDir == "" || cfg.StateSnapshotInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(cfg.StateSnapshotInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := writeStateSnapshot(cfg, eng); err != nil {
+				logger.Error("state snapshot", zap.Error(err))
+			}
+		}
+	}
+}
+
 func parseFlags() Config {
 	cfg := Config{
-		InstanceID:       "quote-0",
-		TradeTopic:       "trade-event",
-		MarketDataTopic:  "market-data",
-		SnapshotInterval: 5 * time.Second,
-		Env:              "dev",
-		LogLevel:         "info",
+		InstanceID:            "quote-0",
+		TradeTopic:            "trade-event",
+		MarketDataTopic:       "market-data",
+		SnapshotInterval:      5 * time.Second,
+		StateSnapshotDir:      "./data/quote",
+		StateSnapshotInterval: 30 * time.Second,
+		Env:                   "dev",
+		LogLevel:              "info",
 	}
 	var brokersStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (client id / consumer group suffix)")
@@ -149,7 +248,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
 	flag.StringVar(&cfg.MarketDataTopic, "market-topic", cfg.MarketDataTopic, "market-data topic name")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group id (default quote-{instance-id})")
-	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "how often to emit DepthSnapshot; 0 disables")
+	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "how often to emit DepthSnapshot on market-data; 0 disables")
+	flag.StringVar(&cfg.StateSnapshotDir, "state-snapshot-dir", cfg.StateSnapshotDir, "directory for engine-state snapshots (empty disables persistence)")
+	flag.DurationVar(&cfg.StateSnapshotInterval, "state-snapshot-interval", cfg.StateSnapshotInterval, "how often to persist engine state to disk; 0 disables (only final snapshot on shutdown)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()

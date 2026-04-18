@@ -144,6 +144,108 @@ func (b *Book) OnOrderClosed(orderID uint64) (*eventpb.MarketDataEvent, error) {
 	return b.makeUpdate(ref.side, ref.priceKey), nil
 }
 
+// State is the serializable form of a Book. Returned by Capture; consumed
+// by Restore. Shapes mirror the in-memory representation directly so that
+// a round-trip through JSON is lossless.
+type State struct {
+	Bids   map[string]string // priceKey → qty.String()
+	Asks   map[string]string
+	Prices map[string]string // priceKey → price.String()
+	Orders []OrderRef
+}
+
+// OrderRef is the exported form of the internal orderRef, kept byte-for-byte
+// compatible with the snapshot on-disk shape.
+type OrderRef struct {
+	OrderID   uint64
+	Side      uint8 // 1=buy, 2=sell (matches Side constants)
+	PriceKey  string
+	Remaining string
+}
+
+// Capture returns a deep copy of the Book's state. Caller must serialize
+// access via the engine mutex while this runs (Book itself is not
+// goroutine-safe).
+func (b *Book) Capture() State {
+	out := State{
+		Bids:   make(map[string]string, len(b.bids)),
+		Asks:   make(map[string]string, len(b.asks)),
+		Prices: make(map[string]string, len(b.priceOf)),
+	}
+	for k, v := range b.bids {
+		out.Bids[k] = v.String()
+	}
+	for k, v := range b.asks {
+		out.Asks[k] = v.String()
+	}
+	for k, v := range b.priceOf {
+		out.Prices[k] = v.String()
+	}
+	if len(b.orders) > 0 {
+		out.Orders = make([]OrderRef, 0, len(b.orders))
+		for id, ref := range b.orders {
+			out.Orders = append(out.Orders, OrderRef{
+				OrderID:   id,
+				Side:      uint8(ref.side),
+				PriceKey:  ref.priceKey,
+				Remaining: ref.remaining.String(),
+			})
+		}
+	}
+	return out
+}
+
+// Restore replaces the Book's state with s. The Book must be fresh (no
+// prior events) or callers must accept the replacement semantics.
+func (b *Book) Restore(s State) error {
+	bids := make(map[string]dec.Decimal, len(s.Bids))
+	asks := make(map[string]dec.Decimal, len(s.Asks))
+	prices := make(map[string]dec.Decimal, len(s.Prices))
+	orders := make(map[uint64]*orderRef, len(s.Orders))
+	for k, v := range s.Bids {
+		d, err := dec.Parse(v)
+		if err != nil {
+			return fmt.Errorf("depth restore: bid %s: %w", k, err)
+		}
+		bids[k] = d
+	}
+	for k, v := range s.Asks {
+		d, err := dec.Parse(v)
+		if err != nil {
+			return fmt.Errorf("depth restore: ask %s: %w", k, err)
+		}
+		asks[k] = d
+	}
+	for k, v := range s.Prices {
+		d, err := dec.Parse(v)
+		if err != nil {
+			return fmt.Errorf("depth restore: price %s: %w", k, err)
+		}
+		prices[k] = d
+	}
+	for _, o := range s.Orders {
+		rem, err := dec.Parse(o.Remaining)
+		if err != nil {
+			return fmt.Errorf("depth restore: order %d remaining: %w", o.OrderID, err)
+		}
+		price, ok := prices[o.PriceKey]
+		if !ok {
+			return fmt.Errorf("depth restore: order %d references missing price key %q", o.OrderID, o.PriceKey)
+		}
+		orders[o.OrderID] = &orderRef{
+			side:      Side(o.Side),
+			priceKey:  o.PriceKey,
+			price:     price,
+			remaining: rem,
+		}
+	}
+	b.bids = bids
+	b.asks = asks
+	b.priceOf = prices
+	b.orders = orders
+	return nil
+}
+
 // Snapshot returns a DepthSnapshot MarketDataEvent with every live level.
 // bids are returned in descending price order, asks ascending.
 func (b *Book) Snapshot() *eventpb.MarketDataEvent {

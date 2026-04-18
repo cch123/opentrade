@@ -39,7 +39,7 @@
 - ~~**集成冒烟脚本**~~ — ✅ [docs/smoke.md](./smoke.md) + [deploy/scripts/smoke.sh](../deploy/scripts/smoke.sh)
 - ~~**市价单 MARKET（服务端原生）**~~ — ✅ 两条路径落地（[ADR-0035](./adr/0035-market-orders-native-server-side.md)）：(A) 服务端原生 `type=market` + `qty`(sell) / `quote_qty`(buy)；(B) BFF 可选滑点保护：`type=market + slippage_bps + last_price` → 翻译成 LIMIT+IOC。客户端用法文档见 [docs/market-orders.md](./market-orders.md)
 - ~~**Counter 对账**~~ — ✅ `counter/internal/reconcile` 每小时对比内存 vs `accounts` 表，差异日志 + 汇总（[ADR-0008 §对账](./adr/0008-sidecar-persistence-trade-dump.md)）；`--mysql-dsn` 空时禁用
-- **Quote state snapshot** — 重启冷启动改从 snapshot + 增量（[ADR-0025 未来工作](./adr/0025-quote-engine-state-and-offset-strategy.md)）
+- ~~**Quote state snapshot**~~ — ✅ 本地 JSON snapshot + 每 partition offset 随状态原子推进，重启热恢复（[ADR-0036](./adr/0036-quote-state-snapshot.md)）
 - **Counter re-shard 工具** — 未来扩容 10→20 shard 用（[ADR-0010](./adr/0010-counter-sharding-by-userid.md)、[ADR-0027](./adr/0027-counter-sharding-rollout.md)）
 - ~~**trade-event consumer 的显式 shard filter**~~ — ✅ Counter 每个 trade-event handler 在进 sequencer 之前 `OwnsUser` 判定，非 owned 走 debug 日志 skip（[ADR-0027 备选方案 D](./adr/0027-counter-sharding-rollout.md)）
 - **BFF auth 升级到 JWT / API-Key** — 目前 `X-User-Id` 弱 auth（[bff/internal/auth](../bff/internal/auth)）

@@ -153,6 +153,89 @@ func (b *bar) update(price, qty dec.Decimal) {
 	b.count++
 }
 
+// State is the serializable form of an Aggregator. Shape mirrors the
+// in-memory bar directly so JSON round-trips are lossless.
+type State struct {
+	Bars map[eventpb.KlineInterval]Bar
+}
+
+// Bar is the exported form of the internal bar, byte-for-byte compatible
+// with the snapshot on-disk shape.
+type Bar struct {
+	OpenTimeMs  int64
+	CloseTimeMs int64
+	Open        string
+	High        string
+	Low         string
+	Close       string
+	Volume      string
+	QuoteVolume string
+	Count       uint64
+}
+
+// Capture returns a snapshot of the current open bars.
+func (a *Aggregator) Capture() State {
+	out := State{Bars: make(map[eventpb.KlineInterval]Bar, len(a.bars))}
+	for iv, b := range a.bars {
+		out.Bars[iv] = Bar{
+			OpenTimeMs:  b.openTime,
+			CloseTimeMs: b.closeTime,
+			Open:        b.open.String(),
+			High:        b.high.String(),
+			Low:         b.low.String(),
+			Close:       b.close.String(),
+			Volume:      b.volume.String(),
+			QuoteVolume: b.quoteVolume.String(),
+			Count:       b.count,
+		}
+	}
+	return out
+}
+
+// Restore replaces the aggregator's open bars with s.Bars.
+func (a *Aggregator) Restore(s State) error {
+	bars := make(map[eventpb.KlineInterval]*bar, len(s.Bars))
+	for iv, b := range s.Bars {
+		open, err := dec.Parse(b.Open)
+		if err != nil {
+			return fmt.Errorf("kline restore: open: %w", err)
+		}
+		high, err := dec.Parse(b.High)
+		if err != nil {
+			return fmt.Errorf("kline restore: high: %w", err)
+		}
+		low, err := dec.Parse(b.Low)
+		if err != nil {
+			return fmt.Errorf("kline restore: low: %w", err)
+		}
+		closeD, err := dec.Parse(b.Close)
+		if err != nil {
+			return fmt.Errorf("kline restore: close: %w", err)
+		}
+		vol, err := dec.Parse(b.Volume)
+		if err != nil {
+			return fmt.Errorf("kline restore: volume: %w", err)
+		}
+		qv, err := dec.Parse(b.QuoteVolume)
+		if err != nil {
+			return fmt.Errorf("kline restore: quote_volume: %w", err)
+		}
+		bars[iv] = &bar{
+			openTime:    b.OpenTimeMs,
+			closeTime:   b.CloseTimeMs,
+			open:        open,
+			high:        high,
+			low:         low,
+			close:       closeD,
+			volume:      vol,
+			quoteVolume: qv,
+			count:       b.Count,
+		}
+	}
+	a.bars = bars
+	return nil
+}
+
 func (a *Aggregator) wrapUpdate(spec IntervalSpec, b *bar) *eventpb.MarketDataEvent {
 	return &eventpb.MarketDataEvent{
 		Symbol:  a.symbol,
