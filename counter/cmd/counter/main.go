@@ -52,17 +52,18 @@ import (
 )
 
 type Config struct {
-	ShardID         int
-	TotalShards     int
-	InstanceID      string
-	GRPCAddr        string
-	Brokers         []string
-	JournalTopic    string
-	OrderEventTopic string
-	TradeEventTopic string
-	ConsumerGroup   string
-	SnapshotDir     string
-	DedupTTL        time.Duration
+	ShardID          int
+	TotalShards      int
+	InstanceID       string
+	GRPCAddr         string
+	Brokers          []string
+	JournalTopic     string
+	OrderEventTopic  string
+	TradeEventTopic  string
+	ConsumerGroup    string
+	SnapshotDir      string
+	SnapshotInterval time.Duration
+	DedupTTL         time.Duration
 
 	// HA (MVP-12).
 	HAMode         string // "disabled" (default) | "auto"
@@ -249,6 +250,19 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		}
 	}()
 
+	// Periodic snapshot. Capture is concurrency-safe against live mutations
+	// (each underlying store takes its own RWMutex + returns deep copies)
+	// and records ShardSeq before scanning state, so restore replays any
+	// in-flight divergence via the idempotent trade / transfer handlers.
+	snapCtx, cancelSnap := context.WithCancel(context.Background())
+	defer cancelSnap()
+	var snapWG sync.WaitGroup
+	snapWG.Add(1)
+	go func() {
+		defer snapWG.Done()
+		periodicSnapshot(snapCtx, cfg, state, userSeq, dt, logger)
+	}()
+
 	grpcServer := grpc.NewServer()
 	counterrpc.RegisterCounterServiceServer(grpcServer, server.New(svc, logger))
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -275,6 +289,9 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	tradeConsumer.Close()
 	tradeWG.Wait()
 
+	cancelSnap()
+	snapWG.Wait()
+
 	// Drain in-flight sequencer work before the final snapshot.
 	time.Sleep(100 * time.Millisecond)
 
@@ -286,23 +303,45 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	logger.Info("primary stopped")
 }
 
+// periodicSnapshot writes a full shard snapshot to SnapshotDir on each tick.
+// SnapshotInterval <= 0 disables the loop (only the shutdown-time snapshot
+// runs, matching pre-MVP-12b behaviour).
+func periodicSnapshot(ctx context.Context, cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, logger *zap.Logger) {
+	if cfg.SnapshotInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(cfg.SnapshotInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := writeSnapshot(cfg, state, seq, dt); err != nil {
+				logger.Error("periodic snapshot", zap.Error(err))
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Config helpers
 // ---------------------------------------------------------------------------
 
 func parseFlags() Config {
 	cfg := Config{
-		GRPCAddr:        ":8081",
-		JournalTopic:    "counter-journal",
-		OrderEventTopic: "order-event",
-		TradeEventTopic: "trade-event",
-		SnapshotDir:     "./data/counter",
-		DedupTTL:        24 * time.Hour,
-		HAMode:          "disabled",
-		LeaseTTL:        10,
-		CampaignBackoff: 2 * time.Second,
-		Env:             "dev",
-		LogLevel:        "info",
+		GRPCAddr:         ":8081",
+		JournalTopic:     "counter-journal",
+		OrderEventTopic:  "order-event",
+		TradeEventTopic:  "trade-event",
+		SnapshotDir:      "./data/counter",
+		SnapshotInterval: 60 * time.Second,
+		DedupTTL:         24 * time.Hour,
+		HAMode:           "disabled",
+		LeaseTTL:         10,
+		CampaignBackoff:  2 * time.Second,
+		Env:              "dev",
+		LogLevel:         "info",
 	}
 	var brokersStr, etcdStr string
 	flag.IntVar(&cfg.ShardID, "shard-id", 0, "shard id (0..total-shards-1)")
@@ -315,6 +354,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TradeEventTopic, "trade-topic", cfg.TradeEventTopic, "trade-event topic name")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default counter-shard-<N>)")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
+	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "periodic snapshot cadence while primary (0 disables; only final shutdown snapshot runs)")
 	flag.DurationVar(&cfg.DedupTTL, "dedup-ttl", cfg.DedupTTL, "transfer_id dedup TTL")
 	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0031)")
 	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto)")

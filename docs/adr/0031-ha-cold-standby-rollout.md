@@ -74,15 +74,18 @@ Match 的完整 transactional fencing 留给 **MVP-12b**。
 
 ### 4. snapshot：primary 周期 + shutdown final
 
-- Counter：MVP-3 起只有 shutdown-time final snapshot。MVP-12 的 HA 下，
-  primary 降级（lease 丢）走 `runPrimary` 的 defer 路径，也会写 final
-  snapshot。**周期性 snapshot 暂不引入**（会加入 CPU 和 lock 竞争），等未来做
-  "备节点 tail journal" 时把快照角色挪到备。
+- Counter：MVP-3 起只有 shutdown-time final snapshot。**随 MVP-12 一起**
+  补了 periodic snapshot（默认 60s，`--snapshot-interval` 可调，`<= 0`
+  关闭）。冷备升主时从最近一次 snapshot + counter-journal 回放到 tail；
+  periodic 让回放窗口被限制在 60s 内而不是"上次优雅关闭"到现在的全部。
+  `snapshot.Capture` 对并发读本就安全（accounts / orders / dedup 各自
+  RWMutex + deep copy），先读 `ShardSeq` 再扫 state 使得恢复时的 replay
+  通过 idempotent handler 收敛窗口内的小不一致。
 - Match：MVP-1 起就有 periodicSnapshot（默认 60s），本 MVP 保持不变；
   primary cycle 内每 60s 打一次。
 
-ADR-0006 "备打快照" 在 MVP-12 不落地，需要先做热备（tail journal）才能
-实现。列 Backlog。
+ADR-0006 "备打快照" 在 MVP-12 不落地（冷备没有 state 可打），需要先做
+热备（tail journal）才能实现。列 Backlog。
 
 ### 5. `--ha-mode` flag：`disabled`（默认）/ `auto`
 
