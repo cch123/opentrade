@@ -152,6 +152,18 @@ func (s *Service) handleTrade(ctx context.Context, t *eventpb.Trade, matchSeq ui
 		TakerFilledQtyAfter: takerFilledAfter,
 	}
 
+	// Self-trade (same user on both sides): the two applyPartyViaSequencer
+	// calls would share one account and the match_seq guard on
+	// (user, symbol) would cause the second call to short-circuit, dropping
+	// half of the settlement. Route through a merged path that applies both
+	// parties inside a single sequencer pass with a single match_seq advance.
+	if ti.MakerUserID == ti.TakerUserID {
+		if err := s.applySelfTrade(ctx, ti, matchSeq); err != nil {
+			return fmt.Errorf("self-trade settlement: %w", err)
+		}
+		return nil
+	}
+
 	// Apply maker side, then taker side. Each goes through its own user
 	// sequencer so concurrent order flow for that user is serialized.
 	// Per-party shard ownership is checked inside applyPartyViaSequencer so
@@ -164,6 +176,70 @@ func (s *Service) handleTrade(ctx context.Context, t *eventpb.Trade, matchSeq ui
 		return fmt.Errorf("taker settlement: %w", err)
 	}
 	return nil
+}
+
+// applySelfTrade settles both parties of a self-trade (maker_user==taker_user)
+// inside one sequencer pass. Idempotency: the (user, symbol) match_seq guard
+// still covers replays because we advance it once at the end — a replay of
+// the same event is dropped before doing any work.
+func (s *Service) applySelfTrade(ctx context.Context, ti engine.TradeInput, matchSeq uint64) error {
+	userID := ti.MakerUserID
+	if !s.OwnsUser(userID) {
+		s.logForeignSkip("trade-self", userID, ti.MakerOrderID)
+		return nil
+	}
+	_, err := s.seq.Execute(userID, func(seqID uint64) (any, error) {
+		acc := s.state.Account(userID)
+		if matchSeqDuplicate(acc, ti.Symbol, matchSeq) {
+			return nil, nil
+		}
+		mSet, tSet, err := engine.ComputeSettlement(s.state, ti)
+		if err != nil {
+			return nil, err
+		}
+		base, quote, _ := engine.SymbolAssets(ti.Symbol)
+		// Apply maker then taker. Each call mutates the same account; the
+		// engine applies deltas sequentially so the final state reflects
+		// both sides.
+		for _, party := range []engine.PartySettlement{mSet, tSet} {
+			o := s.state.Orders().Get(party.OrderID)
+			if o == nil {
+				continue
+			}
+			// Fill-qty idempotency (layer 2): matches the guard in
+			// applyPartyViaSequencer for legacy zero-seq records.
+			if o.FilledQty.Cmp(party.FilledQtyAfter) >= 0 {
+				continue
+			}
+			if err := s.state.ApplyPartySettlement(ti.Symbol, party); err != nil {
+				return nil, err
+			}
+			baseAfter := s.state.Balance(userID, base)
+			quoteAfter := s.state.Balance(userID, quote)
+			evt, err := journal.BuildSettlementEvent(journal.SettlementEventInput{
+				SeqID:          seqID,
+				ProducerID:     s.cfg.ProducerID,
+				AccountVersion: acc.Version(),
+				Symbol:         ti.Symbol,
+				TradeID:        ti.TradeID,
+				Party:          party,
+				BaseAfter:      baseAfter,
+				QuoteAfter:     quoteAfter,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if err := s.publisher.Publish(ctx, userID, evt); err != nil {
+				s.logger.Error("publish self-trade settlement",
+					zap.String("user", userID),
+					zap.Uint64("order_id", party.OrderID),
+					zap.Error(err))
+			}
+		}
+		acc.AdvanceMatchSeq(ti.Symbol, matchSeq)
+		return nil, nil
+	})
+	return err
 }
 
 func (s *Service) handleCancelled(ctx context.Context, c *eventpb.OrderCancelled, matchSeq uint64) error {
