@@ -38,6 +38,7 @@ import (
 	"github.com/xargin/opentrade/conditional/internal/server"
 	"github.com/xargin/opentrade/conditional/internal/service"
 	"github.com/xargin/opentrade/conditional/internal/snapshot"
+	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
 )
@@ -58,6 +59,16 @@ type Config struct {
 	// range by default to avoid id collisions with counter order ids
 	// even though the namespaces are disjoint today.
 	IDGenShard int
+
+	// HA (MVP-14c / ADR-0042). "disabled" = single-process behaviour;
+	// "auto" campaigns for leadership via etcd and only serves traffic as
+	// primary. Backups sit idle and re-campaign when the primary resigns
+	// / dies — same cold-standby shape as Counter/Match (ADR-0031).
+	HAMode          string
+	EtcdEndpoints   []string
+	ElectionPath    string
+	LeaseTTL        int
+	CampaignBackoff time.Duration
 
 	Env      string
 	LogLevel string
@@ -80,14 +91,93 @@ func main() {
 		zap.String("instance", cfg.InstanceID),
 		zap.String("grpc", cfg.GRPCAddr),
 		zap.Strings("brokers", cfg.Brokers),
-		zap.Strings("counter_shards", cfg.CounterShards))
+		zap.Strings("counter_shards", cfg.CounterShards),
+		zap.String("ha_mode", cfg.HAMode))
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	counterConns, counterClients, err := dialCounterShards(rootCtx, cfg.CounterShards)
+	if cfg.HAMode == "disabled" {
+		runPrimary(rootCtx, cfg, logger)
+		return
+	}
+	runElectionLoop(rootCtx, cfg, logger)
+}
+
+// runElectionLoop campaigns for leadership and runs the primary stack for
+// the duration of each leadership cycle. On lost leadership the primary
+// stack tears down, we re-campaign. Identical cold-standby model to
+// Counter/Match (ADR-0031); see ADR-0042 for why conditional gets HA.
+func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
+	elec, err := election.New(election.Config{
+		Endpoints: cfg.EtcdEndpoints,
+		Path:      cfg.ElectionPath,
+		Value:     cfg.InstanceID,
+		LeaseTTL:  cfg.LeaseTTL,
+	})
 	if err != nil {
-		logger.Fatal("dial counter shards", zap.Error(err))
+		logger.Fatal("election init", zap.Error(err))
+	}
+	defer func() { _ = elec.Close() }()
+
+	for {
+		if rootCtx.Err() != nil {
+			return
+		}
+		logger.Info("conditional campaigning for leadership",
+			zap.String("path", cfg.ElectionPath))
+		if err := elec.Campaign(rootCtx); err != nil {
+			if rootCtx.Err() != nil {
+				return
+			}
+			logger.Error("campaign failed", zap.Error(err))
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-time.After(cfg.CampaignBackoff):
+			}
+			continue
+		}
+		logger.Info("conditional became primary", zap.String("instance", cfg.InstanceID))
+
+		primaryCtx, cancelPrimary := context.WithCancel(rootCtx)
+		watchDone := make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			select {
+			case <-elec.LostCh():
+				logger.Warn("conditional lost leadership — demoting")
+				cancelPrimary()
+			case <-primaryCtx.Done():
+			}
+		}()
+
+		runPrimary(primaryCtx, cfg, logger)
+		cancelPrimary()
+		<-watchDone
+
+		if rootCtx.Err() == nil {
+			logger.Info("conditional demoted; re-campaigning")
+			continue
+		}
+		resignCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := elec.Resign(resignCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("resign failed", zap.Error(err))
+		}
+		cancel()
+		return
+	}
+}
+
+// runPrimary brings up the full conditional stack (gRPC server +
+// market-data consumer + snapshot ticker) and blocks until ctx is done.
+// Called directly in HA-disabled mode; called once per leadership cycle
+// under --ha-mode=auto.
+func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
+	counterConns, counterClients, err := dialCounterShards(ctx, cfg.CounterShards)
+	if err != nil {
+		logger.Error("dial counter shards", zap.Error(err))
+		return
 	}
 	defer func() {
 		for i, c := range counterConns {
@@ -98,12 +188,14 @@ func main() {
 	}()
 	placer, err := counterclient.NewSharded(counterClients)
 	if err != nil {
-		logger.Fatal("sharded counter", zap.Error(err))
+		logger.Error("sharded counter", zap.Error(err))
+		return
 	}
 
 	idg, err := idgen.NewGenerator(cfg.IDGenShard)
 	if err != nil {
-		logger.Fatal("idgen", zap.Error(err))
+		logger.Error("idgen", zap.Error(err))
+		return
 	}
 
 	eng := engine.New(engine.Config{
@@ -112,7 +204,8 @@ func main() {
 
 	initialOffsets, err := tryRestoreSnapshot(cfg, eng, logger)
 	if err != nil {
-		logger.Fatal("snapshot restore", zap.Error(err))
+		logger.Error("snapshot restore", zap.Error(err))
+		return
 	}
 
 	mdCons, err := consumer.New(consumer.Config{
@@ -123,7 +216,8 @@ func main() {
 		InitialOffsets: initialOffsets,
 	}, eng.HandleRecord, logger)
 	if err != nil {
-		logger.Fatal("market-data consumer", zap.Error(err))
+		logger.Error("market-data consumer", zap.Error(err))
+		return
 	}
 	defer mdCons.Close()
 
@@ -131,13 +225,13 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := mdCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := mdCons.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("consumer exited", zap.Error(err))
-			stop()
 		}
 	}()
 
 	snapCtx, cancelSnap := context.WithCancel(context.Background())
+	defer cancelSnap()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -150,7 +244,8 @@ func main() {
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
-		logger.Fatal("listen", zap.Error(err))
+		logger.Error("listen", zap.Error(err))
+		return
 	}
 	wg.Add(1)
 	go func() {
@@ -161,8 +256,8 @@ func main() {
 		}
 	}()
 
-	<-rootCtx.Done()
-	logger.Info("shutdown initiated")
+	<-ctx.Done()
+	logger.Info("primary shutting down")
 	grpcSrv.GracefulStop()
 	mdCons.Close()
 	cancelSnap()
@@ -172,7 +267,7 @@ func main() {
 	} else if cfg.SnapshotDir != "" {
 		logger.Info("final snapshot written", zap.String("path", snapshotPath(cfg)))
 	}
-	logger.Info("conditional shutdown complete")
+	logger.Info("primary stopped")
 }
 
 // ---------------------------------------------------------------------------
@@ -270,10 +365,13 @@ func parseFlags() Config {
 		SnapshotInterval:     30 * time.Second,
 		TerminalHistoryLimit: 1000,
 		IDGenShard:           900, // deliberately out of counter's 0..99 range
+		HAMode:               "disabled",
+		LeaseTTL:             10,
+		CampaignBackoff:      2 * time.Second,
 		Env:                  "dev",
 		LogLevel:             "info",
 	}
-	var brokersStr, shardsStr string
+	var brokersStr, shardsStr, etcdStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (grpc client id / default group suffix)")
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
@@ -285,14 +383,23 @@ func parseFlags() Config {
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "snapshot cadence; 0 disables the ticker (still writes on shutdown)")
 	flag.IntVar(&cfg.TerminalHistoryLimit, "terminal-history", cfg.TerminalHistoryLimit, "max retained terminal records per engine for ListConditionals(include_inactive)")
 	flag.IntVar(&cfg.IDGenShard, "idgen-shard", cfg.IDGenShard, "snowflake shard id for conditional ids (avoid collisions with counter)")
+	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0042)")
+	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto)")
+	flag.StringVar(&cfg.ElectionPath, "election-path", "", "etcd election key (default /cex/conditional/leader)")
+	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "etcd session TTL seconds")
+	flag.DurationVar(&cfg.CampaignBackoff, "campaign-backoff", cfg.CampaignBackoff, "wait between failed Campaigns")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
 
 	cfg.Brokers = splitCSV(brokersStr)
 	cfg.CounterShards = splitCSV(shardsStr)
+	cfg.EtcdEndpoints = splitCSV(etcdStr)
 	if cfg.ConsumerGroup == "" {
 		cfg.ConsumerGroup = "conditional-" + cfg.InstanceID
+	}
+	if cfg.ElectionPath == "" {
+		cfg.ElectionPath = "/cex/conditional/leader"
 	}
 	return cfg
 }
@@ -309,6 +416,14 @@ func (c *Config) validate() error {
 	}
 	if len(c.CounterShards) == 0 {
 		return fmt.Errorf("at least one counter shard required")
+	}
+	switch c.HAMode {
+	case "disabled", "auto":
+	default:
+		return fmt.Errorf("ha-mode must be disabled or auto, got %q", c.HAMode)
+	}
+	if c.HAMode == "auto" && len(c.EtcdEndpoints) == 0 {
+		return fmt.Errorf("--etcd required when --ha-mode=auto")
 	}
 	return nil
 }

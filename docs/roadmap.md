@@ -26,6 +26,7 @@
 | [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ✅ | user 过滤 + handshake 检查(partition 严格对齐留 MVP-13b) |
 | [MVP-14a](#mvp-14a-conditional) | 条件单（stop-loss / take-profit） | ✅ | 独立 `conditional` 服务订 market-data，触发时通过 Counter.PlaceOrder 下真实单；无资金预留，MVP-14b 补 |
 | [MVP-14b](#mvp-14b-reservations) | 条件单资金预留 | ✅ | Counter 新 `Reserve` / `ReleaseReservation` + `PlaceOrder(reservation_id)`；conditional 下发即锁资金，触发原子消费 |
+| [MVP-14c](#mvp-14c-conditional-ha) | 条件单 HA（cold standby） | ✅ | etcd 选主复刻 ADR-0031；`--ha-mode=auto` 双实例，primary crash 10~15s 内新 primary 接管 |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
 
@@ -47,7 +48,7 @@
 - ~~**BFF auth 升级到 JWT / API-Key**~~ — ✅ `--auth-mode=header|jwt|api-key|mixed`；HS256 JWT + BN 风格 HMAC-SHA256 API-Key，无外部依赖（[ADR-0039](./adr/0039-bff-auth-jwt-apikey.md)）
 - **Match / Counter 延迟 + 吞吐 benchmark** — 验证是否接近 20w TPS / 10ms P99（[architecture.md §18.3](./architecture.md)）
 - ~~**MVP-14b 条件单资金预留**~~ — ✅ Counter `Reserve` / `ReleaseReservation` RPC + `PlaceOrder(reservation_id)` 原子消费；snapshot 持久化；触发不再因余额不足 reject（[ADR-0041](./adr/0041-counter-reservations.md)）
-- **MVP-14c 条件单 HA** — etcd leader + cold standby（照搬 [ADR-0031](./adr/0031-ha-cold-standby-rollout.md)）
+- ~~**MVP-14c 条件单 HA**~~ — ✅ `pkg/election` cold standby 复刻 ADR-0031；`--ha-mode=auto` + `--etcd` 双实例（[ADR-0042](./adr/0042-conditional-ha.md)）
 - **OCO / Trailing stop / expiry** — 条件单进阶类型，MVP-14a 之上迭代（[ADR-0040 §Future Work](./adr/0040-conditional-order-service.md)）
 
 ## 已完成
@@ -178,6 +179,14 @@
 - 不发 counter-journal 事件：trade-dump projection 在持有期间 stale，consume/release 时收敛，可接受
 - conditional 使用：Place → Reserve（失败不存储），Cancel / REJECTED → best-effort Release；Trigger PlaceOrder 带 `reservation_id` 原子消费
 - Reserve vs `Transfer(FREEZE)` 的边界（权限 / 原子消费 / journal / 副表）详见 ADR-0041
+
+### MVP-14c  条件单 HA（cold standby）  {#mvp-14c-conditional-ha}
+
+- **commit** pending · **ADR** [0042](./adr/0042-conditional-ha.md)
+- `conditional/cmd/conditional` 拆分 `runPrimary` + `runElectionLoop`，复刻 ADR-0031 Counter/Match 的 cold-standby 模型
+- `--ha-mode=auto` + `--etcd`：双实例共享 `/cex/conditional/leader` etcd key + `--snapshot-dir` 共享 mount
+- Split-brain 失败半径退化为"少量重复 PlaceOrder"：Counter 的 `reservation_id` / `client_order_id` dedup 吸收，无业务错误
+- `--ha-mode=disabled` 保留 MVP-14a/b 单机行为，CI / 本地开发零 etcd 依赖
 
 ---
 
