@@ -23,7 +23,7 @@
 | [MVP-11](#mvp-11-match-sharding) | Match 多实例 + symbol 迁移 | ✅ | etcd 配置驱动 + 热加减 symbol |
 | [MVP-12](#mvp-12-ha) | Counter/Match HA | ✅ | etcd lease 选主 + cold standby |
 | MVP-12b | Match transactional producer (fencing) | ✅ | 消除 split-brain 写 trade-event 窗口 |
-| [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ⏳ 计划中 | LB hash 与 partition 订阅对齐 |
+| [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ✅ | user 过滤 + handshake 检查(partition 严格对齐留 MVP-13b) |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
 
@@ -123,8 +123,6 @@
 - 单 upstream（`--push-ws=ws://push:8081/ws`）；多实例 sticky 留给 MVP-13
 - BFF 不解析载荷，对 push 协议变化免疫
 
-## 计划中
-
 ### MVP-11  Match 多实例 + symbol 迁移  {#mvp-11-match-sharding}
 
 - **commit** pending · **ADR** [0030](./adr/0030-match-etcd-sharding-rollout.md)
@@ -149,12 +147,11 @@
 
 ### MVP-13  Push 多实例 sticky  {#mvp-13-push-sharding}
 
-- **范围**：
-  - LB 按 `user_id` hash sticky（复用 `pkg/shard`）
-  - `counter-journal` consumer 按 `instance_id` 订阅子集 partition（[ADR-0022](./adr/0022-push-sharding-sticky-routing.md) §私有数据订阅）
-  - `market-data` 每实例独立 group 消费全量
-- **依赖**：MVP-7 + MVP-8 的 `pkg/shard`
-- **预期 ADR**：0033
+- **commit** pending · **ADR** [0033](./adr/0033-push-sticky-user-filter.md)
+- 新 flag `--instance-ordinal` / `--total-instances`；`TotalInstances=1` 默认（单实例模式）
+- `PrivateConsumer` 按 `shard.Index(userID, total)` 过滤非 owned 事件
+- WS handshake 非 owner 的 `X-User-Id` 返回 `403` + `X-Correct-Instance`；匿名连接 bypass
+- Counter 仍用默认 partitioner（全量消费 + user 过滤，MVP 接受 N 倍流量）；严格 partition 对齐留 **MVP-13b**
 
 ---
 

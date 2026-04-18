@@ -35,6 +35,12 @@ type Conn struct {
 type Config struct {
 	SendBuffer   int           // outbound queue depth; defaults to 256
 	WriteTimeout time.Duration // per-write deadline; defaults to 10s
+
+	// Sticky routing (ADR-0033): when TotalInstances > 1 the HTTP handler
+	// verifies shard.Index(userID, TotalInstances) == InstanceOrdinal
+	// before accepting the upgrade. <=1 disables the check.
+	InstanceOrdinal int
+	TotalInstances  int
 }
 
 // NewConn wraps ws into a ready-but-not-running Conn. The caller must call

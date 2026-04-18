@@ -66,3 +66,4 @@
 | [0030](0030-match-etcd-sharding-rollout.md) | MVP-11 Match etcd 驱动 sharding + 热加减 symbol | Accepted | 2026-04-18 |
 | [0031](0031-ha-cold-standby-rollout.md) | MVP-12 Counter/Match HA — etcd lease + cold standby | Accepted | 2026-04-18 |
 | [0032](0032-match-transactional-producer.md) | MVP-12b Match TradeProducer 升级为 transactional (fencing) | Accepted | 2026-04-18 |
+| [0033](0033-push-sticky-user-filter.md) | MVP-13 Push 多实例 sticky 路由(user 过滤版) | Accepted | 2026-04-18 |

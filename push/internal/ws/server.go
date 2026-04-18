@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strconv"
 
 	"github.com/coder/websocket"
 	"go.uber.org/zap"
 
+	"github.com/xargin/opentrade/pkg/shard"
 	"github.com/xargin/opentrade/push/internal/hub"
 )
 
@@ -16,14 +18,36 @@ import (
 // upstream LB / BFF is the trust boundary (ADR-0022 / BFF auth middleware).
 const HeaderUserID = "X-User-Id"
 
+// HeaderCorrectInstance is set on a 403 response so a misrouted client can
+// resolve where to reconnect (ADR-0033).
+const HeaderCorrectInstance = "X-Correct-Instance"
+
 // Handler returns an http.HandlerFunc that upgrades incoming requests to
 // WebSocket and spawns a Conn bound to the given Hub.
+//
+// When cfg.TotalInstances > 1 the handler enforces sticky routing: an
+// authenticated user whose shard.Index(userID, TotalInstances) is not this
+// instance gets 403 + X-Correct-Instance. Anonymous connections (no
+// X-User-Id) are always accepted because they can only subscribe to public
+// streams — no private delivery depends on sticky routing for them.
 //
 // The connection's ctx inherits from the server's base ctx, so
 // Server.Shutdown can cascade-cancel live connections.
 func Handler(base context.Context, h *hub.Hub, cfg Config, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Header.Get(HeaderUserID)
+
+		if cfg.TotalInstances > 1 && userID != "" {
+			if owner := shard.Index(userID, cfg.TotalInstances); owner != cfg.InstanceOrdinal {
+				w.Header().Set(HeaderCorrectInstance, strconv.Itoa(owner))
+				http.Error(w, "wrong push instance", http.StatusForbidden)
+				logger.Debug("ws sticky reject",
+					zap.String("user", userID),
+					zap.Int("owner", owner),
+					zap.Int("self", cfg.InstanceOrdinal))
+				return
+			}
+		}
 
 		wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			// MVP: skip origin checks; upstream LB terminates TLS and filters.

@@ -33,6 +33,8 @@ import (
 
 type Config struct {
 	InstanceID       string
+	InstanceOrdinal  int // numeric shard position 0..TotalInstances-1 (ADR-0033)
+	TotalInstances   int // number of push instances in the cluster; 1 disables sticky
 	HTTPAddr         string
 	Brokers          []string
 	MarketDataTopic  string
@@ -61,6 +63,8 @@ func main() {
 
 	logger.Info("push starting",
 		zap.String("instance", cfg.InstanceID),
+		zap.Int("ordinal", cfg.InstanceOrdinal),
+		zap.Int("total_instances", cfg.TotalInstances),
 		zap.String("http", cfg.HTTPAddr),
 		zap.Strings("brokers", cfg.Brokers),
 		zap.String("market_topic", cfg.MarketDataTopic),
@@ -82,6 +86,8 @@ func main() {
 
 	privCons, err := consumer.NewPrivate(consumer.PrivateConfig{
 		Brokers: cfg.Brokers, ClientID: cfg.InstanceID,
+		InstanceOrdinal: cfg.InstanceOrdinal,
+		TotalInstances:  cfg.TotalInstances,
 		GroupID: cfg.PrivateGroupID, Topic: cfg.CounterJournalTopic,
 	}, h, logger)
 	if err != nil {
@@ -91,8 +97,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", ws.Handler(rootCtx, h, ws.Config{
-		SendBuffer:   cfg.SendBuffer,
-		WriteTimeout: cfg.WriteTimeout,
+		SendBuffer:      cfg.SendBuffer,
+		WriteTimeout:    cfg.WriteTimeout,
+		InstanceOrdinal: cfg.InstanceOrdinal,
+		TotalInstances:  cfg.TotalInstances,
 	}, logger))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -144,6 +152,8 @@ func main() {
 func parseFlags() Config {
 	cfg := Config{
 		InstanceID:          "push-0",
+		InstanceOrdinal:     0,
+		TotalInstances:      1,
 		HTTPAddr:            ":8081",
 		MarketDataTopic:     "market-data",
 		CounterJournalTopic: "counter-journal",
@@ -154,6 +164,8 @@ func parseFlags() Config {
 	}
 	var brokersStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (client id / default group suffix)")
+	flag.IntVar(&cfg.InstanceOrdinal, "instance-ordinal", cfg.InstanceOrdinal, "numeric position in the push cluster 0..total-1 (ADR-0033)")
+	flag.IntVar(&cfg.TotalInstances, "total-instances", cfg.TotalInstances, "total push instances; 1 disables sticky filtering")
 	flag.StringVar(&cfg.HTTPAddr, "http", cfg.HTTPAddr, "HTTP bind address (serves /ws and /healthz)")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
 	flag.StringVar(&cfg.MarketDataTopic, "market-topic", cfg.MarketDataTopic, "market-data topic")
@@ -185,6 +197,12 @@ func (c *Config) validate() error {
 	}
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("http address required")
+	}
+	if c.TotalInstances < 1 {
+		return fmt.Errorf("total-instances must be >= 1")
+	}
+	if c.InstanceOrdinal < 0 || c.InstanceOrdinal >= c.TotalInstances {
+		return fmt.Errorf("instance-ordinal %d must be in [0, %d)", c.InstanceOrdinal, c.TotalInstances)
 	}
 	return nil
 }
