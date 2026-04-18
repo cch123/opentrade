@@ -56,3 +56,22 @@ func (s *Sharded) PlaceOrder(ctx context.Context, req *counterrpc.PlaceOrderRequ
 	idx := shard.Index(req.UserId, len(s.clients))
 	return s.clients[idx].PlaceOrder(ctx, req)
 }
+
+// Reserve routes a ReserveRequest to the user's shard (ADR-0041).
+func (s *Sharded) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error) {
+	if req.UserId == "" {
+		return nil, fmt.Errorf("sharded counter: empty user id")
+	}
+	idx := shard.Index(req.UserId, len(s.clients))
+	return s.clients[idx].Reserve(ctx, req)
+}
+
+// ReleaseReservation routes to the user's shard. UserId is required so we
+// can pick a shard; the engine always passes it.
+func (s *Sharded) ReleaseReservation(ctx context.Context, req *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error) {
+	if req.UserId == "" {
+		return nil, fmt.Errorf("sharded counter: empty user id")
+	}
+	idx := shard.Index(req.UserId, len(s.clients))
+	return s.clients[idx].ReleaseReservation(ctx, req)
+}

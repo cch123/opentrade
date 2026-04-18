@@ -207,11 +207,26 @@ func mapServiceError(err error) error {
 	case errors.Is(err, service.ErrMissingUserID),
 		errors.Is(err, service.ErrMissingTransferID),
 		errors.Is(err, service.ErrMissingAsset),
-		errors.Is(err, service.ErrInvalidSymbol):
+		errors.Is(err, service.ErrInvalidSymbol),
+		errors.Is(err, service.ErrReservationIDRequired),
+		errors.Is(err, engine.ErrInvalidSymbol),
+		errors.Is(err, engine.ErrInvalidSide),
+		errors.Is(err, engine.ErrInvalidQty),
+		errors.Is(err, engine.ErrInvalidPrice),
+		errors.Is(err, engine.ErrMarketBuyNeedsQuote),
+		errors.Is(err, engine.ErrInvalidAmount):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, service.ErrOrderDepsNotConfigured):
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, service.ErrWrongShard):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, engine.ErrReservationNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, engine.ErrReservationUserMismatch):
+		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, engine.ErrReservationMismatch),
+		errors.Is(err, engine.ErrInsufficientAvailable),
+		errors.Is(err, engine.ErrInsufficientFrozen):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())
@@ -220,6 +235,79 @@ func mapServiceError(err error) error {
 // ---------------------------------------------------------------------------
 // PlaceOrder / CancelOrder / QueryOrder helpers (MVP-3)
 // ---------------------------------------------------------------------------
+
+// Reserve implements CounterService.Reserve (ADR-0041).
+func (s *Server) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+	side, err := sideFromProto(req.Side)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ot, err := orderTypeFromProto(req.OrderType)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	var price dec.Decimal
+	if req.Price != "" {
+		p, perr := dec.Parse(req.Price)
+		if perr != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid price %q: %v", req.Price, perr))
+		}
+		price = p
+	}
+	qty, err := dec.Parse(req.Qty)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid qty %q: %v", req.Qty, err))
+	}
+	quoteQty, err := dec.Parse(req.QuoteQty)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid quote_qty %q: %v", req.QuoteQty, err))
+	}
+	res, err := s.svc.Reserve(ctx, service.ReserveRequest{
+		UserID:        req.UserId,
+		ReservationID: req.ReservationId,
+		Symbol:        req.Symbol,
+		Side:          side,
+		OrderType:     ot,
+		Price:         price,
+		Qty:           qty,
+		QuoteQty:      quoteQty,
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &counterrpc.ReserveResponse{
+		ReservationId: res.ReservationID,
+		Asset:         res.Asset,
+		Amount:        res.Amount.String(),
+		Accepted:      res.Accepted,
+	}, nil
+}
+
+// ReleaseReservation implements CounterService.ReleaseReservation (ADR-0041).
+func (s *Server) ReleaseReservation(ctx context.Context, req *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+	res, err := s.svc.ReleaseReservation(ctx, service.ReleaseReservationRequest{
+		UserID:        req.UserId,
+		ReservationID: req.ReservationId,
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	resp := &counterrpc.ReleaseReservationResponse{
+		ReservationId: res.ReservationID,
+		Accepted:      res.Accepted,
+	}
+	if !res.Amount.IsZero() {
+		resp.Asset = res.Asset
+		resp.Amount = res.Amount.String()
+	}
+	return resp, nil
+}
 
 func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderRequest, error) {
 	side, err := sideFromProto(req.Side)
@@ -260,6 +348,7 @@ func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderR
 		Price:         price,
 		Qty:           qty,
 		QuoteQty:      quoteQty,
+		ReservationID: req.ReservationId,
 	}, nil
 }
 

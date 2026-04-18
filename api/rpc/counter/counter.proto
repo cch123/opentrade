@@ -33,6 +33,19 @@ service CounterService {
 
   // Query balances for a user.
   rpc QueryBalance(QueryBalanceRequest) returns (QueryBalanceResponse);
+
+  // Reserve moves Available → Frozen for a privileged caller (the
+  // conditional-order service, ADR-0041). The ref_id is the idempotency
+  // key; repeated Reserve for the same ref_id returns the prior
+  // record with accepted=false. Freeze amount is derived from the order
+  // shape via the same ComputeFreeze used by PlaceOrder, so Counter
+  // stays the single source of truth for freeze math.
+  rpc Reserve(ReserveRequest) returns (ReserveResponse);
+
+  // ReleaseReservation moves Frozen → Available and deletes the
+  // reservation record. Idempotent: unknown ref_ids return accepted=false
+  // without error.
+  rpc ReleaseReservation(ReleaseReservationRequest) returns (ReleaseReservationResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -51,6 +64,13 @@ message PlaceOrderRequest {
   // Market buy by quote budget (BN-style quoteOrderQty, ADR-0035).
   // Mutually exclusive with qty for market buy.
   string quote_qty = 9;
+  // Reservation id (ADR-0041). When non-empty, Counter consumes the
+  // matching reservation instead of freezing fresh funds: it verifies the
+  // reservation's (asset, amount) matches what ComputeFreeze would
+  // produce for this order, then deletes the reservation and places the
+  // order using the already-frozen balance. Only the conditional-order
+  // service sets this today.
+  string reservation_id = 10;
 }
 
 message PlaceOrderResponse {
@@ -149,4 +169,47 @@ message Balance {
   string asset = 1;
   string available = 2;
   string frozen = 3;
+}
+
+// -----------------------------------------------------------------------------
+// Reservations (ADR-0041)
+// -----------------------------------------------------------------------------
+
+message ReserveRequest {
+  string user_id = 1;
+  // Caller-generated id; dedup key. Conditional service uses "cond-<id>".
+  string reservation_id = 2;
+  // Order shape — Counter runs its existing ComputeFreeze on this tuple to
+  // derive (asset, amount).
+  string symbol = 3;
+  opentrade.event.Side side = 4;
+  opentrade.event.OrderType order_type = 5;
+  string price = 6;                              // for LIMIT
+  string qty = 7;
+  string quote_qty = 8;                          // market buy
+}
+
+message ReserveResponse {
+  string reservation_id = 1;
+  // Computed by ComputeFreeze.
+  string asset = 2;
+  string amount = 3;
+  // false when the reservation_id was already known (returning the prior
+  // asset/amount verbatim so the caller can assert idempotent behaviour).
+  bool accepted = 4;
+}
+
+message ReleaseReservationRequest {
+  string user_id = 1;
+  string reservation_id = 2;
+}
+
+message ReleaseReservationResponse {
+  string reservation_id = 1;
+  // true if we released a live reservation; false if we had nothing to
+  // release (already consumed by PlaceOrder, already released, or never
+  // existed). Either way the client can consider the ref_id "done".
+  bool accepted = 2;
+  string asset = 3;
+  string amount = 4;
 }

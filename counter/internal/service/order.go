@@ -33,6 +33,11 @@ type PlaceOrderRequest struct {
 	// QuoteQty is only set for BN-style market buy with quoteOrderQty
 	// (ADR-0035). Zero for every other shape.
 	QuoteQty dec.Decimal
+	// ReservationID, when non-empty, consumes an existing reservation
+	// instead of freezing Available at place time. The reservation's
+	// (asset, amount) must match ComputeFreeze for this order shape or
+	// the call is rejected (ADR-0041).
+	ReservationID string
 }
 
 // PlaceOrderResult is the response payload.
@@ -109,14 +114,34 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 			}
 		}
 
-		// Balance check.
+		// Reservation path (ADR-0041): the funds are already in Frozen
+		// under `req.ReservationID`; we just validate the match and
+		// consume the record. Plain-path freezes Available here.
 		bal := s.state.Balance(req.UserID, freezeAsset)
-		if bal.Available.Cmp(freezeAmount) < 0 {
-			return &PlaceOrderResult{
-				ClientOrderID: req.ClientOrderID,
-				Accepted:      false,
-				RejectReason:  ErrInsufficientBalance.Error(),
-			}, nil
+		var balAfter engine.Balance
+		if req.ReservationID != "" {
+			if err := s.state.ConsumeReservationForOrder(req.UserID, req.ReservationID, freezeAsset, freezeAmount); err != nil {
+				return &PlaceOrderResult{
+					ClientOrderID: req.ClientOrderID,
+					Accepted:      false,
+					RejectReason:  err.Error(),
+				}, nil
+			}
+			// Balance is unchanged in this step — Reserve already did the
+			// Available → Frozen move. Projected == current.
+			balAfter = bal
+		} else {
+			if bal.Available.Cmp(freezeAmount) < 0 {
+				return &PlaceOrderResult{
+					ClientOrderID: req.ClientOrderID,
+					Accepted:      false,
+					RejectReason:  ErrInsufficientBalance.Error(),
+				}, nil
+			}
+			balAfter = engine.Balance{
+				Available: bal.Available.Sub(freezeAmount),
+				Frozen:    bal.Frozen.Add(freezeAmount),
+			}
 		}
 
 		now := time.Now().UnixMilli()
@@ -138,12 +163,6 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 			Status:        engine.OrderStatusPendingNew,
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		}
-
-		// Projected balance after freeze (for BalanceAfter on journal event).
-		balAfter := engine.Balance{
-			Available: bal.Available.Sub(freezeAmount),
-			Frozen:    bal.Frozen.Add(freezeAmount),
 		}
 
 		journalEvt, orderEvt, err := journal.BuildPlaceOrderEvents(journal.PlaceOrderEventInput{

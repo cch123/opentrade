@@ -88,15 +88,17 @@ func (a *Account) PutForRestore(asset string, b Balance) {
 type ShardState struct {
 	ShardID int
 
-	accounts sync.Map // user_id → *Account
-	orders   *OrderStore
+	accounts     sync.Map // user_id → *Account
+	orders       *OrderStore
+	reservations *reservationStore
 }
 
 // NewShardState constructs an empty state.
 func NewShardState(shardID int) *ShardState {
 	return &ShardState{
-		ShardID: shardID,
-		orders:  newOrderStore(),
+		ShardID:      shardID,
+		orders:       newOrderStore(),
+		reservations: newReservationStore(),
 	}
 }
 

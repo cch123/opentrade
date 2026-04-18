@@ -89,6 +89,47 @@ func TestCaptureRestore(t *testing.T) {
 	}
 }
 
+// TestCaptureRestore_Reservations verifies reservations survive snapshot
+// round-trips — the only durability story for them (ADR-0041 §Durability).
+func TestCaptureRestore_Reservations(t *testing.T) {
+	state := engine.NewShardState(0)
+	seq := sequencer.New()
+	dt := dedup.New(time.Hour)
+
+	// Seed balance and reserve against it.
+	if _, err := state.ApplyTransfer(engine.TransferRequest{
+		UserID: "u1", Asset: "USDT", Amount: dec.New("1000"), Type: engine.TransferDeposit,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := state.CreateReservation("u1", "USDT", "cond-42", dec.New("100")); err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := filepath.Join(t.TempDir(), "shard-0.json")
+	if err := Save(tmp, Capture(0, state, seq, dt, 0)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state2 := engine.NewShardState(0)
+	seq2 := sequencer.New()
+	dt2 := dedup.New(time.Hour)
+	if err := Restore(0, state2, seq2, dt2, loaded); err != nil {
+		t.Fatal(err)
+	}
+	r := state2.LookupReservation("cond-42")
+	if r == nil || r.Amount.String() != "100" || r.Asset != "USDT" || r.UserID != "u1" {
+		t.Fatalf("reservation round-trip lost: %+v", r)
+	}
+	if bal := state2.Balance("u1", "USDT"); bal.Available.String() != "900" || bal.Frozen.String() != "100" {
+		t.Errorf("balance: %+v", bal)
+	}
+}
+
 func TestRestoreRejectsVersionMismatch(t *testing.T) {
 	state := engine.NewShardState(0)
 	seq := sequencer.New()

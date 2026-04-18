@@ -141,7 +141,14 @@ type PlaceOrderRequest struct {
 	Qty           string                 `protobuf:"bytes,8,opt,name=qty,proto3" json:"qty,omitempty"`     // base qty; empty for market buy with quote_qty
 	// Market buy by quote budget (BN-style quoteOrderQty, ADR-0035).
 	// Mutually exclusive with qty for market buy.
-	QuoteQty      string `protobuf:"bytes,9,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`
+	QuoteQty string `protobuf:"bytes,9,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`
+	// Reservation id (ADR-0041). When non-empty, Counter consumes the
+	// matching reservation instead of freezing fresh funds: it verifies the
+	// reservation's (asset, amount) matches what ComputeFreeze would
+	// produce for this order, then deletes the reservation and places the
+	// order using the already-frozen balance. Only the conditional-order
+	// service sets this today.
+	ReservationId string `protobuf:"bytes,10,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -235,6 +242,13 @@ func (x *PlaceOrderRequest) GetQty() string {
 func (x *PlaceOrderRequest) GetQuoteQty() string {
 	if x != nil {
 		return x.QuoteQty
+	}
+	return ""
+}
+
+func (x *PlaceOrderRequest) GetReservationId() string {
+	if x != nil {
+		return x.ReservationId
 	}
 	return ""
 }
@@ -931,11 +945,308 @@ func (x *Balance) GetFrozen() string {
 	return ""
 }
 
+type ReserveRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Caller-generated id; dedup key. Conditional service uses "cond-<id>".
+	ReservationId string `protobuf:"bytes,2,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
+	// Order shape — Counter runs its existing ComputeFreeze on this tuple to
+	// derive (asset, amount).
+	Symbol        string          `protobuf:"bytes,3,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	Side          event.Side      `protobuf:"varint,4,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
+	OrderType     event.OrderType `protobuf:"varint,5,opt,name=order_type,json=orderType,proto3,enum=opentrade.event.OrderType" json:"order_type,omitempty"`
+	Price         string          `protobuf:"bytes,6,opt,name=price,proto3" json:"price,omitempty"` // for LIMIT
+	Qty           string          `protobuf:"bytes,7,opt,name=qty,proto3" json:"qty,omitempty"`
+	QuoteQty      string          `protobuf:"bytes,8,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"` // market buy
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReserveRequest) Reset() {
+	*x = ReserveRequest{}
+	mi := &file_rpc_counter_counter_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReserveRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReserveRequest) ProtoMessage() {}
+
+func (x *ReserveRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_counter_counter_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReserveRequest.ProtoReflect.Descriptor instead.
+func (*ReserveRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ReserveRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *ReserveRequest) GetReservationId() string {
+	if x != nil {
+		return x.ReservationId
+	}
+	return ""
+}
+
+func (x *ReserveRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *ReserveRequest) GetSide() event.Side {
+	if x != nil {
+		return x.Side
+	}
+	return event.Side(0)
+}
+
+func (x *ReserveRequest) GetOrderType() event.OrderType {
+	if x != nil {
+		return x.OrderType
+	}
+	return event.OrderType(0)
+}
+
+func (x *ReserveRequest) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *ReserveRequest) GetQty() string {
+	if x != nil {
+		return x.Qty
+	}
+	return ""
+}
+
+func (x *ReserveRequest) GetQuoteQty() string {
+	if x != nil {
+		return x.QuoteQty
+	}
+	return ""
+}
+
+type ReserveResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ReservationId string                 `protobuf:"bytes,1,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
+	// Computed by ComputeFreeze.
+	Asset  string `protobuf:"bytes,2,opt,name=asset,proto3" json:"asset,omitempty"`
+	Amount string `protobuf:"bytes,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	// false when the reservation_id was already known (returning the prior
+	// asset/amount verbatim so the caller can assert idempotent behaviour).
+	Accepted      bool `protobuf:"varint,4,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReserveResponse) Reset() {
+	*x = ReserveResponse{}
+	mi := &file_rpc_counter_counter_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReserveResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReserveResponse) ProtoMessage() {}
+
+func (x *ReserveResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_counter_counter_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReserveResponse.ProtoReflect.Descriptor instead.
+func (*ReserveResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ReserveResponse) GetReservationId() string {
+	if x != nil {
+		return x.ReservationId
+	}
+	return ""
+}
+
+func (x *ReserveResponse) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *ReserveResponse) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *ReserveResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+type ReleaseReservationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ReservationId string                 `protobuf:"bytes,2,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseReservationRequest) Reset() {
+	*x = ReleaseReservationRequest{}
+	mi := &file_rpc_counter_counter_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseReservationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseReservationRequest) ProtoMessage() {}
+
+func (x *ReleaseReservationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_counter_counter_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseReservationRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseReservationRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ReleaseReservationRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *ReleaseReservationRequest) GetReservationId() string {
+	if x != nil {
+		return x.ReservationId
+	}
+	return ""
+}
+
+type ReleaseReservationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ReservationId string                 `protobuf:"bytes,1,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
+	// true if we released a live reservation; false if we had nothing to
+	// release (already consumed by PlaceOrder, already released, or never
+	// existed). Either way the client can consider the ref_id "done".
+	Accepted      bool   `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	Asset         string `protobuf:"bytes,3,opt,name=asset,proto3" json:"asset,omitempty"`
+	Amount        string `protobuf:"bytes,4,opt,name=amount,proto3" json:"amount,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseReservationResponse) Reset() {
+	*x = ReleaseReservationResponse{}
+	mi := &file_rpc_counter_counter_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseReservationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseReservationResponse) ProtoMessage() {}
+
+func (x *ReleaseReservationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_counter_counter_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseReservationResponse.ProtoReflect.Descriptor instead.
+func (*ReleaseReservationResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ReleaseReservationResponse) GetReservationId() string {
+	if x != nil {
+		return x.ReservationId
+	}
+	return ""
+}
+
+func (x *ReleaseReservationResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *ReleaseReservationResponse) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *ReleaseReservationResponse) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
 var File_rpc_counter_counter_proto protoreflect.FileDescriptor
 
 const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\n" +
-	"\x19rpc/counter/counter.proto\x12\x15opentrade.rpc.counter\x1a\x12event/common.proto\"\xc7\x02\n" +
+	"\x19rpc/counter/counter.proto\x12\x15opentrade.rpc.counter\x1a\x12event/common.proto\"\xee\x02\n" +
 	"\x11PlaceOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x16\n" +
@@ -946,7 +1257,9 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\x03tif\x18\x06 \x01(\x0e2\x1c.opentrade.event.TimeInForceR\x03tif\x12\x14\n" +
 	"\x05price\x18\a \x01(\tR\x05price\x12\x10\n" +
 	"\x03qty\x18\b \x01(\tR\x03qty\x12\x1b\n" +
-	"\tquote_qty\x18\t \x01(\tR\bquoteQty\"\xa2\x01\n" +
+	"\tquote_qty\x18\t \x01(\tR\bquoteQty\x12%\n" +
+	"\x0ereservation_id\x18\n" +
+	" \x01(\tR\rreservationId\"\xa2\x01\n" +
 	"\x12PlaceOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x1a\n" +
@@ -1004,7 +1317,30 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\aBalance\x12\x14\n" +
 	"\x05asset\x18\x01 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x02 \x01(\tR\tavailable\x12\x16\n" +
-	"\x06frozen\x18\x03 \x01(\tR\x06frozen*\x9a\x01\n" +
+	"\x06frozen\x18\x03 \x01(\tR\x06frozen\"\x93\x02\n" +
+	"\x0eReserveRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12%\n" +
+	"\x0ereservation_id\x18\x02 \x01(\tR\rreservationId\x12\x16\n" +
+	"\x06symbol\x18\x03 \x01(\tR\x06symbol\x12)\n" +
+	"\x04side\x18\x04 \x01(\x0e2\x15.opentrade.event.SideR\x04side\x129\n" +
+	"\n" +
+	"order_type\x18\x05 \x01(\x0e2\x1a.opentrade.event.OrderTypeR\torderType\x12\x14\n" +
+	"\x05price\x18\x06 \x01(\tR\x05price\x12\x10\n" +
+	"\x03qty\x18\a \x01(\tR\x03qty\x12\x1b\n" +
+	"\tquote_qty\x18\b \x01(\tR\bquoteQty\"\x82\x01\n" +
+	"\x0fReserveResponse\x12%\n" +
+	"\x0ereservation_id\x18\x01 \x01(\tR\rreservationId\x12\x14\n" +
+	"\x05asset\x18\x02 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\tR\x06amount\x12\x1a\n" +
+	"\baccepted\x18\x04 \x01(\bR\baccepted\"[\n" +
+	"\x19ReleaseReservationRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12%\n" +
+	"\x0ereservation_id\x18\x02 \x01(\tR\rreservationId\"\x8d\x01\n" +
+	"\x1aReleaseReservationResponse\x12%\n" +
+	"\x0ereservation_id\x18\x01 \x01(\tR\rreservationId\x12\x1a\n" +
+	"\baccepted\x18\x02 \x01(\bR\baccepted\x12\x14\n" +
+	"\x05asset\x18\x03 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06amount\x18\x04 \x01(\tR\x06amount*\x9a\x01\n" +
 	"\fTransferType\x12\x1d\n" +
 	"\x19TRANSFER_TYPE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15TRANSFER_TYPE_DEPOSIT\x10\x01\x12\x1a\n" +
@@ -1015,7 +1351,7 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\x1bTRANSFER_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19TRANSFER_STATUS_CONFIRMED\x10\x01\x12\x1c\n" +
 	"\x18TRANSFER_STATUS_REJECTED\x10\x02\x12\x1e\n" +
-	"\x1aTRANSFER_STATUS_DUPLICATED\x10\x032\x82\x04\n" +
+	"\x1aTRANSFER_STATUS_DUPLICATED\x10\x032\xd7\x05\n" +
 	"\x0eCounterService\x12a\n" +
 	"\n" +
 	"PlaceOrder\x12(.opentrade.rpc.counter.PlaceOrderRequest\x1a).opentrade.rpc.counter.PlaceOrderResponse\x12d\n" +
@@ -1023,7 +1359,9 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\bTransfer\x12&.opentrade.rpc.counter.TransferRequest\x1a'.opentrade.rpc.counter.TransferResponse\x12a\n" +
 	"\n" +
 	"QueryOrder\x12(.opentrade.rpc.counter.QueryOrderRequest\x1a).opentrade.rpc.counter.QueryOrderResponse\x12g\n" +
-	"\fQueryBalance\x12*.opentrade.rpc.counter.QueryBalanceRequest\x1a+.opentrade.rpc.counter.QueryBalanceResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/counter;counterrpcb\x06proto3"
+	"\fQueryBalance\x12*.opentrade.rpc.counter.QueryBalanceRequest\x1a+.opentrade.rpc.counter.QueryBalanceResponse\x12X\n" +
+	"\aReserve\x12%.opentrade.rpc.counter.ReserveRequest\x1a&.opentrade.rpc.counter.ReserveResponse\x12y\n" +
+	"\x12ReleaseReservation\x120.opentrade.rpc.counter.ReleaseReservationRequest\x1a1.opentrade.rpc.counter.ReleaseReservationResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/counter;counterrpcb\x06proto3"
 
 var (
 	file_rpc_counter_counter_proto_rawDescOnce sync.Once
@@ -1038,52 +1376,62 @@ func file_rpc_counter_counter_proto_rawDescGZIP() []byte {
 }
 
 var file_rpc_counter_counter_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_rpc_counter_counter_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_rpc_counter_counter_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_rpc_counter_counter_proto_goTypes = []any{
-	(TransferType)(0),              // 0: opentrade.rpc.counter.TransferType
-	(TransferStatus)(0),            // 1: opentrade.rpc.counter.TransferStatus
-	(*PlaceOrderRequest)(nil),      // 2: opentrade.rpc.counter.PlaceOrderRequest
-	(*PlaceOrderResponse)(nil),     // 3: opentrade.rpc.counter.PlaceOrderResponse
-	(*CancelOrderRequest)(nil),     // 4: opentrade.rpc.counter.CancelOrderRequest
-	(*CancelOrderResponse)(nil),    // 5: opentrade.rpc.counter.CancelOrderResponse
-	(*TransferRequest)(nil),        // 6: opentrade.rpc.counter.TransferRequest
-	(*TransferResponse)(nil),       // 7: opentrade.rpc.counter.TransferResponse
-	(*QueryOrderRequest)(nil),      // 8: opentrade.rpc.counter.QueryOrderRequest
-	(*QueryOrderResponse)(nil),     // 9: opentrade.rpc.counter.QueryOrderResponse
-	(*QueryBalanceRequest)(nil),    // 10: opentrade.rpc.counter.QueryBalanceRequest
-	(*QueryBalanceResponse)(nil),   // 11: opentrade.rpc.counter.QueryBalanceResponse
-	(*Balance)(nil),                // 12: opentrade.rpc.counter.Balance
-	(event.Side)(0),                // 13: opentrade.event.Side
-	(event.OrderType)(0),           // 14: opentrade.event.OrderType
-	(event.TimeInForce)(0),         // 15: opentrade.event.TimeInForce
-	(event.InternalOrderStatus)(0), // 16: opentrade.event.InternalOrderStatus
+	(TransferType)(0),                  // 0: opentrade.rpc.counter.TransferType
+	(TransferStatus)(0),                // 1: opentrade.rpc.counter.TransferStatus
+	(*PlaceOrderRequest)(nil),          // 2: opentrade.rpc.counter.PlaceOrderRequest
+	(*PlaceOrderResponse)(nil),         // 3: opentrade.rpc.counter.PlaceOrderResponse
+	(*CancelOrderRequest)(nil),         // 4: opentrade.rpc.counter.CancelOrderRequest
+	(*CancelOrderResponse)(nil),        // 5: opentrade.rpc.counter.CancelOrderResponse
+	(*TransferRequest)(nil),            // 6: opentrade.rpc.counter.TransferRequest
+	(*TransferResponse)(nil),           // 7: opentrade.rpc.counter.TransferResponse
+	(*QueryOrderRequest)(nil),          // 8: opentrade.rpc.counter.QueryOrderRequest
+	(*QueryOrderResponse)(nil),         // 9: opentrade.rpc.counter.QueryOrderResponse
+	(*QueryBalanceRequest)(nil),        // 10: opentrade.rpc.counter.QueryBalanceRequest
+	(*QueryBalanceResponse)(nil),       // 11: opentrade.rpc.counter.QueryBalanceResponse
+	(*Balance)(nil),                    // 12: opentrade.rpc.counter.Balance
+	(*ReserveRequest)(nil),             // 13: opentrade.rpc.counter.ReserveRequest
+	(*ReserveResponse)(nil),            // 14: opentrade.rpc.counter.ReserveResponse
+	(*ReleaseReservationRequest)(nil),  // 15: opentrade.rpc.counter.ReleaseReservationRequest
+	(*ReleaseReservationResponse)(nil), // 16: opentrade.rpc.counter.ReleaseReservationResponse
+	(event.Side)(0),                    // 17: opentrade.event.Side
+	(event.OrderType)(0),               // 18: opentrade.event.OrderType
+	(event.TimeInForce)(0),             // 19: opentrade.event.TimeInForce
+	(event.InternalOrderStatus)(0),     // 20: opentrade.event.InternalOrderStatus
 }
 var file_rpc_counter_counter_proto_depIdxs = []int32{
-	13, // 0: opentrade.rpc.counter.PlaceOrderRequest.side:type_name -> opentrade.event.Side
-	14, // 1: opentrade.rpc.counter.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
-	15, // 2: opentrade.rpc.counter.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
+	17, // 0: opentrade.rpc.counter.PlaceOrderRequest.side:type_name -> opentrade.event.Side
+	18, // 1: opentrade.rpc.counter.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
+	19, // 2: opentrade.rpc.counter.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
 	0,  // 3: opentrade.rpc.counter.TransferRequest.type:type_name -> opentrade.rpc.counter.TransferType
 	1,  // 4: opentrade.rpc.counter.TransferResponse.status:type_name -> opentrade.rpc.counter.TransferStatus
-	13, // 5: opentrade.rpc.counter.QueryOrderResponse.side:type_name -> opentrade.event.Side
-	14, // 6: opentrade.rpc.counter.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
-	15, // 7: opentrade.rpc.counter.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
-	16, // 8: opentrade.rpc.counter.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
+	17, // 5: opentrade.rpc.counter.QueryOrderResponse.side:type_name -> opentrade.event.Side
+	18, // 6: opentrade.rpc.counter.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
+	19, // 7: opentrade.rpc.counter.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
+	20, // 8: opentrade.rpc.counter.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
 	12, // 9: opentrade.rpc.counter.QueryBalanceResponse.balances:type_name -> opentrade.rpc.counter.Balance
-	2,  // 10: opentrade.rpc.counter.CounterService.PlaceOrder:input_type -> opentrade.rpc.counter.PlaceOrderRequest
-	4,  // 11: opentrade.rpc.counter.CounterService.CancelOrder:input_type -> opentrade.rpc.counter.CancelOrderRequest
-	6,  // 12: opentrade.rpc.counter.CounterService.Transfer:input_type -> opentrade.rpc.counter.TransferRequest
-	8,  // 13: opentrade.rpc.counter.CounterService.QueryOrder:input_type -> opentrade.rpc.counter.QueryOrderRequest
-	10, // 14: opentrade.rpc.counter.CounterService.QueryBalance:input_type -> opentrade.rpc.counter.QueryBalanceRequest
-	3,  // 15: opentrade.rpc.counter.CounterService.PlaceOrder:output_type -> opentrade.rpc.counter.PlaceOrderResponse
-	5,  // 16: opentrade.rpc.counter.CounterService.CancelOrder:output_type -> opentrade.rpc.counter.CancelOrderResponse
-	7,  // 17: opentrade.rpc.counter.CounterService.Transfer:output_type -> opentrade.rpc.counter.TransferResponse
-	9,  // 18: opentrade.rpc.counter.CounterService.QueryOrder:output_type -> opentrade.rpc.counter.QueryOrderResponse
-	11, // 19: opentrade.rpc.counter.CounterService.QueryBalance:output_type -> opentrade.rpc.counter.QueryBalanceResponse
-	15, // [15:20] is the sub-list for method output_type
-	10, // [10:15] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	17, // 10: opentrade.rpc.counter.ReserveRequest.side:type_name -> opentrade.event.Side
+	18, // 11: opentrade.rpc.counter.ReserveRequest.order_type:type_name -> opentrade.event.OrderType
+	2,  // 12: opentrade.rpc.counter.CounterService.PlaceOrder:input_type -> opentrade.rpc.counter.PlaceOrderRequest
+	4,  // 13: opentrade.rpc.counter.CounterService.CancelOrder:input_type -> opentrade.rpc.counter.CancelOrderRequest
+	6,  // 14: opentrade.rpc.counter.CounterService.Transfer:input_type -> opentrade.rpc.counter.TransferRequest
+	8,  // 15: opentrade.rpc.counter.CounterService.QueryOrder:input_type -> opentrade.rpc.counter.QueryOrderRequest
+	10, // 16: opentrade.rpc.counter.CounterService.QueryBalance:input_type -> opentrade.rpc.counter.QueryBalanceRequest
+	13, // 17: opentrade.rpc.counter.CounterService.Reserve:input_type -> opentrade.rpc.counter.ReserveRequest
+	15, // 18: opentrade.rpc.counter.CounterService.ReleaseReservation:input_type -> opentrade.rpc.counter.ReleaseReservationRequest
+	3,  // 19: opentrade.rpc.counter.CounterService.PlaceOrder:output_type -> opentrade.rpc.counter.PlaceOrderResponse
+	5,  // 20: opentrade.rpc.counter.CounterService.CancelOrder:output_type -> opentrade.rpc.counter.CancelOrderResponse
+	7,  // 21: opentrade.rpc.counter.CounterService.Transfer:output_type -> opentrade.rpc.counter.TransferResponse
+	9,  // 22: opentrade.rpc.counter.CounterService.QueryOrder:output_type -> opentrade.rpc.counter.QueryOrderResponse
+	11, // 23: opentrade.rpc.counter.CounterService.QueryBalance:output_type -> opentrade.rpc.counter.QueryBalanceResponse
+	14, // 24: opentrade.rpc.counter.CounterService.Reserve:output_type -> opentrade.rpc.counter.ReserveResponse
+	16, // 25: opentrade.rpc.counter.CounterService.ReleaseReservation:output_type -> opentrade.rpc.counter.ReleaseReservationResponse
+	19, // [19:26] is the sub-list for method output_type
+	12, // [12:19] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_rpc_counter_counter_proto_init() }
@@ -1097,7 +1445,7 @@ func file_rpc_counter_counter_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_counter_counter_proto_rawDesc), len(file_rpc_counter_counter_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   11,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

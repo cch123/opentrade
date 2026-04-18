@@ -108,7 +108,7 @@ func main() {
 
 	eng := engine.New(engine.Config{
 		TerminalHistoryLimit: cfg.TerminalHistoryLimit,
-	}, idg, placer, logger)
+	}, idg, placer, placer, logger)
 
 	initialOffsets, err := tryRestoreSnapshot(cfg, eng, logger)
 	if err != nil {

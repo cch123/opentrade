@@ -68,15 +68,27 @@ type OrderSnapshot struct {
 	UpdatedAt       int64  `json:"updated_at"`
 }
 
+// ReservationSnapshot captures a conditional-order reservation
+// (ADR-0041). Reservations are not Kafka-journaled — they only persist
+// across graceful restarts via this snapshot. See ADR-0041 §Durability.
+type ReservationSnapshot struct {
+	UserID      string `json:"user_id"`
+	RefID       string `json:"ref_id"`
+	Asset       string `json:"asset"`
+	Amount      string `json:"amount"`
+	CreatedAtMs int64  `json:"created_at_ms,omitempty"`
+}
+
 // ShardSnapshot is the on-disk representation of one Counter shard.
 type ShardSnapshot struct {
-	Version     int                  `json:"version"`
-	ShardID     int                  `json:"shard_id"`
-	ShardSeq    uint64               `json:"shard_seq"`
-	TimestampMS int64                `json:"ts_unix_ms"`
-	Accounts    []AccountSnapshot    `json:"accounts"`
-	Orders      []OrderSnapshot      `json:"orders,omitempty"`
-	Dedup       []DedupEntrySnapshot `json:"dedup,omitempty"`
+	Version      int                   `json:"version"`
+	ShardID      int                   `json:"shard_id"`
+	ShardSeq     uint64                `json:"shard_seq"`
+	TimestampMS  int64                 `json:"ts_unix_ms"`
+	Accounts     []AccountSnapshot     `json:"accounts"`
+	Orders       []OrderSnapshot       `json:"orders,omitempty"`
+	Dedup        []DedupEntrySnapshot  `json:"dedup,omitempty"`
+	Reservations []ReservationSnapshot `json:"reservations,omitempty"`
 }
 
 // -----------------------------------------------------------------------------
@@ -133,6 +145,15 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			PreCancelStatus: uint8(o.PreCancelStatus),
 			CreatedAt:       o.CreatedAt,
 			UpdatedAt:       o.UpdatedAt,
+		})
+	}
+	for _, r := range state.AllReservations() {
+		snap.Reservations = append(snap.Reservations, ReservationSnapshot{
+			UserID:      r.UserID,
+			RefID:       r.RefID,
+			Asset:       r.Asset,
+			Amount:      r.Amount.String(),
+			CreatedAtMs: r.CreatedAtMs,
 		})
 	}
 	return snap
@@ -227,6 +248,19 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			PreCancelStatus: engine.OrderStatus(os.PreCancelStatus),
 			CreatedAt:       os.CreatedAt,
 			UpdatedAt:       os.UpdatedAt,
+		})
+	}
+	for _, rs := range snap.Reservations {
+		amount, err := dec.Parse(rs.Amount)
+		if err != nil {
+			return fmt.Errorf("reservation %s amount: %w", rs.RefID, err)
+		}
+		state.RestoreReservation(&engine.Reservation{
+			UserID:      rs.UserID,
+			RefID:       rs.RefID,
+			Asset:       rs.Asset,
+			Amount:      amount,
+			CreatedAtMs: rs.CreatedAtMs,
 		})
 	}
 	return nil

@@ -31,8 +31,8 @@ func New(svc *service.Service, clock func() time.Time) *Server {
 }
 
 // PlaceConditional is the gRPC entry. Errors are mapped to canonical codes.
-func (s *Server) PlaceConditional(_ context.Context, req *condrpc.PlaceConditionalRequest) (*condrpc.PlaceConditionalResponse, error) {
-	resp, err := s.svc.Place(req, s.clock().UnixMilli())
+func (s *Server) PlaceConditional(ctx context.Context, req *condrpc.PlaceConditionalRequest) (*condrpc.PlaceConditionalResponse, error) {
+	resp, err := s.svc.Place(ctx, req, s.clock().UnixMilli())
 	if err != nil {
 		return nil, toGRPCErr(err)
 	}
@@ -40,8 +40,8 @@ func (s *Server) PlaceConditional(_ context.Context, req *condrpc.PlaceCondition
 }
 
 // CancelConditional is the gRPC entry.
-func (s *Server) CancelConditional(_ context.Context, req *condrpc.CancelConditionalRequest) (*condrpc.CancelConditionalResponse, error) {
-	resp, err := s.svc.Cancel(req)
+func (s *Server) CancelConditional(ctx context.Context, req *condrpc.CancelConditionalRequest) (*condrpc.CancelConditionalResponse, error) {
+	resp, err := s.svc.Cancel(ctx, req)
 	if err != nil {
 		return nil, toGRPCErr(err)
 	}

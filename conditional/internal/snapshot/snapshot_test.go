@@ -29,12 +29,12 @@ func newEngine() *engine.Engine {
 	return engine.New(engine.Config{
 		TerminalHistoryLimit: 50,
 		Clock:                func() time.Time { return time.Unix(1_700_000_000, 0) },
-	}, &counterSeq{}, nopPlacer{}, zap.NewNop())
+	}, &counterSeq{}, nopPlacer{}, nil, zap.NewNop())
 }
 
 func TestSaveLoad_RoundTrip(t *testing.T) {
 	src := newEngine()
-	id1, _, _, _ := src.Place(&condrpc.PlaceConditionalRequest{
+	id1, _, _, _ := src.Place(context.Background(), &condrpc.PlaceConditionalRequest{
 		UserId:    "u1",
 		Symbol:    "BTC-USDT",
 		Side:      eventpb.Side_SIDE_SELL,
@@ -42,8 +42,8 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 		StopPrice: "100",
 		Qty:       "0.5",
 	})
-	_, _, _ = src.Cancel("u1", id1)
-	_, _, _, _ = src.Place(&condrpc.PlaceConditionalRequest{
+	_, _, _ = src.Cancel(context.Background(), "u1", id1)
+	_, _, _, _ = src.Place(context.Background(), &condrpc.PlaceConditionalRequest{
 		UserId:     "u2",
 		Symbol:     "ETH-USDT",
 		Side:       eventpb.Side_SIDE_BUY,

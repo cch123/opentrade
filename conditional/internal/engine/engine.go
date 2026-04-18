@@ -69,8 +69,21 @@ type IDGen interface {
 }
 
 // OrderPlacer is the narrow gRPC contract the engine needs from Counter.
+// When Reservations is non-nil (default in prod) the engine calls Reserve
+// at Place time, ReleaseReservation on cancel / reject, and PlaceOrder
+// with the reservation_id at trigger time (ADR-0041). A nil Reservations
+// falls back to MVP-14a behaviour: no fund reservation, PlaceOrder may
+// fail at trigger if balance is gone.
 type OrderPlacer interface {
 	PlaceOrder(ctx context.Context, in *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error)
+}
+
+// Reservations is the optional set of reservation operations. Split from
+// OrderPlacer so tests can exercise the MVP-14a codepath without a stub
+// for these methods.
+type Reservations interface {
+	Reserve(ctx context.Context, in *counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error)
+	ReleaseReservation(ctx context.Context, in *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error)
 }
 
 // -----------------------------------------------------------------------------
@@ -114,10 +127,11 @@ type Config struct {
 
 // Engine owns the pending / terminal maps and coordinates triggers.
 type Engine struct {
-	cfg     Config
-	idgen   IDGen
-	placer  OrderPlacer
-	logger  *zap.Logger
+	cfg      Config
+	idgen    IDGen
+	placer   OrderPlacer
+	reserver Reservations // may be nil → MVP-14a behaviour
+	logger   *zap.Logger
 
 	mu         sync.Mutex
 	pending    map[uint64]*Conditional
@@ -129,7 +143,8 @@ type Engine struct {
 }
 
 // New builds an Engine. Pass a zap.NewNop() for tests.
-func New(cfg Config, idgen IDGen, placer OrderPlacer, logger *zap.Logger) *Engine {
+// reserver is optional; nil disables fund reservation (MVP-14a mode).
+func New(cfg Config, idgen IDGen, placer OrderPlacer, reserver Reservations, logger *zap.Logger) *Engine {
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now
 	}
@@ -140,6 +155,7 @@ func New(cfg Config, idgen IDGen, placer OrderPlacer, logger *zap.Logger) *Engin
 		cfg:       cfg,
 		idgen:     idgen,
 		placer:    placer,
+		reserver:  reserver,
 		logger:    logger,
 		pending:   make(map[uint64]*Conditional),
 		terminals: make(map[uint64]*Conditional),
@@ -153,10 +169,11 @@ func New(cfg Config, idgen IDGen, placer OrderPlacer, logger *zap.Logger) *Engin
 // Place / Cancel / Query
 // -----------------------------------------------------------------------------
 
-// Place validates req, stores a new PENDING conditional, returns its id.
-// Duplicate client_conditional_id returns the existing record with
-// accepted=false (idempotency per proto contract).
-func (e *Engine) Place(req *condrpc.PlaceConditionalRequest) (id uint64, status condrpc.ConditionalStatus, accepted bool, err error) {
+// Place validates req, reserves funds (if reserver wired), stores a new
+// PENDING conditional, and returns its id. Duplicate
+// client_conditional_id returns the existing record with accepted=false
+// (idempotency per proto contract).
+func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceConditionalRequest) (id uint64, status condrpc.ConditionalStatus, accepted bool, err error) {
 	c, err := buildConditional(req)
 	if err != nil {
 		return 0, 0, false, err
@@ -164,46 +181,86 @@ func (e *Engine) Place(req *condrpc.PlaceConditionalRequest) (id uint64, status 
 	c.CreatedAtMs = e.cfg.Clock().UnixMilli()
 	c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	// Fast-path dedup: return prior record without reserving anew.
 	if c.ClientCondID != "" {
-		if existing, ok := e.byClient[c.ClientCondID]; ok {
-			prior := e.lookupLocked(existing)
-			if prior != nil {
+		e.mu.Lock()
+		if existingID, ok := e.byClient[c.ClientCondID]; ok {
+			if prior := e.lookupLocked(existingID); prior != nil {
+				e.mu.Unlock()
 				return prior.ID, prior.Status, false, nil
 			}
 		}
+		e.mu.Unlock()
 	}
-	c.ID = e.idgen.Next()
+
+	// Allocate the conditional id now so we can form the reservation
+	// ref_id before calling Counter. idgen is independently
+	// concurrency-safe; a "wasted" id on reservation failure is harmless
+	// at snowflake scale.
+	c.ID = e.nextID()
+	refID := e.refIDFor(c.ID)
+
+	// Reserve funds outside any engine lock. Counter's Reserve is
+	// idempotent on ref_id so retries or replays after crash converge.
+	if e.reserver != nil {
+		if _, rerr := e.reserver.Reserve(ctx, buildReserveReq(c, refID)); rerr != nil {
+			return 0, 0, false, rerr
+		}
+	}
+
+	// Commit to the engine maps. Re-check dedup under the lock; if
+	// another concurrent Place won the race for the same client id, we
+	// orphan a reservation and must release it.
+	e.mu.Lock()
+	if c.ClientCondID != "" {
+		if existingID, ok := e.byClient[c.ClientCondID]; ok {
+			if prior := e.lookupLocked(existingID); prior != nil {
+				priorID, priorStatus := prior.ID, prior.Status
+				e.mu.Unlock()
+				e.bestEffortRelease(ctx, c.UserID, refID)
+				return priorID, priorStatus, false, nil
+			}
+		}
+	}
 	e.pending[c.ID] = c
 	if c.ClientCondID != "" {
 		e.byClient[c.ClientCondID] = c.ID
 	}
+	e.mu.Unlock()
 	return c.ID, c.Status, true, nil
 }
 
-// Cancel transitions a PENDING conditional to CANCELED. The second return
-// value is accepted=true only when a state change actually happened.
-func (e *Engine) Cancel(userID string, id uint64) (condrpc.ConditionalStatus, bool, error) {
+// Cancel transitions a PENDING conditional to CANCELED and releases its
+// reservation (if any). Returns accepted=true only when a state change
+// actually happened.
+func (e *Engine) Cancel(ctx context.Context, userID string, id uint64) (condrpc.ConditionalStatus, bool, error) {
 	if userID == "" {
 		return 0, false, ErrMissingUserID
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	c := e.lookupLocked(id)
 	if c == nil {
+		e.mu.Unlock()
 		return 0, false, ErrNotFound
 	}
 	if c.UserID != userID {
+		e.mu.Unlock()
 		return 0, false, ErrNotOwner
 	}
 	if c.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING {
-		return c.Status, false, nil
+		status := c.Status
+		e.mu.Unlock()
+		return status, false, nil
 	}
 	c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED
 	c.TriggeredAtMs = e.cfg.Clock().UnixMilli()
+	refID := e.refIDFor(c.ID)
+	finalStatus := c.Status
 	e.graduateLocked(c)
-	return c.Status, true, nil
+	e.mu.Unlock()
+
+	e.bestEffortRelease(ctx, userID, refID)
+	return finalStatus, true, nil
 }
 
 // Get returns a clone of the stored conditional. ErrNotFound if unknown or
@@ -299,6 +356,10 @@ func (e *Engine) handleLocked(evt *eventpb.MarketDataEvent, partition int32, off
 // outcome to state. If the conditional was canceled or already terminal
 // by the time we reacquire the lock, the result is ignored. triggeredAtMs
 // is the wall-clock ms stamp set on the record regardless of success.
+// On a successful PlaceOrder, the reservation (if any) has been consumed
+// atomically by Counter. On a failure we attempt a best-effort
+// ReleaseReservation so a lingering reservation does not leak frozen
+// balance.
 func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 	e.mu.Lock()
 	c := e.lookupLocked(id)
@@ -307,20 +368,27 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 		return
 	}
 	req := buildPlaceOrderReq(c)
+	refID := e.refIDFor(c.ID)
+	if e.reserver != nil {
+		req.ReservationId = refID
+	}
+	userID := c.UserID
 	e.mu.Unlock()
 
 	resp, err := e.placer.PlaceOrder(ctx, req)
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	c = e.lookupLocked(id)
 	if c == nil || c.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING {
+		e.mu.Unlock()
 		return
 	}
 	c.TriggeredAtMs = triggeredAtMs
+	failed := false
 	if err != nil {
 		c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED
 		c.RejectReason = cleanRejectReason(err)
+		failed = true
 		if e.logger != nil {
 			e.logger.Warn("conditional trigger rejected",
 				zap.Uint64("id", id),
@@ -338,6 +406,11 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 		}
 	}
 	e.graduateLocked(c)
+	e.mu.Unlock()
+
+	if failed {
+		e.bestEffortRelease(ctx, userID, refID)
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -551,6 +624,56 @@ func validateShape(side eventpb.Side, typ condrpc.ConditionalType, qty, quoteQty
 		return ErrQuoteQtyShape
 	}
 	return nil
+}
+
+// nextID is a thin wrapper so tests / callers can override via idgen.
+func (e *Engine) nextID() uint64 { return e.idgen.Next() }
+
+// refIDFor computes the reservation ref_id used to tie a conditional to its
+// Counter reservation. Stable string so retries / replays reuse the same id.
+func (e *Engine) refIDFor(id uint64) string { return "cond-" + formatUint(id) }
+
+// bestEffortRelease calls Counter.ReleaseReservation ignoring failures.
+// Used in Place dedup races, Cancel, and trigger rejection cleanup paths.
+// Release is idempotent on Counter, so retries are safe.
+func (e *Engine) bestEffortRelease(ctx context.Context, userID, refID string) {
+	if e.reserver == nil {
+		return
+	}
+	_, err := e.reserver.ReleaseReservation(ctx, &counterrpc.ReleaseReservationRequest{
+		UserId:        userID,
+		ReservationId: refID,
+	})
+	if err != nil && e.logger != nil {
+		e.logger.Warn("release reservation failed",
+			zap.String("ref_id", refID),
+			zap.String("user_id", userID),
+			zap.Error(err))
+	}
+}
+
+// buildReserveReq projects a Conditional into the ReserveRequest Counter
+// runs ComputeFreeze against. The order shape here must match what
+// buildPlaceOrderReq produces at trigger time — otherwise Counter returns
+// ErrReservationMismatch when the consuming PlaceOrder arrives.
+func buildReserveReq(c *Conditional, refID string) *counterrpc.ReserveRequest {
+	isLimit := c.Type == condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS_LIMIT ||
+		c.Type == condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT
+	req := &counterrpc.ReserveRequest{
+		UserId:        c.UserID,
+		ReservationId: refID,
+		Symbol:        c.Symbol,
+		Side:          c.Side,
+		Qty:           optString(c.Qty),
+		QuoteQty:      optString(c.QuoteQty),
+	}
+	if isLimit {
+		req.OrderType = eventpb.OrderType_ORDER_TYPE_LIMIT
+		req.Price = c.LimitPrice.String()
+	} else {
+		req.OrderType = eventpb.OrderType_ORDER_TYPE_MARKET
+	}
+	return req
 }
 
 // buildPlaceOrderReq turns a Conditional into the Counter gRPC request that

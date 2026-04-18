@@ -55,7 +55,65 @@ func (p *fakePlacer) calls() []*counterrpc.PlaceOrderRequest {
 
 func newEngine(placer OrderPlacer) *Engine {
 	idg := &counterSeq{}
-	return New(Config{TerminalHistoryLimit: 100, Clock: func() time.Time { return time.Unix(1_700_000_000, 0) }}, idg, placer, zap.NewNop())
+	return New(Config{TerminalHistoryLimit: 100, Clock: func() time.Time { return time.Unix(1_700_000_000, 0) }}, idg, placer, nil, zap.NewNop())
+}
+
+// newEngineWithReserver constructs an engine with both a placer and a
+// reservations stub — MVP-14b behaviour.
+func newEngineWithReserver(placer OrderPlacer, res Reservations) *Engine {
+	idg := &counterSeq{}
+	return New(Config{TerminalHistoryLimit: 100, Clock: func() time.Time { return time.Unix(1_700_000_000, 0) }}, idg, placer, res, zap.NewNop())
+}
+
+// fakeReserver records Reserve / Release calls so tests can inspect the
+// sequence without a live Counter gRPC.
+type fakeReserver struct {
+	mu            sync.Mutex
+	reserves      []*counterrpc.ReserveRequest
+	releases      []*counterrpc.ReleaseReservationRequest
+	reserveErr    error
+	reserveFn     func(*counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error)
+	releaseFn     func(*counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error)
+}
+
+func (r *fakeReserver) Reserve(_ context.Context, req *counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error) {
+	r.mu.Lock()
+	r.reserves = append(r.reserves, req)
+	r.mu.Unlock()
+	if r.reserveErr != nil {
+		return nil, r.reserveErr
+	}
+	if r.reserveFn != nil {
+		return r.reserveFn(req)
+	}
+	return &counterrpc.ReserveResponse{
+		ReservationId: req.ReservationId,
+		Asset:         "USDT",
+		Amount:        "100",
+		Accepted:      true,
+	}, nil
+}
+
+func (r *fakeReserver) ReleaseReservation(_ context.Context, req *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error) {
+	r.mu.Lock()
+	r.releases = append(r.releases, req)
+	r.mu.Unlock()
+	if r.releaseFn != nil {
+		return r.releaseFn(req)
+	}
+	return &counterrpc.ReleaseReservationResponse{ReservationId: req.ReservationId, Accepted: true}, nil
+}
+
+func (r *fakeReserver) reserveCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.reserves)
+}
+
+func (r *fakeReserver) releaseCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.releases)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +177,7 @@ func goodReq() *condrpc.PlaceConditionalRequest {
 
 func TestPlace_HappyPath(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	id, status, accepted, err := e.Place(goodReq())
+	id, status, accepted, err := e.Place(context.Background(), goodReq())
 	if err != nil {
 		t.Fatalf("place: %v", err)
 	}
@@ -138,11 +196,11 @@ func TestPlace_DedupByClientID(t *testing.T) {
 	e := newEngine(&fakePlacer{})
 	req := goodReq()
 	req.ClientConditionalId = "my-cond-1"
-	id1, _, ok1, err := e.Place(req)
+	id1, _, ok1, err := e.Place(context.Background(), req)
 	if err != nil || !ok1 {
 		t.Fatalf("first place: err=%v ok=%v", err, ok1)
 	}
-	id2, _, ok2, err := e.Place(req)
+	id2, _, ok2, err := e.Place(context.Background(), req)
 	if err != nil {
 		t.Fatalf("second place: %v", err)
 	}
@@ -183,7 +241,7 @@ func TestPlace_ValidationErrors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req := goodReq()
 			mutate(req)
-			if _, _, _, err := e.Place(req); err == nil {
+			if _, _, _, err := e.Place(context.Background(), req); err == nil {
 				t.Error("expected err")
 			}
 		})
@@ -196,8 +254,8 @@ func TestPlace_ValidationErrors(t *testing.T) {
 
 func TestCancel_TransitionsPendingToCanceled(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	id, _, _, _ := e.Place(goodReq())
-	status, ok, err := e.Cancel("u1", id)
+	id, _, _, _ := e.Place(context.Background(), goodReq())
+	status, ok, err := e.Cancel(context.Background(), "u1", id)
 	if err != nil || !ok {
 		t.Fatalf("cancel: err=%v ok=%v", err, ok)
 	}
@@ -208,24 +266,24 @@ func TestCancel_TransitionsPendingToCanceled(t *testing.T) {
 
 func TestCancel_NonOwnerRejected(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	id, _, _, _ := e.Place(goodReq())
-	if _, _, err := e.Cancel("someone-else", id); !errors.Is(err, ErrNotOwner) {
+	id, _, _, _ := e.Place(context.Background(), goodReq())
+	if _, _, err := e.Cancel(context.Background(), "someone-else", id); !errors.Is(err, ErrNotOwner) {
 		t.Errorf("err = %v, want ErrNotOwner", err)
 	}
 }
 
 func TestCancel_Unknown(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	if _, _, err := e.Cancel("u1", 99999); !errors.Is(err, ErrNotFound) {
+	if _, _, err := e.Cancel(context.Background(), "u1", 99999); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
 
 func TestCancel_IdempotentOnTerminal(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	id, _, _, _ := e.Place(goodReq())
-	_, _, _ = e.Cancel("u1", id)
-	status, ok, err := e.Cancel("u1", id)
+	id, _, _, _ := e.Place(context.Background(), goodReq())
+	_, _, _ = e.Cancel(context.Background(), "u1", id)
+	status, ok, err := e.Cancel(context.Background(), "u1", id)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -256,7 +314,7 @@ func publicTradeEvent(symbol, price string) *eventpb.MarketDataEvent {
 func TestHandleRecord_SellStopLossFires(t *testing.T) {
 	placer := &fakePlacer{}
 	e := newEngine(placer)
-	id, _, _, _ := e.Place(goodReq()) // sell stop_loss @ 100, qty 0.5
+	id, _, _, _ := e.Place(context.Background(), goodReq()) // sell stop_loss @ 100, qty 0.5
 
 	// Price 101 → no fire
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "101"), 0, 10)
@@ -294,7 +352,7 @@ func TestHandleRecord_SellStopLossFires(t *testing.T) {
 func TestHandleRecord_OnlyRelevantSymbolFires(t *testing.T) {
 	placer := &fakePlacer{}
 	e := newEngine(placer)
-	_, _, _, _ = e.Place(goodReq()) // BTC-USDT @ 100
+	_, _, _, _ = e.Place(context.Background(), goodReq()) // BTC-USDT @ 100
 	e.HandleRecord(context.Background(), publicTradeEvent("ETH-USDT", "10"), 0, 1)
 	if calls := placer.calls(); len(calls) != 0 {
 		t.Errorf("unrelated symbol fired: %d", len(calls))
@@ -308,7 +366,7 @@ func TestHandleRecord_RejectionCapturedAsStatus(t *testing.T) {
 		},
 	}
 	e := newEngine(placer)
-	id, _, _, _ := e.Place(goodReq())
+	id, _, _, _ := e.Place(context.Background(), goodReq())
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "99"), 0, 1)
 	got, _ := e.Get("u1", id)
 	if got.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED {
@@ -321,7 +379,7 @@ func TestHandleRecord_RejectionCapturedAsStatus(t *testing.T) {
 
 func TestHandleRecord_OffsetsAdvance(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	_, _, _, _ = e.Place(goodReq())
+	_, _, _, _ = e.Place(context.Background(), goodReq())
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "101"), 3, 99)
 	got := e.Offsets()
 	if got[3] != 100 {
@@ -331,7 +389,7 @@ func TestHandleRecord_OffsetsAdvance(t *testing.T) {
 
 func TestHandleRecord_NonPublicTradePayloadIgnored(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	_, _, _, _ = e.Place(goodReq())
+	_, _, _, _ = e.Place(context.Background(), goodReq())
 	evt := &eventpb.MarketDataEvent{
 		Symbol:  "BTC-USDT",
 		Payload: &eventpb.MarketDataEvent_DepthUpdate{DepthUpdate: &eventpb.DepthUpdate{Symbol: "BTC-USDT"}},
@@ -349,11 +407,11 @@ func TestHandleRecord_NonPublicTradePayloadIgnored(t *testing.T) {
 
 func TestList_DefaultPendingOnly(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	id1, _, _, _ := e.Place(goodReq())
+	id1, _, _, _ := e.Place(context.Background(), goodReq())
 	r2 := goodReq()
 	r2.ClientConditionalId = "alt"
-	_, _, _, _ = e.Place(r2)
-	_, _, _ = e.Cancel("u1", id1)
+	_, _, _, _ = e.Place(context.Background(), r2)
+	_, _, _ = e.Cancel(context.Background(), "u1", id1)
 
 	active := e.List("u1", false)
 	if len(active) != 1 {
@@ -365,10 +423,98 @@ func TestList_DefaultPendingOnly(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Reservation integration (MVP-14b)
+// ---------------------------------------------------------------------------
+
+func TestPlace_CallsReserveFirst(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	id, _, accepted, err := e.Place(context.Background(), goodReq())
+	if err != nil || !accepted {
+		t.Fatalf("place: err=%v accepted=%v", err, accepted)
+	}
+	if reserver.reserveCount() != 1 {
+		t.Errorf("reserve count = %d, want 1", reserver.reserveCount())
+	}
+	got := reserver.reserves[0]
+	if got.UserId != "u1" || got.Symbol != "BTC-USDT" {
+		t.Errorf("reserve req shape: %+v", got)
+	}
+	if got.ReservationId != e.refIDFor(id) {
+		t.Errorf("ref_id: got %q want %q", got.ReservationId, e.refIDFor(id))
+	}
+}
+
+func TestPlace_ReserveErrorDoesNotStoreConditional(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{reserveErr: errors.New("insufficient")}
+	e := newEngineWithReserver(placer, reserver)
+	_, _, _, err := e.Place(context.Background(), goodReq())
+	if err == nil {
+		t.Fatal("expected err")
+	}
+	if got := e.List("u1", true); len(got) != 0 {
+		t.Errorf("conditional stored despite reserve error: %+v", got)
+	}
+}
+
+func TestCancel_ReleasesReservation(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	id, _, _, _ := e.Place(context.Background(), goodReq())
+	_, ok, err := e.Cancel(context.Background(), "u1", id)
+	if err != nil || !ok {
+		t.Fatalf("cancel: err=%v ok=%v", err, ok)
+	}
+	if reserver.releaseCount() != 1 {
+		t.Errorf("release count = %d, want 1", reserver.releaseCount())
+	}
+	if got := reserver.releases[0]; got.ReservationId != e.refIDFor(id) {
+		t.Errorf("release ref_id = %q", got.ReservationId)
+	}
+}
+
+func TestTrigger_UsesReservationID(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	id, _, _, _ := e.Place(context.Background(), goodReq())
+	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "99"), 0, 1)
+	calls := placer.calls()
+	if len(calls) != 1 {
+		t.Fatalf("place calls = %d", len(calls))
+	}
+	if calls[0].ReservationId != e.refIDFor(id) {
+		t.Errorf("reservation id not forwarded: got %q", calls[0].ReservationId)
+	}
+	// Success path: no release call (Counter consumed the reservation).
+	if reserver.releaseCount() != 0 {
+		t.Errorf("unexpected release on success: %d", reserver.releaseCount())
+	}
+}
+
+func TestTrigger_RejectionReleasesReservation(t *testing.T) {
+	placer := &fakePlacer{
+		respFn: func(*counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			return nil, status.Error(codes.Unavailable, "counter down")
+		},
+	}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	_, _, _, _ = e.Place(context.Background(), goodReq())
+	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "99"), 0, 1)
+	if reserver.releaseCount() != 1 {
+		t.Errorf("expected one release on rejection, got %d", reserver.releaseCount())
+	}
+}
+
 func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	placer := &fakePlacer{}
 	src := newEngine(placer)
-	id, _, _, _ := src.Place(goodReq())
+	id, _, _, _ := src.Place(context.Background(), goodReq())
 	src.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "101"), 0, 5)
 	pending, terminals, offsets := src.Snapshot()
 

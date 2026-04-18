@@ -4,6 +4,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
@@ -28,8 +29,8 @@ func New(eng *engine.Engine) *Service {
 func (s *Service) Engine() *engine.Engine { return s.eng }
 
 // Place forwards to engine.Place + builds the gRPC response.
-func (s *Service) Place(req *condrpc.PlaceConditionalRequest, nowMs int64) (*condrpc.PlaceConditionalResponse, error) {
-	id, status, accepted, err := s.eng.Place(req)
+func (s *Service) Place(ctx context.Context, req *condrpc.PlaceConditionalRequest, nowMs int64) (*condrpc.PlaceConditionalResponse, error) {
+	id, status, accepted, err := s.eng.Place(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -42,8 +43,8 @@ func (s *Service) Place(req *condrpc.PlaceConditionalRequest, nowMs int64) (*con
 }
 
 // Cancel forwards to engine.Cancel + builds the gRPC response.
-func (s *Service) Cancel(req *condrpc.CancelConditionalRequest) (*condrpc.CancelConditionalResponse, error) {
-	status, accepted, err := s.eng.Cancel(req.UserId, req.Id)
+func (s *Service) Cancel(ctx context.Context, req *condrpc.CancelConditionalRequest) (*condrpc.CancelConditionalResponse, error) {
+	status, accepted, err := s.eng.Cancel(ctx, req.UserId, req.Id)
 	if err != nil {
 		return nil, err
 	}

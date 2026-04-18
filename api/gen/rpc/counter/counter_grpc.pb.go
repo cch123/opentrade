@@ -19,11 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CounterService_PlaceOrder_FullMethodName   = "/opentrade.rpc.counter.CounterService/PlaceOrder"
-	CounterService_CancelOrder_FullMethodName  = "/opentrade.rpc.counter.CounterService/CancelOrder"
-	CounterService_Transfer_FullMethodName     = "/opentrade.rpc.counter.CounterService/Transfer"
-	CounterService_QueryOrder_FullMethodName   = "/opentrade.rpc.counter.CounterService/QueryOrder"
-	CounterService_QueryBalance_FullMethodName = "/opentrade.rpc.counter.CounterService/QueryBalance"
+	CounterService_PlaceOrder_FullMethodName         = "/opentrade.rpc.counter.CounterService/PlaceOrder"
+	CounterService_CancelOrder_FullMethodName        = "/opentrade.rpc.counter.CounterService/CancelOrder"
+	CounterService_Transfer_FullMethodName           = "/opentrade.rpc.counter.CounterService/Transfer"
+	CounterService_QueryOrder_FullMethodName         = "/opentrade.rpc.counter.CounterService/QueryOrder"
+	CounterService_QueryBalance_FullMethodName       = "/opentrade.rpc.counter.CounterService/QueryBalance"
+	CounterService_Reserve_FullMethodName            = "/opentrade.rpc.counter.CounterService/Reserve"
+	CounterService_ReleaseReservation_FullMethodName = "/opentrade.rpc.counter.CounterService/ReleaseReservation"
 )
 
 // CounterServiceClient is the client API for CounterService service.
@@ -47,6 +49,17 @@ type CounterServiceClient interface {
 	QueryOrder(ctx context.Context, in *QueryOrderRequest, opts ...grpc.CallOption) (*QueryOrderResponse, error)
 	// Query balances for a user.
 	QueryBalance(ctx context.Context, in *QueryBalanceRequest, opts ...grpc.CallOption) (*QueryBalanceResponse, error)
+	// Reserve moves Available → Frozen for a privileged caller (the
+	// conditional-order service, ADR-0041). The ref_id is the idempotency
+	// key; repeated Reserve for the same ref_id returns the prior
+	// record with accepted=false. Freeze amount is derived from the order
+	// shape via the same ComputeFreeze used by PlaceOrder, so Counter
+	// stays the single source of truth for freeze math.
+	Reserve(ctx context.Context, in *ReserveRequest, opts ...grpc.CallOption) (*ReserveResponse, error)
+	// ReleaseReservation moves Frozen → Available and deletes the
+	// reservation record. Idempotent: unknown ref_ids return accepted=false
+	// without error.
+	ReleaseReservation(ctx context.Context, in *ReleaseReservationRequest, opts ...grpc.CallOption) (*ReleaseReservationResponse, error)
 }
 
 type counterServiceClient struct {
@@ -107,6 +120,26 @@ func (c *counterServiceClient) QueryBalance(ctx context.Context, in *QueryBalanc
 	return out, nil
 }
 
+func (c *counterServiceClient) Reserve(ctx context.Context, in *ReserveRequest, opts ...grpc.CallOption) (*ReserveResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReserveResponse)
+	err := c.cc.Invoke(ctx, CounterService_Reserve_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *counterServiceClient) ReleaseReservation(ctx context.Context, in *ReleaseReservationRequest, opts ...grpc.CallOption) (*ReleaseReservationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseReservationResponse)
+	err := c.cc.Invoke(ctx, CounterService_ReleaseReservation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CounterServiceServer is the server API for CounterService service.
 // All implementations must embed UnimplementedCounterServiceServer
 // for forward compatibility.
@@ -128,6 +161,17 @@ type CounterServiceServer interface {
 	QueryOrder(context.Context, *QueryOrderRequest) (*QueryOrderResponse, error)
 	// Query balances for a user.
 	QueryBalance(context.Context, *QueryBalanceRequest) (*QueryBalanceResponse, error)
+	// Reserve moves Available → Frozen for a privileged caller (the
+	// conditional-order service, ADR-0041). The ref_id is the idempotency
+	// key; repeated Reserve for the same ref_id returns the prior
+	// record with accepted=false. Freeze amount is derived from the order
+	// shape via the same ComputeFreeze used by PlaceOrder, so Counter
+	// stays the single source of truth for freeze math.
+	Reserve(context.Context, *ReserveRequest) (*ReserveResponse, error)
+	// ReleaseReservation moves Frozen → Available and deletes the
+	// reservation record. Idempotent: unknown ref_ids return accepted=false
+	// without error.
+	ReleaseReservation(context.Context, *ReleaseReservationRequest) (*ReleaseReservationResponse, error)
 	mustEmbedUnimplementedCounterServiceServer()
 }
 
@@ -152,6 +196,12 @@ func (UnimplementedCounterServiceServer) QueryOrder(context.Context, *QueryOrder
 }
 func (UnimplementedCounterServiceServer) QueryBalance(context.Context, *QueryBalanceRequest) (*QueryBalanceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryBalance not implemented")
+}
+func (UnimplementedCounterServiceServer) Reserve(context.Context, *ReserveRequest) (*ReserveResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Reserve not implemented")
+}
+func (UnimplementedCounterServiceServer) ReleaseReservation(context.Context, *ReleaseReservationRequest) (*ReleaseReservationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseReservation not implemented")
 }
 func (UnimplementedCounterServiceServer) mustEmbedUnimplementedCounterServiceServer() {}
 func (UnimplementedCounterServiceServer) testEmbeddedByValue()                        {}
@@ -264,6 +314,42 @@ func _CounterService_QueryBalance_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CounterService_Reserve_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReserveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CounterServiceServer).Reserve(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CounterService_Reserve_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CounterServiceServer).Reserve(ctx, req.(*ReserveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CounterService_ReleaseReservation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseReservationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CounterServiceServer).ReleaseReservation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CounterService_ReleaseReservation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CounterServiceServer).ReleaseReservation(ctx, req.(*ReleaseReservationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CounterService_ServiceDesc is the grpc.ServiceDesc for CounterService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -290,6 +376,14 @@ var CounterService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryBalance",
 			Handler:    _CounterService_QueryBalance_Handler,
+		},
+		{
+			MethodName: "Reserve",
+			Handler:    _CounterService_Reserve_Handler,
+		},
+		{
+			MethodName: "ReleaseReservation",
+			Handler:    _CounterService_ReleaseReservation_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
