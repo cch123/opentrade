@@ -195,6 +195,11 @@ const state = {
   // like cancel failed. Entries clear when the server drops them from
   // the open list.
   pendingCancel: new Set(),
+  // pollSeq guards against stale pollAccount responses overwriting fresher
+  // state. Every concurrent caller (cancel path, WS user event, 2.5s timer)
+  // bumps it at entry; after awaits, a poll that isn't the newest drops its
+  // result instead of rendering it on top of a more recent one.
+  pollSeq: 0,
   stream: [],
   wsReconnectTimer: null,
 };
@@ -653,10 +658,13 @@ async function seedOrderbook() {
 }
 
 async function pollAccount() {
+  const mySeq = ++state.pollSeq;
   try {
     const bal = await api('GET', '/v1/account');
-    state.balances = bal.balances || [];
-    renderBalances();
+    if (mySeq === state.pollSeq) {
+      state.balances = bal.balances || [];
+      renderBalances();
+    }
   } catch {}
   try {
     const ords = await api('GET', `/v1/orders?scope=open&symbol=${encodeURIComponent(state.symbol)}&limit=50`);
@@ -681,6 +689,11 @@ async function pollAccount() {
         return o; // counter unreachable — trust the projection
       }
     }));
+    // Drop this poll's result if a newer pollAccount finished in the meantime.
+    // Without this guard, a slow poll started before a cancel could overwrite
+    // the post-cancel view with pre-cancel rows — the user sees orders they
+    // already canceled flicker back for a tick.
+    if (mySeq !== state.pollSeq) return;
     state.orders = verified.filter(Boolean);
     const ids = new Set(state.orders.map((o) => String(o.order_id)));
     for (const pid of [...state.pendingCancel]) {
