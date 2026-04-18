@@ -1,6 +1,6 @@
 // Command counter runs the OpenTrade Counter service.
 //
-// Responsibilities (MVP-3):
+// Responsibilities:
 //   - Serve the CounterService gRPC: PlaceOrder / CancelOrder / QueryOrder /
 //     Transfer / QueryBalance.
 //   - Serialize per-user work through the UserSequencer (ADR-0018).
@@ -12,11 +12,18 @@
 //   - Persist ShardState + orders + dedup + shard seq to local snapshot on
 //     graceful shutdown; auto-restore on next start.
 //
-// Later MVPs add etcd lease election (MVP-8) and Kafka EOS consumer semantics.
+// HA (MVP-12, ADR-0031): with --ha-mode=auto Counter competes for the
+// shard's leader key in etcd. Only the elected primary opens the Kafka
+// transactional producer, runs the trade-event consumer, and accepts gRPC
+// traffic. When the lease is lost the primary tears those down and
+// re-campaigns. Backups sit idle until they win — this is a cold-standby
+// design; ADR-0031 explains why we did not ship a live tailing backup in
+// this MVP.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -39,24 +46,33 @@ import (
 	"github.com/xargin/opentrade/counter/internal/server"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/counter/internal/snapshot"
+	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
 )
 
 type Config struct {
 	ShardID         int
-	TotalShards     int    // 0 disables the shard ownership guard (legacy / single-shard)
-	InstanceID      string // defaults to counter-shard-<N>-main
+	TotalShards     int
+	InstanceID      string
 	GRPCAddr        string
 	Brokers         []string
 	JournalTopic    string
 	OrderEventTopic string
 	TradeEventTopic string
-	ConsumerGroup   string // trade-event consumer group (default "counter-shard-<N>")
+	ConsumerGroup   string
 	SnapshotDir     string
 	DedupTTL        time.Duration
-	Env             string
-	LogLevel        string
+
+	// HA (MVP-12).
+	HAMode         string // "disabled" (default) | "auto"
+	EtcdEndpoints  []string
+	ElectionPath   string
+	LeaseTTL       int    // seconds; default 10
+	CampaignBackoff time.Duration // wait between failed Campaigns
+
+	Env      string
+	LogLevel string
 }
 
 func main() {
@@ -79,22 +95,98 @@ func main() {
 		zap.String("instance", cfg.InstanceID),
 		zap.String("grpc", cfg.GRPCAddr),
 		zap.Strings("brokers", cfg.Brokers),
+		zap.String("ha_mode", cfg.HAMode),
 		zap.String("snapshot_dir", cfg.SnapshotDir))
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// --- Core components -----------------------------------------------------
+	if cfg.HAMode == "disabled" {
+		runPrimary(rootCtx, cfg, logger)
+		return
+	}
+	runElectionLoop(rootCtx, cfg, logger)
+}
 
+// runElectionLoop campaigns for leadership, then runs the primary body for
+// the duration of each leadership cycle. It exits when rootCtx is cancelled.
+func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
+	elec, err := election.New(election.Config{
+		Endpoints: cfg.EtcdEndpoints,
+		Path:      cfg.ElectionPath,
+		Value:     cfg.InstanceID,
+		LeaseTTL:  cfg.LeaseTTL,
+	})
+	if err != nil {
+		logger.Fatal("election init", zap.Error(err))
+	}
+	defer func() { _ = elec.Close() }()
+
+	for {
+		if rootCtx.Err() != nil {
+			return
+		}
+		logger.Info("counter campaigning for leadership",
+			zap.String("path", cfg.ElectionPath))
+		if err := elec.Campaign(rootCtx); err != nil {
+			if rootCtx.Err() != nil {
+				return
+			}
+			logger.Error("campaign failed", zap.Error(err))
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-time.After(cfg.CampaignBackoff):
+			}
+			continue
+		}
+		logger.Info("counter became primary", zap.String("instance", cfg.InstanceID))
+
+		primaryCtx, cancelPrimary := context.WithCancel(rootCtx)
+		watchDone := make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			select {
+			case <-elec.LostCh():
+				logger.Warn("counter lost leadership — demoting")
+				cancelPrimary()
+			case <-primaryCtx.Done():
+			}
+		}()
+
+		runPrimary(primaryCtx, cfg, logger)
+		cancelPrimary()
+		<-watchDone
+
+		// Graceful resign so the backup picks up immediately on clean
+		// shutdown. If rootCtx is dead we skip — the session will expire
+		// on its own.
+		if rootCtx.Err() == nil {
+			logger.Info("counter demoted; re-campaigning")
+			continue
+		}
+		resignCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := elec.Resign(resignCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("resign failed", zap.Error(err))
+		}
+		cancel()
+		return
+	}
+}
+
+// runPrimary brings up the full Counter stack and blocks until ctx is done.
+// Called directly in HA-disabled mode and once per leadership cycle in
+// auto mode.
+func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	state := engine.NewShardState(cfg.ShardID)
 	userSeq := sequencer.New()
 	dt := dedup.New(cfg.DedupTTL)
 
 	if err := tryRestoreSnapshot(cfg, state, userSeq, dt, logger); err != nil {
-		logger.Fatal("snapshot restore", zap.Error(err))
+		logger.Error("snapshot restore", zap.Error(err))
+		return
 	}
 
-	// Non-transactional producer (Transfer path + Settlement events).
 	journalProducer, err := journal.NewJournalProducer(journal.ProducerConfig{
 		Brokers:    cfg.Brokers,
 		ClientID:   cfg.InstanceID + "-journal",
@@ -102,12 +194,15 @@ func main() {
 		Topic:      cfg.JournalTopic,
 	}, logger)
 	if err != nil {
-		logger.Fatal("journal producer", zap.Error(err))
+		logger.Error("journal producer", zap.Error(err))
+		return
 	}
 	defer journalProducer.Close()
 
-	// Transactional producer (PlaceOrder / CancelOrder path, ADR-0005/0017).
-	txnProducer, err := journal.NewTxnProducer(rootCtx, journal.TxnProducerConfig{
+	// TxnProducer carries the shard's stable transactional.id. Opening the
+	// client initializes the producer epoch and fences any previous primary
+	// that held the same id (ADR-0017).
+	txnProducer, err := journal.NewTxnProducer(ctx, journal.TxnProducerConfig{
 		Brokers:         cfg.Brokers,
 		ClientID:        cfg.InstanceID + "-txn",
 		TransactionalID: cfg.InstanceID,
@@ -115,14 +210,15 @@ func main() {
 		OrderEventTopic: cfg.OrderEventTopic,
 	}, logger)
 	if err != nil {
-		logger.Fatal("txn producer", zap.Error(err))
+		logger.Error("txn producer", zap.Error(err))
+		return
 	}
 	defer txnProducer.Close()
 
-	// Snowflake id generator for order ids; seeded with shard id as machine id.
 	idg, err := idgen.NewGenerator(cfg.ShardID)
 	if err != nil {
-		logger.Fatal("idgen", zap.Error(err))
+		logger.Error("idgen", zap.Error(err))
+		return
 	}
 
 	svc := service.New(service.Config{
@@ -132,8 +228,6 @@ func main() {
 	}, state, userSeq, dt, journalProducer, logger)
 	svc.SetOrderDeps(txnProducer, idg)
 
-	// --- Trade consumer ------------------------------------------------------
-
 	tradeConsumer, err := journal.NewTradeConsumer(journal.TradeConsumerConfig{
 		Brokers:  cfg.Brokers,
 		ClientID: cfg.InstanceID + "-trade",
@@ -141,7 +235,8 @@ func main() {
 		Topic:    cfg.TradeEventTopic,
 	}, svc, logger)
 	if err != nil {
-		logger.Fatal("trade consumer", zap.Error(err))
+		logger.Error("trade consumer", zap.Error(err))
+		return
 	}
 	defer tradeConsumer.Close()
 
@@ -149,34 +244,30 @@ func main() {
 	tradeWG.Add(1)
 	go func() {
 		defer tradeWG.Done()
-		if err := tradeConsumer.Run(rootCtx); err != nil && err != context.Canceled {
+		if err := tradeConsumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("trade consumer exited", zap.Error(err))
 		}
 	}()
 
-	// --- gRPC server ---------------------------------------------------------
-
 	grpcServer := grpc.NewServer()
 	counterrpc.RegisterCounterServiceServer(grpcServer, server.New(svc, logger))
-
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
-		logger.Fatal("listen", zap.Error(err))
+		logger.Error("listen", zap.Error(err))
+		return
 	}
 	var grpcWG sync.WaitGroup
 	grpcWG.Add(1)
 	go func() {
 		defer grpcWG.Done()
 		logger.Info("gRPC listening", zap.String("addr", cfg.GRPCAddr))
-		if err := grpcServer.Serve(lis); err != nil {
+		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			logger.Error("grpc Serve", zap.Error(err))
 		}
 	}()
 
-	// --- Shutdown ------------------------------------------------------------
-
-	<-rootCtx.Done()
-	logger.Info("shutdown initiated")
+	<-ctx.Done()
+	logger.Info("primary shutting down")
 
 	grpcServer.GracefulStop()
 	grpcWG.Wait()
@@ -184,7 +275,7 @@ func main() {
 	tradeConsumer.Close()
 	tradeWG.Wait()
 
-	// Brief wait for in-flight sequencer tasks to drain before snapshotting.
+	// Drain in-flight sequencer work before the final snapshot.
 	time.Sleep(100 * time.Millisecond)
 
 	if err := writeSnapshot(cfg, state, userSeq, dt); err != nil {
@@ -192,8 +283,7 @@ func main() {
 	} else {
 		logger.Info("final snapshot written")
 	}
-
-	logger.Info("counter shutdown complete")
+	logger.Info("primary stopped")
 }
 
 // ---------------------------------------------------------------------------
@@ -208,10 +298,13 @@ func parseFlags() Config {
 		TradeEventTopic: "trade-event",
 		SnapshotDir:     "./data/counter",
 		DedupTTL:        24 * time.Hour,
+		HAMode:          "disabled",
+		LeaseTTL:        10,
+		CampaignBackoff: 2 * time.Second,
 		Env:             "dev",
 		LogLevel:        "info",
 	}
-	var brokersStr string
+	var brokersStr, etcdStr string
 	flag.IntVar(&cfg.ShardID, "shard-id", 0, "shard id (0..total-shards-1)")
 	flag.IntVar(&cfg.TotalShards, "total-shards", 10, "total shard count for user→shard routing (0 disables guard)")
 	flag.StringVar(&cfg.InstanceID, "instance-id", "", "instance id (default counter-shard-<N>-main)")
@@ -223,16 +316,25 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default counter-shard-<N>)")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
 	flag.DurationVar(&cfg.DedupTTL, "dedup-ttl", cfg.DedupTTL, "transfer_id dedup TTL")
+	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0031)")
+	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto)")
+	flag.StringVar(&cfg.ElectionPath, "election-path", "", "etcd election key (default /cex/counter/shard-<N>/leader)")
+	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "etcd session TTL seconds")
+	flag.DurationVar(&cfg.CampaignBackoff, "campaign-backoff", cfg.CampaignBackoff, "wait between failed Campaigns")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
 
 	cfg.Brokers = splitCSV(brokersStr)
+	cfg.EtcdEndpoints = splitCSV(etcdStr)
 	if cfg.InstanceID == "" {
 		cfg.InstanceID = fmt.Sprintf("counter-shard-%d-main", cfg.ShardID)
 	}
 	if cfg.ConsumerGroup == "" {
 		cfg.ConsumerGroup = fmt.Sprintf("counter-shard-%d", cfg.ShardID)
+	}
+	if cfg.ElectionPath == "" {
+		cfg.ElectionPath = fmt.Sprintf("/cex/counter/shard-%d/leader", cfg.ShardID)
 	}
 	return cfg
 }
@@ -252,6 +354,14 @@ func (c *Config) validate() error {
 	}
 	if len(c.Brokers) == 0 {
 		return fmt.Errorf("at least one broker required")
+	}
+	switch c.HAMode {
+	case "disabled", "auto":
+	default:
+		return fmt.Errorf("ha-mode must be disabled or auto, got %q", c.HAMode)
+	}
+	if c.HAMode == "auto" && len(c.EtcdEndpoints) == 0 {
+		return fmt.Errorf("--etcd required when --ha-mode=auto")
 	}
 	return nil
 }

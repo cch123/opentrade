@@ -11,6 +11,14 @@
 //   - Publish sequencer outputs to trade-event.
 //   - Periodically snapshot every live worker; write a final snapshot when
 //     a symbol is removed (migration runbook, see ADR-0030).
+//
+// HA (MVP-12, ADR-0031): with --ha-mode=auto Match competes for the shard's
+// leader key in etcd. The elected primary runs the whole stack above;
+// losers sit idle. This is cold-standby — Match does not ship a live
+// tailing backup in MVP-12. Kafka transactional fencing for Match is
+// deferred (producer stays idempotent); operators rely on etcd lease +
+// primary self-exit, with the known split-brain window documented in
+// ADR-0031.
 package main
 
 import (
@@ -33,13 +41,14 @@ import (
 	"github.com/xargin/opentrade/match/internal/registry"
 	"github.com/xargin/opentrade/match/internal/sequencer"
 	"github.com/xargin/opentrade/match/internal/snapshot"
+	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
 )
 
 type Config struct {
-	InstanceID string // e.g. "match-0"
-	ShardID    string // matches SymbolConfig.Shard in etcd; defaults to InstanceID
+	InstanceID string
+	ShardID    string
 
 	Brokers          []string
 	OrderTopic       string
@@ -48,13 +57,17 @@ type Config struct {
 	SnapshotDir      string
 	SnapshotInterval time.Duration
 
-	// etcd-driven symbol ownership (preferred).
 	EtcdEndpoints   []string
 	EtcdPrefix      string
 	EtcdDialTimeout time.Duration
 
-	// Static symbol list (fallback when --etcd is empty).
 	Symbols []string
+
+	// HA (MVP-12).
+	HAMode          string
+	ElectionPath    string
+	LeaseTTL        int
+	CampaignBackoff time.Duration
 
 	Env      string
 	LogLevel string
@@ -80,11 +93,86 @@ func main() {
 		zap.Strings("brokers", cfg.Brokers),
 		zap.Strings("etcd", cfg.EtcdEndpoints),
 		zap.Strings("static_symbols", cfg.Symbols),
+		zap.String("ha_mode", cfg.HAMode),
 		zap.String("snapshot_dir", cfg.SnapshotDir))
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if cfg.HAMode == "disabled" {
+		runPrimary(rootCtx, cfg, logger)
+		return
+	}
+	runElectionLoop(rootCtx, cfg, logger)
+}
+
+// runElectionLoop campaigns for leadership then runs the primary body for
+// each leadership cycle. Exits when rootCtx is cancelled.
+func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
+	elec, err := election.New(election.Config{
+		Endpoints: cfg.EtcdEndpoints,
+		Path:      cfg.ElectionPath,
+		Value:     cfg.InstanceID,
+		LeaseTTL:  cfg.LeaseTTL,
+	})
+	if err != nil {
+		logger.Fatal("election init", zap.Error(err))
+	}
+	defer func() { _ = elec.Close() }()
+
+	for {
+		if rootCtx.Err() != nil {
+			return
+		}
+		logger.Info("match campaigning for leadership",
+			zap.String("path", cfg.ElectionPath))
+		if err := elec.Campaign(rootCtx); err != nil {
+			if rootCtx.Err() != nil {
+				return
+			}
+			logger.Error("campaign failed", zap.Error(err))
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-time.After(cfg.CampaignBackoff):
+			}
+			continue
+		}
+		logger.Info("match became primary", zap.String("instance", cfg.InstanceID))
+
+		primaryCtx, cancelPrimary := context.WithCancel(rootCtx)
+		watchDone := make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			select {
+			case <-elec.LostCh():
+				logger.Warn("match lost leadership — demoting")
+				cancelPrimary()
+			case <-primaryCtx.Done():
+			}
+		}()
+
+		runPrimary(primaryCtx, cfg, logger)
+		cancelPrimary()
+		<-watchDone
+
+		if rootCtx.Err() == nil {
+			logger.Info("match demoted; re-campaigning")
+			continue
+		}
+		resignCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := elec.Resign(resignCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("resign failed", zap.Error(err))
+		}
+		cancel()
+		return
+	}
+}
+
+// runPrimary brings up the whole matching pipeline and blocks until ctx is
+// done. Invoked directly in HA-disabled mode and once per leadership cycle
+// in auto mode.
+func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	// --- Shared pipeline --------------------------------------------------
 
 	dispatcher := journal.NewDispatcher()
@@ -114,10 +202,9 @@ func main() {
 		Logger: logger,
 	})
 	if err != nil {
-		logger.Fatal("registry", zap.Error(err))
+		logger.Error("registry", zap.Error(err))
+		return
 	}
-
-	// --- Producer pump ----------------------------------------------------
 
 	producer, err := journal.NewTradeProducer(journal.ProducerConfig{
 		Brokers:    cfg.Brokers,
@@ -126,7 +213,8 @@ func main() {
 		Topic:      cfg.TradeTopic,
 	}, logger)
 	if err != nil {
-		logger.Fatal("trade producer", zap.Error(err))
+		logger.Error("trade producer", zap.Error(err))
+		return
 	}
 	defer producer.Close()
 
@@ -153,15 +241,17 @@ func main() {
 			Prefix:      cfg.EtcdPrefix,
 		})
 		if err != nil {
-			logger.Fatal("etcd source", zap.Error(err))
+			logger.Error("etcd source", zap.Error(err))
+			return
 		}
 		defer func() { _ = etcdSrc.Close() }()
 
-		listCtx, listCancel := context.WithTimeout(rootCtx, 10*time.Second)
+		listCtx, listCancel := context.WithTimeout(ctx, 10*time.Second)
 		snap, rev, err := etcdSrc.List(listCtx)
 		listCancel()
 		if err != nil {
-			logger.Fatal("etcd list", zap.Error(err))
+			logger.Error("etcd list", zap.Error(err))
+			return
 		}
 		for sym, sc := range snap {
 			if !sc.Owned(cfg.ShardID) {
@@ -173,11 +263,13 @@ func main() {
 			}
 		}
 
-		watchCtx, cancel := context.WithCancel(rootCtx)
+		watchCtx, cancel := context.WithCancel(ctx)
 		watchCancel = cancel
 		watchCh, err := etcdSrc.Watch(watchCtx, rev+1)
 		if err != nil {
-			logger.Fatal("etcd watch", zap.Error(err))
+			logger.Error("etcd watch", zap.Error(err))
+			cancel()
+			return
 		}
 		watchWG.Add(1)
 		go func() {
@@ -202,7 +294,8 @@ func main() {
 		Topic:    cfg.OrderTopic,
 	}, dispatcher, logger)
 	if err != nil {
-		logger.Fatal("order consumer", zap.Error(err))
+		logger.Error("order consumer", zap.Error(err))
+		return
 	}
 	defer consumer.Close()
 
@@ -210,7 +303,7 @@ func main() {
 	consumerWG.Add(1)
 	go func() {
 		defer consumerWG.Done()
-		if err := consumer.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("consumer exited", zap.Error(err))
 		}
 	}()
@@ -223,8 +316,8 @@ func main() {
 
 	// --- Wait for shutdown signal -----------------------------------------
 
-	<-rootCtx.Done()
-	logger.Info("shutdown initiated")
+	<-ctx.Done()
+	logger.Info("primary shutting down")
 
 	if watchCancel != nil {
 		watchCancel()
@@ -242,7 +335,7 @@ func main() {
 	pumpWG.Wait()
 	cancelSnap()
 
-	logger.Info("match shutdown complete")
+	logger.Info("primary stopped")
 }
 
 // applyWatch consumes etcd events and tells the registry what to do.
@@ -299,6 +392,9 @@ func parseFlags() Config {
 		SnapshotInterval: 60 * time.Second,
 		EtcdPrefix:       etcdcfg.DefaultPrefix,
 		EtcdDialTimeout:  5 * time.Second,
+		HAMode:           "disabled",
+		LeaseTTL:         10,
+		CampaignBackoff:  2 * time.Second,
 		Env:              "dev",
 		LogLevel:         "info",
 	}
@@ -310,7 +406,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.InstanceID, "instance-id", "match-0", "instance id (client id / consumer group suffix / producer id)")
 	flag.StringVar(&cfg.ShardID, "shard-id", "", "shard id (match etcd SymbolConfig.Shard); defaults to --instance-id")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
-	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints; empty falls back to --symbols")
+	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints; used for symbol config and HA election")
 	flag.StringVar(&cfg.EtcdPrefix, "etcd-prefix", cfg.EtcdPrefix, "etcd key prefix for symbol configs")
 	flag.DurationVar(&cfg.EtcdDialTimeout, "etcd-dial-timeout", cfg.EtcdDialTimeout, "etcd dial timeout")
 	flag.StringVar(&symbolsStr, "symbols", "", "comma-separated static symbol list (used when --etcd is empty)")
@@ -319,6 +415,10 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default match-{instance-id})")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "how often to snapshot each symbol")
+	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0031)")
+	flag.StringVar(&cfg.ElectionPath, "election-path", "", "etcd election key (default /cex/match/shard-<id>/leader)")
+	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "etcd session TTL seconds")
+	flag.DurationVar(&cfg.CampaignBackoff, "campaign-backoff", cfg.CampaignBackoff, "wait between failed Campaigns")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
@@ -332,6 +432,9 @@ func parseFlags() Config {
 	if cfg.ConsumerGroup == "" {
 		cfg.ConsumerGroup = "match-" + cfg.InstanceID
 	}
+	if cfg.ElectionPath == "" {
+		cfg.ElectionPath = "/cex/match/shard-" + sanitize(cfg.ShardID) + "/leader"
+	}
 	return cfg
 }
 
@@ -344,6 +447,14 @@ func (c *Config) validate() error {
 	}
 	if len(c.EtcdEndpoints) == 0 && len(c.Symbols) == 0 {
 		return fmt.Errorf("either --etcd or --symbols is required")
+	}
+	switch c.HAMode {
+	case "disabled", "auto":
+	default:
+		return fmt.Errorf("ha-mode must be disabled or auto, got %q", c.HAMode)
+	}
+	if c.HAMode == "auto" && len(c.EtcdEndpoints) == 0 {
+		return fmt.Errorf("--etcd required when --ha-mode=auto")
 	}
 	return nil
 }

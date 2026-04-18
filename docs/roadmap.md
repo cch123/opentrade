@@ -21,7 +21,7 @@
 | [MVP-9](#mvp-9-trade-dump-projections) | trade-dump 其它表 | ✅ | orders / account_logs / accounts projection |
 | [MVP-10](#mvp-10-bff-ws) | BFF WebSocket 网关 | ✅ | 客户端走 BFF 而非直连 push |
 | [MVP-11](#mvp-11-match-sharding) | Match 多实例 + symbol 迁移 | ✅ | etcd 配置驱动 + 热加减 symbol |
-| [MVP-12](#mvp-12-ha) | Counter/Match HA | ⏳ 计划中 | etcd lease 选主 + txn.id fencing + 备节点快照 |
+| [MVP-12](#mvp-12-ha) | Counter/Match HA | ✅ | etcd lease 选主 + cold standby |
 | [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ⏳ 计划中 | LB hash 与 partition 订阅对齐 |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
@@ -134,12 +134,12 @@
 
 ### MVP-12  Counter / Match HA  {#mvp-12-ha}
 
-- **范围**：
-  - `pkg/election`（etcd lease 选主，lease TTL 10s，[ADR-0002](./adr/0002-counter-ha-via-etcd-lease.md)）
-  - Kafka `transactional.id` 按 shard 稳定命名 + `InitTransactions()` fence 老主（[ADR-0017](./adr/0017-kafka-transactional-id-naming.md)）
-  - 备节点打 snapshot（[ADR-0006](./adr/0006-snapshots-by-backup-node.md)）
-- **依赖**：MVP-8（shard 编号稳定）、MVP-11
-- **预期 ADR**：0031（HA 整体 rollout）+ 可能 0032（snapshot S3 存储）
+- **commit** pending · **ADR** [0031](./adr/0031-ha-cold-standby-rollout.md)
+- 新 `pkg/election`：etcd `concurrency.Election` 封装（Campaign / Resign / LostCh / Observe）
+- Counter / Match main 分出 `runPrimary`，外层 `runElectionLoop` cold-standby
+- `--ha-mode=auto` 走选举；`disabled` 保留单机模式（向后兼容）
+- Counter fencing 自然走 Kafka `TransactionalID`（ADR-0017）；Match 暂依赖 etcd lease + 自觉退出（split-brain 窗口 10s，明确留 MVP-12b）
+- backup 不消费 Kafka、不打快照；snapshot 共享目录 MVP 假设本地 EFS/NFS mount
 
 ### MVP-13  Push 多实例 sticky  {#mvp-13-push-sharding}
 
