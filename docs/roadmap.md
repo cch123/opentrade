@@ -40,7 +40,7 @@
 - ~~**市价单 MARKET（服务端原生）**~~ — ✅ 两条路径落地（[ADR-0035](./adr/0035-market-orders-native-server-side.md)）：(A) 服务端原生 `type=market` + `qty`(sell) / `quote_qty`(buy)；(B) BFF 可选滑点保护：`type=market + slippage_bps + last_price` → 翻译成 LIMIT+IOC。客户端用法文档见 [docs/market-orders.md](./market-orders.md)
 - ~~**Counter 对账**~~ — ✅ `counter/internal/reconcile` 每小时对比内存 vs `accounts` 表，差异日志 + 汇总（[ADR-0008 §对账](./adr/0008-sidecar-persistence-trade-dump.md)）；`--mysql-dsn` 空时禁用
 - ~~**Quote state snapshot**~~ — ✅ 本地 JSON snapshot + 每 partition offset 随状态原子推进，重启热恢复（[ADR-0036](./adr/0036-quote-state-snapshot.md)）
-- **Counter re-shard 工具** — 未来扩容 10→20 shard 用（[ADR-0010](./adr/0010-counter-sharding-by-userid.md)、[ADR-0027](./adr/0027-counter-sharding-rollout.md)）
+- ~~**Counter re-shard 工具**~~ — ✅ `counter/cmd/counter-reshard`：读 N 份旧 snapshot，按新 hash 写 M 份新 snapshot；账户/订单按 `shard.Index(user, M)` 路由，dedup 丢弃，ShardSeq 取 max（runbook: [docs/counter-reshard.md](./counter-reshard.md)）
 - ~~**trade-event consumer 的显式 shard filter**~~ — ✅ Counter 每个 trade-event handler 在进 sequencer 之前 `OwnsUser` 判定，非 owned 走 debug 日志 skip（[ADR-0027 备选方案 D](./adr/0027-counter-sharding-rollout.md)）
 - **BFF auth 升级到 JWT / API-Key** — 目前 `X-User-Id` 弱 auth（[bff/internal/auth](../bff/internal/auth)）
 - **Match / Counter 延迟 + 吞吐 benchmark** — 验证是否接近 20w TPS / 10ms P99（[architecture.md §18.3](./architecture.md)）
