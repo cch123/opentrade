@@ -35,10 +35,13 @@ _(none)_
   - commit: [`4ccaf23`](../../commit/4ccaf23)
   - 修法：检测到同用户两边，走 `applySelfTrade` 合并路径，在一次 sequencer.Execute 里顺序应用两边 settlement，末尾一次 AdvanceMatchSeq。附 2 个单测。
 
+- **PENDING_CANCEL 单被前端隐藏导致 frozen 资金成谜** — 之前的修法过滤掉了 pending_cancel，用户看余额被冻着却找不到对应单子。
+  - commit: [`e601885`](../../commit/e601885)
+  - 修法：显示 pending_cancel 单，行降透明度 + 状态字段显示 `pending_cancel`，cancel 按钮换成 `canceling…` 占位避免重复点击。
+
 - **cancel 后刷新页面又回来了（PENDING_CANCEL 幽灵单）** — BFF 把 internal `PENDING_CANCEL` 折叠成外部 `new`，UI 区分不出"在途取消"和"正常挂单"；叠加 counter/match 状态分叉导致永远完不成 CANCELED 转移。
   - commit: [`9eb713a`](../../commit/9eb713a)
-  - 修法：`/v1/order/{id}` 响应加 `internal_status` 字段暴露 8 态原始值，web dev UI 在 counter-truth 校验时过滤 `pending_cancel`。
-  - 注意：已按用户反馈改为显示而非隐藏（见更新条目）。
+  - 修法：`/v1/order/{id}` 响应加 `internal_status` 字段暴露 8 态原始值，web 能区分 pending_cancel。
 
 - **accidentally committed tui binary** — `tools/tui/tui` 把 10MB Mach-O 一起塞进了 git。
   - commit: [`8f1d21d`](../../commit/8f1d21d)
