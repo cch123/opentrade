@@ -15,7 +15,11 @@
 
 services:
   kafka:
-    image: bitnami/kafka:3.8
+    # Bitnami moved pre-Aug-2025 tags to bitnamilegacy/* on Docker Hub
+    # (no free `bitnami/kafka:3.8` anymore). Keep legacy for this pinned
+    # dev dep; swap to apache/kafka or a newer Bitnami tag when we bump
+    # Kafka cluster version.
+    image: bitnamilegacy/kafka:3.8
     container_name: opentrade-kafka
     ports:
       - "9092:9092"
@@ -47,7 +51,7 @@ services:
       retries: 10
 
   etcd:
-    image: bitnami/etcd:3.5
+    image: bitnamilegacy/etcd:3.5
     container_name: opentrade-etcd
     ports:
       - "2379:2379"

@@ -85,10 +85,11 @@ for port in 8080 8090; do
   fi
 done
 
-say "alice deposits 10000 USDT"
+say "alice deposits 30000 USDT"
+# 30000 USDT covers the 25000 freeze for 0.5 BTC @ 50000 with headroom.
 curl -fsS -X POST http://localhost:8080/v1/transfer \
   -H "X-User-Id: alice" -H "Content-Type: application/json" \
-  -d '{"transfer_id":"dep-alice-usdt","asset":"USDT","amount":"10000","type":"deposit"}' ; echo
+  -d '{"transfer_id":"dep-alice-usdt","asset":"USDT","amount":"30000","type":"deposit"}' ; echo
 
 say "bob deposits 1 BTC"
 curl -fsS -X POST http://localhost:8080/v1/transfer \
