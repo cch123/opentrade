@@ -50,10 +50,12 @@ type BalanceSnapshot struct {
 	Frozen    string `json:"frozen"`
 }
 
-// AccountSnapshot captures one user's balances.
+// AccountSnapshot captures one user's balances and per-symbol match_seq
+// guard (ADR-0048 backlog: trade-event idempotency).
 type AccountSnapshot struct {
-	UserID   string            `json:"user_id"`
-	Balances []BalanceSnapshot `json:"balances"`
+	UserID       string            `json:"user_id"`
+	Balances     []BalanceSnapshot `json:"balances"`
+	LastMatchSeq map[string]uint64 `json:"last_match_seq,omitempty"`
 }
 
 // DedupEntrySnapshot captures a single transfer_id dedup record. For MVP-2
@@ -141,7 +143,10 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 	for _, userID := range state.Users() {
 		acc := state.Account(userID)
 		balances := acc.Copy()
-		as := AccountSnapshot{UserID: userID}
+		as := AccountSnapshot{
+			UserID:       userID,
+			LastMatchSeq: acc.MatchSeqSnapshot(),
+		}
 		for asset, bal := range balances {
 			as.Balances = append(as.Balances, BalanceSnapshot{
 				Asset:     asset,
@@ -227,6 +232,10 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			// a normal state transition.
 			putBalance(acc, bs.Asset, engine.Balance{Available: available, Frozen: frozen})
 		}
+		// Restore the per-symbol match_seq guard. Empty map for v1 snapshots
+		// and for brand-new accounts — handlers treat missing entries as
+		// zero, which lets the first event through and primes the guard.
+		acc.RestoreMatchSeq(as.LastMatchSeq)
 	}
 	seq.SetShardSeq(snap.ShardSeq)
 

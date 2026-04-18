@@ -55,6 +55,10 @@ func TestCaptureRestore(t *testing.T) {
 	seq.SetShardSeq(42)
 	dt.Set("tx-1", "cached-response")
 
+	// Prime LastMatchSeq on two symbols for u1 (ADR-0048 backlog item 2).
+	state.Account("u1").AdvanceMatchSeq("BTC-USDT", 101)
+	state.Account("u1").AdvanceMatchSeq("ETH-USDT", 7)
+
 	offsets := map[int32]int64{0: 100, 2: 55}
 	snap := Capture(3, state, seq, dt, offsets, 0)
 
@@ -92,6 +96,16 @@ func TestCaptureRestore(t *testing.T) {
 	got := OffsetsSliceToMap(loaded.Offsets)
 	if len(got) != 2 || got[0] != 100 || got[2] != 55 {
 		t.Fatalf("offsets round-trip: %v", got)
+	}
+	// LastMatchSeq round-trip (ADR-0048 backlog item 2).
+	if got := state2.Account("u1").LastMatchSeq("BTC-USDT"); got != 101 {
+		t.Errorf("BTC-USDT match_seq after restore = %d, want 101", got)
+	}
+	if got := state2.Account("u1").LastMatchSeq("ETH-USDT"); got != 7 {
+		t.Errorf("ETH-USDT match_seq after restore = %d, want 7", got)
+	}
+	if got := state2.Account("u2").LastMatchSeq("BTC-USDT"); got != 0 {
+		t.Errorf("u2 BTC-USDT match_seq after restore = %d, want 0", got)
 	}
 }
 

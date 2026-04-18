@@ -24,12 +24,17 @@ var (
 type Account struct {
 	UserID string
 
-	// mu guards balances. In the common path the UserSequencer already
-	// serializes per-user access and mu is uncontended; mu exists so that
-	// snapshot readers can obtain a consistent per-user view without going
-	// through the sequencer.
+	// mu guards balances and matchSeq. In the common path the UserSequencer
+	// already serializes per-user access and mu is uncontended; mu exists so
+	// that snapshot readers can obtain a consistent per-user view without
+	// going through the sequencer.
 	mu       sync.RWMutex
 	balances map[string]*Balance
+	// matchSeq tracks the highest trade-event Meta.SeqId this user has seen
+	// per symbol. Trade-event handlers gate on this value to filter replayed
+	// records after a snapshot-restore (ADR-0048 backlog: trade-event
+	// idempotency, user × symbol match_seq guard).
+	matchSeq map[string]uint64
 }
 
 func newAccount(userID string) *Account {
@@ -82,6 +87,61 @@ func (a *Account) setBalance(asset string, b Balance) {
 // this runs before the shard starts serving traffic.
 func (a *Account) PutForRestore(asset string, b Balance) {
 	a.setBalance(asset, b)
+}
+
+// LastMatchSeq returns the highest trade-event seq already applied for this
+// (user, symbol). Zero means no event seen yet — callers MUST treat incoming
+// seq 0 as "unset" (pre-ADR-0048 test fixtures / legacy) and skip the guard.
+func (a *Account) LastMatchSeq(symbol string) uint64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.matchSeq[symbol]
+}
+
+// AdvanceMatchSeq bumps (symbol → seq). Monotonic: shorter-or-equal values
+// are ignored so out-of-order arrivals never rewind the guard.
+func (a *Account) AdvanceMatchSeq(symbol string, seq uint64) {
+	if seq == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.matchSeq == nil {
+		a.matchSeq = make(map[string]uint64)
+	}
+	if seq > a.matchSeq[symbol] {
+		a.matchSeq[symbol] = seq
+	}
+}
+
+// MatchSeqSnapshot returns a copy of the full per-symbol map, for snapshot
+// serialization. Safe to call concurrently with AdvanceMatchSeq.
+func (a *Account) MatchSeqSnapshot() map[string]uint64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.matchSeq) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(a.matchSeq))
+	for k, v := range a.matchSeq {
+		out[k] = v
+	}
+	return out
+}
+
+// RestoreMatchSeq replaces the per-symbol map (restore-only, same contract
+// as PutForRestore).
+func (a *Account) RestoreMatchSeq(m map[string]uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(m) == 0 {
+		a.matchSeq = nil
+		return
+	}
+	a.matchSeq = make(map[string]uint64, len(m))
+	for k, v := range m {
+		a.matchSeq[k] = v
+	}
 }
 
 // ShardState is the in-memory state for one Counter shard.
