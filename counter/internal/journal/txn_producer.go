@@ -16,12 +16,19 @@ import (
 // TxnProducerConfig configures Counter's transactional Kafka producer used by
 // PlaceOrder / CancelOrder to atomically write counter-journal + order-event
 // (ADR-0005).
+//
+// OrderEventTopicPrefix (ADR-0050) enables per-symbol topics: the producer
+// writes to `<prefix>-<symbol>` instead of a single shared topic. When
+// non-empty it takes precedence; when empty the legacy single-topic
+// OrderEventTopic is used (kept for in-process tests / legacy deployments
+// that still want one shared topic).
 type TxnProducerConfig struct {
-	Brokers        []string
-	ClientID       string
-	TransactionalID string // e.g. "counter-shard-0-main" (ADR-0017)
-	JournalTopic   string  // default "counter-journal"
-	OrderEventTopic string // default "order-event"
+	Brokers               []string
+	ClientID              string
+	TransactionalID       string // e.g. "counter-shard-0-main" (ADR-0017)
+	JournalTopic          string // default "counter-journal"
+	OrderEventTopic       string // legacy single topic; default "order-event"
+	OrderEventTopicPrefix string // ADR-0050; default "order-event" → `order-event-<symbol>`
 }
 
 // TxnProducer wraps franz-go's transactional producer. Each BeginCommit cycle
@@ -68,6 +75,9 @@ func NewTxnProducer(ctx context.Context, cfg TxnProducerConfig, logger *zap.Logg
 // PublishOrderPlacement atomically writes (1) a counter-journal event and
 // (2) an order-event within a single Kafka transaction. Partition keys:
 // user_id for the journal event, symbol for the order event (ADR-0004).
+// Target topic for the order-event is derived from orderKey (= symbol) per
+// ADR-0050 — `OrderEventTopicPrefix + "-" + orderKey`. Empty prefix keeps
+// the legacy single-topic behaviour.
 func (p *TxnProducer) PublishOrderPlacement(
 	ctx context.Context,
 	journalEvt *eventpb.CounterJournalEvent,
@@ -75,15 +85,26 @@ func (p *TxnProducer) PublishOrderPlacement(
 	journalKey string,
 	orderKey string,
 ) error {
+	orderTopic := p.orderEventTopicFor(orderKey)
 	return p.runTxn(ctx, func() error {
 		if err := p.produce(ctx, p.cfg.JournalTopic, journalKey, journalEvt); err != nil {
 			return fmt.Errorf("produce journal: %w", err)
 		}
-		if err := p.produce(ctx, p.cfg.OrderEventTopic, orderKey, orderEvt); err != nil {
+		if err := p.produce(ctx, orderTopic, orderKey, orderEvt); err != nil {
 			return fmt.Errorf("produce order-event: %w", err)
 		}
 		return nil
 	})
+}
+
+// orderEventTopicFor returns the order-event topic name for a given symbol.
+// ADR-0050: returns `OrderEventTopicPrefix + "-" + symbol` when prefix is
+// non-empty; otherwise falls back to the legacy single-topic value.
+func (p *TxnProducer) orderEventTopicFor(symbol string) string {
+	if p.cfg.OrderEventTopicPrefix != "" && symbol != "" {
+		return p.cfg.OrderEventTopicPrefix + "-" + symbol
+	}
+	return p.cfg.OrderEventTopic
 }
 
 // Publish writes a single CounterJournalEvent inside its own Kafka

@@ -51,7 +51,9 @@ type Config struct {
 	ShardID    string
 
 	Brokers          []string
-	OrderTopic       string
+	OrderTopic       string // legacy single topic (ADR-0050 fallback)
+	OrderTopicRegex  string // ADR-0050; e.g. `^order-event-.+$`
+	OrderTopicPrefix string // ADR-0050; used to map symbol → topic in snapshot offset hydration
 	TradeTopic       string
 	ConsumerGroup    string
 	SnapshotDir      string
@@ -308,13 +310,16 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 
 	// --- Consumer ---------------------------------------------------------
 
-	// Merge per-symbol snapshot offsets to the consumer's per-partition
-	// seek map. Partitions shared by multiple symbols rewind to the
-	// slowest owner so no symbol misses events after seek (ADR-0048 §4).
-	initialOffsets := mergeRestoredOffsets(reg)
-	if len(initialOffsets) > 0 {
+	// Merge per-symbol snapshot offsets into the consumer's per-(topic,
+	// partition) seek map. With ADR-0050 per-symbol topics each worker
+	// consumes its own topic, so cross-symbol min collapses to per-worker
+	// independent values. The merge still runs for legacy single-topic
+	// deployments where multiple workers share one topic's partitions.
+	initialOffsets := mergeRestoredOffsets(reg, cfg.OrderTopicPrefix, cfg.OrderTopic)
+	if n := totalOffsetEntries(initialOffsets); n > 0 {
 		logger.Info("restoring consumer offsets from snapshots",
-			zap.Int("partitions", len(initialOffsets)))
+			zap.Int("topics", len(initialOffsets)),
+			zap.Int("entries", n))
 	}
 
 	consumer, err := journal.NewOrderConsumer(journal.ConsumerConfig{
@@ -322,6 +327,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		ClientID:       cfg.InstanceID,
 		GroupID:        cfg.ConsumerGroup,
 		Topic:          cfg.OrderTopic,
+		TopicRegex:     cfg.OrderTopicRegex,
 		InitialOffsets: initialOffsets,
 	}, dispatcher, logger)
 	if err != nil {
@@ -418,6 +424,8 @@ func applyWatch(ctx context.Context, watchCh <-chan etcdcfg.Event, reg *registry
 func parseFlags() Config {
 	cfg := Config{
 		OrderTopic:       "order-event",
+		OrderTopicRegex:  "^order-event-.+$", // ADR-0050
+		OrderTopicPrefix: "order-event",
 		TradeTopic:       "trade-event",
 		SnapshotDir:      "./data/match",
 		SnapshotInterval: 60 * time.Second,
@@ -442,7 +450,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.EtcdPrefix, "etcd-prefix", cfg.EtcdPrefix, "etcd key prefix for symbol configs")
 	flag.DurationVar(&cfg.EtcdDialTimeout, "etcd-dial-timeout", cfg.EtcdDialTimeout, "etcd dial timeout")
 	flag.StringVar(&symbolsStr, "symbols", "", "comma-separated static symbol list (used when --etcd is empty)")
-	flag.StringVar(&cfg.OrderTopic, "order-topic", cfg.OrderTopic, "order-event topic name")
+	flag.StringVar(&cfg.OrderTopic, "order-topic", cfg.OrderTopic, "legacy single order-event topic (used when --order-topic-regex is empty; ADR-0050)")
+	flag.StringVar(&cfg.OrderTopicRegex, "order-topic-regex", cfg.OrderTopicRegex, "regex matching per-symbol order-event topics (ADR-0050; default ^order-event-.+$)")
+	flag.StringVar(&cfg.OrderTopicPrefix, "order-topic-prefix", cfg.OrderTopicPrefix, "per-symbol order-event topic prefix (ADR-0050). Used to map snapshot offsets: worker's symbol → `<prefix>-<symbol>`")
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default match-{instance-id})")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
@@ -598,16 +608,30 @@ func periodicSnapshot(ctx context.Context, reg *registry.Registry, producer *jou
 	}
 }
 
-// mergeRestoredOffsets collects per-partition offsets from every active
-// worker, taking the MIN per partition. A partition shared by multiple
-// symbols (shared-topic deployments, ADR-0048 §4) must be rewound to the
-// slowest consumer's position so none of them miss events after seek.
-func mergeRestoredOffsets(reg *registry.Registry) map[int32]int64 {
-	merged := make(map[int32]int64)
+// mergeRestoredOffsets collects per-(topic, partition) offsets from every
+// active worker. With ADR-0050 per-symbol topics, each worker's offsets
+// belong to its own topic (`<prefix>-<symbol>`) so the merge is mostly a
+// union. When multiple workers share a topic (legacy single-topic mode or
+// future partition-shared setups) the MIN per partition keeps the slowest
+// owner's position so none of them miss events after seek (ADR-0048 §4).
+//
+// When topicPrefix is empty we fall back to legacyTopic for every worker —
+// that's the pre-ADR-0050 behaviour preserved for single-topic deployments.
+func mergeRestoredOffsets(reg *registry.Registry, topicPrefix, legacyTopic string) map[string]map[int32]int64 {
+	merged := make(map[string]map[int32]int64)
 	for _, w := range reg.Workers() {
+		topic := orderEventTopicFor(w.Symbol(), topicPrefix, legacyTopic)
+		if topic == "" {
+			continue
+		}
 		for p, off := range w.Offsets() {
-			if existing, ok := merged[p]; !ok || off < existing {
-				merged[p] = off
+			tp, ok := merged[topic]
+			if !ok {
+				tp = make(map[int32]int64)
+				merged[topic] = tp
+			}
+			if existing, present := tp[p]; !present || off < existing {
+				tp[p] = off
 			}
 		}
 	}
@@ -615,4 +639,23 @@ func mergeRestoredOffsets(reg *registry.Registry) map[int32]int64 {
 		return nil
 	}
 	return merged
+}
+
+// orderEventTopicFor returns the order-event topic name for a symbol under
+// the active topology. Mirror of counter's TxnProducer.orderEventTopicFor.
+func orderEventTopicFor(symbol, topicPrefix, legacyTopic string) string {
+	if topicPrefix != "" && symbol != "" {
+		return topicPrefix + "-" + symbol
+	}
+	return legacyTopic
+}
+
+// totalOffsetEntries counts the flat number of (topic, partition) entries
+// for log output.
+func totalOffsetEntries(m map[string]map[int32]int64) int {
+	n := 0
+	for _, parts := range m {
+		n += len(parts)
+	}
+	return n
 }

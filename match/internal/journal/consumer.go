@@ -14,17 +14,22 @@ import (
 )
 
 // ConsumerConfig configures the order-event Kafka consumer.
+//
+// ADR-0050: production subscribes to per-symbol topics (`order-event-<sym>`)
+// via TopicRegex; legacy single-topic mode is still supported by leaving
+// TopicRegex empty and setting Topic.
 type ConsumerConfig struct {
-	Brokers  []string
-	ClientID string
-	GroupID  string
-	Topic    string // default "order-event"
+	Brokers    []string
+	ClientID   string
+	GroupID    string
+	Topic      string // legacy single topic (used when TopicRegex is empty)
+	TopicRegex string // ADR-0050; e.g. `^order-event-.+$` — takes precedence over Topic
 
-	// InitialOffsets sets the per-partition starting offset (next-to-consume)
-	// when restoring from snapshots (ADR-0048). Partitions missing from the
-	// map default to AtStart so newly-added partitions are backfilled. Nil
-	// means cold start: every partition begins at AtStart.
-	InitialOffsets map[int32]int64
+	// InitialOffsets sets the per-(topic, partition) starting offset when
+	// restoring from snapshots (ADR-0048 + ADR-0050). Missing entries
+	// default to AtStart so newly-added topics / partitions are backfilled.
+	// Nil means cold start.
+	InitialOffsets map[string]map[int32]int64
 }
 
 // OrderConsumer consumes order-event Kafka messages and dispatches them to
@@ -33,7 +38,9 @@ type OrderConsumer struct {
 	client     *kgo.Client
 	dispatcher *Dispatcher
 	logger     *zap.Logger
+	// topic / topicRegex recorded for diagnostic logging only.
 	topic      string
+	topicRegex string
 }
 
 // NewOrderConsumer constructs an OrderConsumer. The caller must start it with
@@ -45,17 +52,26 @@ func NewOrderConsumer(cfg ConsumerConfig, d *Dispatcher, logger *zap.Logger) (*O
 	if cfg.GroupID == "" {
 		return nil, errors.New("journal: GroupID required")
 	}
-	if cfg.Topic == "" {
+	if cfg.Topic == "" && cfg.TopicRegex == "" {
 		cfg.Topic = "order-event"
 	}
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ClientID(cfg.ClientID),
 		kgo.ConsumerGroup(cfg.GroupID),
-		kgo.ConsumeTopics(cfg.Topic),
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
 		kgo.DisableAutoCommit(),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	}
+	if cfg.TopicRegex != "" {
+		// ADR-0050: subscribe by regex to pick up every per-symbol topic
+		// including ones created after the consumer starts.
+		opts = append(opts,
+			kgo.ConsumeTopics(cfg.TopicRegex),
+			kgo.ConsumeRegex(),
+		)
+	} else {
+		opts = append(opts, kgo.ConsumeTopics(cfg.Topic))
 	}
 	if len(cfg.InitialOffsets) > 0 {
 		saved := cfg.InitialOffsets
@@ -63,8 +79,9 @@ func NewOrderConsumer(cfg ConsumerConfig, d *Dispatcher, logger *zap.Logger) (*O
 			out := make(map[string]map[int32]kgo.Offset, len(current))
 			for topic, parts := range current {
 				outParts := make(map[int32]kgo.Offset, len(parts))
+				topicSaved := saved[topic]
 				for p := range parts {
-					if off, ok := saved[p]; ok {
+					if off, ok := topicSaved[p]; ok {
 						outParts[p] = kgo.NewOffset().At(off)
 					} else {
 						outParts[p] = kgo.NewOffset().AtStart()
@@ -84,6 +101,7 @@ func NewOrderConsumer(cfg ConsumerConfig, d *Dispatcher, logger *zap.Logger) (*O
 		dispatcher: d,
 		logger:     logger,
 		topic:      cfg.Topic,
+		topicRegex: cfg.TopicRegex,
 	}, nil
 }
 

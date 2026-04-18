@@ -61,7 +61,8 @@ type Config struct {
 	GRPCAddr         string
 	Brokers          []string
 	JournalTopic     string
-	OrderEventTopic  string
+	OrderEventTopic       string // legacy single topic (ADR-0050 fallback)
+	OrderEventTopicPrefix string // ADR-0050; per-symbol topics `<prefix>-<symbol>`
 	TradeEventTopic  string
 	ConsumerGroup    string
 	SnapshotDir      string
@@ -211,7 +212,8 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		ClientID:        cfg.InstanceID + "-txn",
 		TransactionalID: cfg.InstanceID,
 		JournalTopic:    cfg.JournalTopic,
-		OrderEventTopic: cfg.OrderEventTopic,
+		OrderEventTopic:       cfg.OrderEventTopic,
+		OrderEventTopicPrefix: cfg.OrderEventTopicPrefix,
 	}, logger)
 	if err != nil {
 		logger.Error("txn producer", zap.Error(err))
@@ -407,7 +409,8 @@ func parseFlags() Config {
 	cfg := Config{
 		GRPCAddr:         ":8081",
 		JournalTopic:     "counter-journal",
-		OrderEventTopic:  "order-event",
+		OrderEventTopic:       "order-event",
+		OrderEventTopicPrefix: "order-event",
 		TradeEventTopic:  "trade-event",
 		SnapshotDir:      "./data/counter",
 		SnapshotInterval: 60 * time.Second,
@@ -428,7 +431,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
 	flag.StringVar(&cfg.JournalTopic, "journal-topic", cfg.JournalTopic, "counter-journal topic name")
-	flag.StringVar(&cfg.OrderEventTopic, "order-topic", cfg.OrderEventTopic, "order-event topic name")
+	flag.StringVar(&cfg.OrderEventTopic, "order-topic", cfg.OrderEventTopic, "legacy single order-event topic (used when --order-topic-prefix is empty; ADR-0050)")
+	flag.StringVar(&cfg.OrderEventTopicPrefix, "order-topic-prefix", cfg.OrderEventTopicPrefix, "per-symbol order-event topic prefix — emits to `<prefix>-<symbol>`. Empty falls back to --order-topic (ADR-0050)")
 	flag.StringVar(&cfg.TradeEventTopic, "trade-topic", cfg.TradeEventTopic, "trade-event topic name")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default counter-shard-<N>)")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
