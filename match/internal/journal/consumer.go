@@ -19,6 +19,12 @@ type ConsumerConfig struct {
 	ClientID string
 	GroupID  string
 	Topic    string // default "order-event"
+
+	// InitialOffsets sets the per-partition starting offset (next-to-consume)
+	// when restoring from snapshots (ADR-0048). Partitions missing from the
+	// map default to AtStart so newly-added partitions are backfilled. Nil
+	// means cold start: every partition begins at AtStart.
+	InitialOffsets map[int32]int64
 }
 
 // OrderConsumer consumes order-event Kafka messages and dispatches them to
@@ -42,14 +48,34 @@ func NewOrderConsumer(cfg ConsumerConfig, d *Dispatcher, logger *zap.Logger) (*O
 	if cfg.Topic == "" {
 		cfg.Topic = "order-event"
 	}
-	cli, err := kgo.NewClient(
+	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ClientID(cfg.ClientID),
 		kgo.ConsumerGroup(cfg.GroupID),
 		kgo.ConsumeTopics(cfg.Topic),
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
 		kgo.DisableAutoCommit(),
-	)
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	}
+	if len(cfg.InitialOffsets) > 0 {
+		saved := cfg.InitialOffsets
+		opts = append(opts, kgo.AdjustFetchOffsetsFn(func(_ context.Context, current map[string]map[int32]kgo.Offset) (map[string]map[int32]kgo.Offset, error) {
+			out := make(map[string]map[int32]kgo.Offset, len(current))
+			for topic, parts := range current {
+				outParts := make(map[int32]kgo.Offset, len(parts))
+				for p := range parts {
+					if off, ok := saved[p]; ok {
+						outParts[p] = kgo.NewOffset().At(off)
+					} else {
+						outParts[p] = kgo.NewOffset().AtStart()
+					}
+				}
+				out[topic] = outParts
+			}
+			return out, nil
+		}))
+	}
+	cli, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kgo.NewClient: %w", err)
 	}
@@ -62,7 +88,9 @@ func NewOrderConsumer(cfg ConsumerConfig, d *Dispatcher, logger *zap.Logger) (*O
 }
 
 // Run polls Kafka and dispatches events until ctx is cancelled or the client
-// is closed.
+// is closed. Per ADR-0048 the snapshot file is the authoritative consumer
+// position, so we do NOT commit offsets back to the broker — Kafka's
+// consumer group metadata is only used for partition assignment.
 func (c *OrderConsumer) Run(ctx context.Context) error {
 	for {
 		fetches := c.client.PollFetches(ctx)
@@ -77,9 +105,6 @@ func (c *OrderConsumer) Run(ctx context.Context) error {
 				zap.String("topic", t), zap.Int32("partition", p), zap.Error(err))
 		})
 		fetches.EachRecord(c.handleRecord)
-		if err := c.client.CommitUncommittedOffsets(ctx); err != nil {
-			c.logger.Error("commit offsets", zap.Error(err))
-		}
 	}
 }
 

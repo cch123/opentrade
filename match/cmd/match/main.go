@@ -181,31 +181,10 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	workersCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 
-	reg, err := registry.New(workersCtx, registry.Config{
-		Dispatcher: dispatcher,
-		Factory: func(symbol string) *sequencer.SymbolWorker {
-			return sequencer.NewSymbolWorker(sequencer.Config{
-				Symbol:  symbol,
-				Inbox:   2048,
-				STPMode: engine.STPNone,
-			}, outbox)
-		},
-		Restore: func(w *sequencer.SymbolWorker) error {
-			return tryRestoreSnapshot(w, cfg, logger)
-		},
-		Snapshot: func(w *sequencer.SymbolWorker) {
-			if err := writeSnapshot(w, cfg, time.Now().UnixMilli()); err != nil {
-				logger.Error("final snapshot",
-					zap.String("symbol", w.Symbol()), zap.Error(err))
-			}
-		},
-		Logger: logger,
-	})
-	if err != nil {
-		logger.Error("registry", zap.Error(err))
-		return
-	}
-
+	// Producer comes up before the registry so the registry's Snapshot
+	// callback (invoked from RemoveSymbol) can call producer.FlushAndWait
+	// before capturing state (ADR-0048 output flush barrier).
+	//
 	// HA auto → use a stable TransactionalID so the shard's Kafka producer
 	// epoch fences any older primary still alive under the same id
 	// (ADR-0031 §Match fencing). Disabled mode keeps the legacy idempotent
@@ -235,6 +214,38 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		defer pumpWG.Done()
 		producer.Pump(pumpCtx, outbox)
 	}()
+
+	reg, err := registry.New(workersCtx, registry.Config{
+		Dispatcher: dispatcher,
+		Factory: func(symbol string) *sequencer.SymbolWorker {
+			return sequencer.NewSymbolWorker(sequencer.Config{
+				Symbol:  symbol,
+				Inbox:   2048,
+				STPMode: engine.STPNone,
+			}, outbox)
+		},
+		Restore: func(w *sequencer.SymbolWorker) error {
+			return tryRestoreSnapshot(w, cfg, logger)
+		},
+		Snapshot: func(w *sequencer.SymbolWorker) {
+			// RemoveSymbol path: the worker goroutine is already stopped,
+			// so Pump may have been quiet for a moment — FlushAndWait
+			// still forces any trailing transaction to commit before we
+			// capture. Use a longer timeout because shutdown may coincide
+			// with broker slowdowns.
+			sctx, cancel := context.WithTimeout(context.Background(), shutdownFlushTimeout)
+			defer cancel()
+			if err := writeSnapshot(sctx, w, producer, cfg, time.Now().UnixMilli()); err != nil {
+				logger.Error("final snapshot",
+					zap.String("symbol", w.Symbol()), zap.Error(err))
+			}
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		logger.Error("registry", zap.Error(err))
+		return
+	}
 
 	// --- Symbol ownership: etcd or static flag ----------------------------
 
@@ -296,11 +307,21 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 
 	// --- Consumer ---------------------------------------------------------
 
+	// Merge per-symbol snapshot offsets to the consumer's per-partition
+	// seek map. Partitions shared by multiple symbols rewind to the
+	// slowest owner so no symbol misses events after seek (ADR-0048 §4).
+	initialOffsets := mergeRestoredOffsets(reg)
+	if len(initialOffsets) > 0 {
+		logger.Info("restoring consumer offsets from snapshots",
+			zap.Int("partitions", len(initialOffsets)))
+	}
+
 	consumer, err := journal.NewOrderConsumer(journal.ConsumerConfig{
-		Brokers:  cfg.Brokers,
-		ClientID: cfg.InstanceID,
-		GroupID:  cfg.ConsumerGroup,
-		Topic:    cfg.OrderTopic,
+		Brokers:        cfg.Brokers,
+		ClientID:       cfg.InstanceID,
+		GroupID:        cfg.ConsumerGroup,
+		Topic:          cfg.OrderTopic,
+		InitialOffsets: initialOffsets,
 	}, dispatcher, logger)
 	if err != nil {
 		logger.Error("order consumer", zap.Error(err))
@@ -321,7 +342,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 
 	snapCtx, cancelSnap := context.WithCancel(context.Background())
 	defer cancelSnap()
-	go periodicSnapshot(snapCtx, reg, cfg, logger)
+	go periodicSnapshot(snapCtx, reg, producer, cfg, logger)
 
 	// --- Wait for shutdown signal -----------------------------------------
 
@@ -508,16 +529,36 @@ func tryRestoreSnapshot(w *sequencer.SymbolWorker, cfg Config, logger *zap.Logge
 	logger.Info("restored from snapshot",
 		zap.String("symbol", w.Symbol()),
 		zap.Uint64("seq_id", snap.SeqID),
-		zap.Int("orders", len(snap.Orders)))
+		zap.Int("orders", len(snap.Orders)),
+		zap.Int("partitions", len(snap.Offsets)))
 	return nil
 }
 
-func writeSnapshot(w *sequencer.SymbolWorker, cfg Config, ts int64) error {
-	snap := snapshot.Capture(w, nil, ts)
+// snapshotTimeout caps how long a single Capture is allowed to block the
+// Pump flush barrier. 3s / 10s are copied from the ADR-0048 failure-scenario
+// table so tuning them is a one-place change.
+const (
+	snapshotFlushTimeout = 3 * time.Second
+	shutdownFlushTimeout = 10 * time.Second
+)
+
+// writeSnapshot performs one ADR-0048 Capture cycle for w. It flushes the
+// producer's outbox first so the Kafka commit state is consistent with the
+// offsets about to be written, then reads the worker state under its lock.
+//
+// On flush failure the snapshot is skipped (not written with stale offsets)
+// and the caller sees the error; next periodic tick will retry.
+func writeSnapshot(ctx context.Context, w *sequencer.SymbolWorker, producer *journal.TradeProducer, cfg Config, ts int64) error {
+	flushCtx, cancel := context.WithTimeout(ctx, snapshotFlushTimeout)
+	defer cancel()
+	if err := producer.FlushAndWait(flushCtx); err != nil {
+		return fmt.Errorf("flush before snapshot: %w", err)
+	}
+	snap := snapshot.Capture(w, ts)
 	return snapshot.Save(snapshotPath(cfg, w.Symbol()), snap)
 }
 
-func periodicSnapshot(ctx context.Context, reg *registry.Registry, cfg Config, logger *zap.Logger) {
+func periodicSnapshot(ctx context.Context, reg *registry.Registry, producer *journal.TradeProducer, cfg Config, logger *zap.Logger) {
 	if cfg.SnapshotInterval <= 0 {
 		return
 	}
@@ -529,11 +570,30 @@ func periodicSnapshot(ctx context.Context, reg *registry.Registry, cfg Config, l
 			return
 		case t := <-ticker.C:
 			for _, w := range reg.Workers() {
-				if err := writeSnapshot(w, cfg, t.UnixMilli()); err != nil {
+				if err := writeSnapshot(ctx, w, producer, cfg, t.UnixMilli()); err != nil {
 					logger.Error("periodic snapshot",
 						zap.String("symbol", w.Symbol()), zap.Error(err))
 				}
 			}
 		}
 	}
+}
+
+// mergeRestoredOffsets collects per-partition offsets from every active
+// worker, taking the MIN per partition. A partition shared by multiple
+// symbols (shared-topic deployments, ADR-0048 §4) must be rewound to the
+// slowest consumer's position so none of them miss events after seek.
+func mergeRestoredOffsets(reg *registry.Registry) map[int32]int64 {
+	merged := make(map[int32]int64)
+	for _, w := range reg.Workers() {
+		for p, off := range w.Offsets() {
+			if existing, ok := merged[p]; !ok || off < existing {
+				merged[p] = off
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }

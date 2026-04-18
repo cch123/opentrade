@@ -105,6 +105,16 @@ func (p *TxnProducer) Publish(
 // Close flushes and closes the underlying kgo client.
 func (p *TxnProducer) Close() { p.cli.Close() }
 
+// Flush blocks until any in-flight produce records are acknowledged by the
+// broker. Every Publish / PublishOrderPlacement already runs its own sync
+// EndTransaction, so in steady state there is nothing buffered — Flush is
+// the ADR-0048 "output barrier" that guarantees all transactions have been
+// committed before a snapshot reads state + offsets. Returns the underlying
+// kgo.Client.Flush error (typically ctx cancellation).
+func (p *TxnProducer) Flush(ctx context.Context) error {
+	return p.cli.Flush(ctx)
+}
+
 // runTxn serializes Begin → user op → End for one transaction. On any error
 // inside the callback the transaction is aborted.
 func (p *TxnProducer) runTxn(ctx context.Context, fn func() error) error {

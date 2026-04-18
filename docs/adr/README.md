@@ -64,6 +64,7 @@
 | [0006](0006-snapshots-by-backup-node.md) | 快照由备节点产生 | Accepted |
 | [0031](0031-ha-cold-standby-rollout.md) | MVP-12 Counter/Match HA — etcd lease + cold standby | Accepted |
 | [0032](0032-match-transactional-producer.md) | MVP-12b Match TradeProducer 升级为 transactional (fencing) | Accepted |
+| [0048](0048-snapshot-offset-atomicity.md) | counter/match snapshot 绑 Kafka offset + output flush barrier | Accepted |
 
 ### 并发与 Sequencer
 

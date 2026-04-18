@@ -56,28 +56,32 @@ type SymbolSnapshot struct {
 // Capture / restore between Worker <-> Snapshot
 // -----------------------------------------------------------------------------
 
-// Capture extracts the current state of w into a SymbolSnapshot. offsets is
-// the set of consumer positions the worker has fully processed and is safe to
-// resume from. timestampMS is the wall-clock time at which the snapshot is
-// taken (informational).
+// Capture extracts the current state of w into a SymbolSnapshot. Safe to
+// call while the worker goroutine is running — it takes the worker's state
+// lock (WithStateLocked) so book / seqID / offsets are read as a consistent
+// triple. timestampMS is the wall-clock time at which the snapshot is taken
+// (informational).
 //
-// Must be called from the worker goroutine (or while the worker is stopped)
-// to avoid reading a partially-updated Book.
-func Capture(w *sequencer.SymbolWorker, offsets []KafkaOffset, timestampMS int64) *SymbolSnapshot {
+// Per-partition offsets are sourced from the worker itself (ADR-0048). The
+// snapshot file thus becomes the authoritative consumer position on restart;
+// callers do NOT pass offsets explicitly anymore.
+func Capture(w *sequencer.SymbolWorker, timestampMS int64) *SymbolSnapshot {
 	snap := &SymbolSnapshot{
 		Version:     Version,
 		Symbol:      w.Symbol(),
-		SeqID:       w.SeqID(),
-		Offsets:     append([]KafkaOffset(nil), offsets...),
 		TimestampMS: timestampMS,
 	}
-	w.Book().Walk(orderbook.Bid, func(o *orderbook.Order) bool {
-		snap.Orders = append(snap.Orders, toSnapshot(o))
-		return true
-	})
-	w.Book().Walk(orderbook.Ask, func(o *orderbook.Order) bool {
-		snap.Orders = append(snap.Orders, toSnapshot(o))
-		return true
+	w.WithStateLocked(func(book *orderbook.Book, seqID uint64, offsets map[int32]int64) {
+		snap.SeqID = seqID
+		snap.Offsets = offsetsMapToSlice(offsets)
+		book.Walk(orderbook.Bid, func(o *orderbook.Order) bool {
+			snap.Orders = append(snap.Orders, toSnapshot(o))
+			return true
+		})
+		book.Walk(orderbook.Ask, func(o *orderbook.Order) bool {
+			snap.Orders = append(snap.Orders, toSnapshot(o))
+			return true
+		})
 	})
 	return snap
 }
@@ -105,7 +109,39 @@ func Restore(w *sequencer.SymbolWorker, snap *SymbolSnapshot) error {
 		}
 	}
 	w.SetSeqID(snap.SeqID)
+	w.SetOffsets(offsetsSliceToMap(snap.Offsets))
 	return nil
+}
+
+// offsetsMapToSlice serialises the worker's offsets map to the on-disk
+// KafkaOffset slice. The Topic field is populated with the canonical
+// order-event topic — in the current deployment all events share one topic,
+// but embedding it keeps the schema robust against future multi-topic setups.
+func offsetsMapToSlice(m map[int32]int64) []KafkaOffset {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]KafkaOffset, 0, len(m))
+	for p, o := range m {
+		out = append(out, KafkaOffset{Topic: "order-event", Partition: p, Offset: o})
+	}
+	return out
+}
+
+// offsetsSliceToMap reverses offsetsMapToSlice. Multiple entries for the same
+// partition (shouldn't happen in well-formed snapshots but guard anyway) are
+// reduced to the max — recovery must not go backwards.
+func offsetsSliceToMap(s []KafkaOffset) map[int32]int64 {
+	if len(s) == 0 {
+		return nil
+	}
+	out := make(map[int32]int64, len(s))
+	for _, ko := range s {
+		if ko.Offset > out[ko.Partition] {
+			out[ko.Partition] = ko.Offset
+		}
+	}
+	return out
 }
 
 // -----------------------------------------------------------------------------

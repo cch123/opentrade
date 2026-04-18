@@ -192,7 +192,10 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	userSeq := sequencer.New()
 	dt := dedup.New(cfg.DedupTTL)
 
-	if err := tryRestoreSnapshot(cfg, state, userSeq, dt, logger); err != nil {
+	// Restore returns the per-partition consumer offsets persisted alongside
+	// the shard state; nil on cold start or v1 snapshot (ADR-0048).
+	restoredOffsets, err := tryRestoreSnapshot(cfg, state, userSeq, dt, logger)
+	if err != nil {
 		logger.Error("snapshot restore", zap.Error(err))
 		return
 	}
@@ -227,12 +230,21 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		ProducerID:  cfg.InstanceID,
 	}, state, userSeq, dt, txnProducer, logger)
 	svc.SetOrderDeps(txnProducer, idg)
+	// Inject the snapshot's trade-event offsets so advanceOffset has a
+	// correct baseline. Cold start / v1 snapshot → nil → consumer will
+	// fall back to AtStart below.
+	svc.SetOffsets(restoredOffsets)
+	if len(restoredOffsets) > 0 {
+		logger.Info("restoring trade-event offsets from snapshot",
+			zap.Int("partitions", len(restoredOffsets)))
+	}
 
 	tradeConsumer, err := journal.NewTradeConsumer(journal.TradeConsumerConfig{
-		Brokers:  cfg.Brokers,
-		ClientID: cfg.InstanceID + "-trade",
-		GroupID:  cfg.ConsumerGroup,
-		Topic:    cfg.TradeEventTopic,
+		Brokers:        cfg.Brokers,
+		ClientID:       cfg.InstanceID + "-trade",
+		GroupID:        cfg.ConsumerGroup,
+		Topic:          cfg.TradeEventTopic,
+		InitialOffsets: restoredOffsets,
 	}, svc, logger)
 	if err != nil {
 		logger.Error("trade consumer", zap.Error(err))
@@ -250,16 +262,18 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}()
 
 	// Periodic snapshot. Capture is concurrency-safe against live mutations
-	// (each underlying store takes its own RWMutex + returns deep copies)
-	// and records ShardSeq before scanning state, so restore replays any
-	// in-flight divergence via the idempotent trade / transfer handlers.
+	// (each underlying store takes its own RWMutex + returns deep copies).
+	// Before reading state we call txnProducer.Flush → Kafka ack barrier so
+	// the offsets recorded in the snapshot reflect only fully-committed
+	// transactions (ADR-0048 output flush barrier; TxnProducer is sync so
+	// this is typically a no-op but keeps the contract explicit).
 	snapCtx, cancelSnap := context.WithCancel(context.Background())
 	defer cancelSnap()
 	var snapWG sync.WaitGroup
 	snapWG.Add(1)
 	go func() {
 		defer snapWG.Done()
-		periodicSnapshot(snapCtx, cfg, state, userSeq, dt, logger)
+		periodicSnapshot(snapCtx, cfg, state, userSeq, dt, svc, txnProducer, logger)
 	}()
 
 	// Hourly balance audit against MySQL projection (ADR-0008 §对账). Only
@@ -305,11 +319,13 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	// Drain in-flight sequencer work before the final snapshot.
 	time.Sleep(100 * time.Millisecond)
 
-	if err := writeSnapshot(cfg, state, userSeq, dt); err != nil {
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownFlushTimeout)
+	if err := writeSnapshot(shutdownCtx, cfg, state, userSeq, dt, svc, txnProducer); err != nil {
 		logger.Error("final snapshot", zap.Error(err))
 	} else {
 		logger.Info("final snapshot written")
 	}
+	cancelShutdown()
 	logger.Info("primary stopped")
 }
 
@@ -349,10 +365,19 @@ func startReconcile(parent context.Context, cfg Config, state *engine.ShardState
 	return cancel, done
 }
 
+// snapshotFlushTimeout caps how long one snapshot tick may block waiting for
+// the Kafka producer to drain (ADR-0048). shutdownFlushTimeout gives the
+// final snapshot more headroom since graceful shutdown can coincide with
+// broker slowdowns.
+const (
+	snapshotFlushTimeout = 3 * time.Second
+	shutdownFlushTimeout = 10 * time.Second
+)
+
 // periodicSnapshot writes a full shard snapshot to SnapshotDir on each tick.
 // SnapshotInterval <= 0 disables the loop (only the shutdown-time snapshot
 // runs, matching pre-MVP-12b behaviour).
-func periodicSnapshot(ctx context.Context, cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, logger *zap.Logger) {
+func periodicSnapshot(ctx context.Context, cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, svc *service.Service, txnProducer *journal.TxnProducer, logger *zap.Logger) {
 	if cfg.SnapshotInterval <= 0 {
 		return
 	}
@@ -363,7 +388,10 @@ func periodicSnapshot(ctx context.Context, cfg Config, state *engine.ShardState,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := writeSnapshot(cfg, state, seq, dt); err != nil {
+			flushCtx, cancel := context.WithTimeout(ctx, snapshotFlushTimeout)
+			err := writeSnapshot(flushCtx, cfg, state, seq, dt, svc, txnProducer)
+			cancel()
+			if err != nil {
 				logger.Error("periodic snapshot", zap.Error(err))
 			}
 		}
@@ -477,28 +505,41 @@ func snapshotPath(cfg Config) string {
 	return filepath.Join(cfg.SnapshotDir, fmt.Sprintf("shard-%d.json", cfg.ShardID))
 }
 
-func tryRestoreSnapshot(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, logger *zap.Logger) error {
+// tryRestoreSnapshot loads state + per-partition offsets from disk. Returns
+// the offsets map so main can seed both the Service and the Kafka consumer.
+// A v1 snapshot restores state but returns nil offsets — the consumer falls
+// back to AtStart for one rescan, covered by idempotency guards.
+func tryRestoreSnapshot(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, logger *zap.Logger) (map[int32]int64, error) {
 	path := snapshotPath(cfg)
 	snap, err := snapshot.Load(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			logger.Info("no snapshot found, starting fresh", zap.Int("shard_id", cfg.ShardID))
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("load %s: %w", path, err)
+		return nil, fmt.Errorf("load %s: %w", path, err)
 	}
 	if err := snapshot.Restore(cfg.ShardID, state, seq, dt, snap); err != nil {
-		return fmt.Errorf("restore: %w", err)
+		return nil, fmt.Errorf("restore: %w", err)
 	}
+	offsets := snapshot.OffsetsSliceToMap(snap.Offsets)
 	logger.Info("restored from snapshot",
 		zap.Int("shard_id", cfg.ShardID),
+		zap.Int("version", snap.Version),
 		zap.Uint64("shard_seq", snap.ShardSeq),
 		zap.Int("accounts", len(snap.Accounts)),
-		zap.Int("orders", len(snap.Orders)))
-	return nil
+		zap.Int("orders", len(snap.Orders)),
+		zap.Int("partitions", len(offsets)))
+	return offsets, nil
 }
 
-func writeSnapshot(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table) error {
-	snap := snapshot.Capture(cfg.ShardID, state, seq, dt, time.Now().UnixMilli())
+// writeSnapshot captures state + offsets after flushing the Kafka producer
+// so persisted offsets are guaranteed ≤ committed output position
+// (ADR-0048 output flush barrier).
+func writeSnapshot(ctx context.Context, cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, svc *service.Service, txnProducer *journal.TxnProducer) error {
+	if err := txnProducer.Flush(ctx); err != nil {
+		return fmt.Errorf("flush before snapshot: %w", err)
+	}
+	snap := snapshot.Capture(cfg.ShardID, state, seq, dt, svc.Offsets(), time.Now().UnixMilli())
 	return snapshot.Save(snapshotPath(cfg), snap)
 }

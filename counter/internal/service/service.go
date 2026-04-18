@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"go.uber.org/zap"
 
@@ -78,6 +79,13 @@ type Service struct {
 	txn       TxnPublisher
 	idgen     IDGen
 	logger    *zap.Logger
+
+	// offsets records the trade-event topic's next-to-consume offset per
+	// partition (ADR-0048). Advanced from HandleTradeRecord after the
+	// handler has mutated state, read by snapshot.Capture; guarded by
+	// offsetsMu so snapshot reads don't tear against a concurrent consumer.
+	offsetsMu sync.Mutex
+	offsets   map[int32]int64
 }
 
 // New wires a Service. All dependencies must be non-nil. txn / idgen may be
@@ -98,6 +106,62 @@ func New(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt 
 func (s *Service) SetOrderDeps(txn TxnPublisher, idgen IDGen) {
 	s.txn = txn
 	s.idgen = idgen
+}
+
+// Offsets returns a copy of the per-partition trade-event offsets. Safe to
+// call concurrently with the consumer.
+func (s *Service) Offsets() map[int32]int64 {
+	s.offsetsMu.Lock()
+	defer s.offsetsMu.Unlock()
+	if len(s.offsets) == 0 {
+		return nil
+	}
+	out := make(map[int32]int64, len(s.offsets))
+	for p, o := range s.offsets {
+		out[p] = o
+	}
+	return out
+}
+
+// SetOffsets replaces the per-partition trade-event offsets. Called from
+// main after snapshot.Restore; must not run concurrently with the consumer.
+func (s *Service) SetOffsets(m map[int32]int64) {
+	s.offsetsMu.Lock()
+	defer s.offsetsMu.Unlock()
+	if len(m) == 0 {
+		s.offsets = nil
+		return
+	}
+	s.offsets = make(map[int32]int64, len(m))
+	for p, o := range m {
+		s.offsets[p] = o
+	}
+}
+
+// advanceOffset bumps partition p to next (= Kafka record offset + 1).
+// Monotonic: earlier records that arrive out-of-order (shouldn't happen for
+// a single consumer per partition, but guard anyway) do not rewind.
+func (s *Service) advanceOffset(p int32, next int64) {
+	s.offsetsMu.Lock()
+	defer s.offsetsMu.Unlock()
+	if s.offsets == nil {
+		s.offsets = make(map[int32]int64)
+	}
+	if next > s.offsets[p] {
+		s.offsets[p] = next
+	}
+}
+
+// HandleTradeRecord is the Kafka-aware sibling of HandleTradeEvent. On
+// handler success the record's offset is recorded so the next snapshot will
+// persist it (ADR-0048). Failures do NOT advance the offset — the consumer
+// will re-poll the same record on restart.
+func (s *Service) HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent, partition int32, offset int64) error {
+	if err := s.HandleTradeEvent(ctx, evt); err != nil {
+		return err
+	}
+	s.advanceOffset(partition, offset+1)
+	return nil
 }
 
 // OwnsUser reports whether userID belongs to this shard. Returns true when

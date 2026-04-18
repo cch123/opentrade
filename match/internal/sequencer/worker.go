@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/xargin/opentrade/match/internal/engine"
 	"github.com/xargin/opentrade/match/internal/orderbook"
@@ -28,13 +29,20 @@ type Config struct {
 // See ADR-0016 (per-symbol single-thread matching) and ADR-0019 (constant
 // goroutine actor model).
 type SymbolWorker struct {
-	symbol  string
+	symbol string
+	stp    engine.STPMode
+
+	// mu guards book / seqID / offsets so snapshot readers (WithStateLocked /
+	// Offsets) can take a consistent view without racing with the worker
+	// goroutine. handle() takes mu for the duration of one event — usually
+	// <100µs but bounded by outbox send (emit → Pump).
+	mu      sync.Mutex
 	book    *orderbook.Book
 	seqID   uint64
-	stp     engine.STPMode
+	offsets map[int32]int64 // partition → next-to-consume offset (ADR-0048)
 
-	inbox   chan *Event
-	outbox  chan<- *Output
+	inbox  chan *Event
+	outbox chan<- *Output
 
 	done    chan struct{}
 	started bool
@@ -60,16 +68,62 @@ func NewSymbolWorker(cfg Config, outbox chan<- *Output) *SymbolWorker {
 func (w *SymbolWorker) Symbol() string { return w.symbol }
 
 // Book returns the underlying orderbook. Callers must NOT mutate it from
-// outside the worker goroutine; read-only access from tests is acceptable.
+// outside the worker goroutine. Read-only access without holding mu is
+// only safe before Run starts or after Done fires — concurrent callers
+// during Run should go through WithStateLocked.
 func (w *SymbolWorker) Book() *orderbook.Book { return w.book }
 
 // SeqID returns the current per-symbol sequence id (for snapshot / recovery).
-// Must be called before Run starts or after Done() fires.
-func (w *SymbolWorker) SeqID() uint64 { return w.seqID }
+// Takes mu so the value is consistent with the book even while Run is
+// dispatching.
+func (w *SymbolWorker) SeqID() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.seqID
+}
 
 // SetSeqID sets the starting sequence id — used when restoring from a
 // snapshot. Must be called before Run.
 func (w *SymbolWorker) SetSeqID(seq uint64) { w.seqID = seq }
+
+// WithStateLocked runs f while holding the worker's state lock. Use it to
+// read book / seqID / offsets as a consistent snapshot from outside the
+// worker goroutine (e.g. snapshot.Capture). f must NOT mutate the book or
+// retain the offsets map past the call — the map is the worker's internal
+// buffer.
+func (w *SymbolWorker) WithStateLocked(f func(book *orderbook.Book, seqID uint64, offsets map[int32]int64)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	f(w.book, w.seqID, w.offsets)
+}
+
+// Offsets returns a copy of the per-partition next-to-consume offsets. Safe
+// to call while Run is dispatching (takes mu).
+func (w *SymbolWorker) Offsets() map[int32]int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.offsets) == 0 {
+		return nil
+	}
+	out := make(map[int32]int64, len(w.offsets))
+	for p, o := range w.offsets {
+		out[p] = o
+	}
+	return out
+}
+
+// SetOffsets replaces the per-partition offsets. Used by snapshot.Restore
+// before Run starts; callers must not invoke it concurrently with Run.
+func (w *SymbolWorker) SetOffsets(offs map[int32]int64) {
+	if len(offs) == 0 {
+		w.offsets = nil
+		return
+	}
+	w.offsets = make(map[int32]int64, len(offs))
+	for p, o := range offs {
+		w.offsets[p] = o
+	}
+}
 
 // Submit enqueues an event. Blocks if inbox is full.
 func (w *SymbolWorker) Submit(evt *Event) { w.inbox <- evt }
@@ -112,6 +166,8 @@ func (w *SymbolWorker) Run(ctx context.Context) {
 // ---------------------------------------------------------------------------
 
 func (w *SymbolWorker) handle(evt *Event) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	switch evt.Kind {
 	case EventOrderPlaced:
 		w.handlePlaced(evt)
@@ -119,6 +175,17 @@ func (w *SymbolWorker) handle(evt *Event) {
 		w.handleCancel(evt)
 	default:
 		// Unknown event kind: drop with no emission.
+	}
+	// Advance per-partition offset after a fully applied event (ADR-0048).
+	// evt.Source is zero-valued for in-process tests; we gate on Topic so
+	// those paths don't accidentally populate a bogus partition 0 entry.
+	if evt.Source.Topic != "" {
+		if w.offsets == nil {
+			w.offsets = make(map[int32]int64)
+		}
+		if next := evt.Source.Offset + 1; next > w.offsets[evt.Source.Partition] {
+			w.offsets[evt.Source.Partition] = next
+		}
 	}
 }
 

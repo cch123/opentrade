@@ -75,9 +75,14 @@ func TestCaptureAndRestoreWorker(t *testing.T) {
 	for _, o := range seeds {
 		w.Submit(&sequencer.Event{Kind: sequencer.EventOrderPlaced, Order: o})
 	}
-	// Wait for inbox to drain.
+	// Wait for inbox to drain. Read book size under the worker lock so we
+	// don't race with in-flight handle() goroutines (ADR-0048).
 	for i := 0; i < 100; i++ {
-		if w.Book().Len() == len(seeds) {
+		var n int
+		w.WithStateLocked(func(book *orderbook.Book, _ uint64, _ map[int32]int64) {
+			n = book.Len()
+		})
+		if n == len(seeds) {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -85,9 +90,11 @@ func TestCaptureAndRestoreWorker(t *testing.T) {
 	cancel()
 	<-w.Done()
 
+	// Seed a partition offset so round-trip verifies persistence.
+	w.SetOffsets(map[int32]int64{0: 42})
+
 	// Capture state.
-	offsets := []KafkaOffset{{Topic: "order-event", Partition: 0, Offset: 42}}
-	snap := Capture(w, offsets, 0)
+	snap := Capture(w, 0)
 
 	// Persist and reload to file to exercise serialization.
 	tmp := filepath.Join(t.TempDir(), "btc.json")
@@ -117,6 +124,10 @@ func TestCaptureAndRestoreWorker(t *testing.T) {
 	best, _ := w2.Book().Best(orderbook.Bid)
 	if best.ID != 2 {
 		t.Fatalf("best bid id = %d, want 2 (preserved time priority)", best.ID)
+	}
+	// Offsets must survive round-trip.
+	if off := w2.Offsets(); len(off) != 1 || off[0] != 42 {
+		t.Fatalf("restored offsets = %v, want {0:42}", off)
 	}
 	// At 100, time priority: 1 before 4.
 	var atLevel100 []uint64

@@ -13,9 +13,12 @@ import (
 )
 
 // TradeHandler is the Service-side callback invoked for each trade-event
-// received from Kafka.
+// received from Kafka. HandleTradeRecord is the offset-aware variant used
+// by the consumer; HandleTradeEvent is kept for in-process tests that
+// don't care about per-partition offsets.
 type TradeHandler interface {
 	HandleTradeEvent(ctx context.Context, evt *eventpb.TradeEvent) error
+	HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent, partition int32, offset int64) error
 }
 
 // TradeConsumerConfig configures the trade-event Kafka consumer.
@@ -24,6 +27,11 @@ type TradeConsumerConfig struct {
 	ClientID string
 	GroupID  string
 	Topic    string // default "trade-event"
+
+	// InitialOffsets seeds AdjustFetchOffsetsFn so the consumer resumes at
+	// the snapshot's per-partition position (ADR-0048). Nil means cold
+	// start: every partition begins AtStart.
+	InitialOffsets map[int32]int64
 }
 
 // TradeConsumer reads Match's trade-event stream and dispatches each record
@@ -35,9 +43,10 @@ type TradeConsumer struct {
 	topic   string
 }
 
-// NewTradeConsumer builds a consumer-group client in ReadCommitted + manual
-// commit mode. The consumer is at-least-once (ADR-0005 EOS upgrade is
-// deferred to a later MVP); idempotency lives in the handler.
+// NewTradeConsumer builds a consumer-group client in ReadCommitted mode. Per
+// ADR-0048 the snapshot file is the authoritative consumer position, so we
+// neither auto-commit nor manually commit back to the broker — Kafka's
+// consumer group is used only for partition assignment.
 func NewTradeConsumer(cfg TradeConsumerConfig, handler TradeHandler, logger *zap.Logger) (*TradeConsumer, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, errors.New("journal: no brokers")
@@ -48,14 +57,34 @@ func NewTradeConsumer(cfg TradeConsumerConfig, handler TradeHandler, logger *zap
 	if cfg.Topic == "" {
 		cfg.Topic = "trade-event"
 	}
-	cli, err := kgo.NewClient(
+	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ClientID(cfg.ClientID),
 		kgo.ConsumerGroup(cfg.GroupID),
 		kgo.ConsumeTopics(cfg.Topic),
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
 		kgo.DisableAutoCommit(),
-	)
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	}
+	if len(cfg.InitialOffsets) > 0 {
+		saved := cfg.InitialOffsets
+		opts = append(opts, kgo.AdjustFetchOffsetsFn(func(_ context.Context, current map[string]map[int32]kgo.Offset) (map[string]map[int32]kgo.Offset, error) {
+			out := make(map[string]map[int32]kgo.Offset, len(current))
+			for topic, parts := range current {
+				outParts := make(map[int32]kgo.Offset, len(parts))
+				for p := range parts {
+					if off, ok := saved[p]; ok {
+						outParts[p] = kgo.NewOffset().At(off)
+					} else {
+						outParts[p] = kgo.NewOffset().AtStart()
+					}
+				}
+				out[topic] = outParts
+			}
+			return out, nil
+		}))
+	}
+	cli, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kgo.NewClient: %w", err)
 	}
@@ -80,9 +109,6 @@ func (c *TradeConsumer) Run(ctx context.Context) error {
 		fetches.EachRecord(func(rec *kgo.Record) {
 			c.handleRecord(ctx, rec)
 		})
-		if err := c.cli.CommitUncommittedOffsets(ctx); err != nil {
-			c.logger.Error("commit offsets", zap.Error(err))
-		}
 	}
 }
 
@@ -97,7 +123,7 @@ func (c *TradeConsumer) handleRecord(ctx context.Context, rec *kgo.Record) {
 			zap.Int64("offset", rec.Offset), zap.Error(err))
 		return
 	}
-	if err := c.handler.HandleTradeEvent(ctx, &pb); err != nil {
+	if err := c.handler.HandleTradeRecord(ctx, &pb, rec.Partition, rec.Offset); err != nil {
 		c.logger.Error("handle trade-event",
 			zap.Int64("offset", rec.Offset), zap.Error(err))
 	}

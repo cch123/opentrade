@@ -35,6 +35,14 @@ type ProducerConfig struct {
 	FlushInterval   time.Duration // flush if idle longer than this; default 10ms
 }
 
+// flushReq asks the Pump to drain outbox and flush the current batch. The
+// reply chan is unbuffered; Pump sends the final publish error (possibly nil)
+// after the flush completes.
+type flushReq struct {
+	ctx   context.Context
+	reply chan error
+}
+
 // TradeProducer publishes sequencer.Output emissions to the trade-event topic.
 type TradeProducer struct {
 	client *kgo.Client
@@ -42,6 +50,10 @@ type TradeProducer struct {
 	logger *zap.Logger
 	// transactional is cached from cfg.TransactionalID for hot-path checks.
 	transactional bool
+	// flushCh is served by the Pump goroutine; FlushAndWait sends a request
+	// and waits for reply. Buffer of 1 is enough — callers are expected to
+	// serialise FlushAndWait calls per producer.
+	flushCh chan flushReq
 }
 
 // NewTradeProducer constructs a TradeProducer. If cfg.TransactionalID is
@@ -87,6 +99,7 @@ func NewTradeProducer(cfg ProducerConfig, logger *zap.Logger) (*TradeProducer, e
 		cfg:           cfg,
 		logger:        logger,
 		transactional: transactional,
+		flushCh:       make(chan flushReq, 1),
 	}, nil
 }
 
@@ -172,11 +185,15 @@ func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Outpu
 	}
 	timerArmed := false
 
-	flush := func() {
+	// flush publishes the current batch and returns the first error (if any).
+	// Background tick / shutdown paths ignore the return value (errors are
+	// already logged); FlushAndWait surfaces it to its caller.
+	flush := func(useCtx context.Context) error {
 		if len(batch) == 0 {
-			return
+			return nil
 		}
-		if err := p.PublishBatch(ctx, batch); err != nil {
+		err := p.PublishBatch(useCtx, batch)
+		if err != nil {
 			// Log one line per batch (not per event); include the first
 			// symbol so we can find the flow in other services.
 			p.logger.Error("publish trade-event batch",
@@ -186,16 +203,24 @@ func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Outpu
 				zap.Error(err))
 		}
 		batch = batch[:0]
+		return err
+	}
+
+	disarmTimer := func() {
+		if timerArmed && !timer.Stop() {
+			<-timer.C
+		}
+		timerArmed = false
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			flush()
+			_ = flush(ctx)
 			return
 		case out, ok := <-outbox:
 			if !ok {
-				flush()
+				_ = flush(ctx)
 				return
 			}
 			batch = append(batch, out)
@@ -204,16 +229,59 @@ func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Outpu
 				timerArmed = true
 			}
 			if len(batch) >= p.cfg.BatchSize {
-				if timerArmed && !timer.Stop() {
-					<-timer.C
-				}
-				timerArmed = false
-				flush()
+				disarmTimer()
+				_ = flush(ctx)
 			}
 		case <-timer.C:
 			timerArmed = false
-			flush()
+			_ = flush(ctx)
+		case req := <-p.flushCh:
+			disarmTimer()
+			// Drain any events already sitting in outbox (non-blocking) so
+			// the flush captures everything emitted up to now. Callers
+			// invoke FlushAndWait while the worker's state lock is held,
+			// so no new outputs can be appended after this drain returns.
+		drain:
+			for {
+				select {
+				case out, ok := <-outbox:
+					if !ok {
+						err := flush(req.ctx)
+						req.reply <- err
+						return
+					}
+					batch = append(batch, out)
+				default:
+					break drain
+				}
+			}
+			err := flush(req.ctx)
+			req.reply <- err
 		}
+	}
+}
+
+// FlushAndWait blocks until the Pump has drained every output already in the
+// shared outbox and confirmed commit with Kafka (ADR-0048 output flush
+// barrier). Callers MUST hold any worker-side lock that prevents new
+// emissions; otherwise outputs appended after the drain point are missed.
+//
+// Returns nil on success. Returns ctx.Err() if ctx expires before the Pump
+// receives / replies to the request. Returns the Publish error if the Pump
+// tried to commit but Kafka refused (log already emitted inside Pump).
+func (p *TradeProducer) FlushAndWait(ctx context.Context) error {
+	reply := make(chan error, 1)
+	req := flushReq{ctx: ctx, reply: reply}
+	select {
+	case p.flushCh <- req:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

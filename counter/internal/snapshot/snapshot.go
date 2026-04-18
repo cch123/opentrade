@@ -19,7 +19,29 @@ import (
 )
 
 // Version of the snapshot format.
-const Version = 1
+//
+// v1 (MVP-2 … MVP-14): shard state + dedup + reservations, no Kafka
+//     offsets. Restore falls back to Kafka consumer group committed offset.
+//
+// v2 (ADR-0048): same payload plus per-partition `Offsets`. Restore uses
+//     those to seek the trade-event consumer exactly, eliminating the
+//     commit-ahead-of-snapshot loss window. Loading a v1 file is supported
+//     as a migration bridge: offsets come back empty, consumer falls back
+//     to AtStart one time, then the next tick writes v2.
+const (
+	versionV1 = 1
+	versionV2 = 2
+	Version   = versionV2
+)
+
+// KafkaOffset is one partition's next-to-consume offset, persisted with the
+// snapshot so Restore can seek the consumer without depending on Kafka
+// consumer-group state (ADR-0048).
+type KafkaOffset struct {
+	Topic     string `json:"topic"`
+	Partition int32  `json:"partition"`
+	Offset    int64  `json:"offset"`
+}
 
 // BalanceSnapshot is the serialized form of engine.Balance.
 type BalanceSnapshot struct {
@@ -89,6 +111,10 @@ type ShardSnapshot struct {
 	Orders       []OrderSnapshot       `json:"orders,omitempty"`
 	Dedup        []DedupEntrySnapshot  `json:"dedup,omitempty"`
 	Reservations []ReservationSnapshot `json:"reservations,omitempty"`
+	// Offsets records per-partition next-to-consume offsets for the
+	// trade-event topic (ADR-0048). Written at v2+; v1 files leave this nil
+	// and Restore tolerates that.
+	Offsets []KafkaOffset `json:"offsets,omitempty"`
 }
 
 // -----------------------------------------------------------------------------
@@ -99,12 +125,18 @@ type ShardSnapshot struct {
 // for ensuring no writes are in-flight while Capture runs (MVP-2 performs
 // Capture during graceful shutdown only; live snapshots from a backup node
 // arrive in MVP-8).
-func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, tsMS int64) *ShardSnapshot {
+//
+// offsets records the trade-event consumer's next-to-consume position per
+// partition (ADR-0048). Pass nil (or empty) on cold paths; the callers in
+// MVP code read it from service.Service.Offsets() after having flushed the
+// Kafka transactional producer (output flush barrier).
+func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, offsets map[int32]int64, tsMS int64) *ShardSnapshot {
 	snap := &ShardSnapshot{
 		Version:     Version,
 		ShardID:     shardID,
 		ShardSeq:    seq.ShardSeq(),
 		TimestampMS: tsMS,
+		Offsets:     OffsetsMapToSlice(offsets),
 	}
 	for _, userID := range state.Users() {
 		acc := state.Account(userID)
@@ -161,12 +193,17 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 
 // Restore loads state / seq id / dedup keys from snap. Caller MUST pass fresh
 // (empty) state + sequencer + dedup table; Restore panics on misuse.
+//
+// Accepts v1 files (no offsets) as a one-time migration bridge: business
+// state restores normally, snap.Offsets stays nil, main is expected to
+// start the trade consumer at AtStart which equates to one full rescan
+// guarded by existing dedup / shard_seq idempotency.
 func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, snap *ShardSnapshot) error {
 	if snap == nil {
 		return fmt.Errorf("snapshot is nil")
 	}
-	if snap.Version != Version {
-		return fmt.Errorf("snapshot version mismatch: got %d want %d", snap.Version, Version)
+	if snap.Version != versionV1 && snap.Version != versionV2 {
+		return fmt.Errorf("snapshot version unsupported: got %d want %d or %d", snap.Version, versionV1, versionV2)
 	}
 	if snap.ShardID != shardID {
 		return fmt.Errorf("snapshot shard mismatch: got %d want %d", snap.ShardID, shardID)
@@ -271,6 +308,39 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 // exported API transfer-only.
 func putBalance(acc *engine.Account, asset string, b engine.Balance) {
 	acc.PutForRestore(asset, b)
+}
+
+// -----------------------------------------------------------------------------
+// Offset helpers (ADR-0048)
+// -----------------------------------------------------------------------------
+
+// OffsetsMapToSlice serialises the service's per-partition offsets map to
+// the persisted KafkaOffset slice. The Topic field records the canonical
+// trade-event topic so v2 files are self-describing.
+func OffsetsMapToSlice(m map[int32]int64) []KafkaOffset {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]KafkaOffset, 0, len(m))
+	for p, o := range m {
+		out = append(out, KafkaOffset{Topic: "trade-event", Partition: p, Offset: o})
+	}
+	return out
+}
+
+// OffsetsSliceToMap is the inverse. Duplicate partitions are reduced to the
+// max — recovery must not go backwards.
+func OffsetsSliceToMap(s []KafkaOffset) map[int32]int64 {
+	if len(s) == 0 {
+		return nil
+	}
+	out := make(map[int32]int64, len(s))
+	for _, ko := range s {
+		if ko.Offset > out[ko.Partition] {
+			out[ko.Partition] = ko.Offset
+		}
+	}
+	return out
 }
 
 // -----------------------------------------------------------------------------

@@ -55,7 +55,8 @@ func TestCaptureRestore(t *testing.T) {
 	seq.SetShardSeq(42)
 	dt.Set("tx-1", "cached-response")
 
-	snap := Capture(3, state, seq, dt, 0)
+	offsets := map[int32]int64{0: 100, 2: 55}
+	snap := Capture(3, state, seq, dt, offsets, 0)
 
 	// Persist and reload.
 	tmp := filepath.Join(t.TempDir(), "shard-3.json")
@@ -87,6 +88,11 @@ func TestCaptureRestore(t *testing.T) {
 	if _, ok := dt2.Get("tx-1"); !ok {
 		t.Fatal("dedup key lost across restore")
 	}
+	// Offsets round-trip (ADR-0048).
+	got := OffsetsSliceToMap(loaded.Offsets)
+	if len(got) != 2 || got[0] != 100 || got[2] != 55 {
+		t.Fatalf("offsets round-trip: %v", got)
+	}
 }
 
 // TestCaptureRestore_Reservations verifies reservations survive snapshot
@@ -107,7 +113,7 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 	}
 
 	tmp := filepath.Join(t.TempDir(), "shard-0.json")
-	if err := Save(tmp, Capture(0, state, seq, dt, 0)); err != nil {
+	if err := Save(tmp, Capture(0, state, seq, dt, nil, 0)); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := Load(tmp)

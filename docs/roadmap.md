@@ -57,6 +57,7 @@
 - ~~**MVP-14d 条件单过期**~~ — ✅ `expires_at_unix_ms` 字段 + EXPIRED 终态 + primary 侧 5s sweeper；到期释放 reservation（[ADR-0043](./adr/0043-conditional-expiry.md)）
 - ~~**MVP-14e OCO**~~ — ✅ `PlaceOCO` N 腿原子下单 + 级联取消；`client_oco_id` 幂等；任一腿 terminal 自动 CANCEL 兄弟（[ADR-0044](./adr/0044-conditional-oco.md)）
 - ~~**MVP-14f Trailing stop**~~ — ✅ `TRAILING_STOP_LOSS` 类型 + bps retracement + 可选 activation_price；引擎维护 watermark（[ADR-0045](./adr/0045-conditional-trailing-stop.md)）
+- ~~**counter/match snapshot 绑 Kafka offset + output flush barrier**~~ — ✅ counter 快照 schema v2（加 `Offsets` 字段）；match worker 加 mu + offsets tracking；两者消费前用 `AdjustFetchOffsetsFn` 按 snapshot 位点 seek；snapshot tick 前先调 `Pump.FlushAndWait` / `TxnProducer.Flush`，消除"Kafka commit 超前 snapshot"的丢事件窗口 + "state 已推进但 output 未发"的 in-flight gap（[ADR-0048](./adr/0048-snapshot-offset-atomicity.md)）
 
 ## 已完成
 
