@@ -1,0 +1,158 @@
+syntax = "proto3";
+
+package opentrade.rpc.conditional;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/rpc/conditional;conditionalrpc";
+
+// -----------------------------------------------------------------------------
+// Conditional service — stop-loss / take-profit triggers.
+//
+// The service subscribes to market-data (Quote's PublicTrade stream per
+// ADR-0040), keeps pending conditionals in memory, and fires a real
+// PlaceOrder against Counter when the last trade price crosses the stop
+// threshold.
+//
+// Funds are NOT frozen on Place: if the user has spent the balance by the
+// time the trigger fires, Counter rejects the inner order and the
+// conditional ends in REJECTED. Proper fund reservation is a follow-up
+// (MVP-14b, ADR-0040 §Future Work).
+// -----------------------------------------------------------------------------
+
+service ConditionalService {
+  // PlaceConditional stores a new PENDING conditional. Idempotent via
+  // client_conditional_id: a duplicate returns the existing record with
+  // accepted=false.
+  rpc PlaceConditional(PlaceConditionalRequest) returns (PlaceConditionalResponse);
+
+  // CancelConditional transitions a PENDING conditional to CANCELED. If it
+  // already fired / was canceled we surface the current status without
+  // error (accepted=false).
+  rpc CancelConditional(CancelConditionalRequest) returns (CancelConditionalResponse);
+
+  // QueryConditional returns one record by id. NOT_FOUND if unknown, and
+  // PermissionDenied if the requester's user_id does not match.
+  rpc QueryConditional(QueryConditionalRequest) returns (QueryConditionalResponse);
+
+  // ListConditionals returns all active (PENDING) records for the user by
+  // default. include_inactive=true also returns terminal statuses for
+  // recent history — service keeps the last TerminalHistoryLimit rounds.
+  rpc ListConditionals(ListConditionalsRequest) returns (ListConditionalsResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum ConditionalType {
+  CONDITIONAL_TYPE_UNSPECIFIED = 0;
+  // STOP_LOSS fires a MARKET order when the stop price is crossed.
+  // For SELL: trigger when last_price <= stop_price (protective).
+  // For BUY:  trigger when last_price >= stop_price (break-in).
+  CONDITIONAL_TYPE_STOP_LOSS = 1;
+
+  // STOP_LOSS_LIMIT is STOP_LOSS with a LIMIT order (at limit_price, TIF).
+  CONDITIONAL_TYPE_STOP_LOSS_LIMIT = 2;
+
+  // TAKE_PROFIT fires a MARKET order when the target price is crossed.
+  // For SELL: trigger when last_price >= stop_price (lock in).
+  // For BUY:  trigger when last_price <= stop_price (mean-reversion).
+  CONDITIONAL_TYPE_TAKE_PROFIT = 3;
+
+  // TAKE_PROFIT_LIMIT is TAKE_PROFIT with a LIMIT order (at limit_price, TIF).
+  CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT = 4;
+}
+
+enum ConditionalStatus {
+  CONDITIONAL_STATUS_UNSPECIFIED = 0;
+  // PENDING: awaiting price trigger. Visible to List by default.
+  CONDITIONAL_STATUS_PENDING = 1;
+  // TRIGGERED: price crossed; Counter PlaceOrder succeeded. Terminal.
+  CONDITIONAL_STATUS_TRIGGERED = 2;
+  // CANCELED: user called CancelConditional. Terminal.
+  CONDITIONAL_STATUS_CANCELED = 3;
+  // REJECTED: trigger fired but Counter rejected the inner order
+  // (balance, wrong shard, …). reject_reason carries the detail.
+  CONDITIONAL_STATUS_REJECTED = 4;
+}
+
+// -----------------------------------------------------------------------------
+// Place
+// -----------------------------------------------------------------------------
+
+message PlaceConditionalRequest {
+  string user_id = 1;
+  string client_conditional_id = 2;                 // idempotency key
+  string symbol = 3;
+  opentrade.event.Side side = 4;
+  ConditionalType type = 5;
+  string stop_price = 6;                            // trigger threshold
+  string limit_price = 7;                           // required for LIMIT variants
+  string qty = 8;                                   // base qty; empty for market buy with quote_qty
+  string quote_qty = 9;                             // market buy budget (BN quoteOrderQty)
+  opentrade.event.TimeInForce tif = 10;             // used for LIMIT variants
+}
+
+message PlaceConditionalResponse {
+  uint64 id = 1;
+  ConditionalStatus status = 2;
+  // accepted=true for a fresh conditional; false if client_conditional_id
+  // already exists (returns the prior id/status).
+  bool accepted = 3;
+  int64 received_ts_unix_ms = 4;
+}
+
+// -----------------------------------------------------------------------------
+// Cancel / Query / List
+// -----------------------------------------------------------------------------
+
+message CancelConditionalRequest {
+  string user_id = 1;
+  uint64 id = 2;
+}
+
+message CancelConditionalResponse {
+  uint64 id = 1;
+  bool accepted = 2;
+  ConditionalStatus status = 3;
+}
+
+message QueryConditionalRequest {
+  string user_id = 1;
+  uint64 id = 2;
+}
+
+message QueryConditionalResponse {
+  Conditional conditional = 1;
+}
+
+message ListConditionalsRequest {
+  string user_id = 1;
+  // Default (false) returns only PENDING. True returns every stored
+  // record, trimmed to the service's retention window for terminals.
+  bool include_inactive = 2;
+}
+
+message ListConditionalsResponse {
+  repeated Conditional conditionals = 1;
+}
+
+message Conditional {
+  uint64 id = 1;
+  string client_conditional_id = 2;
+  string user_id = 3;
+  string symbol = 4;
+  opentrade.event.Side side = 5;
+  ConditionalType type = 6;
+  string stop_price = 7;
+  string limit_price = 8;
+  string qty = 9;
+  string quote_qty = 10;
+  opentrade.event.TimeInForce tif = 11;
+  ConditionalStatus status = 12;
+  int64 created_at_unix_ms = 13;
+  int64 triggered_at_unix_ms = 14;
+  uint64 placed_order_id = 15;                      // populated after TRIGGERED
+  string reject_reason = 16;                        // populated on REJECTED
+}

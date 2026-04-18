@@ -24,6 +24,7 @@
 | [MVP-12](#mvp-12-ha) | Counter/Match HA | ✅ | etcd lease 选主 + cold standby |
 | MVP-12b | Match transactional producer (fencing) | ✅ | 消除 split-brain 写 trade-event 窗口 |
 | [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ✅ | user 过滤 + handshake 检查(partition 严格对齐留 MVP-13b) |
+| [MVP-14a](#mvp-14a-conditional) | 条件单（stop-loss / take-profit） | ✅ | 独立 `conditional` 服务订 market-data，触发时通过 Counter.PlaceOrder 下真实单；无资金预留，MVP-14b 补 |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
 
@@ -44,6 +45,9 @@
 - ~~**trade-event consumer 的显式 shard filter**~~ — ✅ Counter 每个 trade-event handler 在进 sequencer 之前 `OwnsUser` 判定，非 owned 走 debug 日志 skip（[ADR-0027 备选方案 D](./adr/0027-counter-sharding-rollout.md)）
 - ~~**BFF auth 升级到 JWT / API-Key**~~ — ✅ `--auth-mode=header|jwt|api-key|mixed`；HS256 JWT + BN 风格 HMAC-SHA256 API-Key，无外部依赖（[ADR-0039](./adr/0039-bff-auth-jwt-apikey.md)）
 - **Match / Counter 延迟 + 吞吐 benchmark** — 验证是否接近 20w TPS / 10ms P99（[architecture.md §18.3](./architecture.md)）
+- **MVP-14b 条件单资金预留** — 触发前 Counter Reserve / Release（见 [ADR-0040 §Future Work](./adr/0040-conditional-order-service.md)）；解决"触发时才发现余额不足"的 UX 折扣
+- **MVP-14c 条件单 HA** — etcd leader + cold standby（照搬 [ADR-0031](./adr/0031-ha-cold-standby-rollout.md)）
+- **OCO / Trailing stop / expiry** — 条件单进阶类型，MVP-14a 之上迭代（[ADR-0040 §Future Work](./adr/0040-conditional-order-service.md)）
 
 ## 已完成
 
@@ -154,6 +158,15 @@
 - `PrivateConsumer` 按 `shard.Index(userID, total)` 过滤非 owned 事件
 - WS handshake 非 owner 的 `X-User-Id` 返回 `403` + `X-Correct-Instance`；匿名连接 bypass
 - Counter 仍用默认 partitioner（全量消费 + user 过滤，MVP 接受 N 倍流量）；严格 partition 对齐留 **MVP-13b**
+
+### MVP-14a  条件单（stop-loss / take-profit）  {#mvp-14a-conditional}
+
+- **commit** pending · **ADR** [0040](./adr/0040-conditional-order-service.md)
+- 新 `conditional/` 模块 + `ConditionalService` gRPC（Place / Cancel / Query / List）
+- 订 Quote `market-data`（PublicTrade）；触发按 side × type 矩阵 —— sell/buy × STOP_LOSS/TAKE_PROFIT（±_LIMIT）
+- 触发时调 Counter `PlaceOrder`（`client_order_id = "cond-<id>"` 天然 dedup + replay 幂等）
+- 本地 JSON snapshot + per-partition offset（照搬 ADR-0036 模式）；单实例，HA 留 MVP-14c
+- **无资金预留**：触发瞬间 Counter 余额不足 → REJECTED + reject_reason；MVP-14b 补 Reserve/Release
 
 ---
 

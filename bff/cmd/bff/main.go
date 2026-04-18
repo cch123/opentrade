@@ -59,6 +59,10 @@ type Config struct {
 	JWTSecret    string
 	APIKeysFile  string
 
+	// Conditional service endpoint (ADR-0040). Empty disables the
+	// /v1/conditional endpoints with 503.
+	ConditionalAddr string
+
 	Env               string
 	LogLevel          string
 }
@@ -116,6 +120,16 @@ func main() {
 		logger.Fatal("auth middleware", zap.Error(err))
 	}
 
+	condConn, condClient, err := maybeDialConditional(rootCtx, cfg.ConditionalAddr, logger)
+	if err != nil {
+		logger.Fatal("dial conditional", zap.Error(err))
+	}
+	defer func() {
+		if condConn != nil {
+			_ = condConn.Close()
+		}
+	}()
+
 	srv := rest.NewServer(rest.Config{
 		Addr:           cfg.HTTPAddr,
 		UserRateLimit:  cfg.UserRateLimit,
@@ -123,7 +137,7 @@ func main() {
 		IPRateLimit:    cfg.IPRateLimit,
 		IPRateWindow:   cfg.IPRateWindow,
 		AuthMiddleware: authMW,
-	}, counter, mdCache, logger)
+	}, counter, mdCache, condClient, logger)
 
 	outer := http.NewServeMux()
 	if cfg.PushWSURL != "" {
@@ -173,6 +187,23 @@ func main() {
 		logger.Error("http shutdown", zap.Error(err))
 	}
 	logger.Info("bff shutdown complete")
+}
+
+// maybeDialConditional dials the conditional service when addr is set.
+// Returns (nil, nil, nil) when disabled so the REST layer falls back to
+// 503 on /v1/conditional endpoints. Errors are fatal so misconfigured
+// prod doesn't silently lose conditional-order traffic.
+func maybeDialConditional(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.Conditional, error) {
+	if addr == "" {
+		logger.Info("conditional endpoint disabled (empty --conditional)")
+		return nil, nil, nil
+	}
+	conn, c, err := client.DialConditional(ctx, addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("conditional dial %s: %w", addr, err)
+	}
+	logger.Info("conditional endpoint configured", zap.String("addr", addr))
+	return conn, c, nil
 }
 
 // buildAuthMiddleware turns the flag set into a configured auth middleware.
@@ -293,6 +324,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.AuthMode, "auth-mode", cfg.AuthMode, "auth mode: header | jwt | api-key | mixed (ADR-0039)")
 	flag.StringVar(&cfg.JWTSecret, "jwt-secret", "", "HS256 secret for --auth-mode=jwt|mixed (empty = jwt disabled in mixed mode)")
 	flag.StringVar(&cfg.APIKeysFile, "api-keys-file", "", "JSON file listing {key,secret,user_id} entries for --auth-mode=api-key|mixed")
+	flag.StringVar(&cfg.ConditionalAddr, "conditional", "", "Conditional service gRPC endpoint (empty disables /v1/conditional; ADR-0040)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()

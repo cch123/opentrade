@@ -9,4 +9,5 @@ use (
 	./push
 	./quote
 	./trade-dump
+	./conditional
 )

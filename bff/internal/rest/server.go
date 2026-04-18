@@ -33,22 +33,24 @@ type Config struct {
 
 // Server is the BFF HTTP server.
 type Server struct {
-	cfg     Config
-	counter client.Counter
-	market  *marketcache.Cache
-	logger  *zap.Logger
+	cfg         Config
+	counter     client.Counter
+	conditional client.Conditional
+	market      *marketcache.Cache
+	logger      *zap.Logger
 
 	userLimiter *ratelimit.SlidingWindow
 	ipLimiter   *ratelimit.SlidingWindow
 }
 
 // NewServer wires handlers. counter may be nil during tests that substitute
-// a fake via a dedicated helper. market is optional: nil disables the
-// reconnect-replay endpoints with 503 (ADR-0038).
-func NewServer(cfg Config, counter client.Counter, market *marketcache.Cache, logger *zap.Logger) *Server {
+// a fake via a dedicated helper. market and conditional are optional: nil
+// disables their endpoints with 503 (ADR-0038 / ADR-0040).
+func NewServer(cfg Config, counter client.Counter, market *marketcache.Cache, conditional client.Conditional, logger *zap.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		counter:     counter,
+		conditional: conditional,
 		market:      market,
 		logger:      logger,
 		userLimiter: ratelimit.New(cfg.UserRateLimit, cfg.UserRateWindow),
@@ -66,6 +68,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/account", s.handleQueryBalance)
 	mux.HandleFunc("GET /v1/depth/{symbol}", s.handleDepthSnapshot)
 	mux.HandleFunc("GET /v1/klines/{symbol}", s.handleKlinesRecent)
+	mux.HandleFunc("POST /v1/conditional", s.handlePlaceConditional)
+	mux.HandleFunc("DELETE /v1/conditional/{id}", s.handleCancelConditional)
+	mux.HandleFunc("GET /v1/conditional/{id}", s.handleQueryConditional)
+	mux.HandleFunc("GET /v1/conditional", s.handleListConditionals)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
