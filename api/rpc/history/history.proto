@@ -1,0 +1,214 @@
+syntax = "proto3";
+
+package opentrade.rpc.history;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/rpc/history;historyrpc";
+
+// -----------------------------------------------------------------------------
+// History service — read-only queries over the trade-dump MySQL projection
+// (ADR-0046, draft).
+//
+// Authority model:
+//   Kafka remains the source of truth (ADR-0001). trade-dump projects
+//   counter-journal + trade-event into `orders` / `trades` / `account_logs`
+//   (ADR-0023 / ADR-0028). History is a pure read-side service over those
+//   tables; it consumes no Kafka and holds no business state. Scaling out
+//   means adding stateless replicas with a MySQL read-replica DSN.
+//
+// Lag model:
+//   trade-dump commits MySQL before advancing Kafka offsets (ADR-0023),
+//   so the projection is at-most one batch behind the live journal.
+//   For live fill progress clients SHOULD keep listening on the Push
+//   `user` stream (ADR-0007); History is for after-the-fact browsing.
+//
+// Hot / cold split:
+//   Counter still serves `QueryOrder` for active orders so BFF can keep
+//   its existing `GET /v1/order/:id` hot-path. History.GetOrder is the
+//   canonical lookup once the order hits a terminal state and is
+//   evicted from Counter memory.
+// -----------------------------------------------------------------------------
+
+service HistoryService {
+  // GetOrder returns one order by id. Works for both active and terminal
+  // orders once trade-dump has projected the row. NOT_FOUND until the
+  // FreezeEvent row lands; PermissionDenied if user_id does not match.
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+
+  // ListOrders pages a user's orders, newest first by created_at.
+  // All filter fields are optional; empty = no filter on that column.
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+
+  // ListTrades pages a user's fills (maker or taker), newest first by ts.
+  rpc ListTrades(ListTradesRequest) returns (ListTradesResponse);
+
+  // ListAccountLogs pages a user's funds-flow journal rows (`account_logs`),
+  // newest first by ts.
+  rpc ListAccountLogs(ListAccountLogsRequest) returns (ListAccountLogsResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Pagination (shared across List* RPCs)
+//
+// Cursors are opaque strings produced and consumed only by this service;
+// clients MUST NOT parse or construct them. An empty request cursor means
+// "start from the newest row"; an empty response next_cursor means "no
+// more rows". limit=0 is replaced by a server default (100); the server
+// clamps to HistoryListLimitMax (500). Time windows are [since_ms, until_ms)
+// with 0 on either bound meaning open-ended.
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// Orders
+// -----------------------------------------------------------------------------
+
+message GetOrderRequest {
+  string user_id = 1;
+  uint64 order_id = 2;
+}
+
+message GetOrderResponse {
+  Order order = 1;
+}
+
+message ListOrdersRequest {
+  string user_id = 1;
+  string symbol = 2;                        // "" = any
+  // Coarse category filter covering the two common UI tabs:
+  //   OPEN     → NEW + PARTIALLY_FILLED   ("open orders" / 未完成)
+  //   TERMINAL → FILLED + CANCELED + REJECTED + EXPIRED  ("order history" / 已完结)
+  //   ALL      → no status filter
+  // UNSPECIFIED is treated as ALL (client convenience; default-zero stays
+  // functional). If `statuses` is also non-empty it wins and `scope` is
+  // ignored — use one or the other.
+  OrderScope scope = 3;
+  // Fine-grained status filter. Empty = rely on `scope`.
+  repeated OrderStatus statuses = 4;
+  int64 since_ms = 5;                       // created_at lower bound, 0 = open
+  int64 until_ms = 6;                       // created_at upper bound, 0 = open
+  string cursor = 7;
+  int32 limit = 8;
+}
+
+// OrderScope is the coarse two-tab filter for ListOrders. See comment on
+// ListOrdersRequest.scope for the exact status folding.
+enum OrderScope {
+  ORDER_SCOPE_UNSPECIFIED = 0;  // == ALL
+  ORDER_SCOPE_OPEN = 1;
+  ORDER_SCOPE_TERMINAL = 2;
+  ORDER_SCOPE_ALL = 3;
+}
+
+message ListOrdersResponse {
+  repeated Order orders = 1;
+  string next_cursor = 2;
+}
+
+// Order mirrors the `orders` projection row. `status` is the external 6-state
+// view (ADR-0020); the internal 8-state machine is folded on the read side so
+// the API contract stays stable across internal refactors.
+message Order {
+  uint64 order_id = 1;
+  string client_order_id = 2;
+  string user_id = 3;
+  string symbol = 4;
+  opentrade.event.Side side = 5;
+  opentrade.event.OrderType order_type = 6;
+  opentrade.event.TimeInForce tif = 7;
+  string price = 8;                         // 0 for MARKET orders
+  string qty = 9;                           // 0 for MARKET buy with quote_qty
+  string filled_qty = 10;
+  string frozen_amt = 11;                   // Initial FreezeEvent amount
+  OrderStatus status = 12;
+  string reject_reason = 13;                // populated only on REJECTED
+  int64 created_at_unix_ms = 14;
+  int64 updated_at_unix_ms = 15;
+}
+
+// OrderStatus is the Binance-compatible external 6-state view (ADR-0020).
+// Internal PENDING_* are folded: PENDING_NEW→NEW, PENDING_CANCEL preserves
+// the pre-cancel state visible to the client.
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_NEW = 1;
+  ORDER_STATUS_PARTIALLY_FILLED = 2;
+  ORDER_STATUS_FILLED = 3;
+  ORDER_STATUS_CANCELED = 4;
+  ORDER_STATUS_REJECTED = 5;
+  ORDER_STATUS_EXPIRED = 6;
+}
+
+// -----------------------------------------------------------------------------
+// Trades
+// -----------------------------------------------------------------------------
+
+message ListTradesRequest {
+  string user_id = 1;
+  string symbol = 2;                        // "" = any
+  int64 since_ms = 3;
+  int64 until_ms = 4;
+  string cursor = 5;
+  int32 limit = 6;
+}
+
+message ListTradesResponse {
+  repeated Trade trades = 1;
+  string next_cursor = 2;
+}
+
+// Trade is the requesting user's view of a fill. The counterparty is not
+// exposed — only which role the user played and their own order id.
+message Trade {
+  string trade_id = 1;
+  string symbol = 2;
+  string price = 3;
+  string qty = 4;
+  TradeRole role = 5;                       // MAKER vs TAKER for this user
+  uint64 order_id = 6;                      // user's own order id
+  opentrade.event.Side side = 7;            // user's side on this fill
+  int64 ts_unix_ms = 8;
+}
+
+enum TradeRole {
+  TRADE_ROLE_UNSPECIFIED = 0;
+  TRADE_ROLE_MAKER = 1;
+  TRADE_ROLE_TAKER = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Account logs (funds-flow journal)
+// -----------------------------------------------------------------------------
+
+message ListAccountLogsRequest {
+  string user_id = 1;
+  string asset = 2;                         // "" = any
+  // Free-form biz_type filter matching the strings written by trade-dump:
+  // "freeze_place_order", "unfreeze", "settlement", "deposit", "withdraw",
+  // "freeze", "unfreeze". Empty = any.
+  repeated string biz_types = 3;
+  int64 since_ms = 4;
+  int64 until_ms = 5;
+  string cursor = 6;
+  int32 limit = 7;
+}
+
+message ListAccountLogsResponse {
+  repeated AccountLog logs = 1;
+  string next_cursor = 2;
+}
+
+// AccountLog mirrors the `account_logs` projection row.
+message AccountLog {
+  int32 shard_id = 1;
+  uint64 seq_id = 2;
+  string asset = 3;
+  string user_id = 4;
+  string delta_avail = 5;
+  string delta_frozen = 6;
+  string avail_after = 7;
+  string frozen_after = 8;
+  string biz_type = 9;
+  string biz_ref_id = 10;
+  int64 ts_unix_ms = 11;
+}
