@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -139,6 +140,95 @@ func (s *Server) handleQueryConditional(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, conditionalToJSON(resp.Conditional))
+}
+
+// placeOCOBody is the REST request for POST /v1/conditional/oco.
+type placeOCOBody struct {
+	ClientOCOID string                 `json:"client_oco_id,omitempty"`
+	Legs        []placeConditionalBody `json:"legs"`
+}
+
+// handlePlaceOCO POST /v1/conditional/oco — forwards an N-leg OCO request
+// (ADR-0044). All legs share the authenticated user_id; validation of
+// same-symbol / same-side / reservation shape runs inside the conditional
+// service.
+func (s *Server) handlePlaceOCO(w http.ResponseWriter, r *http.Request) {
+	if s.conditional == nil {
+		writeError(w, http.StatusServiceUnavailable, "conditional service not configured")
+		return
+	}
+	userID, err := auth.UserID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	var body placeOCOBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(body.Legs) < 2 {
+		writeError(w, http.StatusBadRequest, "OCO requires at least two legs")
+		return
+	}
+	legs := make([]*condrpc.PlaceConditionalRequest, len(body.Legs))
+	for i, lb := range body.Legs {
+		side, perr := parseSide(lb.Side)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("leg %d: %s", i, perr.Error()))
+			return
+		}
+		typ, perr := parseConditionalType(lb.Type)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("leg %d: %s", i, perr.Error()))
+			return
+		}
+		tif := eventpb.TimeInForce_TIME_IN_FORCE_GTC
+		if lb.TIF != "" {
+			t, terr := parseTIF(lb.TIF)
+			if terr != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("leg %d: %s", i, terr.Error()))
+				return
+			}
+			tif = t
+		}
+		legs[i] = &condrpc.PlaceConditionalRequest{
+			UserId:              userID,
+			ClientConditionalId: lb.ClientConditionalID,
+			Symbol:              lb.Symbol,
+			Side:                side,
+			Type:                typ,
+			StopPrice:           lb.StopPrice,
+			LimitPrice:          lb.LimitPrice,
+			Qty:                 lb.Qty,
+			QuoteQty:            lb.QuoteQty,
+			Tif:                 tif,
+			ExpiresAtUnixMs:     lb.ExpiresAtUnixMs,
+		}
+	}
+	resp, err := s.conditional.PlaceOCO(r.Context(), &condrpc.PlaceOCORequest{
+		UserId:      userID,
+		ClientOcoId: body.ClientOCOID,
+		Legs:        legs,
+	})
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	legsOut := make([]map[string]any, len(resp.Legs))
+	for i, lr := range resp.Legs {
+		legsOut[i] = map[string]any{
+			"id":       lr.Id,
+			"status":   conditionalStatusLabel(lr.Status),
+			"accepted": lr.Accepted,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"oco_group_id":        resp.OcoGroupId,
+		"legs":                legsOut,
+		"accepted":            resp.Accepted,
+		"received_ts_unix_ms": resp.ReceivedTsUnixMs,
+	})
 }
 
 // handleListConditionals GET /v1/conditional?include_inactive=true.

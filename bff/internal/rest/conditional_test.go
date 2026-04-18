@@ -18,10 +18,11 @@ import (
 
 // fakeConditional lets tests drive the server without a live gRPC service.
 type fakeConditional struct {
-	placeFn  func(*condrpc.PlaceConditionalRequest) (*condrpc.PlaceConditionalResponse, error)
-	cancelFn func(*condrpc.CancelConditionalRequest) (*condrpc.CancelConditionalResponse, error)
-	queryFn  func(*condrpc.QueryConditionalRequest) (*condrpc.QueryConditionalResponse, error)
-	listFn   func(*condrpc.ListConditionalsRequest) (*condrpc.ListConditionalsResponse, error)
+	placeFn    func(*condrpc.PlaceConditionalRequest) (*condrpc.PlaceConditionalResponse, error)
+	cancelFn   func(*condrpc.CancelConditionalRequest) (*condrpc.CancelConditionalResponse, error)
+	queryFn    func(*condrpc.QueryConditionalRequest) (*condrpc.QueryConditionalResponse, error)
+	listFn     func(*condrpc.ListConditionalsRequest) (*condrpc.ListConditionalsResponse, error)
+	placeOCOFn func(*condrpc.PlaceOCORequest) (*condrpc.PlaceOCOResponse, error)
 }
 
 func (f *fakeConditional) PlaceConditional(_ context.Context, req *condrpc.PlaceConditionalRequest, _ ...grpc.CallOption) (*condrpc.PlaceConditionalResponse, error) {
@@ -35,6 +36,9 @@ func (f *fakeConditional) QueryConditional(_ context.Context, req *condrpc.Query
 }
 func (f *fakeConditional) ListConditionals(_ context.Context, req *condrpc.ListConditionalsRequest, _ ...grpc.CallOption) (*condrpc.ListConditionalsResponse, error) {
 	return f.listFn(req)
+}
+func (f *fakeConditional) PlaceOCO(_ context.Context, req *condrpc.PlaceOCORequest, _ ...grpc.CallOption) (*condrpc.PlaceOCOResponse, error) {
+	return f.placeOCOFn(req)
 }
 
 func newCondServer(fc *fakeConditional) *Server {

@@ -78,3 +78,26 @@ func (s *Service) List(req *condrpc.ListConditionalsRequest) (*condrpc.ListCondi
 	}
 	return &condrpc.ListConditionalsResponse{Conditionals: out}, nil
 }
+
+// PlaceOCO forwards to engine.PlaceOCO + builds the gRPC response.
+func (s *Service) PlaceOCO(ctx context.Context, req *condrpc.PlaceOCORequest, nowMs int64) (*condrpc.PlaceOCOResponse, error) {
+	gid, legs, accepted, err := s.eng.PlaceOCO(ctx, req.UserId, req.ClientOcoId, req.Legs)
+	if err != nil {
+		return nil, err
+	}
+	legResps := make([]*condrpc.PlaceConditionalResponse, len(legs))
+	for i, lr := range legs {
+		legResps[i] = &condrpc.PlaceConditionalResponse{
+			Id:               lr.ID,
+			Status:           lr.Status,
+			Accepted:         accepted,
+			ReceivedTsUnixMs: nowMs,
+		}
+	}
+	return &condrpc.PlaceOCOResponse{
+		OcoGroupId:       gid,
+		Legs:             legResps,
+		Accepted:         accepted,
+		ReceivedTsUnixMs: nowMs,
+	}, nil
+}

@@ -55,6 +55,10 @@ var (
 	ErrQuoteQtyShape       = errors.New("conditional: quote_qty only allowed for MARKET buy")
 	ErrBothQtyAndQuoteQty  = errors.New("conditional: provide either qty or quote_qty for market buy, not both")
 	ErrExpiryInPast        = errors.New("conditional: expires_at_unix_ms must be in the future")
+	ErrOCONeedsTwoLegs     = errors.New("conditional: OCO request needs at least two legs")
+	ErrOCOSymbolMismatch   = errors.New("conditional: OCO legs must share the same symbol")
+	ErrOCOSideMismatch     = errors.New("conditional: OCO legs must share the same side")
+	ErrOCOUserMismatch     = errors.New("conditional: OCO legs must share the same user_id")
 	ErrNotFound            = errors.New("conditional: not found")
 	ErrNotOwner            = errors.New("conditional: user does not own this conditional")
 	ErrNotActive           = errors.New("conditional: already terminal")
@@ -113,6 +117,10 @@ type Conditional struct {
 	// ExpiresAtMs, when > 0, is the absolute wall-clock ms at which a
 	// PENDING conditional flips to EXPIRED via SweepExpired (ADR-0043).
 	ExpiresAtMs int64
+	// OCOGroupID ties this leg to its siblings. Non-empty = when any leg
+	// hits a terminal status, all still-PENDING siblings cascade to
+	// CANCELED (ADR-0044). Empty = standalone conditional.
+	OCOGroupID string
 }
 
 // -----------------------------------------------------------------------------
@@ -142,6 +150,7 @@ type Engine struct {
 	terminals  map[uint64]*Conditional
 	termOrder  []uint64 // FIFO of terminal ids for trim
 	byClient   map[string]uint64
+	ocoByClient map[string]string // client_oco_id → oco_group_id (ADR-0044)
 	lastPrice  map[string]dec.Decimal
 	offsets    map[int32]int64
 }
@@ -156,16 +165,17 @@ func New(cfg Config, idgen IDGen, placer OrderPlacer, reserver Reservations, log
 		cfg.TerminalHistoryLimit = 0
 	}
 	return &Engine{
-		cfg:       cfg,
-		idgen:     idgen,
-		placer:    placer,
-		reserver:  reserver,
-		logger:    logger,
-		pending:   make(map[uint64]*Conditional),
-		terminals: make(map[uint64]*Conditional),
-		byClient:  make(map[string]uint64),
-		lastPrice: make(map[string]dec.Decimal),
-		offsets:   make(map[int32]int64),
+		cfg:         cfg,
+		idgen:       idgen,
+		placer:      placer,
+		reserver:    reserver,
+		logger:      logger,
+		pending:     make(map[uint64]*Conditional),
+		terminals:   make(map[uint64]*Conditional),
+		byClient:    make(map[string]uint64),
+		ocoByClient: make(map[string]string),
+		lastPrice:   make(map[string]dec.Decimal),
+		offsets:     make(map[int32]int64),
 	}
 }
 
@@ -238,6 +248,137 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceConditionalRequest
 	return c.ID, c.Status, true, nil
 }
 
+// OCOLegResult is one leg's outcome inside a PlaceOCO call.
+type OCOLegResult struct {
+	ID     uint64
+	Status condrpc.ConditionalStatus
+}
+
+// PlaceOCO places ≥ 2 conditional legs atomically and ties them together
+// via a common OCOGroupID. When any leg later hits a terminal status the
+// still-PENDING siblings auto-cancel (ADR-0044). Group-level idempotency
+// hangs off `clientOCOID`: a duplicate call with the same id returns the
+// prior group's ids + accepted=false. Per-leg `client_conditional_id`s
+// still dedup independently.
+func (e *Engine) PlaceOCO(ctx context.Context, userID, clientOCOID string, legs []*condrpc.PlaceConditionalRequest) (groupID string, results []OCOLegResult, accepted bool, err error) {
+	if len(legs) < 2 {
+		return "", nil, false, ErrOCONeedsTwoLegs
+	}
+	parsed := make([]*Conditional, len(legs))
+	nowMs := e.cfg.Clock().UnixMilli()
+	for i, lreq := range legs {
+		if lreq == nil {
+			return "", nil, false, fmt.Errorf("conditional: OCO leg %d is nil", i)
+		}
+		// Force leg.user_id = outer user_id (defensive).
+		if lreq.UserId == "" {
+			lreq.UserId = userID
+		} else if lreq.UserId != userID {
+			return "", nil, false, ErrOCOUserMismatch
+		}
+		c, berr := buildConditional(lreq)
+		if berr != nil {
+			return "", nil, false, berr
+		}
+		if c.ExpiresAtMs > 0 && c.ExpiresAtMs <= nowMs {
+			return "", nil, false, ErrExpiryInPast
+		}
+		c.CreatedAtMs = nowMs
+		c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING
+		parsed[i] = c
+	}
+	for i := 1; i < len(parsed); i++ {
+		if parsed[i].Symbol != parsed[0].Symbol {
+			return "", nil, false, ErrOCOSymbolMismatch
+		}
+		if parsed[i].Side != parsed[0].Side {
+			return "", nil, false, ErrOCOSideMismatch
+		}
+	}
+
+	// Group-level dedup (fast path).
+	if clientOCOID != "" {
+		e.mu.Lock()
+		if gid, ok := e.ocoByClient[clientOCOID]; ok {
+			legResults := e.legResultsForGroupLocked(gid)
+			e.mu.Unlock()
+			return gid, legResults, false, nil
+		}
+		e.mu.Unlock()
+	}
+
+	// Allocate ids + group id.
+	for _, c := range parsed {
+		c.ID = e.nextID()
+	}
+	groupID = "oco-" + formatUint(parsed[0].ID)
+	for _, c := range parsed {
+		c.OCOGroupID = groupID
+	}
+
+	// Reserve each outside the engine lock; roll back on error.
+	var reserved []*Conditional
+	if e.reserver != nil {
+		for _, c := range parsed {
+			refID := e.refIDFor(c.ID)
+			if _, rerr := e.reserver.Reserve(ctx, buildReserveReq(c, refID)); rerr != nil {
+				for _, r := range reserved {
+					e.bestEffortRelease(ctx, r.UserID, e.refIDFor(r.ID))
+				}
+				return "", nil, false, rerr
+			}
+			reserved = append(reserved, c)
+		}
+	}
+
+	// Commit.
+	e.mu.Lock()
+	if clientOCOID != "" {
+		if gid, ok := e.ocoByClient[clientOCOID]; ok {
+			// Lost the race: another caller committed the same clientOCOID
+			// between the fast-path dedup and here. Roll back our reservations.
+			legResults := e.legResultsForGroupLocked(gid)
+			e.mu.Unlock()
+			for _, r := range reserved {
+				e.bestEffortRelease(ctx, r.UserID, e.refIDFor(r.ID))
+			}
+			return gid, legResults, false, nil
+		}
+	}
+	for _, c := range parsed {
+		e.pending[c.ID] = c
+		if c.ClientCondID != "" {
+			e.byClient[c.ClientCondID] = c.ID
+		}
+	}
+	if clientOCOID != "" {
+		e.ocoByClient[clientOCOID] = groupID
+	}
+	results = make([]OCOLegResult, len(parsed))
+	for i, c := range parsed {
+		results[i] = OCOLegResult{ID: c.ID, Status: c.Status}
+	}
+	e.mu.Unlock()
+	return groupID, results, true, nil
+}
+
+// legResultsForGroupLocked collects the current (id, status) tuples for
+// every conditional tagged with the given OCO group id. Caller holds e.mu.
+func (e *Engine) legResultsForGroupLocked(groupID string) []OCOLegResult {
+	var out []OCOLegResult
+	for id, c := range e.pending {
+		if c.OCOGroupID == groupID {
+			out = append(out, OCOLegResult{ID: id, Status: c.Status})
+		}
+	}
+	for id, c := range e.terminals {
+		if c.OCOGroupID == groupID {
+			out = append(out, OCOLegResult{ID: id, Status: c.Status})
+		}
+	}
+	return out
+}
+
 // Cancel transitions a PENDING conditional to CANCELED and releases its
 // reservation (if any). Returns accepted=true only when a state change
 // actually happened.
@@ -265,9 +406,11 @@ func (e *Engine) Cancel(ctx context.Context, userID string, id uint64) (condrpc.
 	refID := e.refIDFor(c.ID)
 	finalStatus := c.Status
 	e.graduateLocked(c)
+	cascaded := e.cascadeOCOCancelLocked(c, "sibling OCO leg canceled")
 	e.mu.Unlock()
 
 	e.bestEffortRelease(ctx, userID, refID)
+	e.releaseAll(ctx, cascaded)
 	return finalStatus, true, nil
 }
 
@@ -414,11 +557,13 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 		}
 	}
 	e.graduateLocked(c)
+	cascaded := e.cascadeOCOCancelLocked(c, "sibling OCO leg terminated")
 	e.mu.Unlock()
 
 	if failed {
 		e.bestEffortRelease(ctx, userID, refID)
 	}
+	e.releaseAll(ctx, cascaded)
 }
 
 // -----------------------------------------------------------------------------
@@ -485,6 +630,28 @@ func (e *Engine) Offsets() map[int32]int64 {
 		out[p] = o
 	}
 	return out
+}
+
+// OCOByClient returns a copy of the client_oco_id → group_id dedup map
+// (for snapshot capture).
+func (e *Engine) OCOByClient() map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[string]string, len(e.ocoByClient))
+	for k, v := range e.ocoByClient {
+		out[k] = v
+	}
+	return out
+}
+
+// SetOCOByClient replaces the dedup map (for snapshot restore).
+func (e *Engine) SetOCOByClient(m map[string]string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ocoByClient = make(map[string]string, len(m))
+	for k, v := range m {
+		e.ocoByClient[k] = v
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -646,6 +813,7 @@ func (e *Engine) SweepExpired(ctx context.Context) int {
 		userID string
 	}
 	var victims []expired
+	var cascaded []releaseTarget
 	e.mu.Lock()
 	for id, c := range e.pending {
 		if c.ExpiresAtMs > 0 && c.ExpiresAtMs <= nowMs {
@@ -653,6 +821,7 @@ func (e *Engine) SweepExpired(ctx context.Context) int {
 			c.TriggeredAtMs = nowMs
 			victims = append(victims, expired{id: id, userID: c.UserID})
 			e.graduateLocked(c)
+			cascaded = append(cascaded, e.cascadeOCOCancelLocked(c, "sibling OCO leg expired")...)
 		}
 	}
 	e.mu.Unlock()
@@ -664,7 +833,52 @@ func (e *Engine) SweepExpired(ctx context.Context) int {
 				zap.String("user_id", v.userID))
 		}
 	}
+	e.releaseAll(ctx, cascaded)
 	return len(victims)
+}
+
+// releaseTarget identifies one (user, refID) pair the cascade / OCO path
+// wants to release outside the engine lock.
+type releaseTarget struct{ userID, refID string }
+
+// cascadeOCOCancelLocked: if c is part of an OCO group, mark every still-
+// PENDING sibling as CANCELED and graduate them. Caller must hold e.mu.
+// Returns the list of reservation releases the caller must perform after
+// unlocking. reason is the reject_reason stamped on the siblings.
+func (e *Engine) cascadeOCOCancelLocked(c *Conditional, reason string) []releaseTarget {
+	if c.OCOGroupID == "" {
+		return nil
+	}
+	now := e.cfg.Clock().UnixMilli()
+	var out []releaseTarget
+	// Collect victim ids first — mutating the map while ranging is fine
+	// in Go but makes the intent clearer in two passes.
+	var ids []uint64
+	for id, sib := range e.pending {
+		if sib.OCOGroupID == c.OCOGroupID && sib.Status == condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		sib := e.pending[id]
+		if sib == nil {
+			continue
+		}
+		sib.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED
+		sib.TriggeredAtMs = now
+		sib.RejectReason = reason
+		out = append(out, releaseTarget{userID: sib.UserID, refID: e.refIDFor(id)})
+		e.graduateLocked(sib)
+	}
+	return out
+}
+
+// releaseAll issues best-effort ReleaseReservation for every entry in
+// targets. Used after cascadeOCOCancelLocked + lock release.
+func (e *Engine) releaseAll(ctx context.Context, targets []releaseTarget) {
+	for _, t := range targets {
+		e.bestEffortRelease(ctx, t.userID, t.refID)
+	}
 }
 
 // nextID is a thin wrapper so tests / callers can override via idgen.

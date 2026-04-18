@@ -25,11 +25,15 @@ const Version = 1
 
 // Snapshot is the root on-disk document.
 type Snapshot struct {
-	Version      int                `json:"version"`
-	TakenAtMs    int64              `json:"taken_at_ms"`
-	Offsets      map[int32]int64    `json:"offsets,omitempty"`
-	Pending      []ConditionalSnap  `json:"pending,omitempty"`
-	Terminals    []ConditionalSnap  `json:"terminals,omitempty"`
+	Version   int               `json:"version"`
+	TakenAtMs int64             `json:"taken_at_ms"`
+	Offsets   map[int32]int64   `json:"offsets,omitempty"`
+	Pending   []ConditionalSnap `json:"pending,omitempty"`
+	Terminals []ConditionalSnap `json:"terminals,omitempty"`
+	// OCOByClient maps client-supplied OCO idempotency keys to their
+	// engine-assigned group ids. Restored alongside pending/terminals so
+	// PlaceOCO dedup survives restart (ADR-0044).
+	OCOByClient map[string]string `json:"oco_by_client,omitempty"`
 }
 
 // ConditionalSnap is the persisted shape of one conditional record. Stored
@@ -52,16 +56,18 @@ type ConditionalSnap struct {
 	PlacedOrderID uint64 `json:"placed_order_id,omitempty"`
 	RejectReason  string `json:"reject_reason,omitempty"`
 	ExpiresAtMs   int64  `json:"expires_at_ms,omitempty"` // ADR-0043
+	OCOGroupID    string `json:"oco_group_id,omitempty"`  // ADR-0044
 }
 
 // Capture builds a Snapshot from the engine. Caller stamps TakenAtMs.
 func Capture(eng *engine.Engine) *Snapshot {
 	pending, terminals, offsets := eng.Snapshot()
 	return &Snapshot{
-		Version:   Version,
-		Offsets:   offsets,
-		Pending:   toSnapSlice(pending),
-		Terminals: toSnapSlice(terminals),
+		Version:     Version,
+		Offsets:     offsets,
+		Pending:     toSnapSlice(pending),
+		Terminals:   toSnapSlice(terminals),
+		OCOByClient: eng.OCOByClient(),
 	}
 }
 
@@ -82,6 +88,7 @@ func Restore(eng *engine.Engine, snap *Snapshot) error {
 		return fmt.Errorf("terminals: %w", err)
 	}
 	eng.Restore(pending, terminals, snap.Offsets)
+	eng.SetOCOByClient(snap.OCOByClient)
 	return nil
 }
 
@@ -171,6 +178,7 @@ func toSnapSlice(in []*engine.Conditional) []ConditionalSnap {
 			PlacedOrderID: c.PlacedOrderID,
 			RejectReason:  c.RejectReason,
 			ExpiresAtMs:   c.ExpiresAtMs,
+			OCOGroupID:    c.OCOGroupID,
 		}
 	}
 	return out
@@ -216,6 +224,7 @@ func fromSnapSlice(in []ConditionalSnap) ([]*engine.Conditional, error) {
 			PlacedOrderID: s.PlacedOrderID,
 			RejectReason:  s.RejectReason,
 			ExpiresAtMs:   s.ExpiresAtMs,
+			OCOGroupID:    s.OCOGroupID,
 		})
 	}
 	return out, nil

@@ -39,6 +39,12 @@ service ConditionalService {
   // default. include_inactive=true also returns terminal statuses for
   // recent history — service keeps the last TerminalHistoryLimit rounds.
   rpc ListConditionals(ListConditionalsRequest) returns (ListConditionalsResponse);
+
+  // PlaceOCO places two or more linked conditional legs atomically: when
+  // any leg transitions to TRIGGERED / REJECTED / EXPIRED / CANCELED,
+  // all still-PENDING siblings in the same OCO group are auto-canceled
+  // (ADR-0044). Idempotent via client_oco_id.
+  rpc PlaceOCO(PlaceOCORequest) returns (PlaceOCOResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -164,4 +170,29 @@ message Conditional {
   uint64 placed_order_id = 15;                      // populated after TRIGGERED
   string reject_reason = 16;                        // populated on REJECTED
   int64 expires_at_unix_ms = 17;                    // 0 = never expires
+  // OCO group id (ADR-0044). Empty = standalone conditional. Non-empty
+  // siblings are auto-canceled when this leg hits any terminal status.
+  string oco_group_id = 18;
+}
+
+// -----------------------------------------------------------------------------
+// OCO (One-Cancels-Other)
+// -----------------------------------------------------------------------------
+
+message PlaceOCORequest {
+  string user_id = 1;
+  string client_oco_id = 2;             // group-level idempotency key
+  // Two or more legs. All legs must share user / symbol / side; each leg
+  // re-uses PlaceConditionalRequest so the full MVP-14a/b/d feature set
+  // (LIMIT vs MARKET variants, expiry, reservations) applies unchanged.
+  repeated PlaceConditionalRequest legs = 3;
+}
+
+message PlaceOCOResponse {
+  string oco_group_id = 1;              // engine-assigned; stable across dedup
+  repeated PlaceConditionalResponse legs = 2;
+  // false when client_oco_id matched an existing group — legs then carry
+  // the prior group's leg ids / statuses verbatim (idempotent replay).
+  bool accepted = 3;
+  int64 received_ts_unix_ms = 4;
 }

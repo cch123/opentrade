@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/depth/{symbol}", s.handleDepthSnapshot)
 	mux.HandleFunc("GET /v1/klines/{symbol}", s.handleKlinesRecent)
 	mux.HandleFunc("POST /v1/conditional", s.handlePlaceConditional)
+	mux.HandleFunc("POST /v1/conditional/oco", s.handlePlaceOCO)
 	mux.HandleFunc("DELETE /v1/conditional/{id}", s.handleCancelConditional)
 	mux.HandleFunc("GET /v1/conditional/{id}", s.handleQueryConditional)
 	mux.HandleFunc("GET /v1/conditional", s.handleListConditionals)

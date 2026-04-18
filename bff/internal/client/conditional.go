@@ -17,6 +17,7 @@ type Conditional interface {
 	CancelConditional(ctx context.Context, in *condrpc.CancelConditionalRequest, opts ...grpc.CallOption) (*condrpc.CancelConditionalResponse, error)
 	QueryConditional(ctx context.Context, in *condrpc.QueryConditionalRequest, opts ...grpc.CallOption) (*condrpc.QueryConditionalResponse, error)
 	ListConditionals(ctx context.Context, in *condrpc.ListConditionalsRequest, opts ...grpc.CallOption) (*condrpc.ListConditionalsResponse, error)
+	PlaceOCO(ctx context.Context, in *condrpc.PlaceOCORequest, opts ...grpc.CallOption) (*condrpc.PlaceOCOResponse, error)
 }
 
 // DialConditional opens a plaintext gRPC connection to the conditional

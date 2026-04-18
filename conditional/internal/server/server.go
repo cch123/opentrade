@@ -66,6 +66,15 @@ func (s *Server) ListConditionals(_ context.Context, req *condrpc.ListConditiona
 	return resp, nil
 }
 
+// PlaceOCO is the gRPC entry.
+func (s *Server) PlaceOCO(ctx context.Context, req *condrpc.PlaceOCORequest) (*condrpc.PlaceOCOResponse, error) {
+	resp, err := s.svc.PlaceOCO(ctx, req, s.clock().UnixMilli())
+	if err != nil {
+		return nil, toGRPCErr(err)
+	}
+	return resp, nil
+}
+
 // toGRPCErr maps engine-layer errors into canonical codes. Validation
 // failures become InvalidArgument; missing records become NotFound; the
 // catch-all is Internal (operators should see these in logs and fix).
@@ -85,7 +94,11 @@ func toGRPCErr(err error) error {
 		errors.Is(err, engine.ErrQtyRequired),
 		errors.Is(err, engine.ErrQuoteQtyShape),
 		errors.Is(err, engine.ErrBothQtyAndQuoteQty),
-		errors.Is(err, engine.ErrExpiryInPast):
+		errors.Is(err, engine.ErrExpiryInPast),
+		errors.Is(err, engine.ErrOCONeedsTwoLegs),
+		errors.Is(err, engine.ErrOCOSymbolMismatch),
+		errors.Is(err, engine.ErrOCOSideMismatch),
+		errors.Is(err, engine.ErrOCOUserMismatch):
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())

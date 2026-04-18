@@ -673,8 +673,11 @@ type Conditional struct {
 	PlacedOrderId       uint64                 `protobuf:"varint,15,opt,name=placed_order_id,json=placedOrderId,proto3" json:"placed_order_id,omitempty"`         // populated after TRIGGERED
 	RejectReason        string                 `protobuf:"bytes,16,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`               // populated on REJECTED
 	ExpiresAtUnixMs     int64                  `protobuf:"varint,17,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"` // 0 = never expires
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// OCO group id (ADR-0044). Empty = standalone conditional. Non-empty
+	// siblings are auto-canceled when this leg hits any terminal status.
+	OcoGroupId    string `protobuf:"bytes,18,opt,name=oco_group_id,json=ocoGroupId,proto3" json:"oco_group_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Conditional) Reset() {
@@ -826,6 +829,146 @@ func (x *Conditional) GetExpiresAtUnixMs() int64 {
 	return 0
 }
 
+func (x *Conditional) GetOcoGroupId() string {
+	if x != nil {
+		return x.OcoGroupId
+	}
+	return ""
+}
+
+type PlaceOCORequest struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	UserId      string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ClientOcoId string                 `protobuf:"bytes,2,opt,name=client_oco_id,json=clientOcoId,proto3" json:"client_oco_id,omitempty"` // group-level idempotency key
+	// Two or more legs. All legs must share user / symbol / side; each leg
+	// re-uses PlaceConditionalRequest so the full MVP-14a/b/d feature set
+	// (LIMIT vs MARKET variants, expiry, reservations) applies unchanged.
+	Legs          []*PlaceConditionalRequest `protobuf:"bytes,3,rep,name=legs,proto3" json:"legs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlaceOCORequest) Reset() {
+	*x = PlaceOCORequest{}
+	mi := &file_rpc_conditional_conditional_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlaceOCORequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlaceOCORequest) ProtoMessage() {}
+
+func (x *PlaceOCORequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_conditional_conditional_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlaceOCORequest.ProtoReflect.Descriptor instead.
+func (*PlaceOCORequest) Descriptor() ([]byte, []int) {
+	return file_rpc_conditional_conditional_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *PlaceOCORequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *PlaceOCORequest) GetClientOcoId() string {
+	if x != nil {
+		return x.ClientOcoId
+	}
+	return ""
+}
+
+func (x *PlaceOCORequest) GetLegs() []*PlaceConditionalRequest {
+	if x != nil {
+		return x.Legs
+	}
+	return nil
+}
+
+type PlaceOCOResponse struct {
+	state      protoimpl.MessageState      `protogen:"open.v1"`
+	OcoGroupId string                      `protobuf:"bytes,1,opt,name=oco_group_id,json=ocoGroupId,proto3" json:"oco_group_id,omitempty"` // engine-assigned; stable across dedup
+	Legs       []*PlaceConditionalResponse `protobuf:"bytes,2,rep,name=legs,proto3" json:"legs,omitempty"`
+	// false when client_oco_id matched an existing group — legs then carry
+	// the prior group's leg ids / statuses verbatim (idempotent replay).
+	Accepted         bool  `protobuf:"varint,3,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	ReceivedTsUnixMs int64 `protobuf:"varint,4,opt,name=received_ts_unix_ms,json=receivedTsUnixMs,proto3" json:"received_ts_unix_ms,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *PlaceOCOResponse) Reset() {
+	*x = PlaceOCOResponse{}
+	mi := &file_rpc_conditional_conditional_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlaceOCOResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlaceOCOResponse) ProtoMessage() {}
+
+func (x *PlaceOCOResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_conditional_conditional_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlaceOCOResponse.ProtoReflect.Descriptor instead.
+func (*PlaceOCOResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_conditional_conditional_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *PlaceOCOResponse) GetOcoGroupId() string {
+	if x != nil {
+		return x.OcoGroupId
+	}
+	return ""
+}
+
+func (x *PlaceOCOResponse) GetLegs() []*PlaceConditionalResponse {
+	if x != nil {
+		return x.Legs
+	}
+	return nil
+}
+
+func (x *PlaceOCOResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *PlaceOCOResponse) GetReceivedTsUnixMs() int64 {
+	if x != nil {
+		return x.ReceivedTsUnixMs
+	}
+	return 0
+}
+
 var File_rpc_conditional_conditional_proto protoreflect.FileDescriptor
 
 const file_rpc_conditional_conditional_proto_rawDesc = "" +
@@ -867,7 +1010,7 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12)\n" +
 	"\x10include_inactive\x18\x02 \x01(\bR\x0fincludeInactive\"f\n" +
 	"\x18ListConditionalsResponse\x12J\n" +
-	"\fconditionals\x18\x01 \x03(\v2&.opentrade.rpc.conditional.ConditionalR\fconditionals\"\xaa\x05\n" +
+	"\fconditionals\x18\x01 \x03(\v2&.opentrade.rpc.conditional.ConditionalR\fconditionals\"\xcc\x05\n" +
 	"\vConditional\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x122\n" +
 	"\x15client_conditional_id\x18\x02 \x01(\tR\x13clientConditionalId\x12\x17\n" +
@@ -888,7 +1031,19 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\x14triggered_at_unix_ms\x18\x0e \x01(\x03R\x11triggeredAtUnixMs\x12&\n" +
 	"\x0fplaced_order_id\x18\x0f \x01(\x04R\rplacedOrderId\x12#\n" +
 	"\rreject_reason\x18\x10 \x01(\tR\frejectReason\x12+\n" +
-	"\x12expires_at_unix_ms\x18\x11 \x01(\x03R\x0fexpiresAtUnixMs*\xc3\x01\n" +
+	"\x12expires_at_unix_ms\x18\x11 \x01(\x03R\x0fexpiresAtUnixMs\x12 \n" +
+	"\foco_group_id\x18\x12 \x01(\tR\n" +
+	"ocoGroupId\"\x96\x01\n" +
+	"\x0fPlaceOCORequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\"\n" +
+	"\rclient_oco_id\x18\x02 \x01(\tR\vclientOcoId\x12F\n" +
+	"\x04legs\x18\x03 \x03(\v22.opentrade.rpc.conditional.PlaceConditionalRequestR\x04legs\"\xc8\x01\n" +
+	"\x10PlaceOCOResponse\x12 \n" +
+	"\foco_group_id\x18\x01 \x01(\tR\n" +
+	"ocoGroupId\x12G\n" +
+	"\x04legs\x18\x02 \x03(\v23.opentrade.rpc.conditional.PlaceConditionalResponseR\x04legs\x12\x1a\n" +
+	"\baccepted\x18\x03 \x01(\bR\baccepted\x12-\n" +
+	"\x13received_ts_unix_ms\x18\x04 \x01(\x03R\x10receivedTsUnixMs*\xc3\x01\n" +
 	"\x0fConditionalType\x12 \n" +
 	"\x1cCONDITIONAL_TYPE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCONDITIONAL_TYPE_STOP_LOSS\x10\x01\x12$\n" +
@@ -901,12 +1056,13 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\x1cCONDITIONAL_STATUS_TRIGGERED\x10\x02\x12\x1f\n" +
 	"\x1bCONDITIONAL_STATUS_CANCELED\x10\x03\x12\x1f\n" +
 	"\x1bCONDITIONAL_STATUS_REJECTED\x10\x04\x12\x1e\n" +
-	"\x1aCONDITIONAL_STATUS_EXPIRED\x10\x052\x8b\x04\n" +
+	"\x1aCONDITIONAL_STATUS_EXPIRED\x10\x052\xf0\x04\n" +
 	"\x12ConditionalService\x12{\n" +
 	"\x10PlaceConditional\x122.opentrade.rpc.conditional.PlaceConditionalRequest\x1a3.opentrade.rpc.conditional.PlaceConditionalResponse\x12~\n" +
 	"\x11CancelConditional\x123.opentrade.rpc.conditional.CancelConditionalRequest\x1a4.opentrade.rpc.conditional.CancelConditionalResponse\x12{\n" +
 	"\x10QueryConditional\x122.opentrade.rpc.conditional.QueryConditionalRequest\x1a3.opentrade.rpc.conditional.QueryConditionalResponse\x12{\n" +
-	"\x10ListConditionals\x122.opentrade.rpc.conditional.ListConditionalsRequest\x1a3.opentrade.rpc.conditional.ListConditionalsResponseBDZBgithub.com/xargin/opentrade/api/gen/rpc/conditional;conditionalrpcb\x06proto3"
+	"\x10ListConditionals\x122.opentrade.rpc.conditional.ListConditionalsRequest\x1a3.opentrade.rpc.conditional.ListConditionalsResponse\x12c\n" +
+	"\bPlaceOCO\x12*.opentrade.rpc.conditional.PlaceOCORequest\x1a+.opentrade.rpc.conditional.PlaceOCOResponseBDZBgithub.com/xargin/opentrade/api/gen/rpc/conditional;conditionalrpcb\x06proto3"
 
 var (
 	file_rpc_conditional_conditional_proto_rawDescOnce sync.Once
@@ -921,7 +1077,7 @@ func file_rpc_conditional_conditional_proto_rawDescGZIP() []byte {
 }
 
 var file_rpc_conditional_conditional_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_rpc_conditional_conditional_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_rpc_conditional_conditional_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_rpc_conditional_conditional_proto_goTypes = []any{
 	(ConditionalType)(0),              // 0: opentrade.rpc.conditional.ConditionalType
 	(ConditionalStatus)(0),            // 1: opentrade.rpc.conditional.ConditionalStatus
@@ -934,34 +1090,40 @@ var file_rpc_conditional_conditional_proto_goTypes = []any{
 	(*ListConditionalsRequest)(nil),   // 8: opentrade.rpc.conditional.ListConditionalsRequest
 	(*ListConditionalsResponse)(nil),  // 9: opentrade.rpc.conditional.ListConditionalsResponse
 	(*Conditional)(nil),               // 10: opentrade.rpc.conditional.Conditional
-	(event.Side)(0),                   // 11: opentrade.event.Side
-	(event.TimeInForce)(0),            // 12: opentrade.event.TimeInForce
+	(*PlaceOCORequest)(nil),           // 11: opentrade.rpc.conditional.PlaceOCORequest
+	(*PlaceOCOResponse)(nil),          // 12: opentrade.rpc.conditional.PlaceOCOResponse
+	(event.Side)(0),                   // 13: opentrade.event.Side
+	(event.TimeInForce)(0),            // 14: opentrade.event.TimeInForce
 }
 var file_rpc_conditional_conditional_proto_depIdxs = []int32{
-	11, // 0: opentrade.rpc.conditional.PlaceConditionalRequest.side:type_name -> opentrade.event.Side
+	13, // 0: opentrade.rpc.conditional.PlaceConditionalRequest.side:type_name -> opentrade.event.Side
 	0,  // 1: opentrade.rpc.conditional.PlaceConditionalRequest.type:type_name -> opentrade.rpc.conditional.ConditionalType
-	12, // 2: opentrade.rpc.conditional.PlaceConditionalRequest.tif:type_name -> opentrade.event.TimeInForce
+	14, // 2: opentrade.rpc.conditional.PlaceConditionalRequest.tif:type_name -> opentrade.event.TimeInForce
 	1,  // 3: opentrade.rpc.conditional.PlaceConditionalResponse.status:type_name -> opentrade.rpc.conditional.ConditionalStatus
 	1,  // 4: opentrade.rpc.conditional.CancelConditionalResponse.status:type_name -> opentrade.rpc.conditional.ConditionalStatus
 	10, // 5: opentrade.rpc.conditional.QueryConditionalResponse.conditional:type_name -> opentrade.rpc.conditional.Conditional
 	10, // 6: opentrade.rpc.conditional.ListConditionalsResponse.conditionals:type_name -> opentrade.rpc.conditional.Conditional
-	11, // 7: opentrade.rpc.conditional.Conditional.side:type_name -> opentrade.event.Side
+	13, // 7: opentrade.rpc.conditional.Conditional.side:type_name -> opentrade.event.Side
 	0,  // 8: opentrade.rpc.conditional.Conditional.type:type_name -> opentrade.rpc.conditional.ConditionalType
-	12, // 9: opentrade.rpc.conditional.Conditional.tif:type_name -> opentrade.event.TimeInForce
+	14, // 9: opentrade.rpc.conditional.Conditional.tif:type_name -> opentrade.event.TimeInForce
 	1,  // 10: opentrade.rpc.conditional.Conditional.status:type_name -> opentrade.rpc.conditional.ConditionalStatus
-	2,  // 11: opentrade.rpc.conditional.ConditionalService.PlaceConditional:input_type -> opentrade.rpc.conditional.PlaceConditionalRequest
-	4,  // 12: opentrade.rpc.conditional.ConditionalService.CancelConditional:input_type -> opentrade.rpc.conditional.CancelConditionalRequest
-	6,  // 13: opentrade.rpc.conditional.ConditionalService.QueryConditional:input_type -> opentrade.rpc.conditional.QueryConditionalRequest
-	8,  // 14: opentrade.rpc.conditional.ConditionalService.ListConditionals:input_type -> opentrade.rpc.conditional.ListConditionalsRequest
-	3,  // 15: opentrade.rpc.conditional.ConditionalService.PlaceConditional:output_type -> opentrade.rpc.conditional.PlaceConditionalResponse
-	5,  // 16: opentrade.rpc.conditional.ConditionalService.CancelConditional:output_type -> opentrade.rpc.conditional.CancelConditionalResponse
-	7,  // 17: opentrade.rpc.conditional.ConditionalService.QueryConditional:output_type -> opentrade.rpc.conditional.QueryConditionalResponse
-	9,  // 18: opentrade.rpc.conditional.ConditionalService.ListConditionals:output_type -> opentrade.rpc.conditional.ListConditionalsResponse
-	15, // [15:19] is the sub-list for method output_type
-	11, // [11:15] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	2,  // 11: opentrade.rpc.conditional.PlaceOCORequest.legs:type_name -> opentrade.rpc.conditional.PlaceConditionalRequest
+	3,  // 12: opentrade.rpc.conditional.PlaceOCOResponse.legs:type_name -> opentrade.rpc.conditional.PlaceConditionalResponse
+	2,  // 13: opentrade.rpc.conditional.ConditionalService.PlaceConditional:input_type -> opentrade.rpc.conditional.PlaceConditionalRequest
+	4,  // 14: opentrade.rpc.conditional.ConditionalService.CancelConditional:input_type -> opentrade.rpc.conditional.CancelConditionalRequest
+	6,  // 15: opentrade.rpc.conditional.ConditionalService.QueryConditional:input_type -> opentrade.rpc.conditional.QueryConditionalRequest
+	8,  // 16: opentrade.rpc.conditional.ConditionalService.ListConditionals:input_type -> opentrade.rpc.conditional.ListConditionalsRequest
+	11, // 17: opentrade.rpc.conditional.ConditionalService.PlaceOCO:input_type -> opentrade.rpc.conditional.PlaceOCORequest
+	3,  // 18: opentrade.rpc.conditional.ConditionalService.PlaceConditional:output_type -> opentrade.rpc.conditional.PlaceConditionalResponse
+	5,  // 19: opentrade.rpc.conditional.ConditionalService.CancelConditional:output_type -> opentrade.rpc.conditional.CancelConditionalResponse
+	7,  // 20: opentrade.rpc.conditional.ConditionalService.QueryConditional:output_type -> opentrade.rpc.conditional.QueryConditionalResponse
+	9,  // 21: opentrade.rpc.conditional.ConditionalService.ListConditionals:output_type -> opentrade.rpc.conditional.ListConditionalsResponse
+	12, // 22: opentrade.rpc.conditional.ConditionalService.PlaceOCO:output_type -> opentrade.rpc.conditional.PlaceOCOResponse
+	18, // [18:23] is the sub-list for method output_type
+	13, // [13:18] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_rpc_conditional_conditional_proto_init() }
@@ -975,7 +1137,7 @@ func file_rpc_conditional_conditional_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_conditional_conditional_proto_rawDesc), len(file_rpc_conditional_conditional_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

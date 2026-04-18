@@ -603,6 +603,191 @@ func TestSweepExpired_NoopOnEmpty(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// OCO (MVP-14e / ADR-0044)
+// ---------------------------------------------------------------------------
+
+func ocoLeg(client string, typ condrpc.ConditionalType, stop, limit string) *condrpc.PlaceConditionalRequest {
+	return &condrpc.PlaceConditionalRequest{
+		UserId:              "u1",
+		ClientConditionalId: client,
+		Symbol:              "BTC-USDT",
+		Side:                eventpb.Side_SIDE_SELL,
+		Type:                typ,
+		StopPrice:           stop,
+		LimitPrice:          limit,
+		Qty:                 "0.5",
+	}
+}
+
+func TestPlaceOCO_HappyPath(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	gid, legs, accepted, err := e.PlaceOCO(context.Background(), "u1", "oco-client-1", []*condrpc.PlaceConditionalRequest{
+		ocoLeg("leg-tp", condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, "110", ""),
+		ocoLeg("leg-sl", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", ""),
+	})
+	if err != nil || !accepted {
+		t.Fatalf("place: err=%v accepted=%v", err, accepted)
+	}
+	if gid == "" {
+		t.Error("group id should be non-empty")
+	}
+	if len(legs) != 2 {
+		t.Fatalf("legs = %d", len(legs))
+	}
+	if reserver.reserveCount() != 2 {
+		t.Errorf("reserve called %d times, want 2", reserver.reserveCount())
+	}
+}
+
+func TestPlaceOCO_DedupByClientOCOID(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	req := []*condrpc.PlaceConditionalRequest{
+		ocoLeg("a", condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, "110", ""),
+		ocoLeg("b", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", ""),
+	}
+	gid1, _, ok1, err := e.PlaceOCO(context.Background(), "u1", "dedup-oco", req)
+	if err != nil || !ok1 {
+		t.Fatal(err)
+	}
+	// Rebuild the reqs with fresh client_cond_ids so the per-leg dedup
+	// doesn't interfere — we're testing group-level dedup.
+	req2 := []*condrpc.PlaceConditionalRequest{
+		ocoLeg("c", condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, "110", ""),
+		ocoLeg("d", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", ""),
+	}
+	gid2, _, ok2, err := e.PlaceOCO(context.Background(), "u1", "dedup-oco", req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok2 {
+		t.Error("dup should report accepted=false")
+	}
+	if gid2 != gid1 {
+		t.Errorf("gid drift: got %q want %q", gid2, gid1)
+	}
+	// Reserve must NOT be called for the second OCO.
+	if reserver.reserveCount() != 2 {
+		t.Errorf("reserve called %d times, want 2 (dup should not reserve)", reserver.reserveCount())
+	}
+}
+
+func TestPlaceOCO_MismatchedSymbolRejected(t *testing.T) {
+	e := newEngineWithReserver(&fakePlacer{}, nil)
+	legA := ocoLeg("a", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", "")
+	legB := ocoLeg("b", condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, "110", "")
+	legB.Symbol = "ETH-USDT"
+	if _, _, _, err := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceConditionalRequest{legA, legB}); !errors.Is(err, ErrOCOSymbolMismatch) {
+		t.Errorf("err = %v, want ErrOCOSymbolMismatch", err)
+	}
+}
+
+func TestPlaceOCO_MismatchedSideRejected(t *testing.T) {
+	e := newEngineWithReserver(&fakePlacer{}, nil)
+	legA := ocoLeg("a", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", "")
+	legB := ocoLeg("b", condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, "110", "")
+	legB.Side = eventpb.Side_SIDE_BUY
+	legB.Type = condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS
+	legB.QuoteQty = "100"
+	legB.Qty = ""
+	if _, _, _, err := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceConditionalRequest{legA, legB}); !errors.Is(err, ErrOCOSideMismatch) {
+		t.Errorf("err = %v, want ErrOCOSideMismatch", err)
+	}
+}
+
+func TestPlaceOCO_TooFewLegsRejected(t *testing.T) {
+	e := newEngineWithReserver(&fakePlacer{}, nil)
+	if _, _, _, err := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceConditionalRequest{
+		ocoLeg("only", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", ""),
+	}); !errors.Is(err, ErrOCONeedsTwoLegs) {
+		t.Errorf("err = %v, want ErrOCONeedsTwoLegs", err)
+	}
+}
+
+func TestPlaceOCO_CancelOneCascadesToSibling(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	_, legs, _, _ := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceConditionalRequest{
+		ocoLeg("a", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", ""),
+		ocoLeg("b", condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, "110", ""),
+	})
+	// Cancel leg[0]; leg[1] should cascade to CANCELED.
+	_, _, _ = e.Cancel(context.Background(), "u1", legs[0].ID)
+
+	sib, err := e.Get("u1", legs[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sib.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED {
+		t.Errorf("sibling status = %v, want CANCELED", sib.Status)
+	}
+	if reserver.releaseCount() != 2 {
+		t.Errorf("release called %d times, want 2 (one per leg)", reserver.releaseCount())
+	}
+}
+
+func TestPlaceOCO_TriggerOneCascadesToSibling(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	_, legs, _, _ := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceConditionalRequest{
+		ocoLeg("a", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", ""),
+		ocoLeg("b", condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, "110", ""),
+	})
+	// Price 85 triggers leg-a (stop_loss @ 90); leg-b should cascade CANCELED.
+	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "85"), 0, 1)
+
+	fired, err := e.Get("u1", legs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fired.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED {
+		t.Errorf("fired status = %v, want TRIGGERED", fired.Status)
+	}
+	sib, err := e.Get("u1", legs[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sib.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED {
+		t.Errorf("sibling status = %v, want CANCELED", sib.Status)
+	}
+	// One Counter PlaceOrder only (the triggered leg). Sibling never fires.
+	if len(placer.calls()) != 1 {
+		t.Errorf("PlaceOrder calls = %d, want 1", len(placer.calls()))
+	}
+	// Consumed reservation (leg-a via PlaceOrder) + released reservation (leg-b).
+	if reserver.releaseCount() != 1 {
+		t.Errorf("release called %d, want 1 (only cancelled sibling)", reserver.releaseCount())
+	}
+}
+
+func TestPlaceOCO_ExpirationCascadesToSibling(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := withClock(placer, reserver, &now)
+	expLeg := ocoLeg("exp", condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS, "90", "")
+	expLeg.ExpiresAtUnixMs = now.Add(time.Minute).UnixMilli()
+	steadyLeg := ocoLeg("steady", condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, "110", "")
+	_, legs, _, err := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceConditionalRequest{expLeg, steadyLeg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	if n := e.SweepExpired(context.Background()); n != 1 {
+		t.Fatalf("sweep count = %d, want 1 (only the expired leg)", n)
+	}
+	sib, _ := e.Get("u1", legs[1].ID)
+	if sib.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED {
+		t.Errorf("sibling status = %v, want CANCELED", sib.Status)
+	}
+}
+
 func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	placer := &fakePlacer{}
 	src := newEngine(placer)

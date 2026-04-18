@@ -23,6 +23,7 @@ const (
 	ConditionalService_CancelConditional_FullMethodName = "/opentrade.rpc.conditional.ConditionalService/CancelConditional"
 	ConditionalService_QueryConditional_FullMethodName  = "/opentrade.rpc.conditional.ConditionalService/QueryConditional"
 	ConditionalService_ListConditionals_FullMethodName  = "/opentrade.rpc.conditional.ConditionalService/ListConditionals"
+	ConditionalService_PlaceOCO_FullMethodName          = "/opentrade.rpc.conditional.ConditionalService/PlaceOCO"
 )
 
 // ConditionalServiceClient is the client API for ConditionalService service.
@@ -44,6 +45,11 @@ type ConditionalServiceClient interface {
 	// default. include_inactive=true also returns terminal statuses for
 	// recent history — service keeps the last TerminalHistoryLimit rounds.
 	ListConditionals(ctx context.Context, in *ListConditionalsRequest, opts ...grpc.CallOption) (*ListConditionalsResponse, error)
+	// PlaceOCO places two or more linked conditional legs atomically: when
+	// any leg transitions to TRIGGERED / REJECTED / EXPIRED / CANCELED,
+	// all still-PENDING siblings in the same OCO group are auto-canceled
+	// (ADR-0044). Idempotent via client_oco_id.
+	PlaceOCO(ctx context.Context, in *PlaceOCORequest, opts ...grpc.CallOption) (*PlaceOCOResponse, error)
 }
 
 type conditionalServiceClient struct {
@@ -94,6 +100,16 @@ func (c *conditionalServiceClient) ListConditionals(ctx context.Context, in *Lis
 	return out, nil
 }
 
+func (c *conditionalServiceClient) PlaceOCO(ctx context.Context, in *PlaceOCORequest, opts ...grpc.CallOption) (*PlaceOCOResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlaceOCOResponse)
+	err := c.cc.Invoke(ctx, ConditionalService_PlaceOCO_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ConditionalServiceServer is the server API for ConditionalService service.
 // All implementations must embed UnimplementedConditionalServiceServer
 // for forward compatibility.
@@ -113,6 +129,11 @@ type ConditionalServiceServer interface {
 	// default. include_inactive=true also returns terminal statuses for
 	// recent history — service keeps the last TerminalHistoryLimit rounds.
 	ListConditionals(context.Context, *ListConditionalsRequest) (*ListConditionalsResponse, error)
+	// PlaceOCO places two or more linked conditional legs atomically: when
+	// any leg transitions to TRIGGERED / REJECTED / EXPIRED / CANCELED,
+	// all still-PENDING siblings in the same OCO group are auto-canceled
+	// (ADR-0044). Idempotent via client_oco_id.
+	PlaceOCO(context.Context, *PlaceOCORequest) (*PlaceOCOResponse, error)
 	mustEmbedUnimplementedConditionalServiceServer()
 }
 
@@ -134,6 +155,9 @@ func (UnimplementedConditionalServiceServer) QueryConditional(context.Context, *
 }
 func (UnimplementedConditionalServiceServer) ListConditionals(context.Context, *ListConditionalsRequest) (*ListConditionalsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListConditionals not implemented")
+}
+func (UnimplementedConditionalServiceServer) PlaceOCO(context.Context, *PlaceOCORequest) (*PlaceOCOResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PlaceOCO not implemented")
 }
 func (UnimplementedConditionalServiceServer) mustEmbedUnimplementedConditionalServiceServer() {}
 func (UnimplementedConditionalServiceServer) testEmbeddedByValue()                            {}
@@ -228,6 +252,24 @@ func _ConditionalService_ListConditionals_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ConditionalService_PlaceOCO_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlaceOCORequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConditionalServiceServer).PlaceOCO(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ConditionalService_PlaceOCO_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConditionalServiceServer).PlaceOCO(ctx, req.(*PlaceOCORequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ConditionalService_ServiceDesc is the grpc.ServiceDesc for ConditionalService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -250,6 +292,10 @@ var ConditionalService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListConditionals",
 			Handler:    _ConditionalService_ListConditionals_Handler,
+		},
+		{
+			MethodName: "PlaceOCO",
+			Handler:    _ConditionalService_PlaceOCO_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
