@@ -68,6 +68,12 @@ enum ConditionalType {
 
   // TAKE_PROFIT_LIMIT is TAKE_PROFIT with a LIMIT order (at limit_price, TIF).
   CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT = 4;
+
+  // TRAILING_STOP_LOSS tracks a watermark (max on sell / min on buy) and
+  // fires a MARKET order when price retraces from the watermark by
+  // `trailing_delta_bps`. Optional `activation_price` gates watermark
+  // updates until the first favorable move (ADR-0045).
+  CONDITIONAL_TYPE_TRAILING_STOP_LOSS = 5;
 }
 
 enum ConditionalStatus {
@@ -106,6 +112,14 @@ message PlaceConditionalRequest {
   // is moved to EXPIRED by the service's sweeper (ADR-0043). Must be
   // strictly in the future when non-zero.
   int64 expires_at_unix_ms = 11;
+
+  // Trailing-stop parameters (ADR-0045). Required for
+  // CONDITIONAL_TYPE_TRAILING_STOP_LOSS, forbidden for all other types.
+  // trailing_delta_bps is the retracement threshold in basis points
+  // (e.g. 100 = 1%). activation_price is optional; empty means "start
+  // tracking from the first observed price".
+  int32 trailing_delta_bps = 12;
+  string activation_price = 13;
 }
 
 message PlaceConditionalResponse {
@@ -173,6 +187,11 @@ message Conditional {
   // OCO group id (ADR-0044). Empty = standalone conditional. Non-empty
   // siblings are auto-canceled when this leg hits any terminal status.
   string oco_group_id = 18;
+  // Trailing-stop observable state (ADR-0045). 0 for non-trailing types.
+  int32 trailing_delta_bps = 19;
+  string activation_price = 20;       // 0 = start tracking immediately
+  string trailing_watermark = 21;     // current max (sell) / min (buy)
+  bool trailing_active = 22;          // true once activation_price crossed
 }
 
 // -----------------------------------------------------------------------------

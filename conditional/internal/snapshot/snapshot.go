@@ -57,6 +57,11 @@ type ConditionalSnap struct {
 	RejectReason  string `json:"reject_reason,omitempty"`
 	ExpiresAtMs   int64  `json:"expires_at_ms,omitempty"` // ADR-0043
 	OCOGroupID    string `json:"oco_group_id,omitempty"`  // ADR-0044
+	// Trailing-stop state (ADR-0045).
+	TrailingDeltaBps  int32  `json:"trailing_delta_bps,omitempty"`
+	ActivationPrice   string `json:"activation_price,omitempty"`
+	TrailingWatermark string `json:"trailing_watermark,omitempty"`
+	TrailingActive    bool   `json:"trailing_active,omitempty"`
 }
 
 // Capture builds a Snapshot from the engine. Caller stamps TakenAtMs.
@@ -161,24 +166,28 @@ func toSnapSlice(in []*engine.Conditional) []ConditionalSnap {
 	out := make([]ConditionalSnap, len(in))
 	for i, c := range in {
 		out[i] = ConditionalSnap{
-			ID:            c.ID,
-			ClientCondID:  c.ClientCondID,
-			UserID:        c.UserID,
-			Symbol:        c.Symbol,
-			Side:          uint8(c.Side),
-			Type:          uint8(c.Type),
-			StopPrice:     c.StopPrice.String(),
-			LimitPrice:    decOrEmpty(c.LimitPrice),
-			Qty:           decOrEmpty(c.Qty),
-			QuoteQty:      decOrEmpty(c.QuoteQty),
-			TIF:           uint8(c.TIF),
-			Status:        uint8(c.Status),
-			CreatedAtMs:   c.CreatedAtMs,
-			TriggeredAtMs: c.TriggeredAtMs,
-			PlacedOrderID: c.PlacedOrderID,
-			RejectReason:  c.RejectReason,
-			ExpiresAtMs:   c.ExpiresAtMs,
-			OCOGroupID:    c.OCOGroupID,
+			ID:                c.ID,
+			ClientCondID:      c.ClientCondID,
+			UserID:            c.UserID,
+			Symbol:            c.Symbol,
+			Side:              uint8(c.Side),
+			Type:              uint8(c.Type),
+			StopPrice:         c.StopPrice.String(),
+			LimitPrice:        decOrEmpty(c.LimitPrice),
+			Qty:               decOrEmpty(c.Qty),
+			QuoteQty:          decOrEmpty(c.QuoteQty),
+			TIF:               uint8(c.TIF),
+			Status:            uint8(c.Status),
+			CreatedAtMs:       c.CreatedAtMs,
+			TriggeredAtMs:     c.TriggeredAtMs,
+			PlacedOrderID:     c.PlacedOrderID,
+			RejectReason:      c.RejectReason,
+			ExpiresAtMs:       c.ExpiresAtMs,
+			OCOGroupID:        c.OCOGroupID,
+			TrailingDeltaBps:  c.TrailingDeltaBps,
+			ActivationPrice:   decOrEmpty(c.ActivationPrice),
+			TrailingWatermark: decOrEmpty(c.TrailingWatermark),
+			TrailingActive:    c.TrailingActive,
 		}
 	}
 	return out
@@ -206,25 +215,37 @@ func fromSnapSlice(in []ConditionalSnap) ([]*engine.Conditional, error) {
 		if err != nil {
 			return nil, fmt.Errorf("id %d quote_qty: %w", s.ID, err)
 		}
+		activation, err := dec.Parse(s.ActivationPrice)
+		if err != nil {
+			return nil, fmt.Errorf("id %d activation_price: %w", s.ID, err)
+		}
+		watermark, err := dec.Parse(s.TrailingWatermark)
+		if err != nil {
+			return nil, fmt.Errorf("id %d trailing_watermark: %w", s.ID, err)
+		}
 		out = append(out, &engine.Conditional{
-			ID:            s.ID,
-			ClientCondID:  s.ClientCondID,
-			UserID:        s.UserID,
-			Symbol:        s.Symbol,
-			Side:          eventpb.Side(s.Side),
-			Type:          condrpc.ConditionalType(s.Type),
-			StopPrice:     stop,
-			LimitPrice:    limit,
-			Qty:           qty,
-			QuoteQty:      qq,
-			TIF:           eventpb.TimeInForce(s.TIF),
-			Status:        condrpc.ConditionalStatus(s.Status),
-			CreatedAtMs:   s.CreatedAtMs,
-			TriggeredAtMs: s.TriggeredAtMs,
-			PlacedOrderID: s.PlacedOrderID,
-			RejectReason:  s.RejectReason,
-			ExpiresAtMs:   s.ExpiresAtMs,
-			OCOGroupID:    s.OCOGroupID,
+			ID:                s.ID,
+			ClientCondID:      s.ClientCondID,
+			UserID:            s.UserID,
+			Symbol:            s.Symbol,
+			Side:              eventpb.Side(s.Side),
+			Type:              condrpc.ConditionalType(s.Type),
+			StopPrice:         stop,
+			LimitPrice:        limit,
+			Qty:               qty,
+			QuoteQty:          qq,
+			TIF:               eventpb.TimeInForce(s.TIF),
+			Status:            condrpc.ConditionalStatus(s.Status),
+			CreatedAtMs:       s.CreatedAtMs,
+			TriggeredAtMs:     s.TriggeredAtMs,
+			PlacedOrderID:     s.PlacedOrderID,
+			RejectReason:      s.RejectReason,
+			ExpiresAtMs:       s.ExpiresAtMs,
+			OCOGroupID:        s.OCOGroupID,
+			TrailingDeltaBps:  s.TrailingDeltaBps,
+			ActivationPrice:   activation,
+			TrailingWatermark: watermark,
+			TrailingActive:    s.TrailingActive,
 		})
 	}
 	return out, nil

@@ -30,6 +30,11 @@ func ToProto(c *Conditional) *condrpc.Conditional {
 		PlacedOrderId:       c.PlacedOrderID,
 		RejectReason:        c.RejectReason,
 		ExpiresAtUnixMs:     c.ExpiresAtMs,
+		OcoGroupId:          c.OCOGroupID,
+		TrailingDeltaBps:    c.TrailingDeltaBps,
+		ActivationPrice:     decOrEmpty(c.ActivationPrice),
+		TrailingWatermark:   decOrEmpty(c.TrailingWatermark),
+		TrailingActive:      c.TrailingActive,
 	}
 }
 

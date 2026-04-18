@@ -29,6 +29,7 @@
 | [MVP-14c](#mvp-14c-conditional-ha) | 条件单 HA（cold standby） | ✅ | etcd 选主复刻 ADR-0031；`--ha-mode=auto` 双实例，primary crash 10~15s 内新 primary 接管 |
 | [MVP-14d](#mvp-14d-conditional-expiry) | 条件单过期（TTL） | ✅ | `expires_at_unix_ms` + `EXPIRED` 状态 + primary 侧 sweeper；到期自动释放 reservation |
 | [MVP-14e](#mvp-14e-conditional-oco) | 条件单 OCO（One-Cancels-Other） | ✅ | `PlaceOCO` 接 N 腿；任一腿到 terminal → 兄弟 CANCELED；client_oco_id 幂等 |
+| [MVP-14f](#mvp-14f-conditional-trailing) | 条件单 Trailing Stop | ✅ | `TRAILING_STOP_LOSS` + `trailing_delta_bps` + 可选 `activation_price`；引擎实时追 watermark |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
 
@@ -53,7 +54,7 @@
 - ~~**MVP-14c 条件单 HA**~~ — ✅ `pkg/election` cold standby 复刻 ADR-0031；`--ha-mode=auto` + `--etcd` 双实例（[ADR-0042](./adr/0042-conditional-ha.md)）
 - ~~**MVP-14d 条件单过期**~~ — ✅ `expires_at_unix_ms` 字段 + EXPIRED 终态 + primary 侧 5s sweeper；到期释放 reservation（[ADR-0043](./adr/0043-conditional-expiry.md)）
 - ~~**MVP-14e OCO**~~ — ✅ `PlaceOCO` N 腿原子下单 + 级联取消；`client_oco_id` 幂等；任一腿 terminal 自动 CANCEL 兄弟（[ADR-0044](./adr/0044-conditional-oco.md)）
-- **MVP-14f Trailing stop** —— stop_price 按 last_price 水印浮动
+- ~~**MVP-14f Trailing stop**~~ — ✅ `TRAILING_STOP_LOSS` 类型 + bps retracement + 可选 activation_price；引擎维护 watermark（[ADR-0045](./adr/0045-conditional-trailing-stop.md)）
 
 ## 已完成
 
@@ -207,6 +208,14 @@
 - engine: `PlaceOCO` Reserve 每腿失败回滚；`cascadeOCOCancelLocked` 统一级联，在 Cancel / tryFire / SweepExpired 后触发
 - `ocoByClient map[string]string` 做 group-level 幂等；snapshot 持久化 + restore
 - BFF REST: `POST /v1/conditional/oco`；每腿 body 复用既有 `placeConditionalBody` 结构
+
+### MVP-14f  条件单 Trailing Stop  {#mvp-14f-conditional-trailing}
+
+- **commit** pending · **ADR** [0045](./adr/0045-conditional-trailing-stop.md)
+- proto: `CONDITIONAL_TYPE_TRAILING_STOP_LOSS = 5`；`trailing_delta_bps` + `activation_price` 入参；observable 字段 `trailing_watermark` / `trailing_active`
+- engine: `updateTrailingLocked(c, price)` 在 handleLocked 内分叉：activation gate → watermark 推进 → effective_stop 比较；mutating 写进 Conditional 由引擎锁保护，snapshot 捕获
+- Reservations 走既有 MARKET 逻辑（Reserve 按 qty/quote_qty 一次算好，不依赖触发价）
+- BFF REST: 类型字符串 `"trailing_stop_loss"`；conditionalToJSON 暴露 watermark + active
 
 ---
 

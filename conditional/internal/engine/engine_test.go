@@ -788,6 +788,160 @@ func TestPlaceOCO_ExpirationCascadesToSibling(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Trailing stop (MVP-14f / ADR-0045)
+// ---------------------------------------------------------------------------
+
+func trailingSellReq(delta int32, activation string) *condrpc.PlaceConditionalRequest {
+	return &condrpc.PlaceConditionalRequest{
+		UserId:           "u1",
+		Symbol:           "BTC-USDT",
+		Side:             eventpb.Side_SIDE_SELL,
+		Type:             condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS,
+		Qty:              "0.5",
+		TrailingDeltaBps: delta,
+		ActivationPrice:  activation,
+	}
+}
+
+func TestPlace_TrailingRequiresDelta(t *testing.T) {
+	e := newEngine(&fakePlacer{})
+	req := trailingSellReq(0, "")
+	if _, _, _, err := e.Place(context.Background(), req); !errors.Is(err, ErrTrailingDeltaNeeded) {
+		t.Errorf("err = %v, want ErrTrailingDeltaNeeded", err)
+	}
+}
+
+func TestPlace_TrailingDeltaRangeEnforced(t *testing.T) {
+	e := newEngine(&fakePlacer{})
+	req := trailingSellReq(10_001, "")
+	if _, _, _, err := e.Place(context.Background(), req); !errors.Is(err, ErrTrailingDeltaRange) {
+		t.Errorf("err = %v, want ErrTrailingDeltaRange", err)
+	}
+}
+
+func TestPlace_NonTrailingWithDeltaRejected(t *testing.T) {
+	e := newEngine(&fakePlacer{})
+	req := goodReq()
+	req.TrailingDeltaBps = 100
+	if _, _, _, err := e.Place(context.Background(), req); !errors.Is(err, ErrTrailingDeltaForbidden) {
+		t.Errorf("err = %v, want ErrTrailingDeltaForbidden", err)
+	}
+}
+
+func TestTrailing_SellWatermarkAndFire(t *testing.T) {
+	placer := &fakePlacer{}
+	reserver := &fakeReserver{}
+	e := newEngineWithReserver(placer, reserver)
+	// 500 bps = 5% retracement.
+	id, _, _, err := e.Place(context.Background(), trailingSellReq(500, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Price goes 100 → 110 → 115 (watermark), no fire yet.
+	for _, p := range []string{"100", "110", "115"} {
+		e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", p), 0, 1)
+	}
+	if calls := placer.calls(); len(calls) != 0 {
+		t.Fatalf("fired too early: %d calls", len(calls))
+	}
+	got, _ := e.Get("u1", id)
+	if !got.TrailingActive {
+		t.Errorf("should be active after first price")
+	}
+	if got.TrailingWatermark.String() != "115" {
+		t.Errorf("watermark = %s, want 115", got.TrailingWatermark.String())
+	}
+
+	// Price 115 × (1 - 0.05) = 109.25 → first price ≤ 109.25 triggers.
+	// 109 is below; fires.
+	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "109"), 0, 2)
+	if calls := placer.calls(); len(calls) != 1 {
+		t.Fatalf("fire count = %d, want 1", len(calls))
+	}
+	got, _ = e.Get("u1", id)
+	if got.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED {
+		t.Errorf("status = %v", got.Status)
+	}
+}
+
+func TestTrailing_BuyWatermarkAndFire(t *testing.T) {
+	placer := &fakePlacer{}
+	e := newEngineWithReserver(placer, nil)
+	req := trailingSellReq(500, "")
+	req.Side = eventpb.Side_SIDE_BUY
+	req.Qty = ""
+	req.QuoteQty = "100"
+	id, _, _, err := e.Place(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Price drops 100 → 90 → 85 (watermark = 85), no fire.
+	for _, p := range []string{"100", "90", "85"} {
+		e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", p), 0, 1)
+	}
+	if len(placer.calls()) != 0 {
+		t.Fatalf("fired too early")
+	}
+	// 85 × 1.05 = 89.25 → first price ≥ 89.25 fires. 90 is the trigger.
+	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "90"), 0, 2)
+	if len(placer.calls()) != 1 {
+		t.Fatalf("fire count = %d, want 1", len(placer.calls()))
+	}
+	got, _ := e.Get("u1", id)
+	if got.Status != condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED {
+		t.Errorf("status = %v", got.Status)
+	}
+}
+
+func TestTrailing_ActivationPriceGatesWatermark(t *testing.T) {
+	placer := &fakePlacer{}
+	e := newEngineWithReserver(placer, nil)
+	// sell, trailing 500 bps, activate only once price ≥ 120.
+	req := trailingSellReq(500, "120")
+	id, _, _, err := e.Place(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Price 115 → not activated; watermark stays 0.
+	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "115"), 0, 1)
+	got, _ := e.Get("u1", id)
+	if got.TrailingActive {
+		t.Errorf("should not be active below activation price")
+	}
+	if !got.TrailingWatermark.IsZero() {
+		t.Errorf("watermark = %s, want 0", got.TrailingWatermark.String())
+	}
+
+	// 130 crosses activation → active + watermark initializes.
+	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "130"), 0, 2)
+	got, _ = e.Get("u1", id)
+	if !got.TrailingActive {
+		t.Errorf("should be active after crossing activation")
+	}
+	if got.TrailingWatermark.String() != "130" {
+		t.Errorf("watermark = %s", got.TrailingWatermark.String())
+	}
+
+	// 130 × 0.95 = 123.5 → 120 retraces below → fire.
+	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "120"), 0, 3)
+	if len(placer.calls()) != 1 {
+		t.Fatalf("fire count = %d, want 1", len(placer.calls()))
+	}
+}
+
+func TestPlace_TrailingRejectsStopPrice(t *testing.T) {
+	e := newEngine(&fakePlacer{})
+	req := trailingSellReq(500, "")
+	req.StopPrice = "100"
+	if _, _, _, err := e.Place(context.Background(), req); !errors.Is(err, ErrStopPriceForbidden) {
+		t.Errorf("err = %v, want ErrStopPriceForbidden", err)
+	}
+}
+
 func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	placer := &fakePlacer{}
 	src := newEngine(placer)

@@ -98,7 +98,12 @@ func toGRPCErr(err error) error {
 		errors.Is(err, engine.ErrOCONeedsTwoLegs),
 		errors.Is(err, engine.ErrOCOSymbolMismatch),
 		errors.Is(err, engine.ErrOCOSideMismatch),
-		errors.Is(err, engine.ErrOCOUserMismatch):
+		errors.Is(err, engine.ErrOCOUserMismatch),
+		errors.Is(err, engine.ErrTrailingDeltaNeeded),
+		errors.Is(err, engine.ErrTrailingDeltaForbidden),
+		errors.Is(err, engine.ErrTrailingDeltaRange),
+		errors.Is(err, engine.ErrActivationPriceShape),
+		errors.Is(err, engine.ErrStopPriceForbidden):
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())

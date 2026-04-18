@@ -14,14 +14,18 @@ type placeConditionalBody struct {
 	ClientConditionalID string `json:"client_conditional_id,omitempty"`
 	Symbol              string `json:"symbol"`
 	Side                string `json:"side"`       // "buy" / "sell"
-	Type                string `json:"type"`       // "stop_loss" / "stop_loss_limit" / "take_profit" / "take_profit_limit"
-	StopPrice           string `json:"stop_price"`
+	Type                string `json:"type"`       // "stop_loss" / "stop_loss_limit" / "take_profit" / "take_profit_limit" / "trailing_stop_loss"
+	StopPrice           string `json:"stop_price,omitempty"`
 	LimitPrice          string `json:"limit_price,omitempty"`
 	Qty                 string `json:"qty,omitempty"`
 	QuoteQty            string `json:"quote_qty,omitempty"`
 	TIF                 string `json:"tif,omitempty"`
 	// Optional absolute expiry (unix ms); 0 = never expires. ADR-0043.
 	ExpiresAtUnixMs int64 `json:"expires_at_unix_ms,omitempty"`
+	// Trailing-stop fields (ADR-0045). trailing_delta_bps required for
+	// type "trailing_stop_loss", forbidden otherwise.
+	TrailingDeltaBps int32  `json:"trailing_delta_bps,omitempty"`
+	ActivationPrice  string `json:"activation_price,omitempty"`
 }
 
 // handlePlaceConditional POST /v1/conditional — forwards to the
@@ -73,6 +77,8 @@ func (s *Server) handlePlaceConditional(w http.ResponseWriter, r *http.Request) 
 		QuoteQty:            body.QuoteQty,
 		Tif:                 tif,
 		ExpiresAtUnixMs:     body.ExpiresAtUnixMs,
+		TrailingDeltaBps:    body.TrailingDeltaBps,
+		ActivationPrice:     body.ActivationPrice,
 	})
 	if err != nil {
 		writeGRPCError(w, err)
@@ -204,6 +210,8 @@ func (s *Server) handlePlaceOCO(w http.ResponseWriter, r *http.Request) {
 			QuoteQty:            lb.QuoteQty,
 			Tif:                 tif,
 			ExpiresAtUnixMs:     lb.ExpiresAtUnixMs,
+			TrailingDeltaBps:    lb.TrailingDeltaBps,
+			ActivationPrice:     lb.ActivationPrice,
 		}
 	}
 	resp, err := s.conditional.PlaceOCO(r.Context(), &condrpc.PlaceOCORequest{
@@ -282,6 +290,11 @@ func conditionalToJSON(c *condrpc.Conditional) map[string]any {
 		"placed_order_id":       c.PlacedOrderId,
 		"reject_reason":         c.RejectReason,
 		"expires_at_unix_ms":    c.ExpiresAtUnixMs,
+		"oco_group_id":          c.OcoGroupId,
+		"trailing_delta_bps":    c.TrailingDeltaBps,
+		"activation_price":      c.ActivationPrice,
+		"trailing_watermark":    c.TrailingWatermark,
+		"trailing_active":       c.TrailingActive,
 	}
 }
 
@@ -295,6 +308,8 @@ func parseConditionalType(s string) (condrpc.ConditionalType, error) {
 		return condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT, nil
 	case "take_profit_limit", "TAKE_PROFIT_LIMIT":
 		return condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT, nil
+	case "trailing_stop_loss", "TRAILING_STOP_LOSS":
+		return condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS, nil
 	}
 	return condrpc.ConditionalType_CONDITIONAL_TYPE_UNSPECIFIED, badRequest("type", s)
 }
@@ -309,6 +324,8 @@ func conditionalTypeLabel(t condrpc.ConditionalType) string {
 		return "take_profit"
 	case condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT:
 		return "take_profit_limit"
+	case condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS:
+		return "trailing_stop_loss"
 	}
 	return ""
 }

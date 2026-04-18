@@ -38,6 +38,11 @@ const (
 	ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT ConditionalType = 3
 	// TAKE_PROFIT_LIMIT is TAKE_PROFIT with a LIMIT order (at limit_price, TIF).
 	ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT ConditionalType = 4
+	// TRAILING_STOP_LOSS tracks a watermark (max on sell / min on buy) and
+	// fires a MARKET order when price retraces from the watermark by
+	// `trailing_delta_bps`. Optional `activation_price` gates watermark
+	// updates until the first favorable move (ADR-0045).
+	ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS ConditionalType = 5
 )
 
 // Enum value maps for ConditionalType.
@@ -48,13 +53,15 @@ var (
 		2: "CONDITIONAL_TYPE_STOP_LOSS_LIMIT",
 		3: "CONDITIONAL_TYPE_TAKE_PROFIT",
 		4: "CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT",
+		5: "CONDITIONAL_TYPE_TRAILING_STOP_LOSS",
 	}
 	ConditionalType_value = map[string]int32{
-		"CONDITIONAL_TYPE_UNSPECIFIED":       0,
-		"CONDITIONAL_TYPE_STOP_LOSS":         1,
-		"CONDITIONAL_TYPE_STOP_LOSS_LIMIT":   2,
-		"CONDITIONAL_TYPE_TAKE_PROFIT":       3,
-		"CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT": 4,
+		"CONDITIONAL_TYPE_UNSPECIFIED":        0,
+		"CONDITIONAL_TYPE_STOP_LOSS":          1,
+		"CONDITIONAL_TYPE_STOP_LOSS_LIMIT":    2,
+		"CONDITIONAL_TYPE_TAKE_PROFIT":        3,
+		"CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT":  4,
+		"CONDITIONAL_TYPE_TRAILING_STOP_LOSS": 5,
 	}
 )
 
@@ -167,8 +174,15 @@ type PlaceConditionalRequest struct {
 	// is moved to EXPIRED by the service's sweeper (ADR-0043). Must be
 	// strictly in the future when non-zero.
 	ExpiresAtUnixMs int64 `protobuf:"varint,11,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Trailing-stop parameters (ADR-0045). Required for
+	// CONDITIONAL_TYPE_TRAILING_STOP_LOSS, forbidden for all other types.
+	// trailing_delta_bps is the retracement threshold in basis points
+	// (e.g. 100 = 1%). activation_price is optional; empty means "start
+	// tracking from the first observed price".
+	TrailingDeltaBps int32  `protobuf:"varint,12,opt,name=trailing_delta_bps,json=trailingDeltaBps,proto3" json:"trailing_delta_bps,omitempty"`
+	ActivationPrice  string `protobuf:"bytes,13,opt,name=activation_price,json=activationPrice,proto3" json:"activation_price,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PlaceConditionalRequest) Reset() {
@@ -276,6 +290,20 @@ func (x *PlaceConditionalRequest) GetExpiresAtUnixMs() int64 {
 		return x.ExpiresAtUnixMs
 	}
 	return 0
+}
+
+func (x *PlaceConditionalRequest) GetTrailingDeltaBps() int32 {
+	if x != nil {
+		return x.TrailingDeltaBps
+	}
+	return 0
+}
+
+func (x *PlaceConditionalRequest) GetActivationPrice() string {
+	if x != nil {
+		return x.ActivationPrice
+	}
+	return ""
 }
 
 type PlaceConditionalResponse struct {
@@ -675,9 +703,14 @@ type Conditional struct {
 	ExpiresAtUnixMs     int64                  `protobuf:"varint,17,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"` // 0 = never expires
 	// OCO group id (ADR-0044). Empty = standalone conditional. Non-empty
 	// siblings are auto-canceled when this leg hits any terminal status.
-	OcoGroupId    string `protobuf:"bytes,18,opt,name=oco_group_id,json=ocoGroupId,proto3" json:"oco_group_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	OcoGroupId string `protobuf:"bytes,18,opt,name=oco_group_id,json=ocoGroupId,proto3" json:"oco_group_id,omitempty"`
+	// Trailing-stop observable state (ADR-0045). 0 for non-trailing types.
+	TrailingDeltaBps  int32  `protobuf:"varint,19,opt,name=trailing_delta_bps,json=trailingDeltaBps,proto3" json:"trailing_delta_bps,omitempty"`
+	ActivationPrice   string `protobuf:"bytes,20,opt,name=activation_price,json=activationPrice,proto3" json:"activation_price,omitempty"`       // 0 = start tracking immediately
+	TrailingWatermark string `protobuf:"bytes,21,opt,name=trailing_watermark,json=trailingWatermark,proto3" json:"trailing_watermark,omitempty"` // current max (sell) / min (buy)
+	TrailingActive    bool   `protobuf:"varint,22,opt,name=trailing_active,json=trailingActive,proto3" json:"trailing_active,omitempty"`         // true once activation_price crossed
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Conditional) Reset() {
@@ -836,6 +869,34 @@ func (x *Conditional) GetOcoGroupId() string {
 	return ""
 }
 
+func (x *Conditional) GetTrailingDeltaBps() int32 {
+	if x != nil {
+		return x.TrailingDeltaBps
+	}
+	return 0
+}
+
+func (x *Conditional) GetActivationPrice() string {
+	if x != nil {
+		return x.ActivationPrice
+	}
+	return ""
+}
+
+func (x *Conditional) GetTrailingWatermark() string {
+	if x != nil {
+		return x.TrailingWatermark
+	}
+	return ""
+}
+
+func (x *Conditional) GetTrailingActive() bool {
+	if x != nil {
+		return x.TrailingActive
+	}
+	return false
+}
+
 type PlaceOCORequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	UserId      string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -973,7 +1034,7 @@ var File_rpc_conditional_conditional_proto protoreflect.FileDescriptor
 
 const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\n" +
-	"!rpc/conditional/conditional.proto\x12\x19opentrade.rpc.conditional\x1a\x12event/common.proto\"\xb5\x03\n" +
+	"!rpc/conditional/conditional.proto\x12\x19opentrade.rpc.conditional\x1a\x12event/common.proto\"\x8e\x04\n" +
 	"\x17PlaceConditionalRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x122\n" +
 	"\x15client_conditional_id\x18\x02 \x01(\tR\x13clientConditionalId\x12\x16\n" +
@@ -988,7 +1049,9 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\tquote_qty\x18\t \x01(\tR\bquoteQty\x12.\n" +
 	"\x03tif\x18\n" +
 	" \x01(\x0e2\x1c.opentrade.event.TimeInForceR\x03tif\x12+\n" +
-	"\x12expires_at_unix_ms\x18\v \x01(\x03R\x0fexpiresAtUnixMs\"\xbb\x01\n" +
+	"\x12expires_at_unix_ms\x18\v \x01(\x03R\x0fexpiresAtUnixMs\x12,\n" +
+	"\x12trailing_delta_bps\x18\f \x01(\x05R\x10trailingDeltaBps\x12)\n" +
+	"\x10activation_price\x18\r \x01(\tR\x0factivationPrice\"\xbb\x01\n" +
 	"\x18PlaceConditionalResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12D\n" +
 	"\x06status\x18\x02 \x01(\x0e2,.opentrade.rpc.conditional.ConditionalStatusR\x06status\x12\x1a\n" +
@@ -1010,7 +1073,7 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12)\n" +
 	"\x10include_inactive\x18\x02 \x01(\bR\x0fincludeInactive\"f\n" +
 	"\x18ListConditionalsResponse\x12J\n" +
-	"\fconditionals\x18\x01 \x03(\v2&.opentrade.rpc.conditional.ConditionalR\fconditionals\"\xcc\x05\n" +
+	"\fconditionals\x18\x01 \x03(\v2&.opentrade.rpc.conditional.ConditionalR\fconditionals\"\xfd\x06\n" +
 	"\vConditional\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x122\n" +
 	"\x15client_conditional_id\x18\x02 \x01(\tR\x13clientConditionalId\x12\x17\n" +
@@ -1033,7 +1096,11 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"\rreject_reason\x18\x10 \x01(\tR\frejectReason\x12+\n" +
 	"\x12expires_at_unix_ms\x18\x11 \x01(\x03R\x0fexpiresAtUnixMs\x12 \n" +
 	"\foco_group_id\x18\x12 \x01(\tR\n" +
-	"ocoGroupId\"\x96\x01\n" +
+	"ocoGroupId\x12,\n" +
+	"\x12trailing_delta_bps\x18\x13 \x01(\x05R\x10trailingDeltaBps\x12)\n" +
+	"\x10activation_price\x18\x14 \x01(\tR\x0factivationPrice\x12-\n" +
+	"\x12trailing_watermark\x18\x15 \x01(\tR\x11trailingWatermark\x12'\n" +
+	"\x0ftrailing_active\x18\x16 \x01(\bR\x0etrailingActive\"\x96\x01\n" +
 	"\x0fPlaceOCORequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\"\n" +
 	"\rclient_oco_id\x18\x02 \x01(\tR\vclientOcoId\x12F\n" +
@@ -1043,13 +1110,14 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	"ocoGroupId\x12G\n" +
 	"\x04legs\x18\x02 \x03(\v23.opentrade.rpc.conditional.PlaceConditionalResponseR\x04legs\x12\x1a\n" +
 	"\baccepted\x18\x03 \x01(\bR\baccepted\x12-\n" +
-	"\x13received_ts_unix_ms\x18\x04 \x01(\x03R\x10receivedTsUnixMs*\xc3\x01\n" +
+	"\x13received_ts_unix_ms\x18\x04 \x01(\x03R\x10receivedTsUnixMs*\xec\x01\n" +
 	"\x0fConditionalType\x12 \n" +
 	"\x1cCONDITIONAL_TYPE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCONDITIONAL_TYPE_STOP_LOSS\x10\x01\x12$\n" +
 	" CONDITIONAL_TYPE_STOP_LOSS_LIMIT\x10\x02\x12 \n" +
 	"\x1cCONDITIONAL_TYPE_TAKE_PROFIT\x10\x03\x12&\n" +
-	"\"CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT\x10\x04*\xdb\x01\n" +
+	"\"CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT\x10\x04\x12'\n" +
+	"#CONDITIONAL_TYPE_TRAILING_STOP_LOSS\x10\x05*\xdb\x01\n" +
 	"\x11ConditionalStatus\x12\"\n" +
 	"\x1eCONDITIONAL_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCONDITIONAL_STATUS_PENDING\x10\x01\x12 \n" +

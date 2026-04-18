@@ -55,6 +55,11 @@ var (
 	ErrQuoteQtyShape       = errors.New("conditional: quote_qty only allowed for MARKET buy")
 	ErrBothQtyAndQuoteQty  = errors.New("conditional: provide either qty or quote_qty for market buy, not both")
 	ErrExpiryInPast        = errors.New("conditional: expires_at_unix_ms must be in the future")
+	ErrTrailingDeltaNeeded    = errors.New("conditional: trailing_delta_bps required for TRAILING_STOP_LOSS")
+	ErrTrailingDeltaForbidden = errors.New("conditional: trailing_delta_bps only allowed for TRAILING_STOP_LOSS")
+	ErrTrailingDeltaRange     = errors.New("conditional: trailing_delta_bps must be in (0, 10000]")
+	ErrActivationPriceShape   = errors.New("conditional: activation_price only allowed for TRAILING_STOP_LOSS")
+	ErrStopPriceForbidden     = errors.New("conditional: stop_price not used by TRAILING_STOP_LOSS (derived from watermark)")
 	ErrOCONeedsTwoLegs     = errors.New("conditional: OCO request needs at least two legs")
 	ErrOCOSymbolMismatch   = errors.New("conditional: OCO legs must share the same symbol")
 	ErrOCOSideMismatch     = errors.New("conditional: OCO legs must share the same side")
@@ -121,6 +126,14 @@ type Conditional struct {
 	// hits a terminal status, all still-PENDING siblings cascade to
 	// CANCELED (ADR-0044). Empty = standalone conditional.
 	OCOGroupID string
+	// Trailing-stop fields (ADR-0045). Populated only when Type is
+	// CONDITIONAL_TYPE_TRAILING_STOP_LOSS. The watermark is the current
+	// high (sell) or low (buy) observed since activation; effective stop
+	// is watermark ± (watermark × TrailingDeltaBps / 10000).
+	TrailingDeltaBps  int32
+	ActivationPrice   dec.Decimal
+	TrailingWatermark dec.Decimal
+	TrailingActive    bool
 }
 
 // -----------------------------------------------------------------------------
@@ -496,11 +509,72 @@ func (e *Engine) handleLocked(evt *eventpb.MarketDataEvent, partition int32, off
 		if c.Symbol != symbol {
 			continue
 		}
+		if c.Type == condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS {
+			if e.updateTrailingLocked(c, price) {
+				tofire = append(tofire, c.ID)
+			}
+			continue
+		}
 		if ShouldFire(c.Side, c.Type, price, c.StopPrice) {
 			tofire = append(tofire, c.ID)
 		}
 	}
 	return tofire
+}
+
+// updateTrailingLocked advances the watermark / activation for a trailing
+// conditional and reports whether the latest price has retraced far enough
+// to fire. Called once per PublicTrade under e.mu. Mutates the passed-in
+// Conditional so snapshot observers see the running state.
+func (e *Engine) updateTrailingLocked(c *Conditional, lastPrice dec.Decimal) bool {
+	// Gate on activation.
+	if !c.TrailingActive {
+		if dec.IsZero(c.ActivationPrice) {
+			c.TrailingActive = true
+		} else {
+			switch c.Side {
+			case eventpb.Side_SIDE_SELL:
+				if lastPrice.Cmp(c.ActivationPrice) >= 0 {
+					c.TrailingActive = true
+				}
+			case eventpb.Side_SIDE_BUY:
+				if lastPrice.Cmp(c.ActivationPrice) <= 0 {
+					c.TrailingActive = true
+				}
+			}
+		}
+		if !c.TrailingActive {
+			return false
+		}
+	}
+	// Advance watermark.
+	if dec.IsZero(c.TrailingWatermark) {
+		c.TrailingWatermark = lastPrice
+	} else {
+		switch c.Side {
+		case eventpb.Side_SIDE_SELL:
+			if lastPrice.Cmp(c.TrailingWatermark) > 0 {
+				c.TrailingWatermark = lastPrice
+			}
+		case eventpb.Side_SIDE_BUY:
+			if lastPrice.Cmp(c.TrailingWatermark) < 0 {
+				c.TrailingWatermark = lastPrice
+			}
+		}
+	}
+	// Compute retracement and fire if crossed.
+	bps := dec.FromInt(int64(c.TrailingDeltaBps))
+	const basis = 10_000
+	delta := c.TrailingWatermark.Mul(bps).Div(dec.FromInt(basis))
+	switch c.Side {
+	case eventpb.Side_SIDE_SELL:
+		stop := c.TrailingWatermark.Sub(delta)
+		return lastPrice.Cmp(stop) <= 0
+	case eventpb.Side_SIDE_BUY:
+		stop := c.TrailingWatermark.Add(delta)
+		return lastPrice.Cmp(stop) >= 0
+	}
+	return false
 }
 
 // tryFire issues the inner Counter PlaceOrder call for id and commits the
@@ -715,24 +789,58 @@ func buildConditional(req *condrpc.PlaceConditionalRequest) (*Conditional, error
 	case condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS,
 		condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS_LIMIT,
 		condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT,
-		condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT:
+		condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT,
+		condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS:
 	default:
 		return nil, ErrInvalidType
 	}
-	stop, err := dec.Parse(req.StopPrice)
-	if err != nil || !dec.IsPositive(stop) {
-		return nil, ErrInvalidStopPrice
+	isTrailing := req.Type == condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS
+	var stop dec.Decimal
+	if !isTrailing {
+		s, err := dec.Parse(req.StopPrice)
+		if err != nil || !dec.IsPositive(s) {
+			return nil, ErrInvalidStopPrice
+		}
+		stop = s
+	} else if req.StopPrice != "" && req.StopPrice != "0" {
+		return nil, ErrStopPriceForbidden
 	}
 	isLimit := req.Type == condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS_LIMIT ||
 		req.Type == condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT
 	var limit dec.Decimal
 	if isLimit {
-		limit, err = dec.Parse(req.LimitPrice)
-		if err != nil || !dec.IsPositive(limit) {
+		l, lerr := dec.Parse(req.LimitPrice)
+		if lerr != nil || !dec.IsPositive(l) {
 			return nil, ErrLimitPriceRequired
 		}
+		limit = l
 	} else if req.LimitPrice != "" {
 		return nil, ErrLimitPriceForbidden
+	}
+
+	// Trailing validation.
+	var activation dec.Decimal
+	if isTrailing {
+		if req.TrailingDeltaBps <= 0 {
+			return nil, ErrTrailingDeltaNeeded
+		}
+		if req.TrailingDeltaBps > 10_000 {
+			return nil, ErrTrailingDeltaRange
+		}
+		if req.ActivationPrice != "" {
+			ap, aerr := dec.Parse(req.ActivationPrice)
+			if aerr != nil || !dec.IsPositive(ap) {
+				return nil, fmt.Errorf("%w: %v", ErrActivationPriceShape, aerr)
+			}
+			activation = ap
+		}
+	} else {
+		if req.TrailingDeltaBps != 0 {
+			return nil, ErrTrailingDeltaForbidden
+		}
+		if req.ActivationPrice != "" {
+			return nil, ErrActivationPriceShape
+		}
 	}
 	qty, err := dec.Parse(req.Qty)
 	if err != nil {
@@ -746,17 +854,19 @@ func buildConditional(req *condrpc.PlaceConditionalRequest) (*Conditional, error
 		return nil, err
 	}
 	return &Conditional{
-		ClientCondID: req.ClientConditionalId,
-		UserID:       req.UserId,
-		Symbol:       req.Symbol,
-		Side:         req.Side,
-		Type:         req.Type,
-		StopPrice:    stop,
-		LimitPrice:   limit,
-		Qty:          qty,
-		QuoteQty:     quoteQty,
-		TIF:          req.Tif,
-		ExpiresAtMs:  req.ExpiresAtUnixMs,
+		ClientCondID:     req.ClientConditionalId,
+		UserID:           req.UserId,
+		Symbol:           req.Symbol,
+		Side:             req.Side,
+		Type:             req.Type,
+		StopPrice:        stop,
+		LimitPrice:       limit,
+		Qty:              qty,
+		QuoteQty:         quoteQty,
+		TIF:              req.Tif,
+		ExpiresAtMs:      req.ExpiresAtUnixMs,
+		TrailingDeltaBps: req.TrailingDeltaBps,
+		ActivationPrice:  activation,
 	}, nil
 }
 
@@ -782,7 +892,7 @@ func validateShape(side eventpb.Side, typ condrpc.ConditionalType, qty, quoteQty
 		}
 		return nil
 	}
-	// MARKET variant.
+	// MARKET variant (incl. TRAILING_STOP_LOSS which always fires MARKET).
 	if side == eventpb.Side_SIDE_BUY {
 		if !dec.IsPositive(quoteQty) {
 			return fmt.Errorf("%w: market buy requires quote_qty (ADR-0035)", ErrQtyRequired)
