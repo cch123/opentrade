@@ -11,12 +11,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 
 	"github.com/xargin/opentrade/bff/internal/auth"
 	"github.com/xargin/opentrade/bff/internal/client"
+	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/bff/internal/rest"
 	bffws "github.com/xargin/opentrade/bff/internal/ws"
 	"github.com/xargin/opentrade/pkg/logx"
@@ -41,6 +44,15 @@ type Config struct {
 	IPRateWindow      time.Duration
 	ReadHeaderTimeout time.Duration
 	ShutdownGrace     time.Duration
+
+	// Market-data cache for reconnect replay (ADR-0038). Empty brokers
+	// disables the cache and the /v1/depth + /v1/klines endpoints return
+	// 503.
+	MarketBrokers  []string
+	MarketTopic    string
+	MarketGroupID  string
+	KlineBuffer    int
+
 	Env               string
 	LogLevel          string
 }
@@ -83,13 +95,23 @@ func main() {
 		logger.Fatal("build sharded counter", zap.Error(err))
 	}
 
+	mdCache, mdConsumer, err := startMarketCache(rootCtx, cfg, logger)
+	if err != nil {
+		logger.Fatal("start market-data cache", zap.Error(err))
+	}
+	defer func() {
+		if mdConsumer != nil {
+			mdConsumer.Close()
+		}
+	}()
+
 	srv := rest.NewServer(rest.Config{
 		Addr:           cfg.HTTPAddr,
 		UserRateLimit:  cfg.UserRateLimit,
 		UserRateWindow: cfg.UserRateWindow,
 		IPRateLimit:    cfg.IPRateLimit,
 		IPRateWindow:   cfg.IPRateWindow,
-	}, counter, logger)
+	}, counter, mdCache, logger)
 
 	outer := http.NewServeMux()
 	if cfg.PushWSURL != "" {
@@ -111,6 +133,17 @@ func main() {
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 	}
 
+	var bgWG sync.WaitGroup
+	if mdConsumer != nil {
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			if err := mdConsumer.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("market-data cache run exited", zap.Error(err))
+			}
+		}()
+	}
+
 	go func() {
 		logger.Info("http listening", zap.String("addr", cfg.HTTPAddr))
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -119,6 +152,7 @@ func main() {
 	}()
 
 	<-rootCtx.Done()
+	bgWG.Wait()
 	logger.Info("shutdown initiated")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
@@ -127,6 +161,32 @@ func main() {
 		logger.Error("http shutdown", zap.Error(err))
 	}
 	logger.Info("bff shutdown complete")
+}
+
+// startMarketCache optionally wires a market-data consumer into a
+// marketcache.Cache. Returns (nil, nil, nil) when disabled (empty brokers);
+// a non-nil consumer must be Close()'d on shutdown, Run()'d in a goroutine.
+func startMarketCache(_ context.Context, cfg Config, logger *zap.Logger) (*marketcache.Cache, *marketcache.Consumer, error) {
+	if len(cfg.MarketBrokers) == 0 {
+		logger.Info("market-data cache disabled (empty --market-brokers)")
+		return nil, nil, nil
+	}
+	cache := marketcache.New(marketcache.Config{KlineBuffer: cfg.KlineBuffer})
+	cons, err := marketcache.NewConsumer(marketcache.ConsumerConfig{
+		Brokers:  cfg.MarketBrokers,
+		ClientID: "bff-md",
+		GroupID:  cfg.MarketGroupID,
+		Topic:    cfg.MarketTopic,
+	}, cache, logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marketcache consumer: %w", err)
+	}
+	logger.Info("market-data cache enabled",
+		zap.Strings("brokers", cfg.MarketBrokers),
+		zap.String("topic", cfg.MarketTopic),
+		zap.String("group", cfg.MarketGroupID),
+		zap.Int("kline_buffer", cfg.KlineBuffer))
+	return cache, cons, nil
 }
 
 // dialAllShards walks endpoints left-to-right and dials each as a separate
@@ -163,11 +223,14 @@ func parseFlags() Config {
 		IPRateWindow:       time.Second,
 		ReadHeaderTimeout:  5 * time.Second,
 		ShutdownGrace:      5 * time.Second,
+		MarketTopic:        "market-data",
+		KlineBuffer:        500,
 		Env:                "dev",
 		LogLevel:           "info",
 	}
 	var (
-		shardsCSV string
+		shardsCSV      string
+		marketBrokers  string
 		// legacy single-shard flag for dev one-liner convenience
 		legacyCounter string
 	)
@@ -183,6 +246,10 @@ func parseFlags() Config {
 	flag.IntVar(&cfg.IPRateLimit, "ip-rate", cfg.IPRateLimit, "requests per IP per window")
 	flag.DurationVar(&cfg.IPRateWindow, "ip-window", cfg.IPRateWindow, "IP rate window")
 	flag.DurationVar(&cfg.ShutdownGrace, "shutdown-grace", cfg.ShutdownGrace, "graceful shutdown timeout")
+	flag.StringVar(&marketBrokers, "market-brokers", "", "Kafka brokers for the market-data reconnect cache (empty disables /v1/depth + /v1/klines; ADR-0038)")
+	flag.StringVar(&cfg.MarketTopic, "market-topic", cfg.MarketTopic, "market-data topic name (default: market-data)")
+	flag.StringVar(&cfg.MarketGroupID, "market-group", "", "consumer group id for the market-data cache (default bff-md-{host})")
+	flag.IntVar(&cfg.KlineBuffer, "kline-buffer", cfg.KlineBuffer, "max KlineClosed entries kept per (symbol, interval)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
@@ -191,6 +258,14 @@ func parseFlags() Config {
 		cfg.CounterShards = splitCSV(shardsCSV)
 	} else if legacyCounter != "" {
 		cfg.CounterShards = []string{legacyCounter}
+	}
+	cfg.MarketBrokers = splitCSV(marketBrokers)
+	if len(cfg.MarketBrokers) > 0 && cfg.MarketGroupID == "" {
+		host, _ := os.Hostname()
+		if host == "" {
+			host = "local"
+		}
+		cfg.MarketGroupID = "bff-md-" + host
 	}
 	return cfg
 }

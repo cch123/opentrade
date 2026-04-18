@@ -12,6 +12,7 @@ import (
 
 	"github.com/xargin/opentrade/bff/internal/auth"
 	"github.com/xargin/opentrade/bff/internal/client"
+	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/bff/internal/ratelimit"
 )
 
@@ -29,6 +30,7 @@ type Config struct {
 type Server struct {
 	cfg     Config
 	counter client.Counter
+	market  *marketcache.Cache
 	logger  *zap.Logger
 
 	userLimiter *ratelimit.SlidingWindow
@@ -36,11 +38,13 @@ type Server struct {
 }
 
 // NewServer wires handlers. counter may be nil during tests that substitute
-// a fake via a dedicated helper.
-func NewServer(cfg Config, counter client.Counter, logger *zap.Logger) *Server {
+// a fake via a dedicated helper. market is optional: nil disables the
+// reconnect-replay endpoints with 503 (ADR-0038).
+func NewServer(cfg Config, counter client.Counter, market *marketcache.Cache, logger *zap.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		counter:     counter,
+		market:      market,
 		logger:      logger,
 		userLimiter: ratelimit.New(cfg.UserRateLimit, cfg.UserRateWindow),
 		ipLimiter:   ratelimit.New(cfg.IPRateLimit, cfg.IPRateWindow),
@@ -55,6 +59,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/order/{order_id}", s.handleQueryOrder)
 	mux.HandleFunc("POST /v1/transfer", s.handleTransfer)
 	mux.HandleFunc("GET /v1/account", s.handleQueryBalance)
+	mux.HandleFunc("GET /v1/depth/{symbol}", s.handleDepthSnapshot)
+	mux.HandleFunc("GET /v1/klines/{symbol}", s.handleKlinesRecent)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

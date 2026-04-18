@@ -52,7 +52,7 @@ func newServer(fc *fakeCounter) *Server {
 		UserRateLimit:  100, UserRateWindow: time.Second,
 		IPRateLimit:    100, IPRateWindow:   time.Second,
 		RequestTimeout: time.Second,
-	}, fc, zap.NewNop())
+	}, fc, nil, zap.NewNop())
 }
 
 // -----------------------------------------------------------------------------
@@ -303,7 +303,7 @@ func TestRateLimitPerUser(t *testing.T) {
 	srv := NewServer(Config{
 		UserRateLimit: 2, UserRateWindow: time.Second,
 		IPRateLimit: 100, IPRateWindow: time.Second,
-	}, fc, zap.NewNop())
+	}, fc, nil, zap.NewNop())
 	h := srv.Handler()
 
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"limit","tif":"gtc","price":"100","qty":"1"}`
