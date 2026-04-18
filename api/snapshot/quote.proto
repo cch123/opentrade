@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package opentrade.snapshot;
+
+option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
+
+// -----------------------------------------------------------------------------
+// Quote engine snapshot — protobuf form. See ADR-0049 (format) + ADR-0036
+// (original JSON snapshot for hot restart).
+//
+// Wire mirror of quote/internal/snapshot.Snapshot. Decimals stay on-wire as
+// strings so pkg/dec round-trip is identical to JSON form; depth price keys
+// are opaque canonical strings (priceKey), preserved verbatim.
+// -----------------------------------------------------------------------------
+
+message QuoteSnapshot {
+  uint32 version = 1;
+  int64  taken_at_ms = 2;
+  uint64 seq = 3;
+  map<int32, int64> offsets = 4;
+  map<string, QuoteSymbolState> symbols = 5;  // symbol → state
+}
+
+message QuoteSymbolState {
+  QuoteDepth depth = 1;
+  QuoteKline kline = 2;
+}
+
+message QuoteDepth {
+  string symbol = 1;
+  map<string, string> bids = 2;    // priceKey → qty
+  map<string, string> asks = 3;    // priceKey → qty
+  map<string, string> prices = 4;  // priceKey → canonical price
+  repeated QuoteOrderRef orders = 5;
+}
+
+message QuoteOrderRef {
+  uint64 order_id = 1;
+  uint32 side = 2;                 // 1=bid, 2=ask (internal encoding)
+  string price_key = 3;
+  string remaining = 4;
+}
+
+message QuoteKline {
+  string symbol = 1;
+  map<int32, QuoteBar> bars = 2;   // KlineInterval enum → open bar
+}
+
+message QuoteBar {
+  int64  open_time_ms = 1;
+  int64  close_time_ms = 2;
+  string open = 3;
+  string high = 4;
+  string low = 5;
+  string close = 6;
+  string volume = 7;
+  string quote_volume = 8;
+  uint64 count = 9;
+}

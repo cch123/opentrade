@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package opentrade.snapshot;
+
+option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
+
+// -----------------------------------------------------------------------------
+// Match per-symbol snapshot — protobuf form. See ADR-0049.
+//
+// Wire mirror of match/internal/snapshot.SymbolSnapshot. Decimal fields
+// stay on-wire as decimal strings; enums (Side / OrderType / TIF) ride
+// uint32 containers over their internal uint8.
+// -----------------------------------------------------------------------------
+
+message MatchSymbolSnapshot {
+  uint32 version = 1;
+  string symbol = 2;
+  uint64 seq_id = 3;
+  int64  timestamp_ms = 4;
+  repeated MatchKafkaOffset offsets = 5;
+  repeated MatchOrder orders = 6;
+}
+
+message MatchKafkaOffset {
+  string topic = 1;
+  int32  partition = 2;
+  int64  offset = 3;
+}
+
+message MatchOrder {
+  uint64 id = 1;
+  string user_id = 2;
+  string client_id = 3;
+  uint32 side = 4;
+  uint32 type = 5;
+  uint32 tif = 6;
+  string price = 7;
+  string qty = 8;
+  string remaining = 9;
+  int64  created_at = 10;
+}

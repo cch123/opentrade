@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package opentrade.snapshot;
+
+option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
+
+// -----------------------------------------------------------------------------
+// Conditional service snapshot — protobuf form. See ADR-0049.
+//
+// Wire mirror of conditional/internal/snapshot.Snapshot. Decimals go on-wire
+// as strings (empty means "zero", matching decOrEmpty in the Go side so the
+// on-disk shape is identical across formats).
+// -----------------------------------------------------------------------------
+
+message ConditionalSnapshot {
+  uint32 version = 1;
+  int64  taken_at_ms = 2;
+  map<int32, int64> offsets = 3;
+  repeated ConditionalRecord pending = 4;
+  repeated ConditionalRecord terminals = 5;
+  // OCOByClient: client-supplied idempotency key → engine-assigned group id
+  // (ADR-0044).
+  map<string, string> oco_by_client = 6;
+}
+
+message ConditionalRecord {
+  uint64 id = 1;
+  string client_cond_id = 2;
+  string user_id = 3;
+  string symbol = 4;
+  uint32 side = 5;
+  uint32 type = 6;
+  string stop_price = 7;
+  string limit_price = 8;
+  string qty = 9;
+  string quote_qty = 10;
+  uint32 tif = 11;
+  uint32 status = 12;
+  int64  created_at_ms = 13;
+  int64  triggered_at_ms = 14;
+  uint64 placed_order_id = 15;
+  string reject_reason = 16;
+  int64  expires_at_ms = 17;                 // ADR-0043
+  string oco_group_id = 18;                  // ADR-0044
+  // Trailing-stop state (ADR-0045).
+  int32  trailing_delta_bps = 19;
+  string activation_price = 20;
+  string trailing_watermark = 21;
+  bool   trailing_active = 22;
+}

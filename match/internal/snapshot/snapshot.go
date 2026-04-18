@@ -1,20 +1,67 @@
 // Package snapshot serializes a SymbolWorker's orderbook state to local disk
 // and restores it on startup.
 //
-// MVP-1 scope: single-file JSON per symbol, atomic write (tmp + rename).
-// Future: protobuf format, S3/EFS upload, rotation (ADR-0006).
+// ADR-0049 made the on-disk format selectable: default protobuf (.pb) with
+// JSON (.json) as a debug fallback selected via --snapshot-format=json.
+// Load probes .pb first, then .json, so in-place upgrades just work.
 package snapshot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"google.golang.org/protobuf/proto"
+
+	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	"github.com/xargin/opentrade/match/internal/orderbook"
 	"github.com/xargin/opentrade/match/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )
+
+// Format names the on-disk encoding (ADR-0049).
+type Format int
+
+const (
+	FormatProto Format = iota
+	FormatJSON
+)
+
+func (f Format) String() string {
+	switch f {
+	case FormatProto:
+		return "proto"
+	case FormatJSON:
+		return "json"
+	default:
+		return "unknown"
+	}
+}
+
+func (f Format) ext() string {
+	switch f {
+	case FormatProto:
+		return ".pb"
+	case FormatJSON:
+		return ".json"
+	default:
+		return ""
+	}
+}
+
+// ParseFormat maps a CLI token to Format.
+func ParseFormat(s string) (Format, error) {
+	switch s {
+	case "proto", "pb", "protobuf":
+		return FormatProto, nil
+	case "json":
+		return FormatJSON, nil
+	default:
+		return 0, fmt.Errorf("snapshot: unknown format %q (want proto|json)", s)
+	}
+}
 
 // Version marks the snapshot format version. Bump when the schema changes.
 const Version = 1
@@ -148,51 +195,180 @@ func offsetsSliceToMap(s []KafkaOffset) map[int32]int64 {
 // Disk I/O
 // -----------------------------------------------------------------------------
 
-// Save writes snap to path atomically (tmp + rename).
-func Save(path string, snap *SymbolSnapshot) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// Save writes snap to disk atomically (ADR-0049). basePath is the filename
+// without extension; Save appends `.pb` / `.json` per format.
+func Save(basePath string, snap *SymbolSnapshot, format Format) error {
+	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
 		return fmt.Errorf("snapshot.Save: mkdir: %w", err)
 	}
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	data, err := encode(snap, format)
 	if err != nil {
-		return fmt.Errorf("snapshot.Save: create tmp: %w", err)
+		return fmt.Errorf("snapshot.Save: encode %s: %w", format, err)
 	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(snap); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("snapshot.Save: encode: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("snapshot.Save: sync: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("snapshot.Save: close: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("snapshot.Save: rename: %w", err)
+	path := basePath + format.ext()
+	tmp := path + ".tmp"
+	if err := writeAtomic(tmp, path, data); err != nil {
+		return fmt.Errorf("snapshot.Save: %w", err)
 	}
 	return nil
 }
 
-// Load reads a snapshot from path.
-func Load(path string) (*SymbolSnapshot, error) {
-	f, err := os.Open(path)
+// Load reads a snapshot from disk. Probes .pb first, then .json; returns
+// os.ErrNotExist only when neither exists.
+func Load(basePath string) (*SymbolSnapshot, error) {
+	for _, format := range []Format{FormatProto, FormatJSON} {
+		path := basePath + format.ext()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("snapshot.Load: read %s: %w", path, err)
+		}
+		snap, err := decode(data, format)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot.Load: decode %s: %w", path, err)
+		}
+		return snap, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func writeAtomic(tmp, path string, data []byte) error {
+	f, err := os.Create(tmp)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("create tmp: %w", err)
 	}
-	defer f.Close()
-	var snap SymbolSnapshot
-	if err := json.NewDecoder(f).Decode(&snap); err != nil {
-		return nil, fmt.Errorf("snapshot.Load: decode: %w", err)
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write: %w", err)
 	}
-	return &snap, nil
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
+}
+
+func encode(snap *SymbolSnapshot, format Format) ([]byte, error) {
+	switch format {
+	case FormatProto:
+		return proto.Marshal(toProto(snap))
+	case FormatJSON:
+		return json.MarshalIndent(snap, "", "  ")
+	default:
+		return nil, fmt.Errorf("snapshot: unknown format %d", format)
+	}
+}
+
+func decode(data []byte, format Format) (*SymbolSnapshot, error) {
+	switch format {
+	case FormatProto:
+		var pb snapshotpb.MatchSymbolSnapshot
+		if err := proto.Unmarshal(data, &pb); err != nil {
+			return nil, err
+		}
+		return fromProto(&pb), nil
+	case FormatJSON:
+		var snap SymbolSnapshot
+		if err := json.Unmarshal(data, &snap); err != nil {
+			return nil, err
+		}
+		return &snap, nil
+	default:
+		return nil, fmt.Errorf("snapshot: unknown format %d", format)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Proto <-> SymbolSnapshot mapping (ADR-0049)
+// -----------------------------------------------------------------------------
+
+func toProto(s *SymbolSnapshot) *snapshotpb.MatchSymbolSnapshot {
+	if s == nil {
+		return nil
+	}
+	pb := &snapshotpb.MatchSymbolSnapshot{
+		Version:     uint32(s.Version),
+		Symbol:      s.Symbol,
+		SeqId:       s.SeqID,
+		TimestampMs: s.TimestampMS,
+	}
+	if n := len(s.Offsets); n > 0 {
+		pb.Offsets = make([]*snapshotpb.MatchKafkaOffset, 0, n)
+		for _, o := range s.Offsets {
+			pb.Offsets = append(pb.Offsets, &snapshotpb.MatchKafkaOffset{
+				Topic: o.Topic, Partition: o.Partition, Offset: o.Offset,
+			})
+		}
+	}
+	if n := len(s.Orders); n > 0 {
+		pb.Orders = make([]*snapshotpb.MatchOrder, 0, n)
+		for i := range s.Orders {
+			o := &s.Orders[i]
+			pb.Orders = append(pb.Orders, &snapshotpb.MatchOrder{
+				Id:        o.ID,
+				UserId:    o.UserID,
+				ClientId:  o.ClientID,
+				Side:      uint32(o.Side),
+				Type:      uint32(o.Type),
+				Tif:       uint32(o.TIF),
+				Price:     o.Price,
+				Qty:       o.Qty,
+				Remaining: o.Remaining,
+				CreatedAt: o.CreatedAt,
+			})
+		}
+	}
+	return pb
+}
+
+func fromProto(pb *snapshotpb.MatchSymbolSnapshot) *SymbolSnapshot {
+	if pb == nil {
+		return nil
+	}
+	s := &SymbolSnapshot{
+		Version:     int(pb.Version),
+		Symbol:      pb.Symbol,
+		SeqID:       pb.SeqId,
+		TimestampMS: pb.TimestampMs,
+	}
+	if n := len(pb.Offsets); n > 0 {
+		s.Offsets = make([]KafkaOffset, 0, n)
+		for _, o := range pb.Offsets {
+			s.Offsets = append(s.Offsets, KafkaOffset{
+				Topic: o.Topic, Partition: o.Partition, Offset: o.Offset,
+			})
+		}
+	}
+	if n := len(pb.Orders); n > 0 {
+		s.Orders = make([]OrderSnapshot, 0, n)
+		for _, o := range pb.Orders {
+			s.Orders = append(s.Orders, OrderSnapshot{
+				ID:        o.Id,
+				UserID:    o.UserId,
+				ClientID:  o.ClientId,
+				Side:      uint8(o.Side),
+				Type:      uint8(o.Type),
+				TIF:       uint8(o.Tif),
+				Price:     o.Price,
+				Qty:       o.Qty,
+				Remaining: o.Remaining,
+				CreatedAt: o.CreatedAt,
+			})
+		}
+	}
+	return s
 }
 
 // -----------------------------------------------------------------------------

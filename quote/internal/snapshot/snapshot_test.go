@@ -7,9 +7,17 @@ import (
 	"testing"
 )
 
-func TestSaveLoad_RoundTrip(t *testing.T) {
+func TestSaveLoad_RoundTrip_Proto(t *testing.T) {
+	testSaveLoadRoundTrip(t, FormatProto)
+}
+
+func TestSaveLoad_RoundTrip_JSON(t *testing.T) {
+	testSaveLoadRoundTrip(t, FormatJSON)
+}
+
+func testSaveLoadRoundTrip(t *testing.T, format Format) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
+	base := filepath.Join(dir, "state")
 	src := &Snapshot{
 		Version:   Version,
 		TakenAtMs: 1700,
@@ -36,10 +44,10 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 			},
 		},
 	}
-	if err := Save(path, src); err != nil {
+	if err := Save(base, src, format); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(path)
+	loaded, err := Load(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +57,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 }
 
 func TestLoad_MissingFileReturnsNil(t *testing.T) {
-	snap, err := Load(filepath.Join(t.TempDir(), "nope.json"))
+	snap, err := Load(filepath.Join(t.TempDir(), "nope"))
 	if err != nil {
 		t.Fatalf("err = %v; missing file should be nil, nil", err)
 	}
@@ -59,24 +67,43 @@ func TestLoad_MissingFileReturnsNil(t *testing.T) {
 }
 
 func TestLoad_VersionMismatch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	if err := Save(path, &Snapshot{Version: Version + 1}); err != nil {
+	base := filepath.Join(t.TempDir(), "state")
+	if err := Save(base, &Snapshot{Version: Version + 1}, FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err == nil {
+	if _, err := Load(base); err == nil {
 		t.Fatal("expected version mismatch error")
 	}
 }
 
 func TestSave_AtomicRename(t *testing.T) {
 	// A tmp file must not linger after a successful write.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	if err := Save(path, &Snapshot{Version: Version, Offsets: map[int32]int64{}}); err != nil {
+	base := filepath.Join(t.TempDir(), "state")
+	if err := Save(base, &Snapshot{Version: Version, Offsets: map[int32]int64{}}, FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+	if _, err := os.Stat(base + ".pb.tmp"); !os.IsNotExist(err) {
 		t.Errorf("tmp file lingered: err=%v", err)
+	}
+}
+
+// TestLoad_JSONOnlyMigration verifies Load still reads legacy .json files
+// when only that format is present (ADR-0049 probe order .pb → .json).
+func TestLoad_JSONOnlyMigration(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "state")
+	src := &Snapshot{
+		Version:   Version,
+		TakenAtMs: 7,
+		Offsets:   map[int32]int64{},
+	}
+	if err := Save(base, src, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := Load(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap == nil || snap.TakenAtMs != 7 {
+		t.Fatalf("json-only load: got %+v", snap)
 	}
 }

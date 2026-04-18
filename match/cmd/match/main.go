@@ -56,6 +56,7 @@ type Config struct {
 	ConsumerGroup    string
 	SnapshotDir      string
 	SnapshotInterval time.Duration
+	SnapshotFormat   snapshot.Format // ADR-0049
 
 	EtcdEndpoints   []string
 	EtcdPrefix      string
@@ -420,6 +421,7 @@ func parseFlags() Config {
 		TradeTopic:       "trade-event",
 		SnapshotDir:      "./data/match",
 		SnapshotInterval: 60 * time.Second,
+		SnapshotFormat:   snapshot.FormatProto, // ADR-0049
 		EtcdPrefix:       etcdcfg.DefaultPrefix,
 		EtcdDialTimeout:  5 * time.Second,
 		HAMode:           "disabled",
@@ -445,6 +447,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default match-{instance-id})")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "how often to snapshot each symbol")
+	var snapshotFormatStr string
+	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "snapshot on-disk encoding: proto (default) | json (debug). ADR-0049. Env OPENTRADE_SNAPSHOT_FORMAT overrides.")
 	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0031)")
 	flag.StringVar(&cfg.ElectionPath, "election-path", "", "etcd election key (default /cex/match/shard-<id>/leader)")
 	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "etcd session TTL seconds")
@@ -456,6 +460,18 @@ func parseFlags() Config {
 	cfg.Brokers = splitCSV(brokersStr)
 	cfg.EtcdEndpoints = splitCSV(etcdStr)
 	cfg.Symbols = splitCSV(symbolsStr)
+	// --snapshot-format + OPENTRADE_SNAPSHOT_FORMAT env override (ADR-0049).
+	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
+		snapshotFormatStr = envFmt
+	}
+	if snapshotFormatStr != "" {
+		f, err := snapshot.ParseFormat(snapshotFormatStr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		cfg.SnapshotFormat = f
+	}
 	if cfg.ShardID == "" {
 		cfg.ShardID = cfg.InstanceID
 	}
@@ -505,8 +521,11 @@ func splitCSV(s string) []string {
 // Snapshot helpers
 // ---------------------------------------------------------------------------
 
+// snapshotPath returns the base path WITHOUT extension. snapshot.Save
+// appends the extension from cfg.SnapshotFormat; snapshot.Load probes both
+// .pb and .json (ADR-0049).
 func snapshotPath(cfg Config, symbol string) string {
-	return filepath.Join(cfg.SnapshotDir, fmt.Sprintf("%s.json", sanitize(symbol)))
+	return filepath.Join(cfg.SnapshotDir, sanitize(symbol))
 }
 
 func sanitize(s string) string {
@@ -555,7 +574,7 @@ func writeSnapshot(ctx context.Context, w *sequencer.SymbolWorker, producer *jou
 		return fmt.Errorf("flush before snapshot: %w", err)
 	}
 	snap := snapshot.Capture(w, ts)
-	return snapshot.Save(snapshotPath(cfg, w.Symbol()), snap)
+	return snapshot.Save(snapshotPath(cfg, w.Symbol()), snap, cfg.SnapshotFormat)
 }
 
 func periodicSnapshot(ctx context.Context, reg *registry.Registry, producer *journal.TradeProducer, cfg Config, logger *zap.Logger) {

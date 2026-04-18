@@ -32,7 +32,15 @@ func newEngine() *engine.Engine {
 	}, &counterSeq{}, nopPlacer{}, nil, zap.NewNop())
 }
 
-func TestSaveLoad_RoundTrip(t *testing.T) {
+func TestSaveLoad_RoundTrip_Proto(t *testing.T) {
+	testSaveLoadRoundTrip(t, FormatProto)
+}
+
+func TestSaveLoad_RoundTrip_JSON(t *testing.T) {
+	testSaveLoadRoundTrip(t, FormatJSON)
+}
+
+func testSaveLoadRoundTrip(t *testing.T, format Format) {
 	src := newEngine()
 	id1, _, _, _ := src.Place(context.Background(), &condrpc.PlaceConditionalRequest{
 		UserId:    "u1",
@@ -57,11 +65,11 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	captured.TakenAtMs = 42
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "cond.json")
-	if err := Save(path, captured); err != nil {
+	base := filepath.Join(dir, "cond")
+	if err := Save(base, captured, format); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(path)
+	loaded, err := Load(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +96,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 }
 
 func TestLoad_MissingFileReturnsNil(t *testing.T) {
-	snap, err := Load(filepath.Join(t.TempDir(), "nope.json"))
+	snap, err := Load(filepath.Join(t.TempDir(), "nope"))
 	if err != nil {
 		t.Fatalf("missing file should yield nil,nil: %v", err)
 	}
@@ -98,23 +106,37 @@ func TestLoad_MissingFileReturnsNil(t *testing.T) {
 }
 
 func TestLoad_VersionMismatch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cond.json")
-	if err := Save(path, &Snapshot{Version: Version + 1}); err != nil {
+	base := filepath.Join(t.TempDir(), "cond")
+	if err := Save(base, &Snapshot{Version: Version + 1}, FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err == nil {
+	if _, err := Load(base); err == nil {
 		t.Fatal("expected version mismatch error")
 	}
 }
 
 func TestSave_AtomicRename(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cond.json")
-	if err := Save(path, &Snapshot{Version: Version}); err != nil {
+	base := filepath.Join(t.TempDir(), "cond")
+	if err := Save(base, &Snapshot{Version: Version}, FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+	if _, err := os.Stat(base + ".pb.tmp"); !os.IsNotExist(err) {
 		t.Errorf("tmp lingered: %v", err)
+	}
+}
+
+// TestLoad_JSONOnlyMigration covers the upgrade window: only .json on
+// disk, Load still returns it (ADR-0049 probe order .pb → .json).
+func TestLoad_JSONOnlyMigration(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "cond")
+	if err := Save(base, &Snapshot{Version: Version, TakenAtMs: 7}, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := Load(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap == nil || snap.TakenAtMs != 7 {
+		t.Fatalf("json-only load: got %+v", snap)
 	}
 }

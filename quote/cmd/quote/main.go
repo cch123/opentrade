@@ -43,6 +43,7 @@ type Config struct {
 	// the wire-level snapshots Push consumers rely on.
 	StateSnapshotDir      string
 	StateSnapshotInterval time.Duration
+	StateSnapshotFormat   snapshot.Format // ADR-0049
 
 	Env      string
 	LogLevel string
@@ -169,7 +170,8 @@ func runSnapshotTicker(ctx context.Context, interval time.Duration, eng *engine.
 
 // stateSnapshotPath is the absolute path of the engine-state file.
 func stateSnapshotPath(cfg Config) string {
-	return filepath.Join(cfg.StateSnapshotDir, cfg.InstanceID+".json")
+	// ADR-0049: basePath without extension; Save/Load append the right ext.
+	return filepath.Join(cfg.StateSnapshotDir, cfg.InstanceID)
 }
 
 // tryRestore loads the engine-state snapshot (if any) and returns the
@@ -208,7 +210,7 @@ func writeStateSnapshot(cfg Config, eng *engine.Engine) error {
 	}
 	snap := eng.Capture()
 	snap.TakenAtMs = time.Now().UnixMilli()
-	return snapshot.Save(stateSnapshotPath(cfg), snap)
+	return snapshot.Save(stateSnapshotPath(cfg), snap, cfg.StateSnapshotFormat)
 }
 
 // runStateSnapshotTicker persists engine state on a cadence. Interval <=0
@@ -239,10 +241,11 @@ func parseFlags() Config {
 		SnapshotInterval:      5 * time.Second,
 		StateSnapshotDir:      "./data/quote",
 		StateSnapshotInterval: 30 * time.Second,
+		StateSnapshotFormat:   snapshot.FormatProto, // ADR-0049
 		Env:                   "dev",
 		LogLevel:              "info",
 	}
-	var brokersStr string
+	var brokersStr, snapshotFormatStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (client id / consumer group suffix)")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
@@ -251,6 +254,7 @@ func parseFlags() Config {
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "how often to emit DepthSnapshot on market-data; 0 disables")
 	flag.StringVar(&cfg.StateSnapshotDir, "state-snapshot-dir", cfg.StateSnapshotDir, "directory for engine-state snapshots (empty disables persistence)")
 	flag.DurationVar(&cfg.StateSnapshotInterval, "state-snapshot-interval", cfg.StateSnapshotInterval, "how often to persist engine state to disk; 0 disables (only final snapshot on shutdown)")
+	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.StateSnapshotFormat.String(), "snapshot on-disk encoding: proto (default) | json (debug). ADR-0049. Env OPENTRADE_SNAPSHOT_FORMAT overrides.")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
@@ -258,6 +262,18 @@ func parseFlags() Config {
 	cfg.Brokers = splitCSV(brokersStr)
 	if cfg.ConsumerGroup == "" {
 		cfg.ConsumerGroup = "quote-" + cfg.InstanceID
+	}
+	// --snapshot-format + OPENTRADE_SNAPSHOT_FORMAT env override (ADR-0049).
+	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
+		snapshotFormatStr = envFmt
+	}
+	if snapshotFormatStr != "" {
+		f, err := snapshot.ParseFormat(snapshotFormatStr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		cfg.StateSnapshotFormat = f
 	}
 	return cfg
 }

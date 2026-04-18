@@ -31,9 +31,16 @@ func newLimitOrder(id uint64, user string, side orderbook.Side, price, qty strin
 	}
 }
 
-func TestSaveLoadRoundTrip(t *testing.T) {
-	tmp := filepath.Join(t.TempDir(), "snap.json")
+func TestSaveLoadRoundTrip_Proto(t *testing.T) {
+	testSaveLoadRoundTrip(t, FormatProto)
+}
 
+func TestSaveLoadRoundTrip_JSON(t *testing.T) {
+	testSaveLoadRoundTrip(t, FormatJSON)
+}
+
+func testSaveLoadRoundTrip(t *testing.T, format Format) {
+	base := filepath.Join(t.TempDir(), "snap")
 	snap := &SymbolSnapshot{
 		Version:     Version,
 		Symbol:      "BTC-USDT",
@@ -44,10 +51,10 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 			{ID: 1, UserID: "u1", Side: 1, Type: 1, TIF: 1, Price: "100", Qty: "1", Remaining: "1", CreatedAt: 1},
 		},
 	}
-	if err := Save(tmp, snap); err != nil {
+	if err := Save(base, snap, format); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	got, err := Load(tmp)
+	got, err := Load(base)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -56,6 +63,23 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.Orders[0].Price != "100" {
 		t.Fatalf("order price = %s, want 100", got.Orders[0].Price)
+	}
+}
+
+// TestLoad_JSONOnlyMigration verifies Load still reads legacy .json files
+// when only that format is present (ADR-0049 upgrade window).
+func TestLoad_JSONOnlyMigration(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "snap")
+	snap := &SymbolSnapshot{Version: Version, Symbol: "BTC-USDT", SeqID: 7}
+	if err := Save(base, snap, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SeqID != 7 {
+		t.Fatalf("json-only load: got seq=%d", got.SeqID)
 	}
 }
 
@@ -96,12 +120,12 @@ func TestCaptureAndRestoreWorker(t *testing.T) {
 	// Capture state.
 	snap := Capture(w, 0)
 
-	// Persist and reload to file to exercise serialization.
-	tmp := filepath.Join(t.TempDir(), "btc.json")
-	if err := Save(tmp, snap); err != nil {
+	// Persist and reload to file to exercise serialization (default proto).
+	base := filepath.Join(t.TempDir(), "btc")
+	if err := Save(base, snap, FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(tmp)
+	loaded, err := Load(base)
 	if err != nil {
 		t.Fatal(err)
 	}

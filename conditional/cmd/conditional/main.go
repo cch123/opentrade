@@ -53,6 +53,7 @@ type Config struct {
 	CounterShards        []string
 	SnapshotDir          string
 	SnapshotInterval     time.Duration
+	SnapshotFormat       snapshot.Format // ADR-0049
 	TerminalHistoryLimit int
 	// ExpirySweepInterval tunes how often the primary scans pending
 	// conditionals for expired ones (ADR-0043). 0 disables.
@@ -312,8 +313,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 // Snapshot helpers
 // ---------------------------------------------------------------------------
 
+// snapshotPath returns the base path WITHOUT extension (ADR-0049).
+// snapshot.Save appends `.pb` / `.json` per cfg.SnapshotFormat; Load
+// probes both.
 func snapshotPath(cfg Config) string {
-	return filepath.Join(cfg.SnapshotDir, cfg.InstanceID+".json")
+	return filepath.Join(cfg.SnapshotDir, cfg.InstanceID)
 }
 
 func tryRestoreSnapshot(cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
@@ -348,7 +352,7 @@ func writeSnapshot(cfg Config, eng *engine.Engine) error {
 	}
 	snap := snapshot.Capture(eng)
 	snap.TakenAtMs = time.Now().UnixMilli()
-	return snapshot.Save(snapshotPath(cfg), snap)
+	return snapshot.Save(snapshotPath(cfg), snap, cfg.SnapshotFormat)
 }
 
 // runExpirySweeper sweeps PENDING conditionals whose ExpiresAtMs has
@@ -423,6 +427,7 @@ func parseFlags() Config {
 		MarketTopic:          "market-data",
 		SnapshotDir:          "./data/conditional",
 		SnapshotInterval:     30 * time.Second,
+		SnapshotFormat:       snapshot.FormatProto, // ADR-0049
 		TerminalHistoryLimit: 1000,
 		ExpirySweepInterval:  5 * time.Second,
 		IDGenShard:           900, // deliberately out of counter's 0..99 range
@@ -432,7 +437,7 @@ func parseFlags() Config {
 		Env:                  "dev",
 		LogLevel:             "info",
 	}
-	var brokersStr, shardsStr, etcdStr string
+	var brokersStr, shardsStr, etcdStr, snapshotFormatStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (grpc client id / default group suffix)")
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
@@ -443,6 +448,7 @@ func parseFlags() Config {
 		"comma-separated Counter gRPC endpoints, in shard-id order (shard 0 first)")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "directory for engine-state snapshots (empty disables)")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "snapshot cadence; 0 disables the ticker (still writes on shutdown)")
+	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "snapshot on-disk encoding: proto (default) | json (debug). ADR-0049. Env OPENTRADE_SNAPSHOT_FORMAT overrides.")
 	flag.IntVar(&cfg.TerminalHistoryLimit, "terminal-history", cfg.TerminalHistoryLimit, "max retained terminal records per engine for ListConditionals(include_inactive)")
 	flag.DurationVar(&cfg.ExpirySweepInterval, "expiry-sweep", cfg.ExpirySweepInterval, "cadence for sweeping expired PENDING conditionals (ADR-0043); 0 disables")
 	flag.IntVar(&cfg.IDGenShard, "idgen-shard", cfg.IDGenShard, "snowflake shard id for conditional ids (avoid collisions with counter)")
@@ -458,6 +464,18 @@ func parseFlags() Config {
 	cfg.Brokers = splitCSV(brokersStr)
 	cfg.CounterShards = splitCSV(shardsStr)
 	cfg.EtcdEndpoints = splitCSV(etcdStr)
+	// --snapshot-format + OPENTRADE_SNAPSHOT_FORMAT env override (ADR-0049).
+	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
+		snapshotFormatStr = envFmt
+	}
+	if snapshotFormatStr != "" {
+		f, err := snapshot.ParseFormat(snapshotFormatStr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		cfg.SnapshotFormat = f
+	}
 	if cfg.ConsumerGroup == "" {
 		cfg.ConsumerGroup = "conditional-" + cfg.InstanceID
 	}
