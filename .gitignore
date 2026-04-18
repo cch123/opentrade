@@ -43,3 +43,5 @@ snapshots/
 
 # Claude artifacts
 .claude/
+tools/*/tui
+tools/*/web
