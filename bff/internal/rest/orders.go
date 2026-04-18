@@ -230,9 +230,39 @@ func (s *Server) handleQueryOrder(w http.ResponseWriter, r *http.Request) {
 		"filled_qty":      resp.FilledQty,
 		"frozen_amount":   resp.FrozenAmt,
 		"status":          externalStatusFromInternal(resp.Status),
+		// internal_status surfaces the 8-state machine (ADR-0020) so callers
+		// that need to distinguish e.g. PENDING_CANCEL from NEW — which the
+		// coarse external status folds together — can act on the real state.
+		"internal_status": internalStatusString(resp.Status),
 		"created_at":      resp.CreatedAtUnixMs,
 		"updated_at":      resp.UpdatedAtUnixMs,
 	})
+}
+
+// internalStatusString exposes the raw InternalOrderStatus as a snake-case
+// string. Used by the dev UI to filter orders whose cancel is in flight
+// (PENDING_CANCEL) from the open list without conflating them with live
+// cancelable NEW orders.
+func internalStatusString(s eventpb.InternalOrderStatus) string {
+	switch s {
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW:
+		return "pending_new"
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW:
+		return "new"
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED:
+		return "partially_filled"
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED:
+		return "filled"
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL:
+		return "pending_cancel"
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED:
+		return "canceled"
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_REJECTED:
+		return "rejected"
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_EXPIRED:
+		return "expired"
+	}
+	return "unspecified"
 }
 
 // ---------------------------------------------------------------------------
