@@ -466,8 +466,17 @@ function renderOrders() {
     tb.innerHTML = `<tr><td colspan="10" class="text-slate-500 text-xs py-2">(no open orders)</td></tr>`;
     return;
   }
-  tb.innerHTML = visible.map((o) => `
-    <tr class="border-t border-slate-800/50">
+  tb.innerHTML = visible.map((o) => {
+    const pending = o.internal_status === 'pending_cancel';
+    const rowCls = pending ? 'border-t border-slate-800/50 opacity-60' : 'border-t border-slate-800/50';
+    const statusCell = pending
+      ? `<span class="text-amber-400">pending_cancel</span>`
+      : o.status;
+    const actionCell = pending
+      ? `<span class="text-slate-500 text-xs italic">canceling…</span>`
+      : `<button data-cancel="${o.order_id}" class="text-rose-400 hover:underline text-xs">cancel</button>`;
+    return `
+    <tr class="${rowCls}">
       <td class="py-1">${o.order_id}</td>
       <td>${o.symbol}</td>
       <td class="${o.side === 'buy' ? 'text-emerald-400' : 'text-rose-400'}">${o.side}</td>
@@ -476,10 +485,10 @@ function renderOrders() {
       <td class="text-right">${fmtNum(o.price)}</td>
       <td class="text-right">${fmtNum(o.qty)}</td>
       <td class="text-right">${fmtNum(o.filled_qty)}</td>
-      <td>${o.status}</td>
-      <td><button data-cancel="${o.order_id}" class="text-rose-400 hover:underline text-xs">cancel</button></td>
-    </tr>
-  `).join('');
+      <td>${statusCell}</td>
+      <td>${actionCell}</td>
+    </tr>`;
+  }).join('');
 
   tb.querySelectorAll('button[data-cancel]').forEach((btn) => {
     btn.addEventListener('click', () => cancelOrder(btn.dataset.cancel));
@@ -677,12 +686,17 @@ async function pollAccount() {
     const verified = await Promise.all(raw.map(async (o) => {
       try {
         const t = await api('GET', `/v1/order/${o.order_id}`);
-        // Hide PENDING_CANCEL: cancel is already in flight at counter; match
-        // may not complete the transition (e.g. state divergence) but there's
-        // nothing actionable the user can do, so keep it out of the open list.
-        if ((t.status === 'new' || t.status === 'partially_filled') &&
-            t.internal_status !== 'pending_cancel') {
-          return { ...o, status: t.status, filled_qty: t.filled_qty };
+        // Surface counter's view (status + filled + internal_status). Keep
+        // PENDING_CANCEL rows visible so the user can see resources still
+        // locked by an in-flight cancel — the renderer dims them and
+        // swaps the cancel button for a "canceling" placeholder.
+        if (t.status === 'new' || t.status === 'partially_filled') {
+          return {
+            ...o,
+            status: t.status,
+            filled_qty: t.filled_qty,
+            internal_status: t.internal_status,
+          };
         }
         return null;
       } catch {
