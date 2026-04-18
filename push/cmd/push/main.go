@@ -1,46 +1,202 @@
 // Command push runs the OpenTrade WebSocket push service.
 //
-// MVP-0: scaffold only. MVP-5 adds WS gateway + counter-journal / market-data
-// consumers.
+// MVP-7 is a single-instance gateway that:
+//   - accepts authenticated WS connections (X-User-Id header, matching BFF),
+//   - subscribes connections to public streams and the implicit "user" stream,
+//   - consumes market-data for public fan-out,
+//   - consumes counter-journal for per-user private delivery.
+//
+// Multi-instance sticky routing (ADR-0022) and client snapshot-on-reconnect
+// are deferred to a later MVP; see ADR-0026.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/xargin/opentrade/pkg/logx"
+	"github.com/xargin/opentrade/push/internal/consumer"
+	"github.com/xargin/opentrade/push/internal/hub"
+	"github.com/xargin/opentrade/push/internal/ws"
 )
 
 type Config struct {
-	Service    string `yaml:"service"`
-	LogLevel   string `yaml:"log_level"`
-	Env        string `yaml:"env"`
-	InstanceID int    `yaml:"instance_id"`
+	InstanceID       string
+	HTTPAddr         string
+	Brokers          []string
+	MarketDataTopic  string
+	CounterJournalTopic string
+	MarketGroupID    string
+	PrivateGroupID   string
+	SendBuffer       int
+	WriteTimeout     time.Duration
+	Env              string
+	LogLevel         string
 }
 
 func main() {
-	var cfgPath string
-	flag.StringVar(&cfgPath, "config", "", "path to YAML config file")
-	flag.Parse()
+	cfg := parseFlags()
 
-	cfg := Config{Service: "push", LogLevel: "info", Env: "dev"}
-	_ = cfgPath
-
-	logger, err := logx.New(logx.Config{Service: cfg.Service, Level: cfg.LogLevel, Env: cfg.Env})
+	logger, err := logx.New(logx.Config{Service: "push", Level: cfg.LogLevel, Env: cfg.Env})
 	if err != nil {
 		panic(err)
 	}
 	defer func() { _ = logger.Sync() }()
 	logx.SetGlobal(logger)
 
-	logger.Info("push starting")
+	if err := cfg.validate(); err != nil {
+		logger.Fatal("invalid config", zap.Error(err))
+	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	logger.Info("push starting",
+		zap.String("instance", cfg.InstanceID),
+		zap.String("http", cfg.HTTPAddr),
+		zap.Strings("brokers", cfg.Brokers),
+		zap.String("market_topic", cfg.MarketDataTopic),
+		zap.String("counter_topic", cfg.CounterJournalTopic))
+
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	<-ctx.Done()
-	logger.Info("push shutting down")
+	h := hub.New(logger)
+
+	mdCons, err := consumer.NewMarketData(consumer.MarketDataConfig{
+		Brokers: cfg.Brokers, ClientID: cfg.InstanceID,
+		GroupID: cfg.MarketGroupID, Topic: cfg.MarketDataTopic,
+	}, h, logger)
+	if err != nil {
+		logger.Fatal("market-data consumer init", zap.Error(err))
+	}
+	defer mdCons.Close()
+
+	privCons, err := consumer.NewPrivate(consumer.PrivateConfig{
+		Brokers: cfg.Brokers, ClientID: cfg.InstanceID,
+		GroupID: cfg.PrivateGroupID, Topic: cfg.CounterJournalTopic,
+	}, h, logger)
+	if err != nil {
+		logger.Fatal("private consumer init", zap.Error(err))
+	}
+	defer privCons.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", ws.Handler(rootCtx, h, ws.Config{
+		SendBuffer:   cfg.SendBuffer,
+		WriteTimeout: cfg.WriteTimeout,
+	}, logger))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	srv := &http.Server{
+		Addr:    cfg.HTTPAddr,
+		Handler: mux,
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		if err := mdCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("market-data consumer exited", zap.Error(err))
+			stop()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := privCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("private consumer exited", zap.Error(err))
+			stop()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("http server exited", zap.Error(err))
+			stop()
+		}
+	}()
+
+	<-rootCtx.Done()
+	logger.Info("shutdown initiated")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdownCtx)
+	mdCons.Close()
+	privCons.Close()
+	wg.Wait()
+	logger.Info("push shutdown complete")
+}
+
+func parseFlags() Config {
+	cfg := Config{
+		InstanceID:          "push-0",
+		HTTPAddr:            ":8081",
+		MarketDataTopic:     "market-data",
+		CounterJournalTopic: "counter-journal",
+		SendBuffer:          256,
+		WriteTimeout:        10 * time.Second,
+		Env:                 "dev",
+		LogLevel:            "info",
+	}
+	var brokersStr string
+	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (client id / default group suffix)")
+	flag.StringVar(&cfg.HTTPAddr, "http", cfg.HTTPAddr, "HTTP bind address (serves /ws and /healthz)")
+	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
+	flag.StringVar(&cfg.MarketDataTopic, "market-topic", cfg.MarketDataTopic, "market-data topic")
+	flag.StringVar(&cfg.CounterJournalTopic, "counter-topic", cfg.CounterJournalTopic, "counter-journal topic")
+	flag.StringVar(&cfg.MarketGroupID, "market-group", "", "market-data consumer group (default push-md-{instance-id})")
+	flag.StringVar(&cfg.PrivateGroupID, "private-group", "", "counter-journal consumer group (default push-priv-{instance-id})")
+	flag.IntVar(&cfg.SendBuffer, "send-buffer", cfg.SendBuffer, "per-connection outbound queue depth")
+	flag.DurationVar(&cfg.WriteTimeout, "write-timeout", cfg.WriteTimeout, "per-write deadline on WS")
+	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
+	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
+	flag.Parse()
+
+	cfg.Brokers = splitCSV(brokersStr)
+	if cfg.MarketGroupID == "" {
+		cfg.MarketGroupID = "push-md-" + cfg.InstanceID
+	}
+	if cfg.PrivateGroupID == "" {
+		cfg.PrivateGroupID = "push-priv-" + cfg.InstanceID
+	}
+	return cfg
+}
+
+func (c *Config) validate() error {
+	if c.InstanceID == "" {
+		return fmt.Errorf("instance-id is required")
+	}
+	if len(c.Brokers) == 0 {
+		return fmt.Errorf("at least one broker required")
+	}
+	if c.HTTPAddr == "" {
+		return fmt.Errorf("http address required")
+	}
+	return nil
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

@@ -59,3 +59,4 @@
 | [0023](0023-trade-dump-batching-and-commit-order.md) | trade-dump 批量写入与 offset 提交顺序 | Accepted | 2026-04-18 |
 | [0024](0024-trade-event-order-accepted-extension.md) | 扩展 trade-event.OrderAccepted 以支持行情重建 | Accepted | 2026-04-18 |
 | [0025](0025-quote-engine-state-and-offset-strategy.md) | Quote 内部结构与 offset 回放策略 | Accepted | 2026-04-18 |
+| [0026](0026-push-ws-protocol-and-mvp-scope.md) | Push WS 协议与 MVP-7 单实例范围 | Accepted | 2026-04-18 |
