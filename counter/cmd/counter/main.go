@@ -45,6 +45,7 @@ import (
 
 type Config struct {
 	ShardID         int
+	TotalShards     int    // 0 disables the shard ownership guard (legacy / single-shard)
 	InstanceID      string // defaults to counter-shard-<N>-main
 	GRPCAddr        string
 	Brokers         []string
@@ -74,6 +75,7 @@ func main() {
 
 	logger.Info("counter starting",
 		zap.Int("shard_id", cfg.ShardID),
+		zap.Int("total_shards", cfg.TotalShards),
 		zap.String("instance", cfg.InstanceID),
 		zap.String("grpc", cfg.GRPCAddr),
 		zap.Strings("brokers", cfg.Brokers),
@@ -124,8 +126,9 @@ func main() {
 	}
 
 	svc := service.New(service.Config{
-		ShardID:    cfg.ShardID,
-		ProducerID: cfg.InstanceID,
+		ShardID:     cfg.ShardID,
+		TotalShards: cfg.TotalShards,
+		ProducerID:  cfg.InstanceID,
 	}, state, userSeq, dt, journalProducer, logger)
 	svc.SetOrderDeps(txnProducer, idg)
 
@@ -209,7 +212,8 @@ func parseFlags() Config {
 		LogLevel:        "info",
 	}
 	var brokersStr string
-	flag.IntVar(&cfg.ShardID, "shard-id", 0, "shard id (0..N-1)")
+	flag.IntVar(&cfg.ShardID, "shard-id", 0, "shard id (0..total-shards-1)")
+	flag.IntVar(&cfg.TotalShards, "total-shards", 10, "total shard count for user→shard routing (0 disables guard)")
 	flag.StringVar(&cfg.InstanceID, "instance-id", "", "instance id (default counter-shard-<N>-main)")
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
@@ -236,6 +240,12 @@ func parseFlags() Config {
 func (c *Config) validate() error {
 	if c.ShardID < 0 {
 		return fmt.Errorf("shard-id must be >= 0")
+	}
+	if c.TotalShards < 0 {
+		return fmt.Errorf("total-shards must be >= 0")
+	}
+	if c.TotalShards > 0 && c.ShardID >= c.TotalShards {
+		return fmt.Errorf("shard-id %d must be < total-shards %d", c.ShardID, c.TotalShards)
 	}
 	if c.GRPCAddr == "" {
 		return fmt.Errorf("grpc-addr required")

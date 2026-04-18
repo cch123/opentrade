@@ -64,6 +64,9 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 	if req.UserID == "" {
 		return nil, ErrMissingUserID
 	}
+	if !s.OwnsUser(req.UserID) {
+		return nil, ErrWrongShard
+	}
 	if req.Symbol == "" {
 		return nil, ErrInvalidSymbol
 	}
@@ -185,6 +188,9 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 	}
 	if req.UserID == "" {
 		return nil, ErrMissingUserID
+	}
+	if !s.OwnsUser(req.UserID) {
+		return nil, ErrWrongShard
 	}
 
 	v, err := s.seq.Execute(req.UserID, func(seqID uint64) (any, error) {

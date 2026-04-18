@@ -3,6 +3,7 @@ module github.com/xargin/opentrade/pkg
 go 1.26
 
 require (
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/prometheus/client_golang v1.20.4
 	github.com/shopspring/decimal v1.4.0
 	github.com/twmb/franz-go v1.18.0
@@ -12,7 +13,6 @@ require (
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect

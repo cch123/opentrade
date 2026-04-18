@@ -20,6 +20,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/shard"
 )
 
 // Input-validation errors. Surfaced as gRPC InvalidArgument by the server
@@ -28,6 +29,10 @@ var (
 	ErrMissingUserID     = errors.New("service: user_id is required")
 	ErrMissingTransferID = errors.New("service: transfer_id is required")
 	ErrMissingAsset      = errors.New("service: asset is required")
+	// ErrWrongShard means BFF routed a request for a user that does not
+	// belong to this Counter shard. Surfaced as FailedPrecondition so clients
+	// retry through the routing layer instead of against this instance.
+	ErrWrongShard = errors.New("service: user does not belong to this shard")
 )
 
 // Publisher is the minimal non-transactional Kafka interface used by the
@@ -57,6 +62,10 @@ type IDGen interface {
 type Config struct {
 	ShardID    int    // numeric shard id (0..N-1)
 	ProducerID string // stamped on every CounterJournalEvent (ADR-0017 for future use)
+	// TotalShards enables user→shard ownership checks. Zero disables the
+	// guard (every user is considered owned — legacy single-shard mode
+	// retained for tests and pre-MVP-8 deployments).
+	TotalShards int
 }
 
 // Service executes Counter business operations.
@@ -91,6 +100,15 @@ func (s *Service) SetOrderDeps(txn TxnPublisher, idgen IDGen) {
 	s.idgen = idgen
 }
 
+// OwnsUser reports whether userID belongs to this shard. Returns true when
+// TotalShards==0 (guard disabled).
+func (s *Service) OwnsUser(userID string) bool {
+	if s.cfg.TotalShards <= 0 {
+		return true
+	}
+	return shard.OwnsUser(s.cfg.ShardID, s.cfg.TotalShards, userID)
+}
+
 // Transfer is the unified deposit / withdraw / freeze / unfreeze entry point
 // (ADR-0011). Flow:
 //
@@ -109,6 +127,9 @@ func (s *Service) SetOrderDeps(txn TxnPublisher, idgen IDGen) {
 func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*engine.TransferResult, error) {
 	if err := validateTransfer(req); err != nil {
 		return nil, err
+	}
+	if !s.OwnsUser(req.UserID) {
+		return nil, ErrWrongShard
 	}
 
 	// Fast-path: return cached response without entering the sequencer.
@@ -173,17 +194,26 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 // balance while a concurrent write for the same user is in-flight. This is
 // intentional — ADR-0007 treats query as a best-effort view; authoritative
 // state is Kafka journal.
-func (s *Service) QueryBalance(userID, asset string) engine.Balance {
-	return s.state.Balance(userID, asset)
+func (s *Service) QueryBalance(userID, asset string) (engine.Balance, error) {
+	if !s.OwnsUser(userID) {
+		return engine.Balance{}, ErrWrongShard
+	}
+	return s.state.Balance(userID, asset), nil
 }
 
 // QueryAccount returns the full map of (asset -> balance) for a user.
-func (s *Service) QueryAccount(userID string) map[string]engine.Balance {
-	return s.state.Account(userID).Copy()
+func (s *Service) QueryAccount(userID string) (map[string]engine.Balance, error) {
+	if !s.OwnsUser(userID) {
+		return nil, ErrWrongShard
+	}
+	return s.state.Account(userID).Copy(), nil
 }
 
 // QueryOrder returns a clone of the order if it exists and belongs to userID.
 func (s *Service) QueryOrder(userID string, orderID uint64) (*engine.Order, error) {
+	if !s.OwnsUser(userID) {
+		return nil, ErrWrongShard
+	}
 	o := s.state.Orders().Get(orderID)
 	if o == nil {
 		return nil, engine.ErrOrderNotFound

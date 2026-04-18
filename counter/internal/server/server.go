@@ -114,7 +114,10 @@ func (s *Server) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceReq
 	}
 	resp := &counterrpc.QueryBalanceResponse{}
 	if req.Asset != "" {
-		bal := s.svc.QueryBalance(req.UserId, req.Asset)
+		bal, err := s.svc.QueryBalance(req.UserId, req.Asset)
+		if err != nil {
+			return nil, mapServiceError(err)
+		}
 		resp.Balances = []*counterrpc.Balance{{
 			Asset:     req.Asset,
 			Available: bal.Available.String(),
@@ -122,7 +125,11 @@ func (s *Server) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceReq
 		}}
 		return resp, nil
 	}
-	for asset, bal := range s.svc.QueryAccount(req.UserId) {
+	account, err := s.svc.QueryAccount(req.UserId)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	for asset, bal := range account {
 		resp.Balances = append(resp.Balances, &counterrpc.Balance{
 			Asset:     asset,
 			Available: bal.Available.String(),
@@ -204,6 +211,8 @@ func mapServiceError(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, service.ErrOrderDepsNotConfigured):
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, service.ErrWrongShard):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())
 }
