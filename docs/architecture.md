@@ -27,12 +27,22 @@
 
 ### 3.1 订单类型
 
+**撮合引擎直接识别**：
+
 - 限价（Limit）
-- 市价（Market）
+- 市价（Market，包含 BN `quoteOrderQty` 形态，见 [ADR-0035](./adr/0035-market-orders-native-server-side.md)）
 - IOC（Immediate-Or-Cancel）
 - FOK（Fill-Or-Kill）
 - Post-Only
-- 止损（Stop / Stop-Limit）
+
+**条件单（conditional 服务在市场价穿越阈值时下单，ADR-0040 起）**：
+
+- STOP_LOSS / STOP_LOSS_LIMIT
+- TAKE_PROFIT / TAKE_PROFIT_LIMIT
+- TRAILING_STOP_LOSS（水印追踪 + bps 回撤，[ADR-0045](./adr/0045-conditional-trailing-stop.md)）
+- OCO（One-Cancels-Other，N 腿原子下单 + 级联取消，[ADR-0044](./adr/0044-conditional-oco.md)）
+- 资金预留（Reserve / ReleaseReservation / `PlaceOrder(reservation_id)`，[ADR-0041](./adr/0041-counter-reservations.md)）
+- 过期 TTL（expires_at_unix_ms → EXPIRED + 释放 reservation，[ADR-0043](./adr/0043-conditional-expiry.md)）
 
 ### 3.2 交易能力
 
@@ -45,7 +55,7 @@
 ### 3.3 MVP 不做
 
 - 风控前置
-- 鉴权 / API Key 管理（预留 middleware 挂载点）
+- ~~鉴权 / API Key 管理（预留 middleware 挂载点）~~ — 已补：header / HS256 JWT / BN 风格 HMAC API-Key，详见 [ADR-0039](./adr/0039-bff-auth-jwt-apikey.md)
 - 钱包对接（充提链上交互）
 - 费率 / VIP 等级 / 邀请返佣（Counter 暴露配置接口，MVP 用常数或 0）
 - 告警
@@ -55,11 +65,12 @@
 
 | 模块 | 职责 | 不负责 |
 |---|---|---|
-| **BFF** | REST 下单/撤单/查询；WebSocket 网关；鉴权挂载点；滑动窗口限流 | 业务状态 |
-| **counter** | 账户余额、冻结、解冻；sequencer（同用户串行）；clientOrderId 去重；订单生命周期状态；费率接口；`Transfer`（deposit/withdraw/freeze/unfreeze） | orderbook、撮合逻辑 |
+| **BFF** | REST 下单/撤单/查询；WebSocket 网关；鉴权挂载点（header / JWT / API-Key，ADR-0039）；滑动窗口限流；market-data cache 供重连补齐（ADR-0038） | 业务状态 |
+| **counter** | 账户余额、冻结、解冻；sequencer（同用户串行）；clientOrderId 去重；订单生命周期状态；费率接口；`Transfer`（deposit/withdraw/freeze/unfreeze）；`Reserve` / `ReleaseReservation` / `PlaceOrder(reservation_id)` 为条件单预留资金（ADR-0041） | orderbook、撮合逻辑、行情订阅 |
 | **match** | 内存 orderbook（per symbol 单线程）；撮合规则；成交事件生成 | 余额、权限、费率计算 |
-| **push** | WebSocket 连接维持；订阅关系管理；私有数据（订单/账户）+ 公共行情扇出 | 行情计算、业务状态 |
-| **quote**（旁路） | 消费 trade-event → 生成增量深度、逐笔、K 线 | 连接推送 |
+| **push** | WebSocket 连接维持；订阅关系管理；私有数据（订单/账户）+ 公共行情扇出；coalesce 可替代流 + per-conn token bucket（ADR-0037） | 行情计算、业务状态 |
+| **quote**（旁路） | 消费 trade-event → 生成增量深度、逐笔、K 线（含 gap 填充）；发布 market-data；state snapshot 热重启（ADR-0036） | 连接推送 |
+| **conditional**（旁路） | 订阅 market-data → 维护 pending 条件单状态（含 trailing watermark / OCO 组 / TTL）→ 触发时调 counter.PlaceOrder；单实例 + cold-standby HA（ADR-0040~0045） | 行情产出、订单撮合 |
 | **trade-dump**（旁路） | 消费 counter-journal + trade-event → 幂等写 MySQL | 在线查询 |
 
 ### 4.1 定序组件（Sequencer）
@@ -80,46 +91,47 @@
 ## 5. 核心架构图
 
 ```
-         ┌──── etcd (选主 + 配置: match shard 映射, counter 路由) ────┐
-         │                                                             │
-    ┌─ BFF (无状态, N 实例) ─────────────────────────────────┐
-    │ REST + WS, 鉴权挂载点, 滑窗限流                         │
-    └──┬───────────────────────────────────────┬─────────────┘
-       │ user hash gRPC                         │ WS sticky (user hash)
-       ▼                                        ▼
-  ┌─ counter (10 shard × 一主一备) ───┐      ┌── push (10 shard) ──┐
-  │ 主: 内存校验 → Kafka 事务         │      │ WS 连接 + 订阅过滤   │
-  │     (counter-journal + order-event)│      └────────▲────────────┘
-  │ 备: tail journal,打快照 → S3      │               │
-  │ Transfer / PlaceOrder / Cancel    │               │
-  └─────┬─────────────────────────▲───┘               │
-        │ 事务写                   │ tail 结算         │
-        ▼                          │                   │
-  ┌─ Kafka Cluster (3 broker, ISR≥2) ─────────────────┤
-  │  counter-journal  (user 分区)                     │
-  │  order-event      (symbol 分区)                   │
-  │  trade-event      (symbol 分区)                   │
-  │  wallet-event     (user 分区, 未来)               │
-  │  market-data      (symbol 分区)                   │
-  └─────┬───────────────────────────────────────┬─────┘
-        │ (per-symbol partition)                 │
-        ▼                                        │
-  ┌─ match (N shard × 一主一备) ──┐              │
-  │ 主: 消费 order-event → 撮合     │              │
-  │     → Kafka 事务产出 trade-event │              │
-  │ 备: tail 同步状态              │              │
-  │ 快照 10k 笔 / 1min → S3       │              │
-  └──┬────────────────────────────┘              │
-     │ trade-event                                │
-     └──────┬─────────────────────────────────────┤
-            │                                     │
-  ┌─ quote ─┼───────┐  ┌── trade-dump ─┐          │
-  │ 深度/K线│       │  │ 幂等写 MySQL  │          │
-  └────┬────┘       │  └───────────────┘          │
-       │ market-data│                              │
-       └────────────┴──────────────────────────────┘
-                                                   ▼
-                                                  push
+         ┌──── etcd (选主: counter / match / conditional; 配置: match shard) ────┐
+         │                                                                        │
+    ┌─ BFF (无状态, N 实例) ──────────────────────────────────────────┐
+    │ REST + WS, 鉴权, 限流, market-data cache (ADR-0038)              │
+    └──┬───────────────────────────────┬─────────────────┬────────────┘
+       │ user hash gRPC                │ WS sticky       │ gRPC
+       ▼                               ▼                 ▼
+  ┌─ counter (10 shard × 1主1备) ─┐ ┌─ push (10) ─┐ ┌─ conditional (1主1备) ─┐
+  │ 主: 内存校验 → Kafka 事务      │ │ WS fan-out   │ │ Place/Cancel/PlaceOCO  │
+  │ (counter-journal + order-evt) │ │ coalesce +   │ │ Trigger → Counter       │
+  │ Reserve / Release /            │ │ rate-limit    │ │  .PlaceOrder(res_id)   │
+  │ PlaceOrder(reservation_id)    │ └──▲────▲──────┘ │ HA cold-standby         │
+  │ (ADR-0041)                    │    │    │        │ 本地 snapshot           │
+  └─────┬──────────────────────▲──┘    │    │        └────────▲──────▲────────┘
+        │ 事务写                │ tail  │    │                 │      │ market-data
+        ▼                       │结算   │    │                 │      │
+  ┌─ Kafka Cluster (3 broker, ISR≥2) ───┼────┼─────────────────┴──────┤
+  │  counter-journal  (user 分区)       │    │                        │
+  │  order-event      (symbol 分区)     │    │                        │
+  │  trade-event      (symbol 分区)     │    │                        │
+  │  wallet-event     (user 分区, 未来) │    │                        │
+  │  market-data      (symbol 分区)     │    │                        │
+  └─────┬──────────────────────────┬────┘    │                        │
+        │ (per-symbol partition)   │         │                        │
+        ▼                          │         │                        │
+  ┌─ match (N shard × 1主1备) ──┐  │         │                        │
+  │ 主: 消费 order-event → 撮合  │  │         │                        │
+  │     → 事务产出 trade-event   │  │         │                        │
+  │ 备: tail 同步                │  │         │                        │
+  │ 快照 10k/1min → S3          │  │         │                        │
+  └──┬──────────────────────────┘  │         │                        │
+     │ trade-event                 │         │                        │
+     └──────┬──────────────────────┤         │                        │
+            │                      │         │                        │
+  ┌─ quote ─┼────────┐  ┌── trade-dump ─┐     │                        │
+  │ 深度/K线│        │  │ 幂等写 MySQL  │     │                        │
+  │ state   │        │  └───────────────┘     │                        │
+  │ snapshot│        │                        │                        │
+  └────┬────┘        │                        │                        │
+       │ market-data │                        │                        │
+       └─────────────┴────────────────────────┴────────────────────────┘
 ```
 
 ## 6. 核心数据流
@@ -199,6 +211,35 @@
 
 **外部 6 态**（API / WS 对用户暴露）：
 `NEW` / `PARTIALLY_FILLED` / `FILLED` / `CANCELED` / `REJECTED` / `EXPIRED`
+
+### 6.6 条件单触发流程（ADR-0040~0045）
+
+条件单自己有一套独立状态机（`PENDING` / `TRIGGERED` / `CANCELED` / `REJECTED` / `EXPIRED`，ADR-0040 / 0043），不经过 Counter 的 order 状态机 —— 直到触发那一刻。
+
+```
+1. 用户 → BFF REST (POST /v1/conditional 或 /v1/conditional/oco)
+2. BFF → conditional 主 gRPC (PlaceConditional / PlaceOCO)
+3. conditional 主:
+     a. 验证 shape（ type / side / stop_price / trailing_delta_bps / expires_at_unix_ms ）
+     b. 分配 id，若 reserver 配了 → 调 Counter.Reserve 冻结资金
+        (ADR-0041: Available → Frozen + reservations[refID] = {user, asset, amount})
+     c. 落 pending 表；返回 id 给用户 (status = PENDING)
+4. conditional 消费 market-data → 每笔 PublicTrade:
+     a. standalone 条件单：比较 stop_price
+     b. trailing：更新 watermark → 比较 effective_stop (ADR-0045)
+     c. 任一触发 → fire 外置 Counter.PlaceOrder(reservation_id, client_order_id="cond-<id>")
+        Counter 在同一个用户 sequencer 闭包内:
+          - 查 reservations[refID]，验证 (asset, amount) 匹配
+          - 删 reservation，不再 freeze，正常创建 order → Kafka 事务
+        失败 → conditional REJECTED + best-effort Release
+        成功 → conditional TRIGGERED
+     d. OCO 组的任一腿到终态 → 同组 PENDING 腿自动 CANCELED + Release (ADR-0044)
+5. 后台 sweeper (主 only):
+     - 到 expires_at_unix_ms 的 pending → EXPIRED + Release (ADR-0043)
+6. 用户可随时 DELETE /v1/conditional/{id} → CANCELED + Release
+```
+
+Counter 在条件单路径上完全不感知 "conditional"：它看到的就是普通 `PlaceOrder(reservation_id=…)`，由 reservation_id 路径走已冻结资金的快捷分支。
 
 PENDING_NEW 和 PENDING_CANCEL 仅在 Counter 内部可见（用于监控、排查、一致性校验），对外呈现为相邻的非 pending 态。
 
@@ -288,6 +329,26 @@ RTO：10-15s
 
 同上流程。新主从最近 snapshot + order-event 增量回放重建 orderbook。
 
+### 9.3b Conditional 主崩溃（ADR-0042）
+
+同 cold-standby 模型，但**不**写 counter-journal（ADR-0040 明确 trade-off）：
+
+```
+T0~T3: 同 Counter/Match 流程 (etcd lease 过期 → 备升主)
+T4: 新主:
+      - 从共享 --snapshot-dir 读最新 snapshot → hydrate engine
+      - market-data consumer 用 AdjustFetchOffsetsFn 从 snapshot 保存的
+        offset 续消费
+      - sweeper 接管，gRPC 对外
+T5: 老主（若存活）split-brain → 两个都下 PlaceOrder(reservation_id=X)
+      → Counter 的 client_order_id / reservation_id dedup 吸收，无业务错误
+```
+
+**无 snapshot 时间窗的 pending 会丢**（未 graceful shutdown 且上一次
+周期 snapshot 之后下的条件单）。这是 ADR-0040 / 0042 接受的代价，换
+实现极小化。想要严格无损，需要把 Reserve / Cancel / Trigger 都写
+counter-journal，工作量大，留 backlog。
+
 ### 9.4 Kafka 不可用
 
 - 所有 Counter/Match 主退化为 degraded，拒绝新写入
@@ -305,6 +366,8 @@ RTO：10-15s
 | 单个 broker 挂 | 无影响（ISR ≥ 2，acks=all） |
 | 两个 broker 挂 | 写入阻塞（ISR < min），无数据丢失 |
 | push 挂 | WS 断连，客户端重连+主动拉状态；可能错过几条推送 |
+| conditional 主非 graceful crash | 上一次 snapshot 之后新下的 pending 条件单会丢；已触发的因为 Counter.PlaceOrder 幂等不受影响 |
+| conditional 主 + backup 同挂 | 到 graceful 恢复前，pending 条件单不触发；资金仍锁在 Counter reservation |
 
 ## 10. 持久化与存储
 
@@ -355,6 +418,20 @@ RTO：10-15s
 - 触发条件：每 10,000 笔订单 或 每 60 秒
 - 内容：每个 symbol 的 orderbook（买卖盘、所有活跃订单）+ 消费到的 `order-event offset`
 - 存储：同上
+
+### 11.2b Quote / Conditional 快照
+
+都走"本地 JSON snapshot + per-partition Kafka offset 原子推进"模式（
+[ADR-0036](./adr/0036-quote-state-snapshot.md) / [ADR-0042](./adr/0042-conditional-ha.md)）：
+
+- **Quote**：由**主**（单实例）每 30s 产生；内容 = per-symbol depth book
+  + kline aggregators + engine emit seq + 每 partition offset
+- **Conditional**：由**主**每 30s 产生；内容 = pending / terminals 条
+  件单 + `ocoByClient` dedup 表 + 每 partition offset
+- **非 Kafka-journal**：这两个服务的状态不进 counter-journal，snapshot
+  是唯一 durability。HA 下需要共享 mount（NFS / EFS）让 backup 读到
+- **原子性**：snapshot Capture 和 engine 状态更新拿同一把锁，offset 和
+  state 永远一致 ↔ 重启从保存的 offset 续消费，不重不漏
 
 ### 11.3 冷启动
 
@@ -542,6 +619,17 @@ opentrade/
 │       ├── kline/                    # K 线
 │       └── trades/                   # 逐笔
 │
+├── conditional/                      # module: 条件单触发服务
+│   ├── go.mod
+│   ├── cmd/conditional/main.go       # runPrimary + runElectionLoop (ADR-0042)
+│   └── internal/
+│       ├── engine/                   # pending / OCO / trailing 状态机
+│       ├── consumer/                 # market-data consumer (AdjustFetchOffsetsFn)
+│       ├── counterclient/            # Counter gRPC (PlaceOrder / Reserve / Release)
+│       ├── service/                  # gRPC → engine 适配
+│       ├── server/                   # gRPC server + error mapping
+│       └── snapshot/                 # 本地 JSON 持久化
+│
 ├── trade-dump/                       # module: 持久化
 │   ├── go.mod
 │   ├── cmd/trade-dump/main.go
@@ -562,7 +650,8 @@ opentrade/
 ### 16.2 依赖关系
 
 - `api`、`pkg` 为基础模块，不依赖其他内部 module
-- 各服务 module 依赖 `api` + `pkg`，不互相依赖
+- 各服务 module 依赖 `api` + `pkg`，**不互相依赖**（module 边界）
+- `conditional` 运行时通过 gRPC 调 Counter（和 BFF 一样，不引入代码依赖）
 - `go.work` 本地 replace，发布时用版本锁定
 
 ### 16.3 技术选型
