@@ -56,3 +56,4 @@
 | [0020](0020-order-state-machine.md) | 订单状态机：内部 8 态 + 外部 6 态（Binance 风格） | Accepted | 2026-04-18 |
 | [0021](0021-quote-service-and-market-data-fanout.md) | Quote 作为独立服务；市场数据通过 Kafka topic 扇出 | Accepted | 2026-04-18 |
 | [0022](0022-push-sharding-sticky-routing.md) | Push 分片与 sticky WS 路由 | Accepted | 2026-04-18 |
+| [0023](0023-trade-dump-batching-and-commit-order.md) | trade-dump 批量写入与 offset 提交顺序 | Accepted | 2026-04-18 |
