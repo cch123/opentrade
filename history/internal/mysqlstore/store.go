@@ -110,12 +110,15 @@ func (s *Store) GetOrder(ctx context.Context, userID string, orderID uint64) (*h
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 
+	// UNIX_TIMESTAMP()*1000 + MICROSECOND() DIV 1000 yields a DECIMAL in
+	// MySQL 8 which the Go driver returns as []byte — int64 scan would fail
+	// with "invalid syntax". CAST to SIGNED forces a proper integer column.
 	const q = `
 		SELECT order_id, client_order_id, user_id, symbol, side, order_type, tif,
 		       CAST(price AS CHAR), CAST(qty AS CHAR), CAST(filled_qty AS CHAR),
 		       CAST(frozen_amt AS CHAR), status, reject_reason,
-		       UNIX_TIMESTAMP(created_at) * 1000 + MICROSECOND(created_at) DIV 1000,
-		       UNIX_TIMESTAMP(updated_at) * 1000 + MICROSECOND(updated_at) DIV 1000
+		       CAST(UNIX_TIMESTAMP(created_at) * 1000 + MICROSECOND(created_at) DIV 1000 AS SIGNED),
+		       CAST(UNIX_TIMESTAMP(updated_at) * 1000 + MICROSECOND(updated_at) DIV 1000 AS SIGNED)
 		FROM orders WHERE order_id = ? AND user_id = ? LIMIT 1`
 
 	row := s.db.QueryRowContext(ctx, q, orderID, userID)
@@ -193,8 +196,8 @@ func (s *Store) ListOrders(ctx context.Context, f OrdersFilter, rawCursor string
 		SELECT order_id, client_order_id, user_id, symbol, side, order_type, tif,
 		       CAST(price AS CHAR), CAST(qty AS CHAR), CAST(filled_qty AS CHAR),
 		       CAST(frozen_amt AS CHAR), status, reject_reason,
-		       UNIX_TIMESTAMP(created_at) * 1000 + MICROSECOND(created_at) DIV 1000,
-		       UNIX_TIMESTAMP(updated_at) * 1000 + MICROSECOND(updated_at) DIV 1000
+		       CAST(UNIX_TIMESTAMP(created_at) * 1000 + MICROSECOND(created_at) DIV 1000 AS SIGNED),
+		       CAST(UNIX_TIMESTAMP(updated_at) * 1000 + MICROSECOND(updated_at) DIV 1000 AS SIGNED)
 		FROM orders
 		WHERE ` + strings.Join(conds, " AND ") + `
 		ORDER BY created_at DESC, order_id DESC
