@@ -53,6 +53,12 @@ type Config struct {
 	MarketGroupID  string
 	KlineBuffer    int
 
+	// Auth (ADR-0039). AuthMode in {"header","jwt","api-key","mixed"}.
+	// Default "header" = legacy X-User-Id trust-the-header scheme.
+	AuthMode     string
+	JWTSecret    string
+	APIKeysFile  string
+
 	Env               string
 	LogLevel          string
 }
@@ -105,12 +111,18 @@ func main() {
 		}
 	}()
 
+	authMW, err := buildAuthMiddleware(cfg, logger)
+	if err != nil {
+		logger.Fatal("auth middleware", zap.Error(err))
+	}
+
 	srv := rest.NewServer(rest.Config{
 		Addr:           cfg.HTTPAddr,
 		UserRateLimit:  cfg.UserRateLimit,
 		UserRateWindow: cfg.UserRateWindow,
 		IPRateLimit:    cfg.IPRateLimit,
 		IPRateWindow:   cfg.IPRateWindow,
+		AuthMiddleware: authMW,
 	}, counter, mdCache, logger)
 
 	outer := http.NewServeMux()
@@ -122,7 +134,7 @@ func main() {
 		if err != nil {
 			logger.Fatal("ws proxy init", zap.Error(err))
 		}
-		outer.Handle("/ws", auth.Middleware(proxy.Handler()))
+		outer.Handle("/ws", authMW(proxy.Handler()))
 		logger.Info("ws reverse-proxy enabled", zap.String("upstream", cfg.PushWSURL))
 	}
 	outer.Handle("/", srv.Handler())
@@ -161,6 +173,33 @@ func main() {
 		logger.Error("http shutdown", zap.Error(err))
 	}
 	logger.Info("bff shutdown complete")
+}
+
+// buildAuthMiddleware turns the flag set into a configured auth middleware.
+// Loads the API-key file when api-key or mixed mode is selected.
+func buildAuthMiddleware(cfg Config, logger *zap.Logger) (func(http.Handler) http.Handler, error) {
+	mode := auth.Mode(cfg.AuthMode)
+	authCfg := auth.Config{
+		Mode:      mode,
+		JWTSecret: []byte(cfg.JWTSecret),
+		Logger:    logger,
+	}
+	if mode == auth.ModeAPIKey || mode == auth.ModeMixed {
+		store, err := auth.NewMemoryStore(cfg.APIKeysFile)
+		if err != nil {
+			return nil, fmt.Errorf("api keys: %w", err)
+		}
+		authCfg.APIKeyStore = store
+	}
+	mw, err := auth.NewMiddleware(authCfg)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("auth middleware ready",
+		zap.String("mode", cfg.AuthMode),
+		zap.Bool("jwt_configured", cfg.JWTSecret != ""),
+		zap.Bool("api_keys_loaded", cfg.APIKeysFile != ""))
+	return mw, nil
 }
 
 // startMarketCache optionally wires a market-data consumer into a
@@ -225,6 +264,7 @@ func parseFlags() Config {
 		ShutdownGrace:      5 * time.Second,
 		MarketTopic:        "market-data",
 		KlineBuffer:        500,
+		AuthMode:           "header",
 		Env:                "dev",
 		LogLevel:           "info",
 	}
@@ -250,6 +290,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.MarketTopic, "market-topic", cfg.MarketTopic, "market-data topic name (default: market-data)")
 	flag.StringVar(&cfg.MarketGroupID, "market-group", "", "consumer group id for the market-data cache (default bff-md-{host})")
 	flag.IntVar(&cfg.KlineBuffer, "kline-buffer", cfg.KlineBuffer, "max KlineClosed entries kept per (symbol, interval)")
+	flag.StringVar(&cfg.AuthMode, "auth-mode", cfg.AuthMode, "auth mode: header | jwt | api-key | mixed (ADR-0039)")
+	flag.StringVar(&cfg.JWTSecret, "jwt-secret", "", "HS256 secret for --auth-mode=jwt|mixed (empty = jwt disabled in mixed mode)")
+	flag.StringVar(&cfg.APIKeysFile, "api-keys-file", "", "JSON file listing {key,secret,user_id} entries for --auth-mode=api-key|mixed")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()

@@ -18,12 +18,17 @@ import (
 
 // Config bundles runtime knobs.
 type Config struct {
-	Addr            string
-	UserRateLimit   int
-	UserRateWindow  time.Duration
-	IPRateLimit     int
-	IPRateWindow    time.Duration
-	RequestTimeout  time.Duration
+	Addr           string
+	UserRateLimit  int
+	UserRateWindow time.Duration
+	IPRateLimit    int
+	IPRateWindow   time.Duration
+	RequestTimeout time.Duration
+
+	// AuthMiddleware overrides the middleware that extracts the
+	// authenticated user id into the request context. Nil falls back to
+	// the legacy X-User-Id header scheme (MVP-4 default).
+	AuthMiddleware func(http.Handler) http.Handler
 }
 
 // Server is the BFF HTTP server.
@@ -65,11 +70,15 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	authMW := s.cfg.AuthMiddleware
+	if authMW == nil {
+		authMW = auth.Middleware
+	}
 	return chain(
 		mux,
 		recoverMW(s.logger),
 		accessLog(s.logger),
-		auth.Middleware,
+		authMW,
 		s.rateLimitMW,
 	)
 }
