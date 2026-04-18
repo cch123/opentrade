@@ -14,12 +14,15 @@ type fakeSink struct {
 	cap    int
 	mu     sync.Mutex
 	out    [][]byte
+	// coal latest-wins view; tests may inspect it via Coal() to verify
+	// coalesced writes replace rather than enqueue.
+	coal map[string][]byte
 	// drop forces the next TrySend to fail (simulates a full channel).
 	dropped atomic.Int64
 }
 
 func newSink(id, user string, cap int) *fakeSink {
-	return &fakeSink{id: id, userID: user, cap: cap}
+	return &fakeSink{id: id, userID: user, cap: cap, coal: make(map[string][]byte)}
 }
 
 func (f *fakeSink) ID() string     { return f.id }
@@ -34,11 +37,26 @@ func (f *fakeSink) TrySend(p []byte) bool {
 	f.out = append(f.out, p)
 	return true
 }
+func (f *fakeSink) TrySendCoalesce(key string, p []byte) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.coal[key] = p
+	return true
+}
 func (f *fakeSink) Out() [][]byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := make([][]byte, len(f.out))
 	copy(cp, f.out)
+	return cp
+}
+func (f *fakeSink) Coal() map[string][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make(map[string][]byte, len(f.coal))
+	for k, v := range f.coal {
+		cp[k] = v
+	}
 	return cp
 }
 
@@ -142,6 +160,49 @@ func TestBroadcastStream_SlowConsumerDropped(t *testing.T) {
 	}
 	if slow.dropped.Load() != 1 {
 		t.Errorf("slow dropped counter: %d", slow.dropped.Load())
+	}
+}
+
+// TestBroadcastStreamCoalesce_OverwritesLatest verifies that repeated
+// coalesced broadcasts for the same (conn, key) keep only the latest
+// payload (ADR-0037): the sink's coalesce map ends with "3" after three
+// sends, rather than three queued items.
+func TestBroadcastStreamCoalesce_OverwritesLatest(t *testing.T) {
+	h := newHub()
+	s := newSink("c1", "", 10)
+	h.Register(s)
+	h.Subscribe("c1", []string{"kline@BTC:1m"})
+
+	for _, payload := range [][]byte{[]byte("1"), []byte("2"), []byte("3")} {
+		sent, dropped := h.BroadcastStreamCoalesce("kline@BTC:1m", "kline@BTC:1m", payload)
+		if sent != 1 || dropped != 0 {
+			t.Errorf("sent=%d dropped=%d", sent, dropped)
+		}
+	}
+	// Regular queue must be untouched.
+	if len(s.Out()) != 0 {
+		t.Errorf("expected no regular queue items, got %d", len(s.Out()))
+	}
+	if got := string(s.Coal()["kline@BTC:1m"]); got != "3" {
+		t.Errorf("coalesce map latest = %q, want %q", got, "3")
+	}
+}
+
+// TestBroadcastStreamCoalesce_DifferentKeysCoexist: two different
+// coalesce keys (e.g. different intervals) must keep independent latest
+// values.
+func TestBroadcastStreamCoalesce_DifferentKeysCoexist(t *testing.T) {
+	h := newHub()
+	s := newSink("c1", "", 10)
+	h.Register(s)
+	h.Subscribe("c1", []string{"kline@BTC:1m", "kline@BTC:5m"})
+
+	h.BroadcastStreamCoalesce("kline@BTC:1m", "kline@BTC:1m", []byte("A"))
+	h.BroadcastStreamCoalesce("kline@BTC:5m", "kline@BTC:5m", []byte("B"))
+
+	coal := s.Coal()
+	if string(coal["kline@BTC:1m"]) != "A" || string(coal["kline@BTC:5m"]) != "B" {
+		t.Errorf("coal = %+v", coal)
 	}
 }
 

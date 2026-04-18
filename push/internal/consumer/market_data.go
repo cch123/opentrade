@@ -100,7 +100,7 @@ func (c *MarketDataConsumer) dispatch(rec *kgo.Record) {
 			zap.Error(err))
 		return
 	}
-	streamKey, payload := buildStreamFrame(&evt)
+	streamKey, payload, coalescable := buildStreamFrame(&evt)
 	if streamKey == "" || payload == nil {
 		return
 	}
@@ -109,63 +109,72 @@ func (c *MarketDataConsumer) dispatch(rec *kgo.Record) {
 		c.logger.Error("encode ws data", zap.Error(err))
 		return
 	}
+	if coalescable {
+		c.hub.BroadcastStreamCoalesce(streamKey, streamKey, frame)
+		return
+	}
 	c.hub.BroadcastStream(streamKey, frame)
 }
 
 // buildStreamFrame derives the stream key and the marshalled payload JSON
-// for a MarketDataEvent. Returns ("", nil) for unknown / unsupported events.
-func buildStreamFrame(evt *eventpb.MarketDataEvent) (string, json.RawMessage) {
+// for a MarketDataEvent. Returns ("", nil, false) for unknown / unsupported
+// events. The bool is true when the frame is safe to coalesce — i.e. the
+// latest payload fully subsumes any in-flight older one. Today only
+// KlineUpdate qualifies: DepthUpdate carries an incremental diff (losing one
+// means a stale level), KlineClosed is a transition event, PublicTrade is
+// per-fill.
+func buildStreamFrame(evt *eventpb.MarketDataEvent) (string, json.RawMessage, bool) {
 	symbol := evt.Symbol
 	switch p := evt.Payload.(type) {
 	case *eventpb.MarketDataEvent_PublicTrade:
 		if p.PublicTrade == nil {
-			return "", nil
+			return "", nil, false
 		}
 		b, err := protojson.Marshal(p.PublicTrade)
 		if err != nil {
-			return "", nil
+			return "", nil, false
 		}
-		return "trade@" + symbol, b
+		return "trade@" + symbol, b, false
 	case *eventpb.MarketDataEvent_DepthUpdate:
 		if p.DepthUpdate == nil {
-			return "", nil
+			return "", nil, false
 		}
 		b, err := protojson.Marshal(p.DepthUpdate)
 		if err != nil {
-			return "", nil
+			return "", nil, false
 		}
-		return "depth@" + symbol, b
+		return "depth@" + symbol, b, false
 	case *eventpb.MarketDataEvent_DepthSnapshot:
 		if p.DepthSnapshot == nil {
-			return "", nil
+			return "", nil, false
 		}
 		b, err := protojson.Marshal(p.DepthSnapshot)
 		if err != nil {
-			return "", nil
+			return "", nil, false
 		}
-		return "depth.snapshot@" + symbol, b
+		return "depth.snapshot@" + symbol, b, false
 	case *eventpb.MarketDataEvent_KlineUpdate:
 		if p.KlineUpdate == nil || p.KlineUpdate.Kline == nil {
-			return "", nil
+			return "", nil, false
 		}
 		key := "kline@" + symbol + ":" + klineIntervalLabel(p.KlineUpdate.Kline.Interval)
 		b, err := protojson.Marshal(p.KlineUpdate)
 		if err != nil {
-			return "", nil
+			return "", nil, false
 		}
-		return key, b
+		return key, b, true
 	case *eventpb.MarketDataEvent_KlineClosed:
 		if p.KlineClosed == nil || p.KlineClosed.Kline == nil {
-			return "", nil
+			return "", nil, false
 		}
 		key := "kline@" + symbol + ":" + klineIntervalLabel(p.KlineClosed.Kline.Interval)
 		b, err := protojson.Marshal(p.KlineClosed)
 		if err != nil {
-			return "", nil
+			return "", nil, false
 		}
-		return key, b
+		return key, b, false
 	default:
-		return "", nil
+		return "", nil, false
 	}
 }
 

@@ -33,7 +33,7 @@
 
 - ~~**Counter 周期性 snapshot**~~ — ✅ MVP-12 落地（`--snapshot-interval=60s` 默认，可调）
 - ~~**K 线 gap 填充**~~ — ✅ 跨 bucket 的 trade 会 emit 中间 empty bar（O=H=L=C=上一收盘，volume=0，count=0）；Kline 流保持致密（[ADR-0025 未来工作](./adr/0025-quote-engine-state-and-offset-strategy.md)）
-- **Push coalescing / rate-limit** — K 线 / 深度合并、连接级消息速率限制（[ADR-0022 实施约束](./adr/0022-push-sharding-sticky-routing.md) / [ADR-0026](./adr/0026-push-ws-protocol-and-mvp-scope.md)）
+- ~~**Push coalescing / rate-limit**~~ — ✅ KlineUpdate 走可替代 coalesce 通道（latest-wins），每连接 token bucket 限速（默认 2000/s, burst 4000），depth/trade 继续走原队列（[ADR-0037](./adr/0037-push-coalesce-rate-limit.md)）
 - **Push 重连快照补齐** — 客户端重连后拉 BFF 补齐期间遗漏（[ADR-0026](./adr/0026-push-ws-protocol-and-mvp-scope.md)）
 - ~~**Counter 事务双写 review**~~ — ✅ review 发现 Transfer/Settlement 走非事务 producer（HA 下 fencing 失效），已合并到 TxnProducer（见 ADR-0031 §2 补充）
 - ~~**集成冒烟脚本**~~ — ✅ [docs/smoke.md](./smoke.md) + [deploy/scripts/smoke.sh](../deploy/scripts/smoke.sh)

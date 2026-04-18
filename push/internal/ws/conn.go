@@ -15,7 +15,8 @@ import (
 )
 
 // Conn wraps a WebSocket connection. It owns a single read goroutine and a
-// single write goroutine; Hub enqueues outbound messages via TrySend.
+// single write goroutine; Hub enqueues outbound messages via TrySend or
+// TrySendCoalesce.
 type Conn struct {
 	id     string
 	userID string
@@ -25,6 +26,16 @@ type Conn struct {
 	hub    *hub.Hub
 
 	writeTimeout time.Duration
+	rate         *tokenBucket
+
+	// Coalesce path (ADR-0037). For "replaceable" streams like KlineUpdate
+	// we keep a single latest payload per streamKey; when the write loop is
+	// under quota it flushes the map to the wire. This turns a flood of
+	// rapid updates into one or two sends carrying the freshest state,
+	// instead of backing up the send channel until messages get dropped.
+	coalMu  sync.Mutex
+	coalMap map[string][]byte
+	coalSig chan struct{}
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -35,6 +46,12 @@ type Conn struct {
 type Config struct {
 	SendBuffer   int           // outbound queue depth; defaults to 256
 	WriteTimeout time.Duration // per-write deadline; defaults to 10s
+
+	// Per-connection outbound rate limit (messages / second, with burst).
+	// <= 0 disables the limiter — the default keeps the rate high enough
+	// that well-behaved clients never trip it.
+	MessageRate  float64
+	MessageBurst float64
 
 	// Sticky routing (ADR-0033): when TotalInstances > 1 the HTTP handler
 	// verifies shard.Index(userID, TotalInstances) == InstanceOrdinal
@@ -60,6 +77,9 @@ func NewConn(id, userID string, wsConn *websocket.Conn, h *hub.Hub, cfg Config, 
 		logger:       logger,
 		hub:          h,
 		writeTimeout: cfg.WriteTimeout,
+		rate:         newTokenBucket(cfg.MessageRate, cfg.MessageBurst),
+		coalMap:      make(map[string][]byte),
+		coalSig:      make(chan struct{}, 1),
 		done:         make(chan struct{}),
 	}
 }
@@ -82,6 +102,25 @@ func (c *Conn) TrySend(payload []byte) bool {
 	default:
 		return false
 	}
+}
+
+// TrySendCoalesce implements hub.Sink — stash payload as the "latest for
+// coalesceKey" and wake the write loop. Always returns true (unless the
+// conn is already closed) because the map is an unbounded latest-wins
+// store: older payloads for the same key are discarded, never queued.
+// ADR-0037.
+func (c *Conn) TrySendCoalesce(coalesceKey string, payload []byte) bool {
+	if c.closed.Load() {
+		return false
+	}
+	c.coalMu.Lock()
+	c.coalMap[coalesceKey] = payload
+	c.coalMu.Unlock()
+	select {
+	case c.coalSig <- struct{}{}:
+	default:
+	}
+	return true
 }
 
 // Start runs the read and write loops. Blocks until either side exits, then
@@ -150,18 +189,83 @@ func (c *Conn) writeLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			writeCtx, cancel := context.WithTimeout(ctx, c.writeTimeout)
-			err := c.ws.Write(writeCtx, websocket.MessageText, payload)
-			cancel()
-			if err != nil {
-				if ctx.Err() == nil {
-					c.logger.Debug("ws write failed",
-						zap.String("conn", c.id), zap.Error(err))
-				}
+			if !c.rate.allow() {
+				c.logger.Warn("ws rate-limit drop",
+					zap.String("conn", c.id),
+					zap.String("path", "send"))
+				continue
+			}
+			if err := c.writeFrame(ctx, payload); err != nil {
+				return
+			}
+		case <-c.coalSig:
+			if !c.flushCoalesce(ctx) {
 				return
 			}
 		}
 	}
+}
+
+// flushCoalesce drains the coalesce map (snapshot under the lock so new
+// overwrites after we leave don't block us) and writes each entry. Rate
+// limit applies per-entry: rate-limited entries are put back in the map so
+// the next signal picks them up (or a newer overwrite replaces them).
+// Returns false on a terminal write error (caller should exit the loop).
+func (c *Conn) flushCoalesce(ctx context.Context) bool {
+	c.coalMu.Lock()
+	pending := c.coalMap
+	c.coalMap = make(map[string][]byte, len(pending))
+	c.coalMu.Unlock()
+	if len(pending) == 0 {
+		return true
+	}
+	var reque map[string][]byte
+	for key, payload := range pending {
+		if !c.rate.allow() {
+			c.logger.Warn("ws rate-limit drop",
+				zap.String("conn", c.id),
+				zap.String("path", "coalesce"),
+				zap.String("stream", key))
+			if reque == nil {
+				reque = make(map[string][]byte)
+			}
+			reque[key] = payload
+			continue
+		}
+		if err := c.writeFrame(ctx, payload); err != nil {
+			return false
+		}
+	}
+	if len(reque) > 0 {
+		c.coalMu.Lock()
+		for k, v := range reque {
+			if _, overwritten := c.coalMap[k]; !overwritten {
+				c.coalMap[k] = v
+			}
+		}
+		c.coalMu.Unlock()
+		select {
+		case c.coalSig <- struct{}{}:
+		default:
+		}
+	}
+	return true
+}
+
+// writeFrame pushes one payload through the underlying WS. Returns an error
+// only when the caller should exit (ctx dead; socket broken).
+func (c *Conn) writeFrame(ctx context.Context, payload []byte) error {
+	writeCtx, cancel := context.WithTimeout(ctx, c.writeTimeout)
+	err := c.ws.Write(writeCtx, websocket.MessageText, payload)
+	cancel()
+	if err != nil {
+		if ctx.Err() == nil {
+			c.logger.Debug("ws write failed",
+				zap.String("conn", c.id), zap.Error(err))
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *Conn) handleClientMsg(msg *ClientMsg) {

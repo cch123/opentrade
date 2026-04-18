@@ -19,6 +19,12 @@ type Sink interface {
 	// TrySend attempts a non-blocking enqueue. Returns false if the inbox is
 	// full (the message is dropped).
 	TrySend(payload []byte) bool
+	// TrySendCoalesce stores payload as the latest known value for
+	// coalesceKey on this connection; older payloads for the same key are
+	// overwritten before they reach the wire. Callers use this for
+	// replaceable streams (e.g. KlineUpdate) where only the freshest state
+	// matters. Returns false only if the conn is already closed.
+	TrySendCoalesce(coalesceKey string, payload []byte) bool
 	// ID is the connection id used as the map key.
 	ID() string
 	// UserID is the authenticated user id; may be empty for anonymous.
@@ -162,20 +168,7 @@ func (h *Hub) Unsubscribe(connID string, streams []string) []string {
 // streamKey. Returns the number of successful deliveries (slow consumers are
 // logged and counted as drops in the second return value).
 func (h *Hub) BroadcastStream(streamKey string, payload []byte) (sent, dropped int) {
-	h.mu.RLock()
-	set, ok := h.byStream[streamKey]
-	if !ok {
-		h.mu.RUnlock()
-		return 0, 0
-	}
-	targets := make([]Sink, 0, len(set))
-	for cid := range set {
-		if c, ok := h.conns[cid]; ok {
-			targets = append(targets, c)
-		}
-	}
-	h.mu.RUnlock()
-
+	targets := h.subscribers(streamKey)
 	for _, c := range targets {
 		if c.TrySend(payload) {
 			sent++
@@ -187,6 +180,44 @@ func (h *Hub) BroadcastStream(streamKey string, payload []byte) (sent, dropped i
 			zap.String("stream", streamKey))
 	}
 	return sent, dropped
+}
+
+// BroadcastStreamCoalesce is the replaceable-stream variant of
+// BroadcastStream. Each subscriber keeps only the newest payload under
+// coalesceKey until the write loop picks it up; bursts are collapsed to
+// the latest value instead of backing up the bounded outbound queue.
+//
+// coalesceKey is the grain at which messages replace one another — callers
+// typically pass streamKey verbatim so the coalescing is per (conn, stream).
+// ADR-0037.
+func (h *Hub) BroadcastStreamCoalesce(streamKey, coalesceKey string, payload []byte) (sent, dropped int) {
+	targets := h.subscribers(streamKey)
+	for _, c := range targets {
+		if c.TrySendCoalesce(coalesceKey, payload) {
+			sent++
+			continue
+		}
+		dropped++
+	}
+	return sent, dropped
+}
+
+// subscribers returns the current Sinks for streamKey. Callers iterate
+// outside the lock so a slow conn can't stall unrelated deliveries.
+func (h *Hub) subscribers(streamKey string) []Sink {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	set, ok := h.byStream[streamKey]
+	if !ok {
+		return nil
+	}
+	out := make([]Sink, 0, len(set))
+	for cid := range set {
+		if c, ok := h.conns[cid]; ok {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // SendUser delivers payload to every connection owned by userID. Same slow

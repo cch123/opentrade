@@ -43,6 +43,13 @@ type Config struct {
 	PrivateGroupID   string
 	SendBuffer       int
 	WriteTimeout     time.Duration
+
+	// Per-connection outbound rate limit (ADR-0037). Defaults are generous
+	// enough that a normal client never trips them; an abusive client or a
+	// wedged write loop gets dropped frames with a log line.
+	MessageRate  float64
+	MessageBurst float64
+
 	Env              string
 	LogLevel         string
 }
@@ -99,6 +106,8 @@ func main() {
 	mux.HandleFunc("/ws", ws.Handler(rootCtx, h, ws.Config{
 		SendBuffer:      cfg.SendBuffer,
 		WriteTimeout:    cfg.WriteTimeout,
+		MessageRate:     cfg.MessageRate,
+		MessageBurst:    cfg.MessageBurst,
 		InstanceOrdinal: cfg.InstanceOrdinal,
 		TotalInstances:  cfg.TotalInstances,
 	}, logger))
@@ -159,6 +168,8 @@ func parseFlags() Config {
 		CounterJournalTopic: "counter-journal",
 		SendBuffer:          256,
 		WriteTimeout:        10 * time.Second,
+		MessageRate:         2000,
+		MessageBurst:        4000,
 		Env:                 "dev",
 		LogLevel:            "info",
 	}
@@ -174,6 +185,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.PrivateGroupID, "private-group", "", "counter-journal consumer group (default push-priv-{instance-id})")
 	flag.IntVar(&cfg.SendBuffer, "send-buffer", cfg.SendBuffer, "per-connection outbound queue depth")
 	flag.DurationVar(&cfg.WriteTimeout, "write-timeout", cfg.WriteTimeout, "per-write deadline on WS")
+	flag.Float64Var(&cfg.MessageRate, "msg-rate", cfg.MessageRate, "per-connection outbound rate (msgs/s); 0 disables")
+	flag.Float64Var(&cfg.MessageBurst, "msg-burst", cfg.MessageBurst, "per-connection outbound burst capacity (msgs)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()

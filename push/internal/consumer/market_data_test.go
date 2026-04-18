@@ -15,12 +15,15 @@ func TestBuildStreamFrame_PublicTrade(t *testing.T) {
 			TakerSide: eventpb.Side_SIDE_BUY, TsUnixMs: 42,
 		}},
 	}
-	key, payload := buildStreamFrame(evt)
+	key, payload, coal := buildStreamFrame(evt)
 	if key != "trade@BTC-USDT" {
 		t.Errorf("key: %q", key)
 	}
 	if !json.Valid(payload) {
 		t.Errorf("payload not valid json: %s", payload)
+	}
+	if coal {
+		t.Errorf("public trade must not be coalescable")
 	}
 }
 
@@ -34,17 +37,23 @@ func TestBuildStreamFrame_KlineKeyIncludesInterval(t *testing.T) {
 		Symbol:  "BTC-USDT",
 		Payload: &eventpb.MarketDataEvent_KlineUpdate{KlineUpdate: &eventpb.KlineUpdate{Kline: k}},
 	}
-	keyU, _ := buildStreamFrame(upd)
+	keyU, _, coalU := buildStreamFrame(upd)
 	if keyU != "kline@BTC-USDT:5m" {
 		t.Errorf("update key: %q", keyU)
+	}
+	if !coalU {
+		t.Errorf("kline update must be coalescable")
 	}
 	closed := &eventpb.MarketDataEvent{
 		Symbol:  "BTC-USDT",
 		Payload: &eventpb.MarketDataEvent_KlineClosed{KlineClosed: &eventpb.KlineClosed{Kline: k}},
 	}
-	keyC, _ := buildStreamFrame(closed)
+	keyC, _, coalC := buildStreamFrame(closed)
 	if keyC != "kline@BTC-USDT:5m" {
 		t.Errorf("closed key: %q", keyC)
+	}
+	if coalC {
+		t.Errorf("kline closed must not be coalescable (transition event)")
 	}
 }
 
@@ -56,9 +65,12 @@ func TestBuildStreamFrame_Depth(t *testing.T) {
 			Bids:   []*eventpb.DepthLevel{{Price: "1", Qty: "2"}},
 		}},
 	}
-	key, _ := buildStreamFrame(upd)
+	key, _, coal := buildStreamFrame(upd)
 	if key != "depth@X-Y" {
 		t.Errorf("depth update key: %q", key)
+	}
+	if coal {
+		t.Errorf("depth update must not be coalescable (carries a diff)")
 	}
 	snap := &eventpb.MarketDataEvent{
 		Symbol: "X-Y",
@@ -66,14 +78,14 @@ func TestBuildStreamFrame_Depth(t *testing.T) {
 			Symbol: "X-Y",
 		}},
 	}
-	key, _ = buildStreamFrame(snap)
+	key, _, _ = buildStreamFrame(snap)
 	if key != "depth.snapshot@X-Y" {
 		t.Errorf("depth snapshot key: %q", key)
 	}
 }
 
 func TestBuildStreamFrame_Unknown(t *testing.T) {
-	key, payload := buildStreamFrame(&eventpb.MarketDataEvent{Symbol: "X"})
+	key, payload, _ := buildStreamFrame(&eventpb.MarketDataEvent{Symbol: "X"})
 	if key != "" || payload != nil {
 		t.Errorf("expected empty for unknown payload: key=%q payload=%v", key, payload)
 	}
