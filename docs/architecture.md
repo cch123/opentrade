@@ -582,20 +582,10 @@ opentrade/
 
 ## 17. MVP 分期计划
 
-| 阶段 | 内容 | 验收标准 |
-|---|---|---|
-| **MVP-0** | 脚手架：monorepo + go.work + proto + pkg 基础 + docker-compose | `go build ./...` 全通过；docker-compose up 起依赖 |
-| **MVP-1** | Match 单机：消费 order-event → 撮合 → 产出 trade-event；快照+恢复 | 单 symbol 灌 1000 条订单撮合正确；kill -9 重启状态不丢 |
-| **MVP-2** | Counter 单机：Transfer 接口 + counter-journal + 快照 | deposit/withdraw/freeze/unfreeze 正确；重启恢复 |
-| **MVP-3** | Counter ↔ Match 联动：PlaceOrder / Cancel；Kafka 事务；成交结算 | 两用户对敲一笔成交，双方余额正确；端到端 P99 延迟验证 |
-| **MVP-4** | BFF (REST)：下单/撤单/查询 + 滑窗限流 | curl 下单成交 |
-| **MVP-5** | Push (WS)：私有频道 + 公共频道 + sticky 路由 | 浏览器连 WS 下单后实时看到变化 |
-| **MVP-6** | Quote：增量深度 + 1min K 线 + 逐笔 | WS 订阅深度能看到跳动 |
-| **MVP-7** | trade-dump → MySQL：幂等写 | 历史订单/成交能查 |
-| **MVP-8** | HA：etcd 选主 + 主备切换脚本 | kill 主节点后 10-20s 恢复服务 |
-| **MVP-9** | 分片：Counter 10 shard + Match per-symbol | 路由、迁移、灰度流程打通 |
+**已迁移到 [`docs/roadmap.md`](./roadmap.md)** —— 该文档维护已完成 / 计划中 / Backlog
+三段状态，以及每个 MVP 对应的 commit 和 ADR 引用。
 
-每个 MVP 完成标志：**单元测试 + 集成测试（docker-compose 起依赖） + demo 脚本**。
+本架构文档只描述"应该长什么样"（目标架构），不再跟踪执行进度。
 
 ## 18. 测试策略
 
@@ -616,12 +606,14 @@ opentrade/
 - `counter`：下单受理吞吐与延迟基准
 - 在 MVP-3 结束时跑一次，验证是否接近 20 万 TPS / 10ms P99
 
-## 19. 待定 / 后续
+## 19. 远期方向（本文档不展开）
+
+短期 MVP 路线和填坑项见 [`docs/roadmap.md`](./roadmap.md)。以下是**超出 MVP 视野**的
+方向，列此留痕，不在近期排期：
 
 - 风控前置
 - 合约交易（本次仅现货）
-- 撮合撮合决定性回放 / 双主（若后续需要亚秒级切换再评估）
-- 订单状态的对账机制（Counter 内存 vs MySQL 聚合 vs Kafka 回放）
+- 决定性回放 / 双主撮合（若后续需要亚秒级切换再评估）
 - 冷热数据分层（MySQL → 归档）
 - 多机房容灾
 

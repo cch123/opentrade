@@ -7,6 +7,7 @@ Crypto spot CEX 交易系统（现货）。Monorepo，包含 BFF、Counter（柜
 ## 文档
 
 - 架构总览：[`docs/architecture.md`](docs/architecture.md)
+- MVP 进度与填坑：[`docs/roadmap.md`](docs/roadmap.md)
 - 决策记录：[`docs/adr/`](docs/adr/README.md)
 
 ## 仓库布局
