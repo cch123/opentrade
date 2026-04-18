@@ -37,6 +37,7 @@
 - **Push 重连快照补齐** — 客户端重连后拉 BFF 补齐期间遗漏（[ADR-0026](./adr/0026-push-ws-protocol-and-mvp-scope.md)）
 - ~~**Counter 事务双写 review**~~ — ✅ review 发现 Transfer/Settlement 走非事务 producer（HA 下 fencing 失效），已合并到 TxnProducer（见 ADR-0031 §2 补充）
 - ~~**集成冒烟脚本**~~ — ✅ [docs/smoke.md](./smoke.md) + [deploy/scripts/smoke.sh](../deploy/scripts/smoke.sh)
+- **市价单 MARKET** — 决策：客户端翻译为 LIMIT+IOC + 保护价，服务端永不承载（[ADR-0034](./adr/0034-market-orders-client-side-translation.md)）。后续：写 `docs/market-orders.md` 客户端指导；`engine.ComputeFreeze` 的 `ErrMarketInMVP` 改名 `ErrMarketNotSupported` 并注释指向 ADR-0034
 - **Counter 对账** — 每小时余额对比内存 vs MySQL 聚合（[ADR-0008 实施约束](./adr/0008-sidecar-persistence-trade-dump.md)）
 - **Quote state snapshot** — 重启冷启动改从 snapshot + 增量（[ADR-0025 未来工作](./adr/0025-quote-engine-state-and-offset-strategy.md)）
 - **Counter re-shard 工具** — 未来扩容 10→20 shard 用（[ADR-0010](./adr/0010-counter-sharding-by-userid.md)、[ADR-0027](./adr/0027-counter-sharding-rollout.md)）

@@ -118,6 +118,29 @@ func TestPlaceOrderInvalidSide(t *testing.T) {
 	}
 }
 
+func TestPlaceOrderMarketRejected(t *testing.T) {
+	// Server-side MARKET is not supported (ADR-0034). BFF rejects it at
+	// the REST layer so the caller gets a clear hint to submit LIMIT+IOC.
+	// Ensures we don't accidentally forward a MARKET to counter.
+	fc := &fakeCounter{
+		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			t.Fatalf("counter should not be called: %+v", req)
+			return nil, nil
+		},
+	}
+	srv := newServer(fc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(`{"symbol":"BTC-USDT","side":"buy","order_type":"market","tif":"gtc","qty":"1"}`))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("market")) {
+		t.Errorf("error body should mention market: %s", rr.Body.String())
+	}
+}
+
 func TestCancelOrderAndQuery(t *testing.T) {
 	fc := &fakeCounter{
 		cancelFn: func(req *counterrpc.CancelOrderRequest) (*counterrpc.CancelOrderResponse, error) {

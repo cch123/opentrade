@@ -43,6 +43,17 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if ot == eventpb.OrderType_ORDER_TYPE_MARKET {
+		// OpenTrade does not host MARKET on the server side (ADR-0034).
+		// The client must compute a protective price from the latest ticker
+		// and submit a LIMIT order with tif=ioc. Returning a clear error
+		// points the caller at the right shape instead of silently
+		// forwarding a request the matching engine will reject.
+		writeError(w, http.StatusBadRequest,
+			"market orders are not supported server-side; submit as "+
+				"{order_type:\"limit\", tif:\"ioc\", price:<slippage-bounded>} — see ADR-0034")
+		return
+	}
 	tif, err := parseTIF(body.TIF)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
