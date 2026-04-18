@@ -33,6 +33,7 @@ Thumbs.db
 *.pid
 data/
 snapshots/
+/logs/
 /tmp/
 
 # Secrets

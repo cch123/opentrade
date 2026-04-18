@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenTrade — dev console</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .num { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .book-row { cursor: pointer; transition: background-color .1s; }
+  .book-row:hover { background-color: rgba(255,255,255,0.04); }
+  .book-bar-bid { background: linear-gradient(to left, rgba(34,197,94,0.15) var(--w, 0%), transparent var(--w, 0%)); }
+  .book-bar-ask { background: linear-gradient(to left, rgba(239,68,68,0.15) var(--w, 0%), transparent var(--w, 0%)); }
+  .stream { max-height: 240px; overflow-y: auto; }
+  .chip-on  { background: #38bdf8; color: #0f172a; }
+  .chip-off { background: transparent; color: #94a3b8; border: 1px solid #334155; }
+  .chip     { padding: 4px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  input[type=text], input[type=number] {
+    background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+    padding: 6px 10px; border-radius: 6px; width: 100%;
+    font-variant-numeric: tabular-nums;
+  }
+  input:focus { outline: none; border-color: #38bdf8; }
+</style>
+</head>
+<body class="bg-slate-900 text-slate-200 min-h-screen">
+
+<header class="flex items-center gap-4 px-6 py-3 border-b border-slate-800">
+  <div class="text-lg font-bold text-sky-400">OpenTrade</div>
+  <div class="text-xs text-slate-500">dev console · X-User-Id auth</div>
+  <div class="flex-1"></div>
+  <span class="text-sm text-slate-400">user:</span>
+  <select id="user-sel" class="bg-slate-800 border border-slate-700 text-slate-100 px-2 py-1 rounded text-sm"></select>
+  <button id="add-user" class="text-xs text-sky-400 hover:underline">+ custom</button>
+  <div id="ws-badge" class="text-sm ml-2">● idle</div>
+  <button id="reconnect" class="text-xs text-sky-400 hover:underline">reconnect</button>
+</header>
+
+<section class="px-6 py-2 border-b border-slate-800 flex items-center gap-6 text-sm">
+  <div id="ticker-symbol" class="font-bold text-sky-400">BTC-USDT</div>
+  <div>last: <span id="ticker-last" class="num text-emerald-400">—</span></div>
+  <div>best bid: <span id="ticker-bid" class="num text-emerald-400">—</span></div>
+  <div>best ask: <span id="ticker-ask" class="num text-rose-400">—</span></div>
+  <div class="flex-1"></div>
+  <div id="status" class="text-slate-500"></div>
+</section>
+
+<main class="grid grid-cols-12 gap-4 p-4">
+
+  <!-- Orderbook -->
+  <section class="col-span-4 bg-slate-800/40 rounded-lg border border-slate-800 p-3">
+    <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Orderbook</h2>
+    <div class="grid grid-cols-2 text-xs text-slate-500 px-2 py-1 num">
+      <span>price</span><span class="text-right">qty</span>
+    </div>
+    <div id="asks" class="num text-sm"></div>
+    <div id="mid" class="text-center py-1 text-xs text-slate-500 border-y border-slate-800 my-1">last —</div>
+    <div id="bids" class="num text-sm"></div>
+    <div id="book-ts" class="text-xs text-slate-500 mt-2">waiting for depth…</div>
+  </section>
+
+  <!-- Order form -->
+  <section class="col-span-4 bg-slate-800/40 rounded-lg border border-slate-800 p-3">
+    <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Place Order</h2>
+
+    <div class="flex gap-2 mb-2">
+      <label class="text-xs text-slate-400 w-12 pt-1">side</label>
+      <button class="chip" data-side="buy">buy</button>
+      <button class="chip" data-side="sell">sell</button>
+    </div>
+    <div class="flex gap-2 mb-2">
+      <label class="text-xs text-slate-400 w-12 pt-1">type</label>
+      <button class="chip" data-type="limit">limit</button>
+      <button class="chip" data-type="market">market</button>
+    </div>
+    <div id="tif-row" class="flex gap-2 mb-2">
+      <label class="text-xs text-slate-400 w-12 pt-1">tif</label>
+      <button class="chip" data-tif="gtc">gtc</button>
+      <button class="chip" data-tif="ioc">ioc</button>
+      <button class="chip" data-tif="fok">fok</button>
+      <button class="chip" data-tif="post_only">post</button>
+    </div>
+
+    <div id="field-price" class="flex items-center gap-2 mb-2">
+      <label class="text-xs text-slate-400 w-12">price</label>
+      <input id="price" type="text" placeholder="50000" />
+    </div>
+    <div id="field-qty" class="flex items-center gap-2 mb-2">
+      <label class="text-xs text-slate-400 w-12">qty</label>
+      <input id="qty" type="text" placeholder="0.01" />
+    </div>
+    <div id="field-quote" class="flex items-center gap-2 mb-2 hidden">
+      <label class="text-xs text-slate-400 w-12">quote</label>
+      <input id="quote_qty" type="text" placeholder="(market buy budget)" />
+    </div>
+    <div id="notional" class="text-xs text-slate-500 mb-3 h-4"></div>
+
+    <button id="place" class="w-full py-2 rounded text-white font-semibold bg-emerald-600 hover:bg-emerald-500">
+      Place BUY BTC-USDT
+    </button>
+  </section>
+
+  <!-- Balances + Transfer -->
+  <section class="col-span-4 space-y-4">
+    <div class="bg-slate-800/40 rounded-lg border border-slate-800 p-3">
+      <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Balances</h2>
+      <table class="w-full text-sm num">
+        <thead>
+          <tr class="text-left text-xs text-slate-500">
+            <th class="py-1">asset</th><th class="text-right py-1">available</th><th class="text-right py-1">frozen</th>
+          </tr>
+        </thead>
+        <tbody id="balances"><tr><td colspan="3" class="text-slate-500 text-xs py-2">loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="bg-slate-800/40 rounded-lg border border-slate-800 p-3">
+      <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Transfer</h2>
+      <div class="flex gap-2 mb-2 flex-wrap">
+        <button class="chip" data-xfer="deposit">deposit</button>
+        <button class="chip" data-xfer="withdraw">withdraw</button>
+        <button class="chip" data-xfer="freeze">freeze</button>
+        <button class="chip" data-xfer="unfreeze">unfreeze</button>
+      </div>
+      <div class="flex items-center gap-2 mb-2">
+        <label class="text-xs text-slate-400 w-12">asset</label>
+        <input id="xfer-asset" type="text" placeholder="USDT" />
+      </div>
+      <div class="flex items-center gap-2 mb-2">
+        <label class="text-xs text-slate-400 w-12">amount</label>
+        <input id="xfer-amount" type="text" placeholder="100" />
+      </div>
+      <button id="xfer-submit" class="w-full py-2 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold">
+        Submit Transfer
+      </button>
+    </div>
+  </section>
+
+  <!-- Open orders -->
+  <section class="col-span-12 bg-slate-800/40 rounded-lg border border-slate-800 p-3">
+    <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Open Orders</h2>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-slate-500">
+          <th class="py-1">order_id</th>
+          <th>symbol</th><th>side</th><th>type</th><th>tif</th>
+          <th class="text-right">price</th><th class="text-right">qty</th><th class="text-right">filled</th>
+          <th>status</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="open-orders" class="num"></tbody>
+    </table>
+  </section>
+
+  <!-- Stream -->
+  <section class="col-span-12 bg-slate-800/40 rounded-lg border border-slate-800 p-3">
+    <div class="flex items-center mb-2">
+      <h2 class="text-sm uppercase tracking-wide text-slate-400">Stream</h2>
+      <div class="flex-1"></div>
+      <button id="clear-stream" class="text-xs text-sky-400 hover:underline">clear</button>
+    </div>
+    <div id="stream" class="stream font-mono text-xs space-y-0.5"></div>
+  </section>
+
+</main>
+
+<footer class="px-6 py-3 text-xs text-slate-500 border-t border-slate-800">
+  shortcuts: <kbd class="bg-slate-800 px-1 rounded">b</kbd>/<kbd class="bg-slate-800 px-1 rounded">s</kbd> side ·
+  <kbd class="bg-slate-800 px-1 rounded">l</kbd>/<kbd class="bg-slate-800 px-1 rounded">m</kbd> type ·
+  <kbd class="bg-slate-800 px-1 rounded">Enter</kbd> place order when focused outside inputs
+</footer>
+
+<script>
+'use strict';
+
+// ---------- State ----------
+const state = {
+  user: localStorage.getItem('ot_user') || 'alice',
+  users: JSON.parse(localStorage.getItem('ot_users') || '["alice","bob"]'),
+  symbol: 'BTC-USDT',
+  side: 'buy',
+  orderType: 'limit',
+  tif: 'gtc',
+  xferType: 'deposit',
+  ws: null,
+  wsState: 'idle',
+  book: { bids: new Map(), asks: new Map(), ts: null },
+  lastTrade: null,
+  balances: [],
+  orders: [],
+  // pendingCancel collects order ids the user clicked cancel on. We
+  // optimistically hide them in the UI; history MySQL updates on a batch
+  // delay (ADR-0023), so polling them back as "new" would make it look
+  // like cancel failed. Entries clear when the server drops them from
+  // the open list.
+  pendingCancel: new Set(),
+  stream: [],
+  wsReconnectTimer: null,
+};
+
+// ---------- Utils ----------
+const $ = (id) => document.getElementById(id);
+
+function fmtNum(s) {
+  if (s == null || s === '') return '—';
+  const n = Number(s);
+  if (!isFinite(n)) return s;
+  // keep original precision; just format fractional digits reasonably
+  if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return String(s);
+}
+
+function rand() { return Math.random().toString(16).slice(2, 10); }
+
+function setStatus(text, ok) {
+  const el = $('status');
+  el.textContent = text || '';
+  el.className = 'text-xs ' + (text ? (ok ? 'text-emerald-400' : 'text-rose-400') : 'text-slate-500');
+}
+
+function pushStream(tag, text) {
+  state.stream.push({ ts: new Date(), tag, text });
+  if (state.stream.length > 500) state.stream = state.stream.slice(-500);
+  renderStream();
+}
+
+// ---------- REST ----------
+
+// BFF returns uint64 ids as bare JSON numbers. JS Number only keeps 53 bits
+// of precision, so anything above 2^53 (9_007_199_254_740_992) is silently
+// rounded — canceling an order would hit the wrong id. Preprocess the raw
+// body to quote any *_id/*Id integer with 16+ digits before JSON.parse.
+function quoteBigIds(text) {
+  return text.replace(
+    /("(?:[A-Za-z]+_id|[A-Za-z]+Id)"\s*:\s*)(\d{16,})(?=[\s,}\]])/g,
+    '$1"$2"',
+  );
+}
+
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'X-User-Id': state.user },
+  };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  const raw = await res.text();
+  let json;
+  try { json = raw ? JSON.parse(quoteBigIds(raw)) : null; } catch {}
+  if (!res.ok) {
+    const msg = (json && json.error) || raw || `HTTP ${res.status}`;
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
+  }
+  return json;
+}
+
+// ---------- WebSocket ----------
+function connectWS() {
+  if (state.wsReconnectTimer) { clearTimeout(state.wsReconnectTimer); state.wsReconnectTimer = null; }
+  if (state.ws) { try { state.ws.close(); } catch {} }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = `${proto}://${location.host}/ws?user_id=${encodeURIComponent(state.user)}`;
+  state.wsState = 'connecting';
+  renderHeader();
+  const ws = new WebSocket(url);
+  state.ws = ws;
+  ws.onopen = () => {
+    state.wsState = 'open';
+    renderHeader();
+    ws.send(JSON.stringify({
+      op: 'subscribe',
+      streams: [
+        `publictrade@${state.symbol}`,
+        `depth@${state.symbol}`,
+        `kline@${state.symbol}:1m`,
+      ],
+    }));
+  };
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.stream) handleFrame(msg.stream, msg.data);
+    else if (msg.op) handleControl(msg);
+  };
+  ws.onclose = () => {
+    state.wsState = 'closed';
+    renderHeader();
+    // auto-reconnect unless user-triggered
+    state.wsReconnectTimer = setTimeout(connectWS, 2000);
+  };
+  ws.onerror = () => {};
+}
+
+function handleControl(msg) {
+  if (msg.op === 'error') pushStream('ctl', `error: ${msg.message || ''}`);
+}
+
+function handleFrame(stream, data) {
+  if (stream === 'user') {
+    const sum = summarizeUser(data);
+    if (sum) pushStream('me', sum);
+    // counter-journal events change balance/orders; poll immediately
+    pollAccount();
+  } else if (stream.startsWith('publictrade@')) {
+    state.lastTrade = data.price;
+    const side = String(data.takerSide || '').replace('SIDE_', '').toLowerCase();
+    pushStream('pub', `${data.symbol} ${fmtNum(data.price)} × ${fmtNum(data.qty)} ${side}`);
+    renderTicker();
+  } else if (stream.startsWith('depth@')) {
+    applyDepth(data);
+    renderOrderbook();
+    renderTicker();
+  }
+}
+
+function summarizeUser(data) {
+  if (!data || typeof data !== 'object') return '';
+  if (data.orderStatus) {
+    const s = data.orderStatus;
+    const ns = String(s.newStatus || '');
+    // Remove terminal orders from the open list immediately — don't wait
+    // for the batched MySQL projection.
+    if (/CANCELED|FILLED|REJECTED|EXPIRED/.test(ns)) {
+      const oid = String(s.orderId);
+      state.orders = state.orders.filter((o) => String(o.order_id) !== oid);
+      state.pendingCancel.delete(oid);
+      renderOrders();
+    }
+    return `order ${s.orderId} ${s.symbol || ''} ${ns.replace('INTERNAL_ORDER_STATUS_', '').toLowerCase()} filled=${s.filledQty || '0'}`;
+  }
+  if (data.trade) {
+    const t = data.trade;
+    return `trade ${t.symbol} ${fmtNum(t.price)} × ${fmtNum(t.qty)} role=${t.role} order=${t.orderId}`;
+  }
+  if (data.transfer) {
+    const t = data.transfer;
+    return `transfer ${t.type} ${fmtNum(t.amount)} ${t.asset}`;
+  }
+  if (data.freeze) return `freeze ${data.freeze.asset || ''} ${fmtNum(data.freeze.amount || '')}`;
+  if (data.unfreeze) return `unfreeze ${data.unfreeze.asset || ''} ${fmtNum(data.unfreeze.amount || '')}`;
+  if (data.settlement) return `settlement ${data.settlement.asset || ''} ${fmtNum(data.settlement.delta || '')}`;
+  return JSON.stringify(data);
+}
+
+// ---------- Orderbook ----------
+function applyDepth(data) {
+  for (const lvl of (data.bids || [])) applyLevel(state.book.bids, lvl);
+  for (const lvl of (data.asks || [])) applyLevel(state.book.asks, lvl);
+  state.book.ts = new Date();
+}
+function applyLevel(side, lvl) {
+  if (!lvl || !lvl.price) return;
+  const q = Number(lvl.qty);
+  if (!(q > 0)) { side.delete(lvl.price); return; }
+  side.set(lvl.price, { price: lvl.price, qty: lvl.qty, priceNum: Number(lvl.price) });
+}
+function topBids(n) {
+  return [...state.book.bids.values()].sort((a, b) => b.priceNum - a.priceNum).slice(0, n);
+}
+function topAsks(n) {
+  return [...state.book.asks.values()].sort((a, b) => a.priceNum - b.priceNum).slice(0, n);
+}
+
+// ---------- Rendering ----------
+function renderHeader() {
+  const badge = $('ws-badge');
+  const { wsState } = state;
+  if (wsState === 'open') { badge.textContent = '● ws open'; badge.className = 'text-sm ml-2 text-emerald-400'; }
+  else if (wsState === 'connecting') { badge.textContent = '◌ connecting'; badge.className = 'text-sm ml-2 text-amber-400'; }
+  else if (wsState === 'closed') { badge.textContent = '● ws closed'; badge.className = 'text-sm ml-2 text-rose-400'; }
+  else { badge.textContent = '○ ws idle'; badge.className = 'text-sm ml-2 text-slate-500'; }
+
+  // user select
+  const sel = $('user-sel');
+  sel.innerHTML = '';
+  for (const u of state.users) {
+    const opt = document.createElement('option');
+    opt.value = u; opt.textContent = u;
+    if (u === state.user) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function renderTicker() {
+  $('ticker-symbol').textContent = state.symbol;
+  $('ticker-last').textContent = state.lastTrade != null ? fmtNum(state.lastTrade) : '—';
+  const bb = topBids(1)[0];
+  const ba = topAsks(1)[0];
+  $('ticker-bid').textContent = bb ? `${fmtNum(bb.price)} (${fmtNum(bb.qty)})` : '—';
+  $('ticker-ask').textContent = ba ? `${fmtNum(ba.price)} (${fmtNum(ba.qty)})` : '—';
+}
+
+function renderOrderbook() {
+  const asks = topAsks(10);
+  const bids = topBids(10);
+  const maxQty = Math.max(
+    ...asks.map((x) => Number(x.qty)),
+    ...bids.map((x) => Number(x.qty)),
+    0,
+  );
+
+  const mkRow = (lvl, side) => {
+    const q = Number(lvl.qty);
+    const pct = maxQty > 0 ? (q / maxQty) * 100 : 0;
+    const colorClass = side === 'ask' ? 'text-rose-400' : 'text-emerald-400';
+    const barClass = side === 'ask' ? 'book-bar-ask' : 'book-bar-bid';
+    return `<div class="book-row grid grid-cols-2 px-2 py-0.5 ${barClass}" style="--w:${pct}%" data-price="${lvl.price}">
+      <span class="${colorClass}">${fmtNum(lvl.price)}</span>
+      <span class="text-right text-slate-300">${fmtNum(lvl.qty)}</span>
+    </div>`;
+  };
+
+  // asks: render with best (lowest) at the bottom, just above mid line
+  $('asks').innerHTML = asks.slice().reverse().map((l) => mkRow(l, 'ask')).join('') ||
+    `<div class="text-xs text-slate-500 px-2 py-1">(asks empty)</div>`;
+  $('bids').innerHTML = bids.map((l) => mkRow(l, 'bid')).join('') ||
+    `<div class="text-xs text-slate-500 px-2 py-1">(bids empty)</div>`;
+
+  const midLabel = state.lastTrade != null ? `last ${fmtNum(state.lastTrade)}`
+                 : (asks[0] ? `ask ${fmtNum(asks[0].price)}` : '—');
+  $('mid').textContent = midLabel;
+
+  $('book-ts').textContent = state.book.ts
+    ? `updated ${state.book.ts.toLocaleTimeString()} · click a row to copy price`
+    : `waiting for depth…`;
+
+  // wire click handlers
+  document.querySelectorAll('#asks .book-row, #bids .book-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      $('price').value = row.dataset.price;
+      updateNotional();
+    });
+  });
+}
+
+function renderBalances() {
+  const tb = $('balances');
+  if (!state.balances.length) {
+    tb.innerHTML = `<tr><td colspan="3" class="text-slate-500 text-xs py-2">(empty)</td></tr>`;
+    return;
+  }
+  tb.innerHTML = state.balances.map((b) => `
+    <tr class="border-t border-slate-800/50">
+      <td class="py-1">${b.asset}</td>
+      <td class="py-1 text-right">${fmtNum(b.available)}</td>
+      <td class="py-1 text-right text-slate-400">${fmtNum(b.frozen)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderOrders() {
+  const tb = $('open-orders');
+  const visible = state.orders.filter((o) => !state.pendingCancel.has(String(o.order_id)));
+  if (!visible.length) {
+    tb.innerHTML = `<tr><td colspan="10" class="text-slate-500 text-xs py-2">(no open orders)</td></tr>`;
+    return;
+  }
+  tb.innerHTML = visible.map((o) => `
+    <tr class="border-t border-slate-800/50">
+      <td class="py-1">${o.order_id}</td>
+      <td>${o.symbol}</td>
+      <td class="${o.side === 'buy' ? 'text-emerald-400' : 'text-rose-400'}">${o.side}</td>
+      <td>${o.order_type}</td>
+      <td>${o.tif}</td>
+      <td class="text-right">${fmtNum(o.price)}</td>
+      <td class="text-right">${fmtNum(o.qty)}</td>
+      <td class="text-right">${fmtNum(o.filled_qty)}</td>
+      <td>${o.status}</td>
+      <td><button data-cancel="${o.order_id}" class="text-rose-400 hover:underline text-xs">cancel</button></td>
+    </tr>
+  `).join('');
+
+  tb.querySelectorAll('button[data-cancel]').forEach((btn) => {
+    btn.addEventListener('click', () => cancelOrder(btn.dataset.cancel));
+  });
+}
+
+function renderStream() {
+  const el = $('stream');
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 10;
+  el.innerHTML = state.stream.map((l) => {
+    const tagColor = {
+      pub: 'text-emerald-400',
+      me: 'text-sky-400',
+      ctl: 'text-amber-400',
+      xfer: 'text-fuchsia-400',
+    }[l.tag] || 'text-slate-500';
+    return `<div>
+      <span class="text-slate-600">${l.ts.toLocaleTimeString()}</span>
+      <span class="${tagColor} px-1">[${l.tag}]</span>
+      <span class="text-slate-300">${escapeHTML(l.text)}</span>
+    </div>`;
+  }).join('');
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+function renderForm() {
+  // chip states
+  for (const el of document.querySelectorAll('[data-side]')) {
+    el.className = 'chip ' + (el.dataset.side === state.side ? 'chip-on' : 'chip-off');
+  }
+  for (const el of document.querySelectorAll('[data-type]')) {
+    el.className = 'chip ' + (el.dataset.type === state.orderType ? 'chip-on' : 'chip-off');
+  }
+  for (const el of document.querySelectorAll('[data-tif]')) {
+    el.className = 'chip ' + (el.dataset.tif === state.tif ? 'chip-on' : 'chip-off');
+  }
+  for (const el of document.querySelectorAll('[data-xfer]')) {
+    el.className = 'chip ' + (el.dataset.xfer === state.xferType ? 'chip-on' : 'chip-off');
+  }
+
+  // field visibility
+  const isLimit = state.orderType === 'limit';
+  const isMarketBuy = state.orderType === 'market' && state.side === 'buy';
+  $('field-price').classList.toggle('hidden', !isLimit);
+  $('field-qty').classList.toggle('hidden', isMarketBuy);
+  $('field-quote').classList.toggle('hidden', !isMarketBuy);
+  $('tif-row').classList.toggle('hidden', !isLimit);
+
+  // primary button
+  const btn = $('place');
+  const label = `Place ${state.side.toUpperCase()} ${state.orderType} ${state.symbol}`;
+  btn.textContent = label;
+  btn.className = 'w-full py-2 rounded text-white font-semibold ' +
+    (state.side === 'buy' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-rose-600 hover:bg-rose-500');
+
+  updateNotional();
+}
+
+function updateNotional() {
+  const p = parseFloat($('price').value);
+  const q = parseFloat($('qty').value);
+  if (state.orderType === 'limit' && isFinite(p) && isFinite(q) && p > 0 && q > 0) {
+    const quote = state.symbol.split('-').pop();
+    $('notional').textContent = `≈ notional ${(p * q).toFixed(4)} ${quote}`;
+  } else {
+    $('notional').textContent = '';
+  }
+}
+
+// ---------- Actions ----------
+async function placeOrder() {
+  const req = {
+    client_order_id: 'web-' + rand(),
+    symbol: state.symbol,
+    side: state.side,
+    order_type: state.orderType,
+    tif: state.tif,
+  };
+  if (state.orderType === 'limit') {
+    req.price = $('price').value.trim();
+    req.qty = $('qty').value.trim();
+    if (!req.price || !req.qty) { setStatus('limit needs price + qty', false); return; }
+  } else {
+    if (state.side === 'buy') {
+      req.quote_qty = $('quote_qty').value.trim();
+      if (!req.quote_qty) { setStatus('market buy needs quote', false); return; }
+    } else {
+      req.qty = $('qty').value.trim();
+      if (!req.qty) { setStatus('market sell needs qty', false); return; }
+    }
+  }
+  try {
+    const resp = await api('POST', '/v1/order', req);
+    setStatus(`order ${resp.order_id} accepted=${resp.accepted}`, resp.accepted);
+  } catch (e) {
+    setStatus('order failed: ' + e.message, false);
+  }
+  pollAccount();
+}
+
+async function cancelOrder(orderID) {
+  const id = String(orderID);
+  state.pendingCancel.add(id);
+  renderOrders();
+  pushStream('me', `cancel ${id} …`);
+  try {
+    const resp = await api('DELETE', `/v1/order/${id}`);
+    if (resp.accepted) {
+      setStatus(`cancel ${id} ok`, true);
+      pushStream('me', `cancel ${id} accepted`);
+    } else {
+      state.pendingCancel.delete(id);
+      renderOrders();
+      setStatus(`cancel ${id} rejected by counter`, false);
+      pushStream('me', `cancel ${id} rejected`);
+    }
+  } catch (e) {
+    const msg = String(e.message || '');
+    // "already terminal" / "not found" means the order is effectively gone
+    // at the counter level — the MySQL projection just hasn't caught up
+    // (ADR-0023 batch lag). Treat as a successful cancel: drop the row
+    // and keep pendingCancel so the next stale poll stays hidden.
+    if (/already terminal|not found/i.test(msg)) {
+      state.orders = state.orders.filter((o) => String(o.order_id) !== id);
+      renderOrders();
+      setStatus(`order ${id} already finalized — removed`, true);
+      pushStream('me', `cancel ${id} noop (already terminal)`);
+    } else {
+      state.pendingCancel.delete(id);
+      renderOrders();
+      setStatus(`cancel failed: ${msg}`, false);
+      pushStream('me', `cancel ${id} failed: ${msg}`);
+    }
+  }
+  pollAccount();
+}
+
+async function submitTransfer() {
+  const asset = $('xfer-asset').value.trim().toUpperCase();
+  const amount = $('xfer-amount').value.trim();
+  if (!asset || !amount) { setStatus('transfer needs asset + amount', false); return; }
+  const req = {
+    transfer_id: `${state.xferType}-${state.user}-${rand()}`,
+    asset, amount, type: state.xferType,
+  };
+  try {
+    const resp = await api('POST', '/v1/transfer', req);
+    setStatus(`transfer ${state.xferType} ${amount} ${asset} → ${resp.status}`, resp.status !== 'rejected');
+  } catch (e) {
+    setStatus('transfer failed: ' + e.message, false);
+  }
+  pollAccount();
+}
+
+// ---------- Polling ----------
+async function pollAccount() {
+  try {
+    const bal = await api('GET', '/v1/account');
+    state.balances = bal.balances || [];
+    renderBalances();
+  } catch {}
+  try {
+    const ords = await api('GET', `/v1/orders?scope=open&symbol=${encodeURIComponent(state.symbol)}&limit=50`);
+    const raw = ords.orders || [];
+    // history's MySQL projection can lag or miss status events across dev
+    // restarts. Counter is the source of truth for live order state (ADR-0007,
+    // ADR-0020), so cross-check each "open" candidate via /v1/order/{id}
+    // (gRPC to counter) before showing it. N is small in dev; fine to do N
+    // round-trips per poll.
+    const verified = await Promise.all(raw.map(async (o) => {
+      try {
+        const t = await api('GET', `/v1/order/${o.order_id}`);
+        // Hide PENDING_CANCEL: cancel is already in flight at counter; match
+        // may not complete the transition (e.g. state divergence) but there's
+        // nothing actionable the user can do, so keep it out of the open list.
+        if ((t.status === 'new' || t.status === 'partially_filled') &&
+            t.internal_status !== 'pending_cancel') {
+          return { ...o, status: t.status, filled_qty: t.filled_qty };
+        }
+        return null;
+      } catch {
+        return o; // counter unreachable — trust the projection
+      }
+    }));
+    state.orders = verified.filter(Boolean);
+    const ids = new Set(state.orders.map((o) => String(o.order_id)));
+    for (const pid of [...state.pendingCancel]) {
+      if (!ids.has(pid)) state.pendingCancel.delete(pid);
+    }
+    renderOrders();
+  } catch {}
+}
+function schedulePoll() {
+  setInterval(pollAccount, 2500);
+}
+
+// ---------- Wiring ----------
+function addUserFlow() {
+  const name = prompt('custom user id:');
+  if (!name) return;
+  const t = name.trim();
+  if (!t) return;
+  if (!state.users.includes(t)) state.users.push(t);
+  state.user = t;
+  persistUser();
+  renderHeader();
+  reconnectAll();
+}
+function persistUser() {
+  localStorage.setItem('ot_user', state.user);
+  localStorage.setItem('ot_users', JSON.stringify(state.users));
+}
+function reconnectAll() {
+  // Per-user state needs clearing; public market data (orderbook, ticker,
+  // stream) is the same for everyone — keep it so the user doesn't see a
+  // blank book while waiting for the next depth snapshot.
+  state.orders = []; state.balances = [];
+  renderBalances(); renderOrders();
+  connectWS(); pollAccount();
+}
+
+function wire() {
+  $('user-sel').addEventListener('change', (e) => {
+    state.user = e.target.value; persistUser(); reconnectAll();
+  });
+  $('add-user').addEventListener('click', addUserFlow);
+  $('reconnect').addEventListener('click', connectWS);
+
+  for (const el of document.querySelectorAll('[data-side]')) {
+    el.addEventListener('click', () => { state.side = el.dataset.side; renderForm(); });
+  }
+  for (const el of document.querySelectorAll('[data-type]')) {
+    el.addEventListener('click', () => { state.orderType = el.dataset.type; renderForm(); });
+  }
+  for (const el of document.querySelectorAll('[data-tif]')) {
+    el.addEventListener('click', () => { state.tif = el.dataset.tif; renderForm(); });
+  }
+  for (const el of document.querySelectorAll('[data-xfer]')) {
+    el.addEventListener('click', () => { state.xferType = el.dataset.xfer; renderForm(); });
+  }
+
+  $('price').addEventListener('input', updateNotional);
+  $('qty').addEventListener('input', updateNotional);
+
+  $('place').addEventListener('click', placeOrder);
+  $('xfer-submit').addEventListener('click', submitTransfer);
+  $('clear-stream').addEventListener('click', () => { state.stream = []; renderStream(); });
+
+  document.addEventListener('keydown', (e) => {
+    const inInput = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+    if (inInput) return;
+    const k = e.key.toLowerCase();
+    if (k === 'b') { state.side = 'buy'; renderForm(); }
+    else if (k === 's') { state.side = 'sell'; renderForm(); }
+    else if (k === 'l') { state.orderType = 'limit'; renderForm(); }
+    else if (k === 'm') { state.orderType = 'market'; renderForm(); }
+    else if (e.key === 'Enter') placeOrder();
+  });
+}
+
+// ---------- Boot ----------
+function boot() {
+  wire();
+  renderHeader();
+  renderForm();
+  renderTicker();
+  renderOrderbook();
+  renderBalances();
+  renderOrders();
+  renderStream();
+  connectWS();
+  pollAccount();
+  schedulePoll();
+}
+boot();
+</script>
+</body>
+</html>

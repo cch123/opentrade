@@ -11,4 +11,6 @@ use (
 	./trade-dump
 	./conditional
 	./history
+	./tools/tui
+	./tools/web
 )
