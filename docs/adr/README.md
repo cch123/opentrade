@@ -120,6 +120,7 @@
 | [0043](0043-conditional-expiry.md) | 条件单过期（TTL） | Accepted |
 | [0044](0044-conditional-oco.md) | 条件单 OCO（One-Cancels-Other） | Accepted |
 | [0045](0045-conditional-trailing-stop.md) | 条件单 Trailing Stop | Accepted |
+| [0047](0047-conditional-long-term-history.md) | 条件单长期历史（conditional-event + 投影） | Accepted |
 
 ### 工程与基础设施
 

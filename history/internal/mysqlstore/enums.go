@@ -2,6 +2,7 @@ package mysqlstore
 
 import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 )
 
@@ -157,6 +158,81 @@ func InternalStatusesForFilters(external []historypb.OrderStatus) []int8 {
 			seen[n] = struct{}{}
 			out = append(out, n)
 		}
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// Conditional enum helpers (ADR-0047)
+// ---------------------------------------------------------------------------
+
+func conditionalTypeFromInt(n int8) condrpc.ConditionalType {
+	switch n {
+	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS):
+		return condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS
+	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS_LIMIT):
+		return condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS_LIMIT
+	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT):
+		return condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT
+	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT):
+		return condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT
+	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS):
+		return condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS
+	}
+	return condrpc.ConditionalType_CONDITIONAL_TYPE_UNSPECIFIED
+}
+
+func conditionalStatusFromInt(n int8) condrpc.ConditionalStatus {
+	switch n {
+	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING):
+		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING
+	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED):
+		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED
+	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED):
+		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED
+	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED):
+		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED
+	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED):
+		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED
+	}
+	return condrpc.ConditionalStatus_CONDITIONAL_STATUS_UNSPECIFIED
+}
+
+// ConditionalStatusesForScope expands a ConditionalScope to the set of
+// condrpc statuses it covers. Used by the server layer to fold
+// scope → statuses before calling the store.
+func ConditionalStatusesForScope(s historypb.ConditionalScope) []condrpc.ConditionalStatus {
+	switch s {
+	case historypb.ConditionalScope_CONDITIONAL_SCOPE_ACTIVE:
+		return []condrpc.ConditionalStatus{
+			condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING,
+		}
+	case historypb.ConditionalScope_CONDITIONAL_SCOPE_TERMINAL:
+		return []condrpc.ConditionalStatus{
+			condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED,
+			condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED,
+			condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED,
+			condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED,
+		}
+	}
+	return nil
+}
+
+// InternalConditionalStatuses flattens a (possibly empty) slice of
+// condrpc statuses into the deduped int8 slice the store needs.
+func InternalConditionalStatuses(external []condrpc.ConditionalStatus) []int8 {
+	if len(external) == 0 {
+		return nil
+	}
+	seen := map[int8]struct{}{}
+	var out []int8
+	for _, s := range external {
+		n := int8(s)
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
 	}
 	return out
 }

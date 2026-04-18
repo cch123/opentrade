@@ -93,6 +93,48 @@ func (s *Server) ListTrades(ctx context.Context, req *historypb.ListTradesReques
 	return &historypb.ListTradesResponse{Trades: rows, NextCursor: next}, nil
 }
 
+// GetConditional fetches one conditional by id scoped to user_id.
+func (s *Server) GetConditional(ctx context.Context, req *historypb.GetConditionalRequest) (*historypb.GetConditionalResponse, error) {
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	if req.GetId() == 0 {
+		return nil, status.Error(codes.InvalidArgument, "id required")
+	}
+	c, err := s.store.GetConditional(ctx, req.UserId, req.Id)
+	if err != nil {
+		if errors.Is(err, mysqlstore.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "conditional not found")
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &historypb.GetConditionalResponse{Conditional: c}, nil
+}
+
+// ListConditionals folds scope → statuses, then delegates to the store.
+func (s *Server) ListConditionals(ctx context.Context, req *historypb.ListConditionalsRequest) (*historypb.ListConditionalsResponse, error) {
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	var external = req.GetStatuses()
+	if len(external) == 0 {
+		external = mysqlstore.ConditionalStatusesForScope(req.GetScope())
+	}
+	rows, next, err := s.store.ListConditionals(ctx,
+		mysqlstore.ConditionalsFilter{
+			UserID:   req.UserId,
+			Symbol:   req.Symbol,
+			Statuses: mysqlstore.InternalConditionalStatuses(external),
+			SinceMs:  req.SinceMs,
+			UntilMs:  req.UntilMs,
+		},
+		req.Cursor, int(req.Limit))
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return &historypb.ListConditionalsResponse{Conditionals: rows, NextCursor: next}, nil
+}
+
 // ListAccountLogs pages the user's funds-flow journal.
 func (s *Server) ListAccountLogs(ctx context.Context, req *historypb.ListAccountLogsRequest) (*historypb.ListAccountLogsResponse, error) {
 	if req.GetUserId() == "" {

@@ -35,6 +35,7 @@ import (
 	"github.com/xargin/opentrade/conditional/internal/consumer"
 	"github.com/xargin/opentrade/conditional/internal/counterclient"
 	"github.com/xargin/opentrade/conditional/internal/engine"
+	"github.com/xargin/opentrade/conditional/internal/journal"
 	"github.com/xargin/opentrade/conditional/internal/server"
 	"github.com/xargin/opentrade/conditional/internal/service"
 	"github.com/xargin/opentrade/conditional/internal/snapshot"
@@ -56,6 +57,11 @@ type Config struct {
 	// ExpirySweepInterval tunes how often the primary scans pending
 	// conditionals for expired ones (ADR-0043). 0 disables.
 	ExpirySweepInterval time.Duration
+
+	// JournalTopic (ADR-0047) names the conditional-event audit topic.
+	// Empty disables journaling — useful for CI / local dev and for
+	// backward compatibility with MVP-14 deployments.
+	JournalTopic string
 
 	// idgen shard id — snowflake layout (ADR: counter/cmd/counter uses
 	// ShardID for this). For conditional we give it its own shard id
@@ -205,6 +211,25 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		TerminalHistoryLimit: cfg.TerminalHistoryLimit,
 	}, idg, placer, placer, logger)
 
+	var jProducer *journal.Producer
+	if cfg.JournalTopic != "" {
+		p, err := journal.New(journal.Config{
+			Brokers:    cfg.Brokers,
+			Topic:      cfg.JournalTopic,
+			ProducerID: "conditional-" + cfg.InstanceID,
+			Logger:     logger,
+		})
+		if err != nil {
+			logger.Error("journal producer init", zap.Error(err))
+			return
+		}
+		jProducer = p
+		eng.SetJournal(p)
+		logger.Info("conditional journal enabled", zap.String("topic", cfg.JournalTopic))
+	} else {
+		logger.Info("conditional journal disabled (empty --journal-topic)")
+	}
+
 	initialOffsets, err := tryRestoreSnapshot(cfg, eng, logger)
 	if err != nil {
 		logger.Error("snapshot restore", zap.Error(err))
@@ -274,6 +299,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		logger.Error("final snapshot", zap.Error(err))
 	} else if cfg.SnapshotDir != "" {
 		logger.Info("final snapshot written", zap.String("path", snapshotPath(cfg)))
+	}
+	if jProducer != nil {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = jProducer.Close(drainCtx)
+		drainCancel()
 	}
 	logger.Info("primary stopped")
 }
@@ -407,6 +437,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
 	flag.StringVar(&cfg.MarketTopic, "market-topic", cfg.MarketTopic, "market-data topic name")
+	flag.StringVar(&cfg.JournalTopic, "journal-topic", cfg.JournalTopic, "conditional-event audit topic name (empty disables journaling; ADR-0047)")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default conditional-{instance-id})")
 	flag.StringVar(&shardsStr, "counter-shards", "localhost:8081",
 		"comma-separated Counter gRPC endpoints, in shard-id order (shard 0 first)")

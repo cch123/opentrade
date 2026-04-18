@@ -19,10 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HistoryService_GetOrder_FullMethodName        = "/opentrade.rpc.history.HistoryService/GetOrder"
-	HistoryService_ListOrders_FullMethodName      = "/opentrade.rpc.history.HistoryService/ListOrders"
-	HistoryService_ListTrades_FullMethodName      = "/opentrade.rpc.history.HistoryService/ListTrades"
-	HistoryService_ListAccountLogs_FullMethodName = "/opentrade.rpc.history.HistoryService/ListAccountLogs"
+	HistoryService_GetOrder_FullMethodName         = "/opentrade.rpc.history.HistoryService/GetOrder"
+	HistoryService_ListOrders_FullMethodName       = "/opentrade.rpc.history.HistoryService/ListOrders"
+	HistoryService_ListTrades_FullMethodName       = "/opentrade.rpc.history.HistoryService/ListTrades"
+	HistoryService_ListAccountLogs_FullMethodName  = "/opentrade.rpc.history.HistoryService/ListAccountLogs"
+	HistoryService_GetConditional_FullMethodName   = "/opentrade.rpc.history.HistoryService/GetConditional"
+	HistoryService_ListConditionals_FullMethodName = "/opentrade.rpc.history.HistoryService/ListConditionals"
 )
 
 // HistoryServiceClient is the client API for HistoryService service.
@@ -41,6 +43,16 @@ type HistoryServiceClient interface {
 	// ListAccountLogs pages a user's funds-flow journal rows (`account_logs`),
 	// newest first by ts.
 	ListAccountLogs(ctx context.Context, in *ListAccountLogsRequest, opts ...grpc.CallOption) (*ListAccountLogsResponse, error)
+	// GetConditional returns one conditional by id from the long-term
+	// projection (ADR-0047). Use this for looking up a conditional after
+	// it has aged out of the conditional service's in-memory terminal
+	// buffer. The conditional service is still authoritative for active
+	// PENDING records.
+	GetConditional(ctx context.Context, in *GetConditionalRequest, opts ...grpc.CallOption) (*GetConditionalResponse, error)
+	// ListConditionals pages a user's conditionals, newest first by
+	// created_at. Scope filter covers "active" (PENDING) and "terminal"
+	// (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
+	ListConditionals(ctx context.Context, in *ListConditionalsRequest, opts ...grpc.CallOption) (*ListConditionalsResponse, error)
 }
 
 type historyServiceClient struct {
@@ -91,6 +103,26 @@ func (c *historyServiceClient) ListAccountLogs(ctx context.Context, in *ListAcco
 	return out, nil
 }
 
+func (c *historyServiceClient) GetConditional(ctx context.Context, in *GetConditionalRequest, opts ...grpc.CallOption) (*GetConditionalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetConditionalResponse)
+	err := c.cc.Invoke(ctx, HistoryService_GetConditional_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *historyServiceClient) ListConditionals(ctx context.Context, in *ListConditionalsRequest, opts ...grpc.CallOption) (*ListConditionalsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListConditionalsResponse)
+	err := c.cc.Invoke(ctx, HistoryService_ListConditionals_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HistoryServiceServer is the server API for HistoryService service.
 // All implementations must embed UnimplementedHistoryServiceServer
 // for forward compatibility.
@@ -107,6 +139,16 @@ type HistoryServiceServer interface {
 	// ListAccountLogs pages a user's funds-flow journal rows (`account_logs`),
 	// newest first by ts.
 	ListAccountLogs(context.Context, *ListAccountLogsRequest) (*ListAccountLogsResponse, error)
+	// GetConditional returns one conditional by id from the long-term
+	// projection (ADR-0047). Use this for looking up a conditional after
+	// it has aged out of the conditional service's in-memory terminal
+	// buffer. The conditional service is still authoritative for active
+	// PENDING records.
+	GetConditional(context.Context, *GetConditionalRequest) (*GetConditionalResponse, error)
+	// ListConditionals pages a user's conditionals, newest first by
+	// created_at. Scope filter covers "active" (PENDING) and "terminal"
+	// (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
+	ListConditionals(context.Context, *ListConditionalsRequest) (*ListConditionalsResponse, error)
 	mustEmbedUnimplementedHistoryServiceServer()
 }
 
@@ -128,6 +170,12 @@ func (UnimplementedHistoryServiceServer) ListTrades(context.Context, *ListTrades
 }
 func (UnimplementedHistoryServiceServer) ListAccountLogs(context.Context, *ListAccountLogsRequest) (*ListAccountLogsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAccountLogs not implemented")
+}
+func (UnimplementedHistoryServiceServer) GetConditional(context.Context, *GetConditionalRequest) (*GetConditionalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetConditional not implemented")
+}
+func (UnimplementedHistoryServiceServer) ListConditionals(context.Context, *ListConditionalsRequest) (*ListConditionalsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListConditionals not implemented")
 }
 func (UnimplementedHistoryServiceServer) mustEmbedUnimplementedHistoryServiceServer() {}
 func (UnimplementedHistoryServiceServer) testEmbeddedByValue()                        {}
@@ -222,6 +270,42 @@ func _HistoryService_ListAccountLogs_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HistoryService_GetConditional_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetConditionalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HistoryServiceServer).GetConditional(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HistoryService_GetConditional_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HistoryServiceServer).GetConditional(ctx, req.(*GetConditionalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HistoryService_ListConditionals_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListConditionalsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HistoryServiceServer).ListConditionals(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HistoryService_ListConditionals_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HistoryServiceServer).ListConditionals(ctx, req.(*ListConditionalsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HistoryService_ServiceDesc is the grpc.ServiceDesc for HistoryService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -244,6 +328,14 @@ var HistoryService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAccountLogs",
 			Handler:    _HistoryService_ListAccountLogs_Handler,
+		},
+		{
+			MethodName: "GetConditional",
+			Handler:    _HistoryService_GetConditional_Handler,
+		},
+		{
+			MethodName: "ListConditionals",
+			Handler:    _HistoryService_ListConditionals_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

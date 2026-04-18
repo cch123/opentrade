@@ -37,6 +37,14 @@ type AccountLogsCursor struct {
 	Asset   string `json:"a"`
 }
 
+// ConditionalsCursor paginates ListConditionals. `conditionals` orders by
+// (created_at DESC, id DESC). The id column is a monotonic snowflake so
+// (created_at, id) is unique in practice.
+type ConditionalsCursor struct {
+	CreatedAt int64  `json:"c"`
+	ID        uint64 `json:"i"`
+}
+
 var enc = base64.RawURLEncoding
 
 // ErrInvalid is returned when a cursor string fails to decode. Callers

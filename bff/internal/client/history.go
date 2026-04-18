@@ -18,6 +18,8 @@ type History interface {
 	ListOrders(ctx context.Context, in *historypb.ListOrdersRequest, opts ...grpc.CallOption) (*historypb.ListOrdersResponse, error)
 	ListTrades(ctx context.Context, in *historypb.ListTradesRequest, opts ...grpc.CallOption) (*historypb.ListTradesResponse, error)
 	ListAccountLogs(ctx context.Context, in *historypb.ListAccountLogsRequest, opts ...grpc.CallOption) (*historypb.ListAccountLogsResponse, error)
+	GetConditional(ctx context.Context, in *historypb.GetConditionalRequest, opts ...grpc.CallOption) (*historypb.GetConditionalResponse, error)
+	ListConditionals(ctx context.Context, in *historypb.ListConditionalsRequest, opts ...grpc.CallOption) (*historypb.ListConditionalsResponse, error)
 }
 
 // DialHistory opens a plaintext gRPC connection to the history service.

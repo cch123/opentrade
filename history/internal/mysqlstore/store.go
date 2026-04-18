@@ -436,6 +436,143 @@ func (s *Store) ListAccountLogs(ctx context.Context, f AccountLogsFilter, rawCur
 }
 
 // ---------------------------------------------------------------------------
+// GetConditional
+// ---------------------------------------------------------------------------
+
+// GetConditional fetches a single conditional by id, scoped to userID.
+// Returns ErrNotFound when the row does not exist or belongs to another
+// user — same policy as GetOrder.
+func (s *Store) GetConditional(ctx context.Context, userID string, id uint64) (*historypb.Conditional, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+
+	const q = `
+		SELECT id, client_conditional_id, user_id, symbol, side, type,
+		       CAST(stop_price AS CHAR), CAST(limit_price AS CHAR),
+		       CAST(qty AS CHAR), CAST(quote_qty AS CHAR),
+		       tif, status, triggered_order_id, reject_reason,
+		       expires_at_unix_ms, oco_group_id,
+		       trailing_delta_bps, CAST(activation_price AS CHAR),
+		       CAST(trailing_watermark AS CHAR), trailing_active,
+		       created_at_unix_ms, triggered_at_unix_ms
+		FROM conditionals WHERE id = ? AND user_id = ? LIMIT 1`
+
+	row := s.db.QueryRowContext(ctx, q, id, userID)
+	c, err := scanConditional(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+// ---------------------------------------------------------------------------
+// ListConditionals
+// ---------------------------------------------------------------------------
+
+// ConditionalsFilter is the decoded ListConditionalsRequest for the store.
+type ConditionalsFilter struct {
+	UserID   string
+	Symbol   string
+	Statuses []int8
+	SinceMs  int64
+	UntilMs  int64
+}
+
+// ListConditionals pages a user's conditionals newest-first by
+// created_at_unix_ms. Follows the same over-fetch-by-one-to-detect-next
+// convention as ListOrders.
+func (s *Store) ListConditionals(ctx context.Context, f ConditionalsFilter, rawCursor string, limit int) ([]*historypb.Conditional, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+
+	limit = clampLimit(limit)
+
+	var cur cursor.ConditionalsCursor
+	if err := cursor.Decode(rawCursor, &cur); err != nil {
+		return nil, "", err
+	}
+
+	conds := []string{"user_id = ?"}
+	args := []any{f.UserID}
+	if f.Symbol != "" {
+		conds = append(conds, "symbol = ?")
+		args = append(args, f.Symbol)
+	}
+	if len(f.Statuses) > 0 {
+		placeholders := make([]string, len(f.Statuses))
+		for i, st := range f.Statuses {
+			placeholders[i] = "?"
+			args = append(args, st)
+		}
+		conds = append(conds, "status IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if f.SinceMs > 0 {
+		conds = append(conds, "created_at_unix_ms >= ?")
+		args = append(args, f.SinceMs)
+	}
+	if f.UntilMs > 0 {
+		conds = append(conds, "created_at_unix_ms < ?")
+		args = append(args, f.UntilMs)
+	}
+	if rawCursor != "" {
+		conds = append(conds,
+			"(created_at_unix_ms < ? OR (created_at_unix_ms = ? AND id < ?))")
+		args = append(args, cur.CreatedAt, cur.CreatedAt, cur.ID)
+	}
+
+	q := `
+		SELECT id, client_conditional_id, user_id, symbol, side, type,
+		       CAST(stop_price AS CHAR), CAST(limit_price AS CHAR),
+		       CAST(qty AS CHAR), CAST(quote_qty AS CHAR),
+		       tif, status, triggered_order_id, reject_reason,
+		       expires_at_unix_ms, oco_group_id,
+		       trailing_delta_bps, CAST(activation_price AS CHAR),
+		       CAST(trailing_watermark AS CHAR), trailing_active,
+		       created_at_unix_ms, triggered_at_unix_ms
+		FROM conditionals
+		WHERE ` + strings.Join(conds, " AND ") + `
+		ORDER BY created_at_unix_ms DESC, id DESC
+		LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	var out []*historypb.Conditional
+	for rows.Next() {
+		c, err := scanConditional(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		out = out[:limit]
+		c, err := cursor.Encode(cursor.ConditionalsCursor{
+			CreatedAt: last.CreatedAtUnixMs,
+			ID:        last.Id,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		next = c
+	}
+	return out, next, nil
+}
+
+// ---------------------------------------------------------------------------
 // scan helpers — tolerant of both *sql.Row and *sql.Rows via the Scanner
 // ---------------------------------------------------------------------------
 
@@ -484,6 +621,35 @@ func scanTrade(r rowScanner) (*historypb.Trade, error) {
 	t.Role = tradeRoleFromInt(role)
 	t.Side = sideFromInt(side)
 	return &t, nil
+}
+
+func scanConditional(r rowScanner) (*historypb.Conditional, error) {
+	var (
+		c         historypb.Conditional
+		side      int8
+		typ       int8
+		tif       int8
+		status    int8
+		trailing  int8
+	)
+	if err := r.Scan(
+		&c.Id, &c.ClientConditionalId, &c.UserId, &c.Symbol,
+		&side, &typ,
+		&c.StopPrice, &c.LimitPrice, &c.Qty, &c.QuoteQty,
+		&tif, &status, &c.TriggeredOrderId, &c.RejectReason,
+		&c.ExpiresAtUnixMs, &c.OcoGroupId,
+		&c.TrailingDeltaBps, &c.ActivationPrice,
+		&c.TrailingWatermark, &trailing,
+		&c.CreatedAtUnixMs, &c.TriggeredAtUnixMs,
+	); err != nil {
+		return nil, err
+	}
+	c.Side = sideFromInt(side)
+	c.Type = conditionalTypeFromInt(typ)
+	c.Tif = tifFromInt(tif)
+	c.Status = conditionalStatusFromInt(status)
+	c.TrailingActive = trailing != 0
+	return &c, nil
 }
 
 func scanAccountLog(r rowScanner) (*historypb.AccountLog, error) {

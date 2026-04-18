@@ -3,6 +3,7 @@ syntax = "proto3";
 package opentrade.rpc.history;
 
 import "event/common.proto";
+import "rpc/conditional/conditional.proto";
 
 option go_package = "github.com/xargin/opentrade/api/gen/rpc/history;historyrpc";
 
@@ -46,6 +47,18 @@ service HistoryService {
   // ListAccountLogs pages a user's funds-flow journal rows (`account_logs`),
   // newest first by ts.
   rpc ListAccountLogs(ListAccountLogsRequest) returns (ListAccountLogsResponse);
+
+  // GetConditional returns one conditional by id from the long-term
+  // projection (ADR-0047). Use this for looking up a conditional after
+  // it has aged out of the conditional service's in-memory terminal
+  // buffer. The conditional service is still authoritative for active
+  // PENDING records.
+  rpc GetConditional(GetConditionalRequest) returns (GetConditionalResponse);
+
+  // ListConditionals pages a user's conditionals, newest first by
+  // created_at. Scope filter covers "active" (PENDING) and "terminal"
+  // (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
+  rpc ListConditionals(ListConditionalsRequest) returns (ListConditionalsResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -196,6 +209,73 @@ message ListAccountLogsRequest {
 message ListAccountLogsResponse {
   repeated AccountLog logs = 1;
   string next_cursor = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Conditionals (long-term history, ADR-0047)
+// -----------------------------------------------------------------------------
+
+message GetConditionalRequest {
+  string user_id = 1;
+  uint64 id = 2;
+}
+
+message GetConditionalResponse {
+  Conditional conditional = 1;
+}
+
+message ListConditionalsRequest {
+  string user_id = 1;
+  string symbol = 2;                              // "" = any
+  // Coarse category filter. ACTIVE folds PENDING, TERMINAL folds
+  // TRIGGERED + CANCELED + REJECTED + EXPIRED, ALL disables the filter.
+  // UNSPECIFIED is treated as ALL. Exclusive with `statuses`.
+  ConditionalScope scope = 3;
+  repeated opentrade.rpc.conditional.ConditionalStatus statuses = 4;
+  int64 since_ms = 5;
+  int64 until_ms = 6;
+  string cursor = 7;
+  int32 limit = 8;
+}
+
+message ListConditionalsResponse {
+  repeated Conditional conditionals = 1;
+  string next_cursor = 2;
+}
+
+enum ConditionalScope {
+  CONDITIONAL_SCOPE_UNSPECIFIED = 0; // == ALL
+  CONDITIONAL_SCOPE_ACTIVE = 1;      // PENDING
+  CONDITIONAL_SCOPE_TERMINAL = 2;    // TRIGGERED + CANCELED + REJECTED + EXPIRED
+  CONDITIONAL_SCOPE_ALL = 3;
+}
+
+// Conditional is the long-term view served by history. Field layout
+// mirrors conditional.Conditional (rpc/conditional.proto) so clients that
+// already know that shape reuse it verbatim.
+message Conditional {
+  uint64 id = 1;
+  string client_conditional_id = 2;
+  string user_id = 3;
+  string symbol = 4;
+  opentrade.event.Side side = 5;
+  opentrade.rpc.conditional.ConditionalType type = 6;
+  string stop_price = 7;
+  string limit_price = 8;
+  string qty = 9;
+  string quote_qty = 10;
+  opentrade.event.TimeInForce tif = 11;
+  opentrade.rpc.conditional.ConditionalStatus status = 12;
+  uint64 triggered_order_id = 13;
+  string reject_reason = 14;
+  int64 expires_at_unix_ms = 15;
+  string oco_group_id = 16;
+  int32 trailing_delta_bps = 17;
+  string activation_price = 18;
+  string trailing_watermark = 19;
+  bool trailing_active = 20;
+  int64 created_at_unix_ms = 21;
+  int64 triggered_at_unix_ms = 22;
 }
 
 // AccountLog mirrors the `account_logs` projection row.

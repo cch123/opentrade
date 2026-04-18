@@ -31,7 +31,7 @@
 | [MVP-14e](#mvp-14e-conditional-oco) | 条件单 OCO（One-Cancels-Other） | ✅ | `PlaceOCO` 接 N 腿；任一腿到 terminal → 兄弟 CANCELED；client_oco_id 幂等 |
 | [MVP-14f](#mvp-14f-conditional-trailing) | 条件单 Trailing Stop | ✅ | `TRAILING_STOP_LOSS` + `trailing_delta_bps` + 可选 `activation_price`；引擎实时追 watermark |
 | [MVP-15](#mvp-15-history) | history / query 服务 | ✅ | 独立只读服务读 trade-dump 的 MySQL 投影（orders / trades / account_logs），BFF 历史接口改走它 |
-| [MVP-16](#mvp-16-conditional-history) | 条件单长期历史 | ⏳ | `conditional-event` topic + trade-dump 投影 `conditional_events`；history 新增 `ListConditionals` |
+| [MVP-16](#mvp-16-conditional-history) | 条件单长期历史 | ✅ | `conditional-event` topic + trade-dump 投影 `conditionals`；history 新增 `ListConditionals` / `GetConditional` |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
 
@@ -57,22 +57,6 @@
 - ~~**MVP-14d 条件单过期**~~ — ✅ `expires_at_unix_ms` 字段 + EXPIRED 终态 + primary 侧 5s sweeper；到期释放 reservation（[ADR-0043](./adr/0043-conditional-expiry.md)）
 - ~~**MVP-14e OCO**~~ — ✅ `PlaceOCO` N 腿原子下单 + 级联取消；`client_oco_id` 幂等；任一腿 terminal 自动 CANCEL 兄弟（[ADR-0044](./adr/0044-conditional-oco.md)）
 - ~~**MVP-14f Trailing stop**~~ — ✅ `TRAILING_STOP_LOSS` 类型 + bps retracement + 可选 activation_price；引擎维护 watermark（[ADR-0045](./adr/0045-conditional-trailing-stop.md)）
-
-## 规划中
-
-### MVP-16  条件单长期历史  {#mvp-16-conditional-history}
-
-- **动机**：MVP-14a 的 `conditional` 服务只在内存保留 `TerminalHistoryLimit` 轮终态，重启 / 滚动后丢失。客户端查"三个月前那笔 stop-loss 最终怎么了"没有来源。和 MVP-15 分开是因为这块要动 Kafka 拓扑和 trade-dump 投影，工作量独立
-- **范围**：
-  - 新 Kafka topic `conditional-event`（key=`user_id`），conditional 服务在状态变更时发事件（PLACED / TRIGGERED / CANCELED / REJECTED / EXPIRED / OCO_LINKED）
-  - conditional producer 走事务（沿用 ADR-0032 / ADR-0017 的 fencing 模型），避免 HA 切换期间 split-brain 写
-  - trade-dump 新增 consumer 投影到 `conditional_events` 表（schema 待设计：id / user_id / symbol / side / type / stop_price / limit_price / status / triggered_order_id / reject_reason / oco_group_id / trailing_watermark / created_at / terminal_at / seq_id）
-  - history 新增 `ListConditionals(user_id, symbol?, statuses?, since_ms?, until_ms?, cursor, limit)` + `GetConditional(user_id, id)`；proto 复用 conditional.proto 的 `Conditional` / `ConditionalStatus` / `ConditionalType` 类型
-  - BFF REST：`GET /v1/conditionals` 改为 MVP-16 落地后走 history（`include_inactive=true` 走长期库）；conditional gRPC 的 `ListConditionals` 仍保留给活跃单 hot path
-- **ADR**：0047（待写）—— 为什么 `conditional-event` 用事务 producer、为什么不复用 `counter-journal`（domain 污染）、MySQL schema 的 PK 选择
-- **不做**：
-  - 跨用户条件单分析 / 运营面板（和 MVP-15 同样走内部 RPC）
-  - 把条件单事件反向投影到 `orders` 表（条件单不是订单，保持表的业务语义纯粹）
 
 ## 已完成
 
@@ -245,6 +229,19 @@
 - BFF：新增 `client.History` 接口 + `DialHistory`；`--history` flag 空时 `/v1/orders` / `/v1/trades` / `/v1/account-logs` 返回 503；`GET /v1/order/:id` 保持 Counter hot path 不变（单笔终态查询改走列表）
 - `orderToJSON` 加 `source=conditional|user` 标记（基于 `client_order_id` 是否以 `cond-` 开头，ADR-0040 条件单触发单识别）
 - 测试：cursor 编解码 + boundary、sqlmock 驱动的 GetOrder / ListOrders 分页 / NotFound / scope → statuses 展开 / invalid cursor 错误映射；BFF 既有测试全绿
+
+### MVP-16  条件单长期历史  {#mvp-16-conditional-history}
+
+- **commit** pending · **ADR** [0047](./adr/0047-conditional-long-term-history.md)
+- 新 proto `api/event/conditional_event.proto` + `ConditionalUpdate`（post-change full snapshot + `meta.ts_unix_ms` 守卫），`ConditionalEventType` / `ConditionalEventStatus` 与 rpc/conditional 枚举同值
+- 新 Kafka topic `conditional-event`（默认），key=user_id；conditional 服务 `internal/journal/journal.go` 起非事务 producer + 4096 槽 buffer，drain goroutine async 落盘；队列满 WARN 丢弃
+- engine `JournalSink` 接口 + `SetJournal`；Place / PlaceOCO / Cancel / tryFire / SweepExpired / cascadeOCOCancelLocked 全部在锁里 capture snapshot，锁外 emit
+- `conditionals` MySQL 表（TINYINT side/type/status/tif, DECIMAL(36,18) prices/qty, BIGINT last_update_ms 守卫）+ idx_user_ctime / idx_user_symbol_ctime / idx_oco_group
+- trade-dump 新 consumer `conditional-event`（`--conditional-topic` 空禁用）+ `ApplyConditionalBatch`：每列 `IF(VALUES(last_update_ms) >= last_update_ms, ...)` 保证 last-write-wins
+- history 新 RPC `GetConditional` / `ListConditionals`（复用 cursor 模式，scope=ACTIVE/TERMINAL/ALL），proto 复用 condrpc ConditionalType/ConditionalStatus
+- BFF `GET /v1/conditional?scope=active|terminal|all`：active → conditional gRPC；terminal/all → history gRPC；`include_inactive=true` 保留 MVP-14 兼容（history 未部署时回落 conditional.IncludeInactive）
+- `GET /v1/conditional/:id`：Counter-first + history-fallback on NotFound
+- history JSON 响应打 `source="history"` 标记；字段名与 conditional 服务一致（`placed_order_id` 等）
 
 ---
 

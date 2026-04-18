@@ -8,6 +8,7 @@ package historyrpc
 
 import (
 	event "github.com/xargin/opentrade/api/gen/event"
+	conditional "github.com/xargin/opentrade/api/gen/rpc/conditional"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -187,6 +188,58 @@ func (x TradeRole) Number() protoreflect.EnumNumber {
 // Deprecated: Use TradeRole.Descriptor instead.
 func (TradeRole) EnumDescriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{2}
+}
+
+type ConditionalScope int32
+
+const (
+	ConditionalScope_CONDITIONAL_SCOPE_UNSPECIFIED ConditionalScope = 0 // == ALL
+	ConditionalScope_CONDITIONAL_SCOPE_ACTIVE      ConditionalScope = 1 // PENDING
+	ConditionalScope_CONDITIONAL_SCOPE_TERMINAL    ConditionalScope = 2 // TRIGGERED + CANCELED + REJECTED + EXPIRED
+	ConditionalScope_CONDITIONAL_SCOPE_ALL         ConditionalScope = 3
+)
+
+// Enum value maps for ConditionalScope.
+var (
+	ConditionalScope_name = map[int32]string{
+		0: "CONDITIONAL_SCOPE_UNSPECIFIED",
+		1: "CONDITIONAL_SCOPE_ACTIVE",
+		2: "CONDITIONAL_SCOPE_TERMINAL",
+		3: "CONDITIONAL_SCOPE_ALL",
+	}
+	ConditionalScope_value = map[string]int32{
+		"CONDITIONAL_SCOPE_UNSPECIFIED": 0,
+		"CONDITIONAL_SCOPE_ACTIVE":      1,
+		"CONDITIONAL_SCOPE_TERMINAL":    2,
+		"CONDITIONAL_SCOPE_ALL":         3,
+	}
+)
+
+func (x ConditionalScope) Enum() *ConditionalScope {
+	p := new(ConditionalScope)
+	*p = x
+	return p
+}
+
+func (x ConditionalScope) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConditionalScope) Descriptor() protoreflect.EnumDescriptor {
+	return file_rpc_history_history_proto_enumTypes[3].Descriptor()
+}
+
+func (ConditionalScope) Type() protoreflect.EnumType {
+	return &file_rpc_history_history_proto_enumTypes[3]
+}
+
+func (x ConditionalScope) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConditionalScope.Descriptor instead.
+func (ConditionalScope) EnumDescriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{3}
 }
 
 type GetOrderRequest struct {
@@ -991,6 +1044,472 @@ func (x *ListAccountLogsResponse) GetNextCursor() string {
 	return ""
 }
 
+type GetConditionalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Id            uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetConditionalRequest) Reset() {
+	*x = GetConditionalRequest{}
+	mi := &file_rpc_history_history_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetConditionalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetConditionalRequest) ProtoMessage() {}
+
+func (x *GetConditionalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetConditionalRequest.ProtoReflect.Descriptor instead.
+func (*GetConditionalRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GetConditionalRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *GetConditionalRequest) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+type GetConditionalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Conditional   *Conditional           `protobuf:"bytes,1,opt,name=conditional,proto3" json:"conditional,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetConditionalResponse) Reset() {
+	*x = GetConditionalResponse{}
+	mi := &file_rpc_history_history_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetConditionalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetConditionalResponse) ProtoMessage() {}
+
+func (x *GetConditionalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetConditionalResponse.ProtoReflect.Descriptor instead.
+func (*GetConditionalResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetConditionalResponse) GetConditional() *Conditional {
+	if x != nil {
+		return x.Conditional
+	}
+	return nil
+}
+
+type ListConditionalsRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = any
+	// Coarse category filter. ACTIVE folds PENDING, TERMINAL folds
+	// TRIGGERED + CANCELED + REJECTED + EXPIRED, ALL disables the filter.
+	// UNSPECIFIED is treated as ALL. Exclusive with `statuses`.
+	Scope         ConditionalScope                `protobuf:"varint,3,opt,name=scope,proto3,enum=opentrade.rpc.history.ConditionalScope" json:"scope,omitempty"`
+	Statuses      []conditional.ConditionalStatus `protobuf:"varint,4,rep,packed,name=statuses,proto3,enum=opentrade.rpc.conditional.ConditionalStatus" json:"statuses,omitempty"`
+	SinceMs       int64                           `protobuf:"varint,5,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
+	UntilMs       int64                           `protobuf:"varint,6,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
+	Cursor        string                          `protobuf:"bytes,7,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         int32                           `protobuf:"varint,8,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListConditionalsRequest) Reset() {
+	*x = ListConditionalsRequest{}
+	mi := &file_rpc_history_history_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListConditionalsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListConditionalsRequest) ProtoMessage() {}
+
+func (x *ListConditionalsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListConditionalsRequest.ProtoReflect.Descriptor instead.
+func (*ListConditionalsRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListConditionalsRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *ListConditionalsRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *ListConditionalsRequest) GetScope() ConditionalScope {
+	if x != nil {
+		return x.Scope
+	}
+	return ConditionalScope_CONDITIONAL_SCOPE_UNSPECIFIED
+}
+
+func (x *ListConditionalsRequest) GetStatuses() []conditional.ConditionalStatus {
+	if x != nil {
+		return x.Statuses
+	}
+	return nil
+}
+
+func (x *ListConditionalsRequest) GetSinceMs() int64 {
+	if x != nil {
+		return x.SinceMs
+	}
+	return 0
+}
+
+func (x *ListConditionalsRequest) GetUntilMs() int64 {
+	if x != nil {
+		return x.UntilMs
+	}
+	return 0
+}
+
+func (x *ListConditionalsRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListConditionalsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListConditionalsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Conditionals  []*Conditional         `protobuf:"bytes,1,rep,name=conditionals,proto3" json:"conditionals,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListConditionalsResponse) Reset() {
+	*x = ListConditionalsResponse{}
+	mi := &file_rpc_history_history_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListConditionalsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListConditionalsResponse) ProtoMessage() {}
+
+func (x *ListConditionalsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListConditionalsResponse.ProtoReflect.Descriptor instead.
+func (*ListConditionalsResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ListConditionalsResponse) GetConditionals() []*Conditional {
+	if x != nil {
+		return x.Conditionals
+	}
+	return nil
+}
+
+func (x *ListConditionalsResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+// Conditional is the long-term view served by history. Field layout
+// mirrors conditional.Conditional (rpc/conditional.proto) so clients that
+// already know that shape reuse it verbatim.
+type Conditional struct {
+	state               protoimpl.MessageState        `protogen:"open.v1"`
+	Id                  uint64                        `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	ClientConditionalId string                        `protobuf:"bytes,2,opt,name=client_conditional_id,json=clientConditionalId,proto3" json:"client_conditional_id,omitempty"`
+	UserId              string                        `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol              string                        `protobuf:"bytes,4,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	Side                event.Side                    `protobuf:"varint,5,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
+	Type                conditional.ConditionalType   `protobuf:"varint,6,opt,name=type,proto3,enum=opentrade.rpc.conditional.ConditionalType" json:"type,omitempty"`
+	StopPrice           string                        `protobuf:"bytes,7,opt,name=stop_price,json=stopPrice,proto3" json:"stop_price,omitempty"`
+	LimitPrice          string                        `protobuf:"bytes,8,opt,name=limit_price,json=limitPrice,proto3" json:"limit_price,omitempty"`
+	Qty                 string                        `protobuf:"bytes,9,opt,name=qty,proto3" json:"qty,omitempty"`
+	QuoteQty            string                        `protobuf:"bytes,10,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`
+	Tif                 event.TimeInForce             `protobuf:"varint,11,opt,name=tif,proto3,enum=opentrade.event.TimeInForce" json:"tif,omitempty"`
+	Status              conditional.ConditionalStatus `protobuf:"varint,12,opt,name=status,proto3,enum=opentrade.rpc.conditional.ConditionalStatus" json:"status,omitempty"`
+	TriggeredOrderId    uint64                        `protobuf:"varint,13,opt,name=triggered_order_id,json=triggeredOrderId,proto3" json:"triggered_order_id,omitempty"`
+	RejectReason        string                        `protobuf:"bytes,14,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
+	ExpiresAtUnixMs     int64                         `protobuf:"varint,15,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"`
+	OcoGroupId          string                        `protobuf:"bytes,16,opt,name=oco_group_id,json=ocoGroupId,proto3" json:"oco_group_id,omitempty"`
+	TrailingDeltaBps    int32                         `protobuf:"varint,17,opt,name=trailing_delta_bps,json=trailingDeltaBps,proto3" json:"trailing_delta_bps,omitempty"`
+	ActivationPrice     string                        `protobuf:"bytes,18,opt,name=activation_price,json=activationPrice,proto3" json:"activation_price,omitempty"`
+	TrailingWatermark   string                        `protobuf:"bytes,19,opt,name=trailing_watermark,json=trailingWatermark,proto3" json:"trailing_watermark,omitempty"`
+	TrailingActive      bool                          `protobuf:"varint,20,opt,name=trailing_active,json=trailingActive,proto3" json:"trailing_active,omitempty"`
+	CreatedAtUnixMs     int64                         `protobuf:"varint,21,opt,name=created_at_unix_ms,json=createdAtUnixMs,proto3" json:"created_at_unix_ms,omitempty"`
+	TriggeredAtUnixMs   int64                         `protobuf:"varint,22,opt,name=triggered_at_unix_ms,json=triggeredAtUnixMs,proto3" json:"triggered_at_unix_ms,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *Conditional) Reset() {
+	*x = Conditional{}
+	mi := &file_rpc_history_history_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Conditional) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Conditional) ProtoMessage() {}
+
+func (x *Conditional) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Conditional.ProtoReflect.Descriptor instead.
+func (*Conditional) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *Conditional) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *Conditional) GetClientConditionalId() string {
+	if x != nil {
+		return x.ClientConditionalId
+	}
+	return ""
+}
+
+func (x *Conditional) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *Conditional) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *Conditional) GetSide() event.Side {
+	if x != nil {
+		return x.Side
+	}
+	return event.Side(0)
+}
+
+func (x *Conditional) GetType() conditional.ConditionalType {
+	if x != nil {
+		return x.Type
+	}
+	return conditional.ConditionalType(0)
+}
+
+func (x *Conditional) GetStopPrice() string {
+	if x != nil {
+		return x.StopPrice
+	}
+	return ""
+}
+
+func (x *Conditional) GetLimitPrice() string {
+	if x != nil {
+		return x.LimitPrice
+	}
+	return ""
+}
+
+func (x *Conditional) GetQty() string {
+	if x != nil {
+		return x.Qty
+	}
+	return ""
+}
+
+func (x *Conditional) GetQuoteQty() string {
+	if x != nil {
+		return x.QuoteQty
+	}
+	return ""
+}
+
+func (x *Conditional) GetTif() event.TimeInForce {
+	if x != nil {
+		return x.Tif
+	}
+	return event.TimeInForce(0)
+}
+
+func (x *Conditional) GetStatus() conditional.ConditionalStatus {
+	if x != nil {
+		return x.Status
+	}
+	return conditional.ConditionalStatus(0)
+}
+
+func (x *Conditional) GetTriggeredOrderId() uint64 {
+	if x != nil {
+		return x.TriggeredOrderId
+	}
+	return 0
+}
+
+func (x *Conditional) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *Conditional) GetExpiresAtUnixMs() int64 {
+	if x != nil {
+		return x.ExpiresAtUnixMs
+	}
+	return 0
+}
+
+func (x *Conditional) GetOcoGroupId() string {
+	if x != nil {
+		return x.OcoGroupId
+	}
+	return ""
+}
+
+func (x *Conditional) GetTrailingDeltaBps() int32 {
+	if x != nil {
+		return x.TrailingDeltaBps
+	}
+	return 0
+}
+
+func (x *Conditional) GetActivationPrice() string {
+	if x != nil {
+		return x.ActivationPrice
+	}
+	return ""
+}
+
+func (x *Conditional) GetTrailingWatermark() string {
+	if x != nil {
+		return x.TrailingWatermark
+	}
+	return ""
+}
+
+func (x *Conditional) GetTrailingActive() bool {
+	if x != nil {
+		return x.TrailingActive
+	}
+	return false
+}
+
+func (x *Conditional) GetCreatedAtUnixMs() int64 {
+	if x != nil {
+		return x.CreatedAtUnixMs
+	}
+	return 0
+}
+
+func (x *Conditional) GetTriggeredAtUnixMs() int64 {
+	if x != nil {
+		return x.TriggeredAtUnixMs
+	}
+	return 0
+}
+
 // AccountLog mirrors the `account_logs` projection row.
 type AccountLog struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1011,7 +1530,7 @@ type AccountLog struct {
 
 func (x *AccountLog) Reset() {
 	*x = AccountLog{}
-	mi := &file_rpc_history_history_proto_msgTypes[10]
+	mi := &file_rpc_history_history_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1023,7 +1542,7 @@ func (x *AccountLog) String() string {
 func (*AccountLog) ProtoMessage() {}
 
 func (x *AccountLog) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[10]
+	mi := &file_rpc_history_history_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1036,7 +1555,7 @@ func (x *AccountLog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountLog.ProtoReflect.Descriptor instead.
 func (*AccountLog) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{10}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AccountLog) GetShardId() int32 {
@@ -1120,7 +1639,7 @@ var File_rpc_history_history_proto protoreflect.FileDescriptor
 
 const file_rpc_history_history_proto_rawDesc = "" +
 	"\n" +
-	"\x19rpc/history/history.proto\x12\x15opentrade.rpc.history\x1a\x12event/common.proto\"E\n" +
+	"\x19rpc/history/history.proto\x12\x15opentrade.rpc.history\x1a\x12event/common.proto\x1a!rpc/conditional/conditional.proto\"E\n" +
 	"\x0fGetOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\"F\n" +
@@ -1191,7 +1710,52 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x17ListAccountLogsResponse\x125\n" +
 	"\x04logs\x18\x01 \x03(\v2!.opentrade.rpc.history.AccountLogR\x04logs\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor\"\xcc\x02\n" +
+	"nextCursor\"@\n" +
+	"\x15GetConditionalRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\x04R\x02id\"^\n" +
+	"\x16GetConditionalResponse\x12D\n" +
+	"\vconditional\x18\x01 \x01(\v2\".opentrade.rpc.history.ConditionalR\vconditional\"\xb7\x02\n" +
+	"\x17ListConditionalsRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12=\n" +
+	"\x05scope\x18\x03 \x01(\x0e2'.opentrade.rpc.history.ConditionalScopeR\x05scope\x12H\n" +
+	"\bstatuses\x18\x04 \x03(\x0e2,.opentrade.rpc.conditional.ConditionalStatusR\bstatuses\x12\x19\n" +
+	"\bsince_ms\x18\x05 \x01(\x03R\asinceMs\x12\x19\n" +
+	"\buntil_ms\x18\x06 \x01(\x03R\auntilMs\x12\x16\n" +
+	"\x06cursor\x18\a \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\b \x01(\x05R\x05limit\"\x83\x01\n" +
+	"\x18ListConditionalsResponse\x12F\n" +
+	"\fconditionals\x18\x01 \x03(\v2\".opentrade.rpc.history.ConditionalR\fconditionals\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"\x83\a\n" +
+	"\vConditional\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x122\n" +
+	"\x15client_conditional_id\x18\x02 \x01(\tR\x13clientConditionalId\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x04 \x01(\tR\x06symbol\x12)\n" +
+	"\x04side\x18\x05 \x01(\x0e2\x15.opentrade.event.SideR\x04side\x12>\n" +
+	"\x04type\x18\x06 \x01(\x0e2*.opentrade.rpc.conditional.ConditionalTypeR\x04type\x12\x1d\n" +
+	"\n" +
+	"stop_price\x18\a \x01(\tR\tstopPrice\x12\x1f\n" +
+	"\vlimit_price\x18\b \x01(\tR\n" +
+	"limitPrice\x12\x10\n" +
+	"\x03qty\x18\t \x01(\tR\x03qty\x12\x1b\n" +
+	"\tquote_qty\x18\n" +
+	" \x01(\tR\bquoteQty\x12.\n" +
+	"\x03tif\x18\v \x01(\x0e2\x1c.opentrade.event.TimeInForceR\x03tif\x12D\n" +
+	"\x06status\x18\f \x01(\x0e2,.opentrade.rpc.conditional.ConditionalStatusR\x06status\x12,\n" +
+	"\x12triggered_order_id\x18\r \x01(\x04R\x10triggeredOrderId\x12#\n" +
+	"\rreject_reason\x18\x0e \x01(\tR\frejectReason\x12+\n" +
+	"\x12expires_at_unix_ms\x18\x0f \x01(\x03R\x0fexpiresAtUnixMs\x12 \n" +
+	"\foco_group_id\x18\x10 \x01(\tR\n" +
+	"ocoGroupId\x12,\n" +
+	"\x12trailing_delta_bps\x18\x11 \x01(\x05R\x10trailingDeltaBps\x12)\n" +
+	"\x10activation_price\x18\x12 \x01(\tR\x0factivationPrice\x12-\n" +
+	"\x12trailing_watermark\x18\x13 \x01(\tR\x11trailingWatermark\x12'\n" +
+	"\x0ftrailing_active\x18\x14 \x01(\bR\x0etrailingActive\x12+\n" +
+	"\x12created_at_unix_ms\x18\x15 \x01(\x03R\x0fcreatedAtUnixMs\x12/\n" +
+	"\x14triggered_at_unix_ms\x18\x16 \x01(\x03R\x11triggeredAtUnixMs\"\xcc\x02\n" +
 	"\n" +
 	"AccountLog\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12\x15\n" +
@@ -1227,14 +1791,21 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\tTradeRole\x12\x1a\n" +
 	"\x16TRADE_ROLE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10TRADE_ROLE_MAKER\x10\x01\x12\x14\n" +
-	"\x10TRADE_ROLE_TAKER\x10\x022\xa5\x03\n" +
+	"\x10TRADE_ROLE_TAKER\x10\x02*\x8e\x01\n" +
+	"\x10ConditionalScope\x12!\n" +
+	"\x1dCONDITIONAL_SCOPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18CONDITIONAL_SCOPE_ACTIVE\x10\x01\x12\x1e\n" +
+	"\x1aCONDITIONAL_SCOPE_TERMINAL\x10\x02\x12\x19\n" +
+	"\x15CONDITIONAL_SCOPE_ALL\x10\x032\x89\x05\n" +
 	"\x0eHistoryService\x12[\n" +
 	"\bGetOrder\x12&.opentrade.rpc.history.GetOrderRequest\x1a'.opentrade.rpc.history.GetOrderResponse\x12a\n" +
 	"\n" +
 	"ListOrders\x12(.opentrade.rpc.history.ListOrdersRequest\x1a).opentrade.rpc.history.ListOrdersResponse\x12a\n" +
 	"\n" +
 	"ListTrades\x12(.opentrade.rpc.history.ListTradesRequest\x1a).opentrade.rpc.history.ListTradesResponse\x12p\n" +
-	"\x0fListAccountLogs\x12-.opentrade.rpc.history.ListAccountLogsRequest\x1a..opentrade.rpc.history.ListAccountLogsResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/history;historyrpcb\x06proto3"
+	"\x0fListAccountLogs\x12-.opentrade.rpc.history.ListAccountLogsRequest\x1a..opentrade.rpc.history.ListAccountLogsResponse\x12m\n" +
+	"\x0eGetConditional\x12,.opentrade.rpc.history.GetConditionalRequest\x1a-.opentrade.rpc.history.GetConditionalResponse\x12s\n" +
+	"\x10ListConditionals\x12..opentrade.rpc.history.ListConditionalsRequest\x1a/.opentrade.rpc.history.ListConditionalsResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/history;historyrpcb\x06proto3"
 
 var (
 	file_rpc_history_history_proto_rawDescOnce sync.Once
@@ -1248,53 +1819,73 @@ func file_rpc_history_history_proto_rawDescGZIP() []byte {
 	return file_rpc_history_history_proto_rawDescData
 }
 
-var file_rpc_history_history_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_rpc_history_history_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_rpc_history_history_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_rpc_history_history_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_rpc_history_history_proto_goTypes = []any{
-	(OrderScope)(0),                 // 0: opentrade.rpc.history.OrderScope
-	(OrderStatus)(0),                // 1: opentrade.rpc.history.OrderStatus
-	(TradeRole)(0),                  // 2: opentrade.rpc.history.TradeRole
-	(*GetOrderRequest)(nil),         // 3: opentrade.rpc.history.GetOrderRequest
-	(*GetOrderResponse)(nil),        // 4: opentrade.rpc.history.GetOrderResponse
-	(*ListOrdersRequest)(nil),       // 5: opentrade.rpc.history.ListOrdersRequest
-	(*ListOrdersResponse)(nil),      // 6: opentrade.rpc.history.ListOrdersResponse
-	(*Order)(nil),                   // 7: opentrade.rpc.history.Order
-	(*ListTradesRequest)(nil),       // 8: opentrade.rpc.history.ListTradesRequest
-	(*ListTradesResponse)(nil),      // 9: opentrade.rpc.history.ListTradesResponse
-	(*Trade)(nil),                   // 10: opentrade.rpc.history.Trade
-	(*ListAccountLogsRequest)(nil),  // 11: opentrade.rpc.history.ListAccountLogsRequest
-	(*ListAccountLogsResponse)(nil), // 12: opentrade.rpc.history.ListAccountLogsResponse
-	(*AccountLog)(nil),              // 13: opentrade.rpc.history.AccountLog
-	(event.Side)(0),                 // 14: opentrade.event.Side
-	(event.OrderType)(0),            // 15: opentrade.event.OrderType
-	(event.TimeInForce)(0),          // 16: opentrade.event.TimeInForce
+	(OrderScope)(0),                    // 0: opentrade.rpc.history.OrderScope
+	(OrderStatus)(0),                   // 1: opentrade.rpc.history.OrderStatus
+	(TradeRole)(0),                     // 2: opentrade.rpc.history.TradeRole
+	(ConditionalScope)(0),              // 3: opentrade.rpc.history.ConditionalScope
+	(*GetOrderRequest)(nil),            // 4: opentrade.rpc.history.GetOrderRequest
+	(*GetOrderResponse)(nil),           // 5: opentrade.rpc.history.GetOrderResponse
+	(*ListOrdersRequest)(nil),          // 6: opentrade.rpc.history.ListOrdersRequest
+	(*ListOrdersResponse)(nil),         // 7: opentrade.rpc.history.ListOrdersResponse
+	(*Order)(nil),                      // 8: opentrade.rpc.history.Order
+	(*ListTradesRequest)(nil),          // 9: opentrade.rpc.history.ListTradesRequest
+	(*ListTradesResponse)(nil),         // 10: opentrade.rpc.history.ListTradesResponse
+	(*Trade)(nil),                      // 11: opentrade.rpc.history.Trade
+	(*ListAccountLogsRequest)(nil),     // 12: opentrade.rpc.history.ListAccountLogsRequest
+	(*ListAccountLogsResponse)(nil),    // 13: opentrade.rpc.history.ListAccountLogsResponse
+	(*GetConditionalRequest)(nil),      // 14: opentrade.rpc.history.GetConditionalRequest
+	(*GetConditionalResponse)(nil),     // 15: opentrade.rpc.history.GetConditionalResponse
+	(*ListConditionalsRequest)(nil),    // 16: opentrade.rpc.history.ListConditionalsRequest
+	(*ListConditionalsResponse)(nil),   // 17: opentrade.rpc.history.ListConditionalsResponse
+	(*Conditional)(nil),                // 18: opentrade.rpc.history.Conditional
+	(*AccountLog)(nil),                 // 19: opentrade.rpc.history.AccountLog
+	(event.Side)(0),                    // 20: opentrade.event.Side
+	(event.OrderType)(0),               // 21: opentrade.event.OrderType
+	(event.TimeInForce)(0),             // 22: opentrade.event.TimeInForce
+	(conditional.ConditionalStatus)(0), // 23: opentrade.rpc.conditional.ConditionalStatus
+	(conditional.ConditionalType)(0),   // 24: opentrade.rpc.conditional.ConditionalType
 }
 var file_rpc_history_history_proto_depIdxs = []int32{
-	7,  // 0: opentrade.rpc.history.GetOrderResponse.order:type_name -> opentrade.rpc.history.Order
+	8,  // 0: opentrade.rpc.history.GetOrderResponse.order:type_name -> opentrade.rpc.history.Order
 	0,  // 1: opentrade.rpc.history.ListOrdersRequest.scope:type_name -> opentrade.rpc.history.OrderScope
 	1,  // 2: opentrade.rpc.history.ListOrdersRequest.statuses:type_name -> opentrade.rpc.history.OrderStatus
-	7,  // 3: opentrade.rpc.history.ListOrdersResponse.orders:type_name -> opentrade.rpc.history.Order
-	14, // 4: opentrade.rpc.history.Order.side:type_name -> opentrade.event.Side
-	15, // 5: opentrade.rpc.history.Order.order_type:type_name -> opentrade.event.OrderType
-	16, // 6: opentrade.rpc.history.Order.tif:type_name -> opentrade.event.TimeInForce
+	8,  // 3: opentrade.rpc.history.ListOrdersResponse.orders:type_name -> opentrade.rpc.history.Order
+	20, // 4: opentrade.rpc.history.Order.side:type_name -> opentrade.event.Side
+	21, // 5: opentrade.rpc.history.Order.order_type:type_name -> opentrade.event.OrderType
+	22, // 6: opentrade.rpc.history.Order.tif:type_name -> opentrade.event.TimeInForce
 	1,  // 7: opentrade.rpc.history.Order.status:type_name -> opentrade.rpc.history.OrderStatus
-	10, // 8: opentrade.rpc.history.ListTradesResponse.trades:type_name -> opentrade.rpc.history.Trade
+	11, // 8: opentrade.rpc.history.ListTradesResponse.trades:type_name -> opentrade.rpc.history.Trade
 	2,  // 9: opentrade.rpc.history.Trade.role:type_name -> opentrade.rpc.history.TradeRole
-	14, // 10: opentrade.rpc.history.Trade.side:type_name -> opentrade.event.Side
-	13, // 11: opentrade.rpc.history.ListAccountLogsResponse.logs:type_name -> opentrade.rpc.history.AccountLog
-	3,  // 12: opentrade.rpc.history.HistoryService.GetOrder:input_type -> opentrade.rpc.history.GetOrderRequest
-	5,  // 13: opentrade.rpc.history.HistoryService.ListOrders:input_type -> opentrade.rpc.history.ListOrdersRequest
-	8,  // 14: opentrade.rpc.history.HistoryService.ListTrades:input_type -> opentrade.rpc.history.ListTradesRequest
-	11, // 15: opentrade.rpc.history.HistoryService.ListAccountLogs:input_type -> opentrade.rpc.history.ListAccountLogsRequest
-	4,  // 16: opentrade.rpc.history.HistoryService.GetOrder:output_type -> opentrade.rpc.history.GetOrderResponse
-	6,  // 17: opentrade.rpc.history.HistoryService.ListOrders:output_type -> opentrade.rpc.history.ListOrdersResponse
-	9,  // 18: opentrade.rpc.history.HistoryService.ListTrades:output_type -> opentrade.rpc.history.ListTradesResponse
-	12, // 19: opentrade.rpc.history.HistoryService.ListAccountLogs:output_type -> opentrade.rpc.history.ListAccountLogsResponse
-	16, // [16:20] is the sub-list for method output_type
-	12, // [12:16] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	20, // 10: opentrade.rpc.history.Trade.side:type_name -> opentrade.event.Side
+	19, // 11: opentrade.rpc.history.ListAccountLogsResponse.logs:type_name -> opentrade.rpc.history.AccountLog
+	18, // 12: opentrade.rpc.history.GetConditionalResponse.conditional:type_name -> opentrade.rpc.history.Conditional
+	3,  // 13: opentrade.rpc.history.ListConditionalsRequest.scope:type_name -> opentrade.rpc.history.ConditionalScope
+	23, // 14: opentrade.rpc.history.ListConditionalsRequest.statuses:type_name -> opentrade.rpc.conditional.ConditionalStatus
+	18, // 15: opentrade.rpc.history.ListConditionalsResponse.conditionals:type_name -> opentrade.rpc.history.Conditional
+	20, // 16: opentrade.rpc.history.Conditional.side:type_name -> opentrade.event.Side
+	24, // 17: opentrade.rpc.history.Conditional.type:type_name -> opentrade.rpc.conditional.ConditionalType
+	22, // 18: opentrade.rpc.history.Conditional.tif:type_name -> opentrade.event.TimeInForce
+	23, // 19: opentrade.rpc.history.Conditional.status:type_name -> opentrade.rpc.conditional.ConditionalStatus
+	4,  // 20: opentrade.rpc.history.HistoryService.GetOrder:input_type -> opentrade.rpc.history.GetOrderRequest
+	6,  // 21: opentrade.rpc.history.HistoryService.ListOrders:input_type -> opentrade.rpc.history.ListOrdersRequest
+	9,  // 22: opentrade.rpc.history.HistoryService.ListTrades:input_type -> opentrade.rpc.history.ListTradesRequest
+	12, // 23: opentrade.rpc.history.HistoryService.ListAccountLogs:input_type -> opentrade.rpc.history.ListAccountLogsRequest
+	14, // 24: opentrade.rpc.history.HistoryService.GetConditional:input_type -> opentrade.rpc.history.GetConditionalRequest
+	16, // 25: opentrade.rpc.history.HistoryService.ListConditionals:input_type -> opentrade.rpc.history.ListConditionalsRequest
+	5,  // 26: opentrade.rpc.history.HistoryService.GetOrder:output_type -> opentrade.rpc.history.GetOrderResponse
+	7,  // 27: opentrade.rpc.history.HistoryService.ListOrders:output_type -> opentrade.rpc.history.ListOrdersResponse
+	10, // 28: opentrade.rpc.history.HistoryService.ListTrades:output_type -> opentrade.rpc.history.ListTradesResponse
+	13, // 29: opentrade.rpc.history.HistoryService.ListAccountLogs:output_type -> opentrade.rpc.history.ListAccountLogsResponse
+	15, // 30: opentrade.rpc.history.HistoryService.GetConditional:output_type -> opentrade.rpc.history.GetConditionalResponse
+	17, // 31: opentrade.rpc.history.HistoryService.ListConditionals:output_type -> opentrade.rpc.history.ListConditionalsResponse
+	26, // [26:32] is the sub-list for method output_type
+	20, // [20:26] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_rpc_history_history_proto_init() }
@@ -1307,8 +1898,8 @@ func file_rpc_history_history_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_history_history_proto_rawDesc), len(file_rpc_history_history_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   11,
+			NumEnums:      4,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

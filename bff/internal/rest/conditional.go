@@ -4,9 +4,14 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
+	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 	"github.com/xargin/opentrade/bff/internal/auth"
 )
 
@@ -122,12 +127,12 @@ func (s *Server) handleCancelConditional(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// handleQueryConditional GET /v1/conditional/{id}.
+// handleQueryConditional GET /v1/conditional/{id}. Tries the conditional
+// service first (hot path for active PENDING conditionals) and falls back
+// to history's long-term projection on NotFound — so a client looking up
+// a conditional that aged out of the conditional service's in-memory
+// terminal buffer still gets a row (ADR-0047).
 func (s *Server) handleQueryConditional(w http.ResponseWriter, r *http.Request) {
-	if s.conditional == nil {
-		writeError(w, http.StatusServiceUnavailable, "conditional service not configured")
-		return
-	}
 	userID, err := auth.UserID(r.Context())
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
@@ -138,14 +143,33 @@ func (s *Server) handleQueryConditional(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	resp, err := s.conditional.QueryConditional(r.Context(), &condrpc.QueryConditionalRequest{
-		UserId: userID, Id: id,
-	})
-	if err != nil {
-		writeGRPCError(w, err)
+
+	if s.conditional != nil {
+		resp, err := s.conditional.QueryConditional(r.Context(), &condrpc.QueryConditionalRequest{
+			UserId: userID, Id: id,
+		})
+		if err == nil {
+			writeJSON(w, http.StatusOK, conditionalToJSON(resp.Conditional))
+			return
+		}
+		if status.Code(err) != codes.NotFound || s.history == nil {
+			writeGRPCError(w, err)
+			return
+		}
+		// Fall through to history lookup below.
+	} else if s.history == nil {
+		writeError(w, http.StatusServiceUnavailable, "conditional service not configured")
 		return
 	}
-	writeJSON(w, http.StatusOK, conditionalToJSON(resp.Conditional))
+
+	hresp, herr := s.history.GetConditional(r.Context(), &historypb.GetConditionalRequest{
+		UserId: userID, Id: id,
+	})
+	if herr != nil {
+		writeGRPCError(w, herr)
+		return
+	}
+	writeJSON(w, http.StatusOK, historyConditionalToJSON(hresp.Conditional))
 }
 
 // placeOCOBody is the REST request for POST /v1/conditional/oco.
@@ -239,30 +263,102 @@ func (s *Server) handlePlaceOCO(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListConditionals GET /v1/conditional?include_inactive=true.
+// handleListConditionals GET /v1/conditional.
+//
+// Query params:
+//
+//	scope=active|terminal|all (default: active for back-compat)
+//	include_inactive=true (legacy; equivalent to scope=all)
+//	symbol=, since_ms=, until_ms=, cursor=, limit= (history only)
+//
+// Scope `active` routes to the conditional service's in-memory hot path
+// (no pagination — active set is small). `terminal` and `all` route to
+// history's MySQL projection with cursor pagination (ADR-0047).
 func (s *Server) handleListConditionals(w http.ResponseWriter, r *http.Request) {
-	if s.conditional == nil {
-		writeError(w, http.StatusServiceUnavailable, "conditional service not configured")
-		return
-	}
 	userID, err := auth.UserID(r.Context())
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	include := r.URL.Query().Get("include_inactive") == "true"
-	resp, err := s.conditional.ListConditionals(r.Context(), &condrpc.ListConditionalsRequest{
-		UserId: userID, IncludeInactive: include,
-	})
-	if err != nil {
-		writeGRPCError(w, err)
-		return
+	q := r.URL.Query()
+	scope := strings.ToLower(q.Get("scope"))
+	if scope == "" {
+		if q.Get("include_inactive") == "true" {
+			scope = "all"
+		} else {
+			scope = "active"
+		}
 	}
-	out := make([]map[string]any, 0, len(resp.Conditionals))
-	for _, c := range resp.Conditionals {
-		out = append(out, conditionalToJSON(c))
+
+	switch scope {
+	case "active":
+		if s.conditional == nil {
+			writeError(w, http.StatusServiceUnavailable, "conditional service not configured")
+			return
+		}
+		resp, err := s.conditional.ListConditionals(r.Context(), &condrpc.ListConditionalsRequest{
+			UserId: userID, IncludeInactive: false,
+		})
+		if err != nil {
+			writeGRPCError(w, err)
+			return
+		}
+		out := make([]map[string]any, 0, len(resp.Conditionals))
+		for _, c := range resp.Conditionals {
+			out = append(out, conditionalToJSON(c))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"conditionals": out})
+	case "terminal", "all":
+		if s.history == nil {
+			// Back-compat: without history deployed, fall back to the
+			// conditional service's in-memory terminal buffer for "all"
+			// (MVP-14 behaviour). "terminal" alone truly needs history.
+			if scope == "all" && s.conditional != nil {
+				resp, err := s.conditional.ListConditionals(r.Context(), &condrpc.ListConditionalsRequest{
+					UserId: userID, IncludeInactive: true,
+				})
+				if err != nil {
+					writeGRPCError(w, err)
+					return
+				}
+				out := make([]map[string]any, 0, len(resp.Conditionals))
+				for _, c := range resp.Conditionals {
+					out = append(out, conditionalToJSON(c))
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"conditionals": out})
+				return
+			}
+			writeError(w, http.StatusServiceUnavailable, "history service not configured (needed for terminal conditionals; ADR-0047)")
+			return
+		}
+		histScope := historypb.ConditionalScope_CONDITIONAL_SCOPE_TERMINAL
+		if scope == "all" {
+			histScope = historypb.ConditionalScope_CONDITIONAL_SCOPE_ALL
+		}
+		resp, err := s.history.ListConditionals(r.Context(), &historypb.ListConditionalsRequest{
+			UserId:  userID,
+			Symbol:  q.Get("symbol"),
+			Scope:   histScope,
+			SinceMs: parseInt64Query(q.Get("since_ms")),
+			UntilMs: parseInt64Query(q.Get("until_ms")),
+			Cursor:  q.Get("cursor"),
+			Limit:   parseInt32Query(q.Get("limit")),
+		})
+		if err != nil {
+			writeGRPCError(w, err)
+			return
+		}
+		out := make([]map[string]any, 0, len(resp.Conditionals))
+		for _, c := range resp.Conditionals {
+			out = append(out, historyConditionalToJSON(c))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"conditionals": out,
+			"next_cursor":  resp.NextCursor,
+		})
+	default:
+		writeError(w, http.StatusBadRequest, "invalid scope: "+scope)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"conditionals": out})
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +391,40 @@ func conditionalToJSON(c *condrpc.Conditional) map[string]any {
 		"activation_price":      c.ActivationPrice,
 		"trailing_watermark":    c.TrailingWatermark,
 		"trailing_active":       c.TrailingActive,
+	}
+}
+
+// historyConditionalToJSON maps history.Conditional to the same shape as
+// conditionalToJSON so clients can treat both sources uniformly. Field
+// names match the conditional service's output (`placed_order_id`, not
+// `triggered_order_id`) for API stability.
+func historyConditionalToJSON(c *historypb.Conditional) map[string]any {
+	if c == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":                    c.Id,
+		"client_conditional_id": c.ClientConditionalId,
+		"symbol":                c.Symbol,
+		"side":                  sideToString(c.Side),
+		"type":                  conditionalTypeLabel(c.Type),
+		"stop_price":            c.StopPrice,
+		"limit_price":           c.LimitPrice,
+		"qty":                   c.Qty,
+		"quote_qty":             c.QuoteQty,
+		"tif":                   tifToString(c.Tif),
+		"status":                conditionalStatusLabel(c.Status),
+		"created_at_unix_ms":    c.CreatedAtUnixMs,
+		"triggered_at_unix_ms":  c.TriggeredAtUnixMs,
+		"placed_order_id":       c.TriggeredOrderId,
+		"reject_reason":         c.RejectReason,
+		"expires_at_unix_ms":    c.ExpiresAtUnixMs,
+		"oco_group_id":          c.OcoGroupId,
+		"trailing_delta_bps":    c.TrailingDeltaBps,
+		"activation_price":      c.ActivationPrice,
+		"trailing_watermark":    c.TrailingWatermark,
+		"trailing_active":       c.TrailingActive,
+		"source":                "history",
 	}
 }
 

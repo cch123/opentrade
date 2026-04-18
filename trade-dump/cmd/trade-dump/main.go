@@ -29,10 +29,12 @@ type Config struct {
 	InstanceID string
 	Brokers    []string
 
-	TradeTopic      string
-	TradeGroup      string
-	JournalTopic    string
-	JournalGroup    string
+	TradeTopic         string
+	TradeGroup         string
+	JournalTopic       string
+	JournalGroup       string
+	ConditionalTopic   string
+	ConditionalGroup   string
 
 	MySQLDSN            string
 	MySQLMaxOpenConns   int
@@ -103,6 +105,25 @@ func main() {
 	}
 	defer journalCons.Close()
 
+	var condCons *consumer.ConditionalConsumer
+	if cfg.ConditionalTopic != "" {
+		condCons, err = consumer.NewConditional(consumer.ConditionalConfig{
+			Brokers:  cfg.Brokers,
+			ClientID: cfg.InstanceID + "-cond",
+			GroupID:  cfg.ConditionalGroup,
+			Topic:    cfg.ConditionalTopic,
+		}, mysql, logger)
+		if err != nil {
+			logger.Fatal("conditional consumer init", zap.Error(err))
+		}
+		defer condCons.Close()
+		logger.Info("conditional consumer enabled",
+			zap.String("topic", cfg.ConditionalTopic),
+			zap.String("group", cfg.ConditionalGroup))
+	} else {
+		logger.Info("conditional consumer disabled (empty --conditional-topic)")
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -119,11 +140,24 @@ func main() {
 			stop()
 		}
 	}()
+	if condCons != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := condCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("conditional consumer exited", zap.Error(err))
+				stop()
+			}
+		}()
+	}
 
 	<-rootCtx.Done()
 	logger.Info("shutdown initiated")
 	tradeCons.Close()
 	journalCons.Close()
+	if condCons != nil {
+		condCons.Close()
+	}
 	wg.Wait()
 	logger.Info("trade-dump shutdown complete")
 }
@@ -133,6 +167,7 @@ func parseFlags() Config {
 		InstanceID:        "trade-dump-0",
 		TradeTopic:        "trade-event",
 		JournalTopic:      "counter-journal",
+		ConditionalTopic:  "conditional-event",
 		MySQLDSN:          "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
 		MySQLMaxOpenConns: 16,
 		MySQLMaxIdleConns: 4,
@@ -147,6 +182,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TradeGroup, "trade-group", "", "trade-event consumer group (default trade-dump-trade-{instance-id})")
 	flag.StringVar(&cfg.JournalTopic, "journal-topic", cfg.JournalTopic, "counter-journal topic name")
 	flag.StringVar(&cfg.JournalGroup, "journal-group", "", "counter-journal consumer group (default trade-dump-journal-{instance-id})")
+	flag.StringVar(&cfg.ConditionalTopic, "conditional-topic", cfg.ConditionalTopic, "conditional-event topic name (empty disables projection; ADR-0047)")
+	flag.StringVar(&cfg.ConditionalGroup, "conditional-group", "", "conditional-event consumer group (default trade-dump-cond-{instance-id})")
 	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", cfg.MySQLDSN, "MySQL DSN")
 	flag.IntVar(&cfg.MySQLMaxOpenConns, "mysql-max-open", cfg.MySQLMaxOpenConns, "MySQL max open connections")
 	flag.IntVar(&cfg.MySQLMaxIdleConns, "mysql-max-idle", cfg.MySQLMaxIdleConns, "MySQL max idle connections")
@@ -162,6 +199,9 @@ func parseFlags() Config {
 	}
 	if cfg.JournalGroup == "" {
 		cfg.JournalGroup = "trade-dump-journal-" + cfg.InstanceID
+	}
+	if cfg.ConditionalGroup == "" {
+		cfg.ConditionalGroup = "trade-dump-cond-" + cfg.InstanceID
 	}
 	return cfg
 }

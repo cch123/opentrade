@@ -150,6 +150,15 @@ type Config struct {
 	Clock func() time.Time
 }
 
+// JournalSink receives a post-change clone of a Conditional after every
+// state transition (PENDING / TRIGGERED / CANCELED / REJECTED / EXPIRED).
+// Implementations MUST NOT block — the engine calls Emit on its hot path.
+// Nil (the default) means journaling is disabled, which is the MVP-14 /
+// test behaviour.
+type JournalSink interface {
+	Emit(c *Conditional)
+}
+
 // Engine owns the pending / terminal maps and coordinates triggers.
 type Engine struct {
 	cfg      Config
@@ -166,6 +175,37 @@ type Engine struct {
 	ocoByClient map[string]string // client_oco_id → oco_group_id (ADR-0044)
 	lastPrice  map[string]dec.Decimal
 	offsets    map[int32]int64
+
+	journal JournalSink // may be nil; set via SetJournal at main wiring time (ADR-0047)
+}
+
+// SetJournal installs (or clears) the journal sink. Safe to call before
+// the engine is under traffic; callers wire this in main after the Kafka
+// producer comes up.
+func (e *Engine) SetJournal(j JournalSink) {
+	e.mu.Lock()
+	e.journal = j
+	e.mu.Unlock()
+}
+
+// emitSnapshots fires the journal for a slice of already-cloned
+// Conditionals. Called outside the engine lock.
+func (e *Engine) emitSnapshots(snaps []Conditional) {
+	if len(snaps) == 0 {
+		return
+	}
+	// Re-read journal under the lock briefly to see the latest sink, then
+	// emit without holding it.
+	e.mu.Lock()
+	j := e.journal
+	e.mu.Unlock()
+	if j == nil {
+		return
+	}
+	for i := range snaps {
+		snap := snaps[i]
+		j.Emit(&snap)
+	}
 }
 
 // New builds an Engine. Pass a zap.NewNop() for tests.
@@ -257,7 +297,10 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceConditionalRequest
 	if c.ClientCondID != "" {
 		e.byClient[c.ClientCondID] = c.ID
 	}
+	snap := *c
 	e.mu.Unlock()
+
+	e.emitSnapshots([]Conditional{snap})
 	return c.ID, c.Status, true, nil
 }
 
@@ -368,10 +411,14 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID, clientOCOID string, legs 
 		e.ocoByClient[clientOCOID] = groupID
 	}
 	results = make([]OCOLegResult, len(parsed))
+	snaps := make([]Conditional, len(parsed))
 	for i, c := range parsed {
 		results[i] = OCOLegResult{ID: c.ID, Status: c.Status}
+		snaps[i] = *c
 	}
 	e.mu.Unlock()
+
+	e.emitSnapshots(snaps)
 	return groupID, results, true, nil
 }
 
@@ -418,12 +465,14 @@ func (e *Engine) Cancel(ctx context.Context, userID string, id uint64) (condrpc.
 	c.TriggeredAtMs = e.cfg.Clock().UnixMilli()
 	refID := e.refIDFor(c.ID)
 	finalStatus := c.Status
+	primary := *c
 	e.graduateLocked(c)
-	cascaded := e.cascadeOCOCancelLocked(c, "sibling OCO leg canceled")
+	cascaded, cascadeSnaps := e.cascadeOCOCancelLocked(c, "sibling OCO leg canceled")
 	e.mu.Unlock()
 
 	e.bestEffortRelease(ctx, userID, refID)
 	e.releaseAll(ctx, cascaded)
+	e.emitSnapshots(append([]Conditional{primary}, cascadeSnaps...))
 	return finalStatus, true, nil
 }
 
@@ -630,14 +679,16 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 				zap.Uint64("order_id", resp.OrderId))
 		}
 	}
+	primary := *c
 	e.graduateLocked(c)
-	cascaded := e.cascadeOCOCancelLocked(c, "sibling OCO leg terminated")
+	cascaded, cascadeSnaps := e.cascadeOCOCancelLocked(c, "sibling OCO leg terminated")
 	e.mu.Unlock()
 
 	if failed {
 		e.bestEffortRelease(ctx, userID, refID)
 	}
 	e.releaseAll(ctx, cascaded)
+	e.emitSnapshots(append([]Conditional{primary}, cascadeSnaps...))
 }
 
 // -----------------------------------------------------------------------------
@@ -924,14 +975,18 @@ func (e *Engine) SweepExpired(ctx context.Context) int {
 	}
 	var victims []expired
 	var cascaded []releaseTarget
+	var snaps []Conditional
 	e.mu.Lock()
 	for id, c := range e.pending {
 		if c.ExpiresAtMs > 0 && c.ExpiresAtMs <= nowMs {
 			c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED
 			c.TriggeredAtMs = nowMs
 			victims = append(victims, expired{id: id, userID: c.UserID})
+			snaps = append(snaps, *c)
 			e.graduateLocked(c)
-			cascaded = append(cascaded, e.cascadeOCOCancelLocked(c, "sibling OCO leg expired")...)
+			targets, siblingSnaps := e.cascadeOCOCancelLocked(c, "sibling OCO leg expired")
+			cascaded = append(cascaded, targets...)
+			snaps = append(snaps, siblingSnaps...)
 		}
 	}
 	e.mu.Unlock()
@@ -944,6 +999,7 @@ func (e *Engine) SweepExpired(ctx context.Context) int {
 		}
 	}
 	e.releaseAll(ctx, cascaded)
+	e.emitSnapshots(snaps)
 	return len(victims)
 }
 
@@ -954,13 +1010,16 @@ type releaseTarget struct{ userID, refID string }
 // cascadeOCOCancelLocked: if c is part of an OCO group, mark every still-
 // PENDING sibling as CANCELED and graduate them. Caller must hold e.mu.
 // Returns the list of reservation releases the caller must perform after
-// unlocking. reason is the reject_reason stamped on the siblings.
-func (e *Engine) cascadeOCOCancelLocked(c *Conditional, reason string) []releaseTarget {
+// unlocking *and* clones of the transitioned siblings (for JournalSink
+// emission after the caller unlocks). reason is the reject_reason stamped
+// on the siblings.
+func (e *Engine) cascadeOCOCancelLocked(c *Conditional, reason string) ([]releaseTarget, []Conditional) {
 	if c.OCOGroupID == "" {
-		return nil
+		return nil, nil
 	}
 	now := e.cfg.Clock().UnixMilli()
 	var out []releaseTarget
+	var snaps []Conditional
 	// Collect victim ids first — mutating the map while ranging is fine
 	// in Go but makes the intent clearer in two passes.
 	var ids []uint64
@@ -978,9 +1037,10 @@ func (e *Engine) cascadeOCOCancelLocked(c *Conditional, reason string) []release
 		sib.TriggeredAtMs = now
 		sib.RejectReason = reason
 		out = append(out, releaseTarget{userID: sib.UserID, refID: e.refIDFor(id)})
+		snaps = append(snaps, *sib)
 		e.graduateLocked(sib)
 	}
-	return out
+	return out, snaps
 }
 
 // releaseAll issues best-effort ReleaseReservation for every entry in
