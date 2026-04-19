@@ -17,11 +17,15 @@ _(none)_
 
 ## Backlog
 
-- **match 撮合侧收到 cancel 但 book 里没这个 order 时，应该回消息给 counter 告知 "不存在"** — 让 counter 能执行 `unfreezeResidual` + 转 CANCELED 终态。当前 match 静默丢弃，counter 永远停在 PENDING_CANCEL，frozen 资金卡死。这是之前 dev 多次重启导致 counter / match 状态分叉后的根本修复；不修的话只能靠人工 force-cancel 或清状态。
+_(none)_
 
 ## Fixed
 
 ### 2026-04-19
+
+- **match book 里找不到 order 的 cancel 被静默丢弃，counter 永远停在 PENDING_CANCEL** — counter/match 状态分叉（dev 多次重启 / 快照丢失）后，counter 的 cancel 请求打到 match 找不到订单，match 直接 `return` 不 emit，counter 的 in-flight cancel 永远没有回包，`unfreezeResidual` 永远不执行，frozen 资金卡死。之前只能人工 force-cancel 或清状态。
+  - commit: *(this change)*
+  - 修法：`handleCancel` book miss 路径改为 emit `OutputOrderCancelled` + `FilledQty=0` + 正常分配 match_seq，保持"每个 input 都产出带 seq 的 output"不变量。counter 收到后由 `handleCancelled` 自己判断：order 已 terminal → 只 advance match_seq 短路；仍活着 → `unfreezeResidual` + 转 CANCELED。quote `OnOrderClosed` 对 unknown order 本来就是 no-op。附 1 个单测 `TestWorkerCancelUnknownOrderStillEmits`。
 
 - **取消订单时 open orders 闪烁出更多单又消失** — `pollAccount` 多路径并发（cancel 回调 / WS user event / 2.5s 定时器），更老的 poll 结果覆盖了更新的一次。
   - commit: [`7fc4089`](../../commit/7fc4089)

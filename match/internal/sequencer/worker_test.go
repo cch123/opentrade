@@ -96,6 +96,39 @@ func TestWorkerCancelEmitsCancelled(t *testing.T) {
 	}
 }
 
+// TestWorkerCancelUnknownOrderStillEmits guards the invariant that every input
+// produces an output with a match_seq. Before: handleCancel silently dropped
+// cancels for orders not in the book, leaving Counter stuck in PENDING_CANCEL
+// forever (see docs/bugs.md Backlog 2026-04-19). After: emit OrderCancelled
+// with zero FilledQty so Counter can close the loop via its own state.
+func TestWorkerCancelUnknownOrderStillEmits(t *testing.T) {
+	outbox := make(chan *Output, 16)
+	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox)
+
+	// Cancel for an order that was never placed on this worker's book.
+	w.Submit(&Event{Kind: EventOrderCancel, Symbol: "BTC-USDT", OrderID: 999, UserID: "u1"})
+
+	collect := runWorker(t, w, outbox)
+	time.Sleep(20 * time.Millisecond)
+	got := collect()
+
+	if len(got) != 1 {
+		t.Fatalf("emissions = %d, want 1: %v", len(got), got)
+	}
+	if got[0].Kind != OutputOrderCancelled {
+		t.Fatalf("kind = %d, want OrderCancelled", got[0].Kind)
+	}
+	if got[0].MatchSeq != 1 {
+		t.Errorf("match_seq = %d, want 1 (invariant: every input bumps seq)", got[0].MatchSeq)
+	}
+	if got[0].OrderID != 999 || got[0].UserID != "u1" || got[0].Symbol != "BTC-USDT" {
+		t.Errorf("identity mismatch: %+v", got[0])
+	}
+	if got[0].FilledQty.String() != "0" {
+		t.Errorf("filled_qty = %s, want 0", got[0].FilledQty)
+	}
+}
+
 func TestWorkerDedupDuplicateOrderID(t *testing.T) {
 	outbox := make(chan *Output, 16)
 	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox)

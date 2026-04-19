@@ -300,8 +300,22 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 func (w *SymbolWorker) handleCancel(evt *Event) {
 	o, err := w.book.Cancel(evt.OrderID)
 	if err != nil {
-		// Order not on the book — nothing to do. Counter's state machine will
-		// accept a no-op (order may have been filled / already cancelled).
+		// Order not on the book. This happens when match / counter state has
+		// drifted: order already filled / already cancelled / never reached us
+		// (dev wipe, snapshot divergence). Still emit OrderCancelled with zero
+		// FilledQty so every input produces an output with a match_seq — the
+		// invariant downstream dedup + PENDING_CANCEL unfreeze both rely on.
+		// Counter's handleCancelled short-circuits if its own view already has
+		// the order terminal; otherwise it unfreezes residual from its own
+		// state and transitions PENDING_CANCEL → CANCELED.
+		w.emit(&Output{
+			Kind:         OutputOrderCancelled,
+			Symbol:       w.symbol,
+			UserID:       evt.UserID,
+			OrderID:      evt.OrderID,
+			FilledQty:    dec.Zero,
+			SourceOffset: evt.Source,
+		})
 		return
 	}
 	// Authorization: if UserID is provided and does not match the order owner,
