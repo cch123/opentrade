@@ -19,6 +19,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/admin-gateway/internal/counterclient"
 	"github.com/xargin/opentrade/admin-gateway/internal/rollout"
 	"github.com/xargin/opentrade/admin-gateway/internal/server"
@@ -150,12 +151,15 @@ func main() {
 
 	// ADR-0053 M4: precision rollout executor. Runs only when etcd is
 	// configured (no etcd → no Tiers → no schedule → nothing to execute).
+	// M4.b: sharded counter is passed as Canceller so first-strict switches
+	// broadcast-cancel existing orders before flipping Tiers.
 	if etcdSource != nil && cfg.RolloutScanInterval > 0 {
 		runner, err := rollout.New(rollout.Config{
 			Etcd:         etcdSource,
 			Audit:        audit,
 			Logger:       logger,
 			ScanInterval: cfg.RolloutScanInterval,
+			Canceller:    rolloutCancellerShim{s: sharded},
 		})
 		if err != nil {
 			logger.Fatal("rollout runner", zap.Error(err))
@@ -243,6 +247,15 @@ func (s etcdSrcShim) Put(ctx context.Context, symbol string, cfg etcdcfg.SymbolC
 }
 func (s etcdSrcShim) Delete(ctx context.Context, symbol string) (bool, int64, error) {
 	return s.s.Delete(ctx, symbol)
+}
+
+// rolloutCancellerShim drops the variadic grpc.CallOption tail so
+// *counterclient.Sharded satisfies rollout.CounterCanceller without
+// dragging grpc into the rollout package.
+type rolloutCancellerShim struct{ s *counterclient.Sharded }
+
+func (s rolloutCancellerShim) BroadcastAdminCancelOrders(ctx context.Context, req *counterrpc.AdminCancelOrdersRequest) ([]*counterrpc.AdminCancelOrdersResponse, error) {
+	return s.s.BroadcastAdminCancelOrders(ctx, req)
 }
 
 // ---------------------------------------------------------------------------
