@@ -38,10 +38,10 @@ func TestApplyJournalBatch_FullFlowInSingleTx(t *testing.T) {
 			{OrderID: 42, UserID: "u1", Status: 4, FilledQty: "1", UpdatedAtMs: 1_700_000_000_001, Kind: OrderRowUpdate},
 		},
 		Accounts: []AccountRow{
-			{UserID: "u1", Asset: "USDT", Available: "400", Frozen: "100", SeqID: 5},
+			{UserID: "u1", Asset: "USDT", Available: "400", Frozen: "100", CounterSeqID: 5},
 		},
 		AccountLogs: []AccountLogRow{
-			{ShardID: 0, SeqID: 5, Asset: "USDT", UserID: "u1",
+			{ShardID: 0, CounterSeqID: 5, Asset: "USDT", UserID: "u1",
 				DeltaAvail: "-100", DeltaFrozen: "100",
 				AvailAfter: "400", FrozenAfter: "100",
 				BizType: "freeze_place_order", BizRefID: "42", TsUnixMs: 1_700_000_000_000},

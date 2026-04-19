@@ -25,7 +25,7 @@ type MatchSymbolSnapshot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
 	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	SeqId         uint64                 `protobuf:"varint,3,opt,name=seq_id,json=seqId,proto3" json:"seq_id,omitempty"`
+	MatchSeqId    uint64                 `protobuf:"varint,3,opt,name=match_seq_id,json=matchSeqId,proto3" json:"match_seq_id,omitempty"`
 	TimestampMs   int64                  `protobuf:"varint,4,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"`
 	Offsets       []*MatchKafkaOffset    `protobuf:"bytes,5,rep,name=offsets,proto3" json:"offsets,omitempty"`
 	Orders        []*MatchOrder          `protobuf:"bytes,6,rep,name=orders,proto3" json:"orders,omitempty"`
@@ -77,9 +77,9 @@ func (x *MatchSymbolSnapshot) GetSymbol() string {
 	return ""
 }
 
-func (x *MatchSymbolSnapshot) GetSeqId() uint64 {
+func (x *MatchSymbolSnapshot) GetMatchSeqId() uint64 {
 	if x != nil {
-		return x.SeqId
+		return x.MatchSeqId
 	}
 	return 0
 }
@@ -285,11 +285,12 @@ var File_snapshot_match_proto protoreflect.FileDescriptor
 
 const file_snapshot_match_proto_rawDesc = "" +
 	"\n" +
-	"\x14snapshot/match.proto\x12\x12opentrade.snapshot\"\xf9\x01\n" +
+	"\x14snapshot/match.proto\x12\x12opentrade.snapshot\"\x84\x02\n" +
 	"\x13MatchSymbolSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x16\n" +
-	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x15\n" +
-	"\x06seq_id\x18\x03 \x01(\x04R\x05seqId\x12!\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12 \n" +
+	"\fmatch_seq_id\x18\x03 \x01(\x04R\n" +
+	"matchSeqId\x12!\n" +
 	"\ftimestamp_ms\x18\x04 \x01(\x03R\vtimestampMs\x12>\n" +
 	"\aoffsets\x18\x05 \x03(\v2$.opentrade.snapshot.MatchKafkaOffsetR\aoffsets\x126\n" +
 	"\x06orders\x18\x06 \x03(\v2\x1e.opentrade.snapshot.MatchOrderR\x06orders\"^\n" +

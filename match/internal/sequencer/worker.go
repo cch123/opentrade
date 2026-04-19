@@ -23,8 +23,8 @@ type Config struct {
 }
 
 // SymbolWorker serializes all matching for a single symbol.
-// It owns a Book and a per-symbol monotonic SeqID counter. It reads Events
-// from Inbox and writes Outputs to Outbox.
+// It owns a Book and a per-symbol monotonic match seq counter. It reads
+// Events from Inbox and writes Outputs to Outbox.
 //
 // See ADR-0016 (per-symbol single-thread matching) and ADR-0019 (constant
 // goroutine actor model).
@@ -32,14 +32,14 @@ type SymbolWorker struct {
 	symbol string
 	stp    engine.STPMode
 
-	// mu guards book / seqID / offsets so snapshot readers (WithStateLocked /
+	// mu guards book / matchSeq / offsets so snapshot readers (WithStateLocked /
 	// Offsets) can take a consistent view without racing with the worker
 	// goroutine. handle() takes mu for the duration of one event — usually
 	// <100µs but bounded by outbox send (emit → Pump).
-	mu      sync.Mutex
-	book    *orderbook.Book
-	seqID   uint64
-	offsets map[int32]int64 // partition → next-to-consume offset (ADR-0048)
+	mu       sync.Mutex
+	book     *orderbook.Book
+	matchSeq uint64
+	offsets  map[int32]int64 // partition → next-to-consume offset (ADR-0048)
 
 	inbox  chan *Event
 	outbox chan<- *Output
@@ -73,28 +73,28 @@ func (w *SymbolWorker) Symbol() string { return w.symbol }
 // during Run should go through WithStateLocked.
 func (w *SymbolWorker) Book() *orderbook.Book { return w.book }
 
-// SeqID returns the current per-symbol sequence id (for snapshot / recovery).
-// Takes mu so the value is consistent with the book even while Run is
-// dispatching.
-func (w *SymbolWorker) SeqID() uint64 {
+// MatchSeq returns the current per-symbol monotonic match seq (for snapshot
+// / recovery). Takes mu so the value is consistent with the book even while
+// Run is dispatching.
+func (w *SymbolWorker) MatchSeq() uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.seqID
+	return w.matchSeq
 }
 
-// SetSeqID sets the starting sequence id — used when restoring from a
+// SetMatchSeq sets the starting match seq — used when restoring from a
 // snapshot. Must be called before Run.
-func (w *SymbolWorker) SetSeqID(seq uint64) { w.seqID = seq }
+func (w *SymbolWorker) SetMatchSeq(seq uint64) { w.matchSeq = seq }
 
 // WithStateLocked runs f while holding the worker's state lock. Use it to
-// read book / seqID / offsets as a consistent snapshot from outside the
+// read book / matchSeq / offsets as a consistent snapshot from outside the
 // worker goroutine (e.g. snapshot.Capture). f must NOT mutate the book or
 // retain the offsets map past the call — the map is the worker's internal
 // buffer.
-func (w *SymbolWorker) WithStateLocked(f func(book *orderbook.Book, seqID uint64, offsets map[int32]int64)) {
+func (w *SymbolWorker) WithStateLocked(f func(book *orderbook.Book, matchSeq uint64, offsets map[int32]int64)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	f(w.book, w.seqID, w.offsets)
+	f(w.book, w.matchSeq, w.offsets)
 }
 
 // Offsets returns a copy of the per-partition next-to-consume offsets. Safe
@@ -334,10 +334,10 @@ func (w *SymbolWorker) handleCancel(evt *Event) {
 	})
 }
 
-// emit assigns the next seq id and sends the output to the outbox.
+// emit assigns the next match seq and sends the output to the outbox.
 func (w *SymbolWorker) emit(out *Output) {
-	w.seqID++
-	out.SeqID = w.seqID
+	w.matchSeq++
+	out.MatchSeq = w.matchSeq
 	if dec.IsZero(out.Qty) && out.Kind != OutputTrade {
 		// keep zero values clean
 	}

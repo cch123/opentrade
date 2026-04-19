@@ -37,7 +37,7 @@ type Account struct {
 	// consistent per-user view without going through the sequencer.
 	mu       sync.RWMutex
 	balances map[string]*Balance
-	// matchSeq tracks the highest trade-event Meta.SeqId this user has seen
+	// matchSeq tracks the highest trade-event match_seq_id this user has seen
 	// per symbol. Trade-event handlers gate on this value to filter replayed
 	// records after a snapshot-restore (ADR-0048 backlog: trade-event
 	// idempotency, user × symbol match_seq guard).

@@ -281,7 +281,7 @@ message Conditional {
 // AccountLog mirrors the `account_logs` projection row.
 message AccountLog {
   int32 shard_id = 1;
-  uint64 seq_id = 2;
+  uint64 counter_seq_id = 2;
   string asset = 3;
   string user_id = 4;
   string delta_avail = 5;

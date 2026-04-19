@@ -141,9 +141,11 @@ func (ConditionalEventStatus) EnumDescriptor() ([]byte, []int) {
 }
 
 // ConditionalUpdate is the post-change full snapshot of one conditional.
-// seq_id in EventMeta is a service-global monotonic id (sharded by
-// conditional id space is not required; the service runs as a single
-// logical shard today).
+//
+// conditional_seq_id is a service-global monotonic id assigned by the
+// conditional service (sharded by conditional id space is not required;
+// the service runs as a single logical shard today). trade-dump uses it
+// as the upsert guard on the conditionals table.
 type ConditionalUpdate struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	Meta                *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
@@ -173,6 +175,7 @@ type ConditionalUpdate struct {
 	ActivationPrice   string `protobuf:"bytes,21,opt,name=activation_price,json=activationPrice,proto3" json:"activation_price,omitempty"`
 	TrailingWatermark string `protobuf:"bytes,22,opt,name=trailing_watermark,json=trailingWatermark,proto3" json:"trailing_watermark,omitempty"`
 	TrailingActive    bool   `protobuf:"varint,23,opt,name=trailing_active,json=trailingActive,proto3" json:"trailing_active,omitempty"`
+	ConditionalSeqId  uint64 `protobuf:"varint,24,opt,name=conditional_seq_id,json=conditionalSeqId,proto3" json:"conditional_seq_id,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -368,11 +371,18 @@ func (x *ConditionalUpdate) GetTrailingActive() bool {
 	return false
 }
 
+func (x *ConditionalUpdate) GetConditionalSeqId() uint64 {
+	if x != nil {
+		return x.ConditionalSeqId
+	}
+	return 0
+}
+
 var File_event_conditional_event_proto protoreflect.FileDescriptor
 
 const file_event_conditional_event_proto_rawDesc = "" +
 	"\n" +
-	"\x1devent/conditional_event.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xa9\a\n" +
+	"\x1devent/conditional_event.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xd7\a\n" +
 	"\x11ConditionalUpdate\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\x04R\x02id\x122\n" +
@@ -400,7 +410,8 @@ const file_event_conditional_event_proto_rawDesc = "" +
 	"\x12trailing_delta_bps\x18\x14 \x01(\x05R\x10trailingDeltaBps\x12)\n" +
 	"\x10activation_price\x18\x15 \x01(\tR\x0factivationPrice\x12-\n" +
 	"\x12trailing_watermark\x18\x16 \x01(\tR\x11trailingWatermark\x12'\n" +
-	"\x0ftrailing_active\x18\x17 \x01(\bR\x0etrailingActive*\x95\x02\n" +
+	"\x0ftrailing_active\x18\x17 \x01(\bR\x0etrailingActive\x12,\n" +
+	"\x12conditional_seq_id\x18\x18 \x01(\x04R\x10conditionalSeqId*\x95\x02\n" +
 	"\x14ConditionalEventType\x12&\n" +
 	"\"CONDITIONAL_EVENT_TYPE_UNSPECIFIED\x10\x00\x12$\n" +
 	" CONDITIONAL_EVENT_TYPE_STOP_LOSS\x10\x01\x12*\n" +

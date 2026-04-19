@@ -120,12 +120,12 @@ func TestTransferIdempotent(t *testing.T) {
 	}
 	// ADR-0048 backlog item 4 方案 A: ring only remembers the id, not the
 	// cached response — dedup hits return a bare DUPLICATED with empty
-	// balance / seq. Callers fetch balance_after via QueryBalance.
+	// balance / counter_seq_id. Callers fetch balance_after via QueryBalance.
 	if !second.BalanceAfter.IsEmpty() {
 		t.Fatalf("second: expected empty balance, got %+v", second.BalanceAfter)
 	}
-	if second.SeqID != 0 {
-		t.Fatalf("second: expected zero seq id, got %d", second.SeqID)
+	if second.CounterSeqID != 0 {
+		t.Fatalf("second: expected zero counter_seq_id, got %d", second.CounterSeqID)
 	}
 	if len(pub.Events()) != 1 {
 		t.Fatalf("dedup hit wrote Kafka event: %d total", len(pub.Events()))
@@ -208,13 +208,13 @@ func TestConcurrentUsersIndependent(t *testing.T) {
 	if got := len(pub.Events()); got != users*perUser {
 		t.Fatalf("events = %d, want %d", got, users*perUser)
 	}
-	// All seq ids must be distinct.
+	// All counter_seq_ids must be distinct.
 	seen := make(map[uint64]bool, users*perUser)
 	for _, e := range pub.Events() {
-		if seen[e.Meta.SeqId] {
-			t.Fatalf("duplicate seq id %d", e.Meta.SeqId)
+		if seen[e.CounterSeqId] {
+			t.Fatalf("duplicate counter_seq_id %d", e.CounterSeqId)
 		}
-		seen[e.Meta.SeqId] = true
+		seen[e.CounterSeqId] = true
 	}
 }
 

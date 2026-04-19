@@ -1,5 +1,5 @@
 // Package snapshot serializes Counter's ShardState + Dedup + UserSequencer
-// shard seq id to local disk and restores it on startup.
+// counter-shard-scoped seq to local disk and restores it on startup.
 //
 // ADR-0049: default on-disk format is protobuf (.pb); JSON (.json) stays
 // available as a debug fallback selected by --snapshot-format=json. Load
@@ -169,7 +169,7 @@ type ReservationSnapshot struct {
 type ShardSnapshot struct {
 	Version      int                   `json:"version"`
 	ShardID      int                   `json:"shard_id"`
-	ShardSeq     uint64                `json:"shard_seq"`
+	CounterSeq   uint64                `json:"counter_seq"`
 	TimestampMS  int64                 `json:"ts_unix_ms"`
 	Accounts     []AccountSnapshot     `json:"accounts"`
 	Orders       []OrderSnapshot       `json:"orders,omitempty"`
@@ -198,7 +198,7 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 	snap := &ShardSnapshot{
 		Version:     Version,
 		ShardID:     shardID,
-		ShardSeq:    seq.ShardSeq(),
+		CounterSeq:  seq.CounterSeq(),
 		TimestampMS: tsMS,
 		Offsets:     OffsetsMapToSlice(offsets),
 	}
@@ -323,7 +323,7 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 		// at which point any never-seen transfer_id flows through.
 		acc.RestoreRecentTransferIDs(as.RecentTransferIDs)
 	}
-	seq.SetShardSeq(snap.ShardSeq)
+	seq.SetCounterSeq(snap.CounterSeq)
 
 	// Restore the legacy dedup.Table only so pre-ring snapshots still load
 	// without losing their entries in case operators re-export. Service is
@@ -557,7 +557,7 @@ func toProto(s *ShardSnapshot) *snapshotpb.CounterShardSnapshot {
 	pb := &snapshotpb.CounterShardSnapshot{
 		Version:     uint32(s.Version),
 		ShardId:     int32(s.ShardID),
-		ShardSeq:    s.ShardSeq,
+		CounterSeq:  s.CounterSeq,
 		TimestampMs: s.TimestampMS,
 	}
 	if len(s.Accounts) > 0 {
@@ -651,7 +651,7 @@ func fromProto(pb *snapshotpb.CounterShardSnapshot) *ShardSnapshot {
 	s := &ShardSnapshot{
 		Version:     int(pb.Version),
 		ShardID:     int(pb.ShardId),
-		ShardSeq:    pb.ShardSeq,
+		CounterSeq:  pb.CounterSeq,
 		TimestampMS: pb.TimestampMs,
 	}
 	if n := len(pb.Accounts); n > 0 {

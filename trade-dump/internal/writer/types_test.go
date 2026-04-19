@@ -8,7 +8,8 @@ import (
 
 func TestTradeRowFromEvent_Trade(t *testing.T) {
 	evt := &eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 17, TsUnixMs: 1_700_000_000_000, ProducerId: "match-shard-0-main"},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 1_700_000_000_000, ProducerId: "match-shard-0-main"},
+		MatchSeqId: 17,
 		Payload: &eventpb.TradeEvent_Trade{
 			Trade: &eventpb.Trade{
 				TradeId:      "BTC-USDT:17",
@@ -46,8 +47,8 @@ func TestTradeRowFromEvent_Trade(t *testing.T) {
 	if row.TS != 1_700_000_000_000 {
 		t.Errorf("TS: got %d", row.TS)
 	}
-	if row.SymbolSeqID != 17 {
-		t.Errorf("SymbolSeqID: got %d", row.SymbolSeqID)
+	if row.MatchSeqID != 17 {
+		t.Errorf("MatchSeqID: got %d", row.MatchSeqID)
 	}
 }
 
@@ -58,24 +59,29 @@ func TestTradeRowFromEvent_NonTrade(t *testing.T) {
 	}{
 		{"nil", nil},
 		{"accepted", &eventpb.TradeEvent{
-			Meta:    &eventpb.EventMeta{SeqId: 1},
-			Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{OrderId: 1}},
+			Meta:       &eventpb.EventMeta{},
+			MatchSeqId: 1,
+			Payload:    &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{OrderId: 1}},
 		}},
 		{"rejected", &eventpb.TradeEvent{
-			Meta:    &eventpb.EventMeta{SeqId: 2},
-			Payload: &eventpb.TradeEvent_Rejected{Rejected: &eventpb.OrderRejected{OrderId: 2}},
+			Meta:       &eventpb.EventMeta{},
+			MatchSeqId: 2,
+			Payload:    &eventpb.TradeEvent_Rejected{Rejected: &eventpb.OrderRejected{OrderId: 2}},
 		}},
 		{"cancelled", &eventpb.TradeEvent{
-			Meta:    &eventpb.EventMeta{SeqId: 3},
-			Payload: &eventpb.TradeEvent_Cancelled{Cancelled: &eventpb.OrderCancelled{OrderId: 3}},
+			Meta:       &eventpb.EventMeta{},
+			MatchSeqId: 3,
+			Payload:    &eventpb.TradeEvent_Cancelled{Cancelled: &eventpb.OrderCancelled{OrderId: 3}},
 		}},
 		{"expired", &eventpb.TradeEvent{
-			Meta:    &eventpb.EventMeta{SeqId: 4},
-			Payload: &eventpb.TradeEvent_Expired{Expired: &eventpb.OrderExpired{OrderId: 4}},
+			Meta:       &eventpb.EventMeta{},
+			MatchSeqId: 4,
+			Payload:    &eventpb.TradeEvent_Expired{Expired: &eventpb.OrderExpired{OrderId: 4}},
 		}},
 		{"trade payload nil", &eventpb.TradeEvent{
-			Meta:    &eventpb.EventMeta{SeqId: 5},
-			Payload: &eventpb.TradeEvent_Trade{Trade: nil},
+			Meta:       &eventpb.EventMeta{},
+			MatchSeqId: 5,
+			Payload:    &eventpb.TradeEvent_Trade{Trade: nil},
 		}},
 	}
 	for _, tc := range cases {
@@ -97,7 +103,7 @@ func TestTradeRowFromEvent_MissingMeta(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
-	if row.TS != 0 || row.SymbolSeqID != 0 {
-		t.Errorf("expected zero meta-derived fields, got TS=%d SeqID=%d", row.TS, row.SymbolSeqID)
+	if row.TS != 0 || row.MatchSeqID != 0 {
+		t.Errorf("expected zero meta-derived fields, got TS=%d MatchSeqID=%d", row.TS, row.MatchSeqID)
 	}
 }

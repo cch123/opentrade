@@ -13,8 +13,12 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 // See ADR-0003, 0020 (state transitions driven by this stream).
 // -----------------------------------------------------------------------------
 
+// match_seq_id is the per-symbol monotonic sequence assigned by the match
+// SymbolWorker. Used by counter as the (user, symbol) replay guard
+// (Account.matchSeq) and by trade-dump as the trades.match_seq_id row guard.
 message TradeEvent {
   EventMeta meta = 1;
+  uint64 match_seq_id = 2;
 
   oneof payload {
     OrderAccepted  accepted  = 10;

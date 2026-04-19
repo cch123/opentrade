@@ -8,7 +8,8 @@ import (
 
 func TestFromTrade_OK(t *testing.T) {
 	evt := &eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 1, TsUnixMs: 42},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 42},
+		MatchSeqId: 1,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId:   "BTC-USDT:1",
 			Symbol:    "BTC-USDT",

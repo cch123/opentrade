@@ -113,7 +113,7 @@ func (r *Registry) AddSymbol(symbol string) error {
 	r.active[symbol] = &handle{worker: w, cancel: cancel, done: done}
 	r.cfg.Logger.Info("symbol added",
 		zap.String("symbol", symbol),
-		zap.Uint64("seq_id", w.SeqID()))
+		zap.Uint64("match_seq_id", w.MatchSeq()))
 	return nil
 }
 

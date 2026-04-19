@@ -16,7 +16,7 @@ option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
 message QuoteSnapshot {
   uint32 version = 1;
   int64  taken_at_ms = 2;
-  uint64 seq = 3;
+  uint64 quote_seq = 3;
   map<int32, int64> offsets = 4;
   map<string, QuoteSymbolState> symbols = 5;  // symbol → state
 }

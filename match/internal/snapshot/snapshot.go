@@ -93,7 +93,7 @@ type OrderSnapshot struct {
 type SymbolSnapshot struct {
 	Version     int             `json:"version"`
 	Symbol      string          `json:"symbol"`
-	SeqID       uint64          `json:"seq_id"`
+	MatchSeqID  uint64          `json:"match_seq_id"`
 	Offsets     []KafkaOffset   `json:"offsets"`
 	Orders      []OrderSnapshot `json:"orders"`
 	TimestampMS int64           `json:"ts_unix_ms"`
@@ -105,9 +105,9 @@ type SymbolSnapshot struct {
 
 // Capture extracts the current state of w into a SymbolSnapshot. Safe to
 // call while the worker goroutine is running — it takes the worker's state
-// lock (WithStateLocked) so book / seqID / offsets are read as a consistent
-// triple. timestampMS is the wall-clock time at which the snapshot is taken
-// (informational).
+// lock (WithStateLocked) so book / matchSeq / offsets are read as a
+// consistent triple. timestampMS is the wall-clock time at which the
+// snapshot is taken (informational).
 //
 // Per-partition offsets are sourced from the worker itself (ADR-0048). The
 // snapshot file thus becomes the authoritative consumer position on restart;
@@ -118,8 +118,8 @@ func Capture(w *sequencer.SymbolWorker, timestampMS int64) *SymbolSnapshot {
 		Symbol:      w.Symbol(),
 		TimestampMS: timestampMS,
 	}
-	w.WithStateLocked(func(book *orderbook.Book, seqID uint64, offsets map[int32]int64) {
-		snap.SeqID = seqID
+	w.WithStateLocked(func(book *orderbook.Book, matchSeq uint64, offsets map[int32]int64) {
+		snap.MatchSeqID = matchSeq
 		snap.Offsets = offsetsMapToSlice(offsets)
 		book.Walk(orderbook.Bid, func(o *orderbook.Order) bool {
 			snap.Orders = append(snap.Orders, toSnapshot(o))
@@ -134,10 +134,10 @@ func Capture(w *sequencer.SymbolWorker, timestampMS int64) *SymbolSnapshot {
 }
 
 // Restore rebuilds the worker's state from snap. The worker MUST be freshly
-// constructed (empty book, default seq_id); calling Restore on a worker that
-// has already processed events panics.
+// constructed (empty book, default match_seq_id); calling Restore on a
+// worker that has already processed events panics.
 func Restore(w *sequencer.SymbolWorker, snap *SymbolSnapshot) error {
-	if w.Book().Len() != 0 || w.SeqID() != 0 {
+	if w.Book().Len() != 0 || w.MatchSeq() != 0 {
 		return fmt.Errorf("snapshot.Restore: worker is not empty")
 	}
 	if snap.Symbol != w.Symbol() {
@@ -155,7 +155,7 @@ func Restore(w *sequencer.SymbolWorker, snap *SymbolSnapshot) error {
 			return fmt.Errorf("snapshot.Restore: insert order %d: %w", o.ID, err)
 		}
 	}
-	w.SetSeqID(snap.SeqID)
+	w.SetMatchSeq(snap.MatchSeqID)
 	w.SetOffsets(offsetsSliceToMap(snap.Offsets))
 	return nil
 }
@@ -301,7 +301,7 @@ func toProto(s *SymbolSnapshot) *snapshotpb.MatchSymbolSnapshot {
 	pb := &snapshotpb.MatchSymbolSnapshot{
 		Version:     uint32(s.Version),
 		Symbol:      s.Symbol,
-		SeqId:       s.SeqID,
+		MatchSeqId:  s.MatchSeqID,
 		TimestampMs: s.TimestampMS,
 	}
 	if n := len(s.Offsets); n > 0 {
@@ -340,7 +340,7 @@ func fromProto(pb *snapshotpb.MatchSymbolSnapshot) *SymbolSnapshot {
 	s := &SymbolSnapshot{
 		Version:     int(pb.Version),
 		Symbol:      pb.Symbol,
-		SeqID:       pb.SeqId,
+		MatchSeqID:  pb.MatchSeqId,
 		TimestampMS: pb.TimestampMs,
 	}
 	if n := len(pb.Offsets); n > 0 {

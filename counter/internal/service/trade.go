@@ -21,17 +21,14 @@ var ErrUnknownPayload = errors.New("trade consumer: unknown payload")
 // HandleTradeEvent applies a trade-event produced by Match to the Counter
 // state. The consumer is at-least-once; per ADR-0048 backlog item 2 the
 // handler guards against replay using per-(user, symbol) match_seq carried
-// in evt.Meta.SeqId. A matchSeq of 0 (unset — legacy fixtures / cold path)
-// bypasses the guard so in-process tests without Meta still exercise the
+// in evt.MatchSeqId. A matchSeq of 0 (unset — legacy fixtures / cold path)
+// bypasses the guard so in-process tests without it still exercise the
 // business logic.
 func (s *Service) HandleTradeEvent(ctx context.Context, evt *eventpb.TradeEvent) error {
 	if evt == nil {
 		return errors.New("nil event")
 	}
-	matchSeq := uint64(0)
-	if evt.Meta != nil {
-		matchSeq = evt.Meta.SeqId
-	}
+	matchSeq := evt.MatchSeqId
 	switch p := evt.Payload.(type) {
 	case *eventpb.TradeEvent_Accepted:
 		return s.handleAccepted(ctx, p.Accepted, matchSeq)
@@ -67,7 +64,7 @@ func (s *Service) handleAccepted(ctx context.Context, a *eventpb.OrderAccepted, 
 		s.logForeignSkip("accepted", a.UserId, a.OrderId)
 		return nil
 	}
-	_, err := s.seq.Execute(a.UserId, func(seqID uint64) (any, error) {
+	_, err := s.seq.Execute(a.UserId, func(counterSeq uint64) (any, error) {
 		acc := s.state.Account(a.UserId)
 		if matchSeqDuplicate(acc, a.Symbol, matchSeq) {
 			return nil, nil // ADR-0048 backlog: already seen this match_seq
@@ -81,7 +78,7 @@ func (s *Service) handleAccepted(ctx context.Context, a *eventpb.OrderAccepted, 
 		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusNew, time.Now().UnixMilli()); err != nil {
 			return nil, err
 		}
-		if err := s.emitStatus(ctx, seqID, o, oldStatus, engine.OrderStatusNew, 0); err != nil {
+		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusNew, 0); err != nil {
 			return nil, err
 		}
 		acc.AdvanceMatchSeq(a.Symbol, matchSeq)
@@ -95,7 +92,7 @@ func (s *Service) handleRejected(ctx context.Context, r *eventpb.OrderRejected, 
 		s.logForeignSkip("rejected", r.UserId, r.OrderId)
 		return nil
 	}
-	_, err := s.seq.Execute(r.UserId, func(seqID uint64) (any, error) {
+	_, err := s.seq.Execute(r.UserId, func(counterSeq uint64) (any, error) {
 		acc := s.state.Account(r.UserId)
 		if matchSeqDuplicate(acc, r.Symbol, matchSeq) {
 			return nil, nil
@@ -112,7 +109,7 @@ func (s *Service) handleRejected(ctx context.Context, r *eventpb.OrderRejected, 
 		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusRejected, time.Now().UnixMilli()); err != nil {
 			return nil, err
 		}
-		if err := s.emitStatus(ctx, seqID, o, oldStatus, engine.OrderStatusRejected, r.Reason); err != nil {
+		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusRejected, r.Reason); err != nil {
 			return nil, err
 		}
 		acc.AdvanceMatchSeq(r.Symbol, matchSeq)
@@ -188,7 +185,7 @@ func (s *Service) applySelfTrade(ctx context.Context, ti engine.TradeInput, matc
 		s.logForeignSkip("trade-self", userID, ti.MakerOrderID)
 		return nil
 	}
-	_, err := s.seq.Execute(userID, func(seqID uint64) (any, error) {
+	_, err := s.seq.Execute(userID, func(counterSeq uint64) (any, error) {
 		acc := s.state.Account(userID)
 		if matchSeqDuplicate(acc, ti.Symbol, matchSeq) {
 			return nil, nil
@@ -217,7 +214,7 @@ func (s *Service) applySelfTrade(ctx context.Context, ti engine.TradeInput, matc
 			baseAfter := s.state.Balance(userID, base)
 			quoteAfter := s.state.Balance(userID, quote)
 			evt, err := journal.BuildSettlementEvent(journal.SettlementEventInput{
-				SeqID:          seqID,
+				CounterSeqID:   counterSeq,
 				ProducerID:     s.cfg.ProducerID,
 				AccountVersion: acc.Version(),
 				Symbol:         ti.Symbol,
@@ -247,7 +244,7 @@ func (s *Service) handleCancelled(ctx context.Context, c *eventpb.OrderCancelled
 		s.logForeignSkip("cancelled", c.UserId, c.OrderId)
 		return nil
 	}
-	_, err := s.seq.Execute(c.UserId, func(seqID uint64) (any, error) {
+	_, err := s.seq.Execute(c.UserId, func(counterSeq uint64) (any, error) {
 		acc := s.state.Account(c.UserId)
 		if matchSeqDuplicate(acc, c.Symbol, matchSeq) {
 			return nil, nil
@@ -264,7 +261,7 @@ func (s *Service) handleCancelled(ctx context.Context, c *eventpb.OrderCancelled
 		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusCanceled, time.Now().UnixMilli()); err != nil {
 			return nil, err
 		}
-		if err := s.emitStatus(ctx, seqID, o, oldStatus, engine.OrderStatusCanceled, 0); err != nil {
+		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusCanceled, 0); err != nil {
 			return nil, err
 		}
 		acc.AdvanceMatchSeq(c.Symbol, matchSeq)
@@ -278,7 +275,7 @@ func (s *Service) handleExpired(ctx context.Context, e *eventpb.OrderExpired, ma
 		s.logForeignSkip("expired", e.UserId, e.OrderId)
 		return nil
 	}
-	_, err := s.seq.Execute(e.UserId, func(seqID uint64) (any, error) {
+	_, err := s.seq.Execute(e.UserId, func(counterSeq uint64) (any, error) {
 		acc := s.state.Account(e.UserId)
 		if matchSeqDuplicate(acc, e.Symbol, matchSeq) {
 			return nil, nil
@@ -295,7 +292,7 @@ func (s *Service) handleExpired(ctx context.Context, e *eventpb.OrderExpired, ma
 		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusExpired, time.Now().UnixMilli()); err != nil {
 			return nil, err
 		}
-		if err := s.emitStatus(ctx, seqID, o, oldStatus, engine.OrderStatusExpired, e.Reason); err != nil {
+		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusExpired, e.Reason); err != nil {
 			return nil, err
 		}
 		acc.AdvanceMatchSeq(e.Symbol, matchSeq)
@@ -327,7 +324,7 @@ func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInp
 		s.logForeignSkip(kind, userID, orderID)
 		return nil
 	}
-	_, err := s.seq.Execute(userID, func(seqID uint64) (any, error) {
+	_, err := s.seq.Execute(userID, func(counterSeq uint64) (any, error) {
 		acc := s.state.Account(userID)
 		if matchSeqDuplicate(acc, ti.Symbol, matchSeq) {
 			return nil, nil
@@ -340,7 +337,7 @@ func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInp
 			return nil, nil
 		}
 		// Idempotency layer 2: compare stored FilledQty with the event's
-		// after-value. Covers legacy records whose Meta.SeqId is zero.
+		// after-value. Covers legacy records whose match_seq_id is zero.
 		after := ti.MakerFilledQtyAfter
 		if !maker {
 			after = ti.TakerFilledQtyAfter
@@ -369,7 +366,7 @@ func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInp
 		baseAfter := s.state.Balance(party.UserID, base)
 		quoteAfter := s.state.Balance(party.UserID, quote)
 		evt, err := journal.BuildSettlementEvent(journal.SettlementEventInput{
-			SeqID:          seqID,
+			CounterSeqID:   counterSeq,
 			ProducerID:     s.cfg.ProducerID,
 			AccountVersion: acc.Version(),
 			Symbol:         ti.Symbol,
@@ -442,9 +439,9 @@ func (s *Service) logForeignSkip(kind, userID string, orderID uint64) {
 // AccountVersion is read AT emit time. Callers that just called
 // unfreezeResidual will see the bumped value; pure-status transitions
 // (PENDING_NEW → NEW) emit the still-stable pre-call value.
-func (s *Service) emitStatus(ctx context.Context, seqID uint64, o *engine.Order, oldStatus, newStatus engine.OrderStatus, reason eventpb.RejectReason) error {
+func (s *Service) emitStatus(ctx context.Context, counterSeq uint64, o *engine.Order, oldStatus, newStatus engine.OrderStatus, reason eventpb.RejectReason) error {
 	evt := journal.BuildOrderStatusEvent(journal.OrderStatusEventInput{
-		SeqID:          seqID,
+		CounterSeqID:   counterSeq,
 		ProducerID:     s.cfg.ProducerID,
 		AccountVersion: s.state.Account(o.UserID).Version(),
 		UserID:         o.UserID,

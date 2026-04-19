@@ -161,6 +161,10 @@ func (x *BalanceSnapshot) GetVersion() uint64 {
 
 // Event envelope for counter-journal.
 //
+// counter_seq_id is the counter-shard-scoped monotonic sequence assigned by
+// the counter UserSequencer. Used by trade-dump as the per-row idempotency
+// guard for accounts / account_logs (see ADR-0028).
+//
 // account_version is the user-level monotonic counter (bumped on any of
 // this user's balance mutations, ADR-0048 backlog: 双层 version 方案 B).
 // Sent on every event; unchanged on OrderStatus / CancelRequested which
@@ -170,6 +174,7 @@ type CounterJournalEvent struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Meta           *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
 	AccountVersion uint64                 `protobuf:"varint,2,opt,name=account_version,json=accountVersion,proto3" json:"account_version,omitempty"`
+	CounterSeqId   uint64                 `protobuf:"varint,3,opt,name=counter_seq_id,json=counterSeqId,proto3" json:"counter_seq_id,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*CounterJournalEvent_Freeze
@@ -223,6 +228,13 @@ func (x *CounterJournalEvent) GetMeta() *EventMeta {
 func (x *CounterJournalEvent) GetAccountVersion() uint64 {
 	if x != nil {
 		return x.AccountVersion
+	}
+	return 0
+}
+
+func (x *CounterJournalEvent) GetCounterSeqId() uint64 {
+	if x != nil {
+		return x.CounterSeqId
 	}
 	return 0
 }
@@ -959,10 +971,11 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\x05asset\x18\x02 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x03 \x01(\tR\tavailable\x12\x16\n" +
 	"\x06frozen\x18\x04 \x01(\tR\x06frozen\x12\x18\n" +
-	"\aversion\x18\x05 \x01(\x04R\aversion\"\xfc\x03\n" +
+	"\aversion\x18\x05 \x01(\x04R\aversion\"\xa2\x04\n" +
 	"\x13CounterJournalEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12'\n" +
-	"\x0faccount_version\x18\x02 \x01(\x04R\x0eaccountVersion\x126\n" +
+	"\x0faccount_version\x18\x02 \x01(\x04R\x0eaccountVersion\x12$\n" +
+	"\x0ecounter_seq_id\x18\x03 \x01(\x04R\fcounterSeqId\x126\n" +
 	"\x06freeze\x18\n" +
 	" \x01(\v2\x1c.opentrade.event.FreezeEventH\x00R\x06freeze\x12<\n" +
 	"\bunfreeze\x18\v \x01(\v2\x1e.opentrade.event.UnfreezeEventH\x00R\bunfreeze\x12B\n" +

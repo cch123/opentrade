@@ -11,7 +11,8 @@ import (
 
 func TestOrderEventToInternal_Placed(t *testing.T) {
 	pb := &eventpb.OrderEvent{
-		Meta: &eventpb.EventMeta{SeqId: 1, TsUnixMs: 1000},
+		Meta:         &eventpb.EventMeta{TsUnixMs: 1000},
+		CounterSeqId: 1,
 		Payload: &eventpb.OrderEvent_Placed{
 			Placed: &eventpb.OrderPlaced{
 				UserId:        "u1",
@@ -50,7 +51,8 @@ func TestOrderEventToInternal_Placed(t *testing.T) {
 
 func TestOrderEventToInternal_Cancel(t *testing.T) {
 	pb := &eventpb.OrderEvent{
-		Meta: &eventpb.EventMeta{SeqId: 2},
+		Meta:         &eventpb.EventMeta{},
+		CounterSeqId: 2,
 		Payload: &eventpb.OrderEvent_Cancel{
 			Cancel: &eventpb.OrderCancel{
 				UserId:  "u1",
@@ -90,7 +92,7 @@ func TestOrderEventToInternal_InvalidQty(t *testing.T) {
 func TestOutputToTradeEvent_Trade(t *testing.T) {
 	out := &sequencer.Output{
 		Kind:           sequencer.OutputTrade,
-		SeqID:          17,
+		MatchSeq:       17,
 		Symbol:         "BTC-USDT",
 		UserID:         "t1",
 		OrderID:        101,
@@ -107,8 +109,8 @@ func TestOutputToTradeEvent_Trade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	if te.Meta.SeqId != 17 || te.Meta.ProducerId != "match-shard-0-main" {
-		t.Fatalf("meta: %+v", te.Meta)
+	if te.MatchSeqId != 17 || te.Meta.ProducerId != "match-shard-0-main" {
+		t.Fatalf("meta: %+v match_seq_id=%d", te.Meta, te.MatchSeqId)
 	}
 	trade := te.GetTrade()
 	if trade == nil {
@@ -125,7 +127,7 @@ func TestOutputToTradeEvent_Trade(t *testing.T) {
 func TestOutputToTradeEvent_Accepted(t *testing.T) {
 	out := &sequencer.Output{
 		Kind:           sequencer.OutputOrderAccepted,
-		SeqID:          9,
+		MatchSeq:       9,
 		Symbol:         "BTC-USDT",
 		UserID:         "u1",
 		OrderID:        42,
@@ -155,7 +157,7 @@ func TestOutputToTradeEvent_Accepted(t *testing.T) {
 func TestOutputToTradeEvent_Rejected(t *testing.T) {
 	out := &sequencer.Output{
 		Kind:         sequencer.OutputOrderRejected,
-		SeqID:        5,
+		MatchSeq:     5,
 		Symbol:       "BTC-USDT",
 		UserID:       "u1",
 		OrderID:      1,

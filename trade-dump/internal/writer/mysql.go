@@ -112,7 +112,7 @@ func (m *MySQL) InsertTrades(ctx context.Context, rows []TradeRow) error {
 	return nil
 }
 
-const tradeColumns = "trade_id, symbol, price, qty, maker_user_id, maker_order_id, taker_user_id, taker_order_id, taker_side, ts, symbol_seq_id"
+const tradeColumns = "trade_id, symbol, price, qty, maker_user_id, maker_order_id, taker_user_id, taker_order_id, taker_side, ts, match_seq_id"
 
 func insertTradeChunk(ctx context.Context, tx *sql.Tx, rows []TradeRow) error {
 	placeholders := make([]string, len(rows))
@@ -130,7 +130,7 @@ func insertTradeChunk(ctx context.Context, tx *sql.Tx, rows []TradeRow) error {
 			r.TakerOrderID,
 			r.TakerSide,
 			r.TS,
-			r.SymbolSeqID,
+			r.MatchSeqID,
 		)
 	}
 	query := "INSERT INTO trades (" + tradeColumns + ") VALUES " +

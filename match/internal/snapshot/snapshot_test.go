@@ -44,7 +44,7 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 	snap := &SymbolSnapshot{
 		Version:     Version,
 		Symbol:      "BTC-USDT",
-		SeqID:       42,
+		MatchSeqID:  42,
 		Offsets:     []KafkaOffset{{Topic: "order-event", Partition: 0, Offset: 1000}},
 		TimestampMS: 1700000000000,
 		Orders: []OrderSnapshot{
@@ -58,7 +58,7 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Symbol != snap.Symbol || got.SeqID != snap.SeqID || len(got.Orders) != 1 {
+	if got.Symbol != snap.Symbol || got.MatchSeqID != snap.MatchSeqID || len(got.Orders) != 1 {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 	if got.Orders[0].Price != "100" {
@@ -70,7 +70,7 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 // when only that format is present (ADR-0049 upgrade window).
 func TestLoad_JSONOnlyMigration(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "snap")
-	snap := &SymbolSnapshot{Version: Version, Symbol: "BTC-USDT", SeqID: 7}
+	snap := &SymbolSnapshot{Version: Version, Symbol: "BTC-USDT", MatchSeqID: 7}
 	if err := Save(base, snap, FormatJSON); err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +78,8 @@ func TestLoad_JSONOnlyMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.SeqID != 7 {
-		t.Fatalf("json-only load: got seq=%d", got.SeqID)
+	if got.MatchSeqID != 7 {
+		t.Fatalf("json-only load: got match_seq=%d", got.MatchSeqID)
 	}
 }
 
@@ -141,8 +141,8 @@ func TestCaptureAndRestoreWorker(t *testing.T) {
 	if w2.Book().Len() != len(seeds) {
 		t.Fatalf("restored book size = %d, want %d", w2.Book().Len(), len(seeds))
 	}
-	if w2.SeqID() != w.SeqID() {
-		t.Fatalf("seq mismatch: %d vs %d", w2.SeqID(), w.SeqID())
+	if w2.MatchSeq() != w.MatchSeq() {
+		t.Fatalf("match seq mismatch: %d vs %d", w2.MatchSeq(), w.MatchSeq())
 	}
 	// Time-priority must survive: best bid should be the earliest order at 101.
 	best, _ := w2.Book().Best(orderbook.Bid)

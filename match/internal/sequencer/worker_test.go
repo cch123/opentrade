@@ -66,10 +66,10 @@ func TestWorkerProcessesInFIFOOrder(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("emissions = %d, want 2: %v", len(got), got)
 	}
-	if got[0].Kind != OutputOrderAccepted || got[0].OrderID != 1 || got[0].SeqID != 1 {
+	if got[0].Kind != OutputOrderAccepted || got[0].OrderID != 1 || got[0].MatchSeq != 1 {
 		t.Fatalf("got[0] = %+v", got[0])
 	}
-	if got[1].Kind != OutputTrade || got[1].OrderID != 2 || got[1].SeqID != 2 {
+	if got[1].Kind != OutputTrade || got[1].OrderID != 2 || got[1].MatchSeq != 2 {
 		t.Fatalf("got[1] = %+v", got[1])
 	}
 }

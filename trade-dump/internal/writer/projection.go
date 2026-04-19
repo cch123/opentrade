@@ -51,9 +51,9 @@ const (
 )
 
 // AccountRow mirrors the `accounts` table. Upserted on every event whose
-// CounterJournalEvent payload carries a BalanceSnapshot. seq_id is the
-// shard-monotonic id at event emission; writer uses it to guard against
-// out-of-order replays.
+// CounterJournalEvent payload carries a BalanceSnapshot. CounterSeqID is the
+// counter-shard-monotonic id at event emission; writer uses it to guard
+// against out-of-order replays.
 //
 // AccountVersion / BalanceVersion are the ADR-0048 backlog "双层 version"
 // counters (方案 B). Mirrored to the accounts projection so downstream
@@ -64,17 +64,17 @@ type AccountRow struct {
 	Asset          string
 	Available      string
 	Frozen         string
-	SeqID          uint64
+	CounterSeqID   uint64
 	AccountVersion uint64
 	BalanceVersion uint64
 }
 
-// AccountLogRow mirrors the `account_logs` table — one row per (shard, seq,
-// asset). Inserted with ON DUPLICATE KEY UPDATE no-op so replays are
-// idempotent.
+// AccountLogRow mirrors the `account_logs` table — one row per
+// (shard, counter_seq_id, asset). Inserted with ON DUPLICATE KEY UPDATE
+// no-op so replays are idempotent.
 type AccountLogRow struct {
 	ShardID      int32
-	SeqID        uint64
+	CounterSeqID uint64
 	Asset        string
 	UserID       string
 	DeltaAvail   string
@@ -125,19 +125,20 @@ func BuildJournalBatch(events []*eventpb.CounterJournalEvent) JournalBatch {
 		if evt == nil {
 			continue
 		}
-		seq, ts := metaFor(evt.Meta)
+		ts := tsFromMeta(evt.Meta)
+		counterSeq := evt.CounterSeqId
 		shardID, hasShard := shardIDFromProducer(evt.Meta.GetProducerId())
 
 		accVer := evt.AccountVersion
 		switch p := evt.Payload.(type) {
 		case *eventpb.CounterJournalEvent_Freeze:
-			appendFromFreeze(&batch, p.Freeze, seq, ts, shardID, hasShard, accVer)
+			appendFromFreeze(&batch, p.Freeze, counterSeq, ts, shardID, hasShard, accVer)
 		case *eventpb.CounterJournalEvent_Unfreeze:
-			appendFromUnfreeze(&batch, p.Unfreeze, seq, ts, shardID, hasShard, accVer)
+			appendFromUnfreeze(&batch, p.Unfreeze, counterSeq, ts, shardID, hasShard, accVer)
 		case *eventpb.CounterJournalEvent_Settlement:
-			appendFromSettlement(&batch, p.Settlement, seq, ts, shardID, hasShard, accVer)
+			appendFromSettlement(&batch, p.Settlement, counterSeq, ts, shardID, hasShard, accVer)
 		case *eventpb.CounterJournalEvent_Transfer:
-			appendFromTransfer(&batch, p.Transfer, seq, ts, shardID, hasShard, accVer)
+			appendFromTransfer(&batch, p.Transfer, counterSeq, ts, shardID, hasShard, accVer)
 		case *eventpb.CounterJournalEvent_OrderStatus:
 			appendFromOrderStatus(&batch, p.OrderStatus, ts)
 		case *eventpb.CounterJournalEvent_CancelReq:
@@ -152,14 +153,11 @@ func BuildJournalBatch(events []*eventpb.CounterJournalEvent) JournalBatch {
 // helpers
 // -----------------------------------------------------------------------------
 
-func metaFor(meta *eventpb.EventMeta) (seqID uint64, tsMs int64) {
-	if meta == nil {
-		return 0, time.Now().UnixMilli()
+func tsFromMeta(meta *eventpb.EventMeta) int64 {
+	if meta == nil || meta.TsUnixMs == 0 {
+		return time.Now().UnixMilli()
 	}
-	if meta.TsUnixMs == 0 {
-		return meta.SeqId, time.Now().UnixMilli()
-	}
-	return meta.SeqId, meta.TsUnixMs
+	return meta.TsUnixMs
 }
 
 // shardIDFromProducer extracts N from "counter-shard-N-<role>". Returns
@@ -182,7 +180,7 @@ func shardIDFromProducer(producerID string) (int32, bool) {
 	return int32(n), true
 }
 
-func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, seq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
+func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
 	if e == nil {
 		return
 	}
@@ -204,11 +202,11 @@ func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, seq uint64, ts in
 		Kind:          OrderRowInsert,
 	})
 	if snap := e.BalanceAfter; snap != nil {
-		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
+		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
 				ShardID:     shardID,
-				SeqID:       seq,
+				CounterSeqID: counterSeq,
 				Asset:       snap.Asset,
 				UserID:      e.UserId,
 				DeltaAvail:  "-" + trimDecimal(e.FreezeAmount),
@@ -223,16 +221,16 @@ func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, seq uint64, ts in
 	}
 }
 
-func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, seq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
+func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
 	if e == nil {
 		return
 	}
 	if snap := e.BalanceAfter; snap != nil {
-		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
+		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
 				ShardID:     shardID,
-				SeqID:       seq,
+				CounterSeqID: counterSeq,
 				Asset:       snap.Asset,
 				UserID:      e.UserId,
 				DeltaAvail:  trimDecimal(e.Amount),
@@ -247,17 +245,17 @@ func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, seq uint64, t
 	}
 }
 
-func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, seq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
+func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
 	if e == nil {
 		return
 	}
 	// base leg
 	if snap := e.BaseBalanceAfter; snap != nil {
-		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
+		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
 				ShardID:     shardID,
-				SeqID:       seq,
+				CounterSeqID: counterSeq,
 				Asset:       snap.Asset,
 				UserID:      e.UserId,
 				DeltaAvail:  trimDecimal(e.DeltaBase),
@@ -272,11 +270,11 @@ func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, seq uint6
 	}
 	// quote leg
 	if snap := e.QuoteBalanceAfter; snap != nil {
-		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
+		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
 				ShardID:     shardID,
-				SeqID:       seq,
+				CounterSeqID: counterSeq,
 				Asset:       snap.Asset,
 				UserID:      e.UserId,
 				DeltaAvail:  trimDecimal(e.DeltaQuote),
@@ -291,7 +289,7 @@ func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, seq uint6
 	}
 }
 
-func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, seq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
+func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
 	if e == nil {
 		return
 	}
@@ -299,15 +297,15 @@ func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, seq uint64, t
 	if snap == nil {
 		return
 	}
-	b.Accounts = append(b.Accounts, accountRowFromSnap(snap, seq, accVer))
+	b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 	if !hasShard {
 		return
 	}
 	deltaAvail, deltaFrozen := transferDeltas(e.Type, e.Amount)
 	b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-		ShardID:     shardID,
-		SeqID:       seq,
-		Asset:       snap.Asset,
+		ShardID:      shardID,
+		CounterSeqID: counterSeq,
+		Asset:        snap.Asset,
 		UserID:      e.UserId,
 		DeltaAvail:  deltaAvail,
 		DeltaFrozen: deltaFrozen,
@@ -334,13 +332,13 @@ func appendFromOrderStatus(b *JournalBatch, e *eventpb.OrderStatusEvent, ts int6
 	})
 }
 
-func accountRowFromSnap(snap *eventpb.BalanceSnapshot, seq uint64, accVer uint64) AccountRow {
+func accountRowFromSnap(snap *eventpb.BalanceSnapshot, counterSeq uint64, accVer uint64) AccountRow {
 	return AccountRow{
 		UserID:         snap.UserId,
 		Asset:          snap.Asset,
 		Available:      snap.Available,
 		Frozen:         snap.Frozen,
-		SeqID:          seq,
+		CounterSeqID:   counterSeq,
 		AccountVersion: accVer,
 		BalanceVersion: snap.Version,
 	}

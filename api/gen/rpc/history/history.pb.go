@@ -1514,7 +1514,7 @@ func (x *Conditional) GetTriggeredAtUnixMs() int64 {
 type AccountLog struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ShardId       int32                  `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	SeqId         uint64                 `protobuf:"varint,2,opt,name=seq_id,json=seqId,proto3" json:"seq_id,omitempty"`
+	CounterSeqId  uint64                 `protobuf:"varint,2,opt,name=counter_seq_id,json=counterSeqId,proto3" json:"counter_seq_id,omitempty"`
 	Asset         string                 `protobuf:"bytes,3,opt,name=asset,proto3" json:"asset,omitempty"`
 	UserId        string                 `protobuf:"bytes,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	DeltaAvail    string                 `protobuf:"bytes,5,opt,name=delta_avail,json=deltaAvail,proto3" json:"delta_avail,omitempty"`
@@ -1565,9 +1565,9 @@ func (x *AccountLog) GetShardId() int32 {
 	return 0
 }
 
-func (x *AccountLog) GetSeqId() uint64 {
+func (x *AccountLog) GetCounterSeqId() uint64 {
 	if x != nil {
-		return x.SeqId
+		return x.CounterSeqId
 	}
 	return 0
 }
@@ -1755,11 +1755,11 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x12trailing_watermark\x18\x13 \x01(\tR\x11trailingWatermark\x12'\n" +
 	"\x0ftrailing_active\x18\x14 \x01(\bR\x0etrailingActive\x12+\n" +
 	"\x12created_at_unix_ms\x18\x15 \x01(\x03R\x0fcreatedAtUnixMs\x12/\n" +
-	"\x14triggered_at_unix_ms\x18\x16 \x01(\x03R\x11triggeredAtUnixMs\"\xcc\x02\n" +
+	"\x14triggered_at_unix_ms\x18\x16 \x01(\x03R\x11triggeredAtUnixMs\"\xdb\x02\n" +
 	"\n" +
 	"AccountLog\x12\x19\n" +
-	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12\x15\n" +
-	"\x06seq_id\x18\x02 \x01(\x04R\x05seqId\x12\x14\n" +
+	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12$\n" +
+	"\x0ecounter_seq_id\x18\x02 \x01(\x04R\fcounterSeqId\x12\x14\n" +
 	"\x05asset\x18\x03 \x01(\tR\x05asset\x12\x17\n" +
 	"\auser_id\x18\x04 \x01(\tR\x06userId\x12\x1f\n" +
 	"\vdelta_avail\x18\x05 \x01(\tR\n" +

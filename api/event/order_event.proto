@@ -15,6 +15,7 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 
 message OrderEvent {
   EventMeta meta = 1;
+  uint64 counter_seq_id = 2;
 
   oneof payload {
     OrderPlaced placed = 10;

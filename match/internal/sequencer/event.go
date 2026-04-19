@@ -60,9 +60,9 @@ const (
 // Output is the structured emission from a SymbolWorker. Each field is only
 // populated for the relevant OutputKind(s); see the per-kind list.
 type Output struct {
-	Kind   OutputKind
-	SeqID  uint64 // per-symbol monotonic sequence id (ADR-0019)
-	Symbol string
+	Kind     OutputKind
+	MatchSeq uint64 // per-symbol monotonic match seq (ADR-0019)
+	Symbol   string
 
 	// Identity of the order that produced this emission.
 	UserID  string

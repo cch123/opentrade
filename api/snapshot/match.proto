@@ -15,7 +15,7 @@ option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
 message MatchSymbolSnapshot {
   uint32 version = 1;
   string symbol = 2;
-  uint64 seq_id = 3;
+  uint64 match_seq_id = 3;
   int64  timestamp_ms = 4;
   repeated MatchKafkaOffset offsets = 5;
   repeated MatchOrder orders = 6;

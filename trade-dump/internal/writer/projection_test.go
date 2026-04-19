@@ -6,8 +6,8 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
-func newMeta(seq uint64, ts int64, producerID string) *eventpb.EventMeta {
-	return &eventpb.EventMeta{SeqId: seq, TsUnixMs: ts, ProducerId: producerID}
+func newMeta(ts int64, producerID string) *eventpb.EventMeta {
+	return &eventpb.EventMeta{TsUnixMs: ts, ProducerId: producerID}
 }
 
 func TestShardIDFromProducer(t *testing.T) {
@@ -34,7 +34,8 @@ func TestShardIDFromProducer(t *testing.T) {
 
 func TestBuildJournalBatch_Freeze(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta: newMeta(5, 1_700_000_000_000, "counter-shard-0-main"),
+		Meta:         newMeta(1_700_000_000_000, "counter-shard-0-main"),
+		CounterSeqId: 5,
 		Payload: &eventpb.CounterJournalEvent_Freeze{Freeze: &eventpb.FreezeEvent{
 			UserId:        "u1",
 			OrderId:       42,
@@ -73,7 +74,7 @@ func TestBuildJournalBatch_Freeze(t *testing.T) {
 	if len(batch.Accounts) != 1 {
 		t.Fatalf("accounts: %+v", batch.Accounts)
 	}
-	if batch.Accounts[0].Available != "400" || batch.Accounts[0].Frozen != "100" || batch.Accounts[0].SeqID != 5 {
+	if batch.Accounts[0].Available != "400" || batch.Accounts[0].Frozen != "100" || batch.Accounts[0].CounterSeqID != 5 {
 		t.Errorf("account fields: %+v", batch.Accounts[0])
 	}
 
@@ -81,7 +82,7 @@ func TestBuildJournalBatch_Freeze(t *testing.T) {
 		t.Fatalf("logs: %+v", batch.AccountLogs)
 	}
 	log := batch.AccountLogs[0]
-	if log.ShardID != 0 || log.SeqID != 5 || log.Asset != "USDT" {
+	if log.ShardID != 0 || log.CounterSeqID != 5 || log.Asset != "USDT" {
 		t.Errorf("log pk: %+v", log)
 	}
 	if log.DeltaAvail != "-100" || log.DeltaFrozen != "100" {
@@ -94,7 +95,8 @@ func TestBuildJournalBatch_Freeze(t *testing.T) {
 
 func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta: newMeta(11, 1_700_000_000_001, "counter-shard-3-main"),
+		Meta:         newMeta(1_700_000_000_001, "counter-shard-3-main"),
+		CounterSeqId: 11,
 		Payload: &eventpb.CounterJournalEvent_Settlement{Settlement: &eventpb.SettlementEvent{
 			UserId:        "buyer",
 			OrderId:       42,
@@ -126,11 +128,11 @@ func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 	if len(batch.AccountLogs) != 2 {
 		t.Fatalf("expected 2 logs (base+quote): %+v", batch.AccountLogs)
 	}
-	// Logs share (shard_id, seq_id) but differ in asset — this is exactly
-	// why the PK expanded to include asset.
+	// Logs share (shard_id, counter_seq_id) but differ in asset — this is
+	// exactly why the PK expanded to include asset.
 	assets := map[string]bool{}
 	for _, l := range batch.AccountLogs {
-		if l.ShardID != 3 || l.SeqID != 11 {
+		if l.ShardID != 3 || l.CounterSeqID != 11 {
 			t.Errorf("log pk: %+v", l)
 		}
 		assets[l.Asset] = true
@@ -142,7 +144,8 @@ func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 
 func TestBuildJournalBatch_OrderStatusUpdate(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta: newMeta(7, 1_700_000_000_050, "counter-shard-0-main"),
+		Meta:         newMeta(1_700_000_000_050, "counter-shard-0-main"),
+		CounterSeqId: 7,
 		Payload: &eventpb.CounterJournalEvent_OrderStatus{OrderStatus: &eventpb.OrderStatusEvent{
 			UserId:    "u1",
 			OrderId:   42,
@@ -173,7 +176,8 @@ func TestBuildJournalBatch_OrderStatusUpdate(t *testing.T) {
 
 func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 	deposit := &eventpb.CounterJournalEvent{
-		Meta: newMeta(1, 10, "counter-shard-0-main"),
+		Meta:         newMeta(10, "counter-shard-0-main"),
+		CounterSeqId: 1,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
 			UserId: "u1", TransferId: "tx-1", Asset: "USDT",
 			Amount: "500", Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
@@ -183,7 +187,8 @@ func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 		}},
 	}
 	withdraw := &eventpb.CounterJournalEvent{
-		Meta: newMeta(2, 11, "counter-shard-0-main"),
+		Meta:         newMeta(11, "counter-shard-0-main"),
+		CounterSeqId: 2,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
 			UserId: "u1", TransferId: "tx-2", Asset: "USDT",
 			Amount: "100", Type: eventpb.TransferEvent_TRANSFER_TYPE_WITHDRAW,
@@ -207,7 +212,8 @@ func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 
 func TestBuildJournalBatch_CancelRequestedIsNoop(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta: newMeta(9, 1, "counter-shard-0-main"),
+		Meta:         newMeta(1, "counter-shard-0-main"),
+		CounterSeqId: 9,
 		Payload: &eventpb.CounterJournalEvent_CancelReq{CancelReq: &eventpb.CancelRequested{
 			UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",
 		}},
@@ -220,7 +226,8 @@ func TestBuildJournalBatch_CancelRequestedIsNoop(t *testing.T) {
 
 func TestBuildJournalBatch_DropsUnparseableShard(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta: newMeta(1, 1, "not-a-counter"),
+		Meta:         newMeta(1, "not-a-counter"),
+		CounterSeqId: 1,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
 			UserId: "u1", TransferId: "tx-1", Asset: "USDT",
 			Amount: "1", Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,

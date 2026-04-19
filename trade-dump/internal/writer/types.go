@@ -23,9 +23,9 @@ type TradeRow struct {
 	MakerOrderID uint64
 	TakerUserID  string
 	TakerOrderID uint64
-	TakerSide    int8  // opentrade.event.Side (0 unspecified / 1 buy / 2 sell)
-	TS           int64 // ms since epoch, copied from EventMeta.ts_unix_ms
-	SymbolSeqID  uint64
+	TakerSide    int8   // opentrade.event.Side (0 unspecified / 1 buy / 2 sell)
+	TS           int64  // ms since epoch, copied from EventMeta.ts_unix_ms
+	MatchSeqID   uint64 // per-symbol monotonic seq, assigned by match SymbolWorker
 }
 
 // TradeWriter is what the consumer talks to. A real implementation writes to
@@ -38,8 +38,8 @@ type TradeWriter interface {
 // value is false when the event is not a Trade payload (e.g. OrderAccepted,
 // OrderCancelled) — callers should skip these for the trades table.
 //
-// The EventMeta.seq_id is treated as the per-symbol monotonic id (see
-// api/event/common.proto EventMeta docs and match/internal/journal/convert.go).
+// The TradeEvent.MatchSeqId carries the per-symbol monotonic seq assigned by
+// match (see api/event/trade_event.proto and match/internal/sequencer).
 func TradeRowFromEvent(evt *eventpb.TradeEvent) (TradeRow, bool) {
 	if evt == nil {
 		return TradeRow{}, false
@@ -59,10 +59,10 @@ func TradeRowFromEvent(evt *eventpb.TradeEvent) (TradeRow, bool) {
 		TakerUserID:  t.TakerUserId,
 		TakerOrderID: t.TakerOrderId,
 		TakerSide:    int8(t.TakerSide),
+		MatchSeqID:   evt.MatchSeqId,
 	}
 	if evt.Meta != nil {
 		row.TS = evt.Meta.TsUnixMs
-		row.SymbolSeqID = evt.Meta.SeqId
 	}
 	return row, true
 }

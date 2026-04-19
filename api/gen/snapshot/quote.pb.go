@@ -25,7 +25,7 @@ type QuoteSnapshot struct {
 	state         protoimpl.MessageState       `protogen:"open.v1"`
 	Version       uint32                       `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
 	TakenAtMs     int64                        `protobuf:"varint,2,opt,name=taken_at_ms,json=takenAtMs,proto3" json:"taken_at_ms,omitempty"`
-	Seq           uint64                       `protobuf:"varint,3,opt,name=seq,proto3" json:"seq,omitempty"`
+	QuoteSeq      uint64                       `protobuf:"varint,3,opt,name=quote_seq,json=quoteSeq,proto3" json:"quote_seq,omitempty"`
 	Offsets       map[int32]int64              `protobuf:"bytes,4,rep,name=offsets,proto3" json:"offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	Symbols       map[string]*QuoteSymbolState `protobuf:"bytes,5,rep,name=symbols,proto3" json:"symbols,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // symbol → state
 	unknownFields protoimpl.UnknownFields
@@ -76,9 +76,9 @@ func (x *QuoteSnapshot) GetTakenAtMs() int64 {
 	return 0
 }
 
-func (x *QuoteSnapshot) GetSeq() uint64 {
+func (x *QuoteSnapshot) GetQuoteSeq() uint64 {
 	if x != nil {
-		return x.Seq
+		return x.QuoteSeq
 	}
 	return 0
 }
@@ -457,11 +457,11 @@ var File_snapshot_quote_proto protoreflect.FileDescriptor
 
 const file_snapshot_quote_proto_rawDesc = "" +
 	"\n" +
-	"\x14snapshot/quote.proto\x12\x12opentrade.snapshot\"\x8d\x03\n" +
+	"\x14snapshot/quote.proto\x12\x12opentrade.snapshot\"\x98\x03\n" +
 	"\rQuoteSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x1e\n" +
-	"\vtaken_at_ms\x18\x02 \x01(\x03R\ttakenAtMs\x12\x10\n" +
-	"\x03seq\x18\x03 \x01(\x04R\x03seq\x12H\n" +
+	"\vtaken_at_ms\x18\x02 \x01(\x03R\ttakenAtMs\x12\x1b\n" +
+	"\tquote_seq\x18\x03 \x01(\x04R\bquoteSeq\x12H\n" +
 	"\aoffsets\x18\x04 \x03(\v2..opentrade.snapshot.QuoteSnapshot.OffsetsEntryR\aoffsets\x12H\n" +
 	"\asymbols\x18\x05 \x03(\v2..opentrade.snapshot.QuoteSnapshot.SymbolsEntryR\asymbols\x1a:\n" +
 	"\fOffsetsEntry\x12\x10\n" +

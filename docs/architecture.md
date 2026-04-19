@@ -84,7 +84,7 @@
 | 数量级 | 百万级（动态活跃） | <2000（静态配置） |
 | 实现 | 懒启动 per-user worker，30s idle 退出 | per-symbol 常驻 goroutine |
 | FIFO 保证 | Go channel | Go channel |
-| seq_id | shard 级单调（`atomic.Uint64`） | per-symbol 单调 |
+| 单调序列字段 | `counter_seq_id`（counter shard 级单调，`atomic.Uint64`） | `match_seq_id`（per-symbol 单调） |
 | 内存稳态 | 1-10 MB | ~16 MB |
 
 **关键原则**：**严格 FIFO 由 Go channel 语义保证；`sync.Mutex` 不是定序组件**（Go 的 mutex 允许新到 goroutine 在一定条件下插队，不能用作严格定序）。
@@ -208,11 +208,12 @@
 ### 6.4 消费 Kafka 事件的幂等
 
 所有消费方都要支持：
-- `(event_type, seq_id)` 或 `(topic, partition, offset)` 作为幂等键
+- producer 自带的单调字段（`counter_seq_id` / `match_seq_id` / `quote_seq_id` / `conditional_seq_id`，每条事件类型自己声明），或 `(topic, partition, offset)`，作为幂等键
 - consumer offset 提交与业务写入的原子性：
   - **Counter 主**：用 Kafka EOS 事务（`sendOffsetsToTransaction`）
-  - **trade-dump**：MySQL UNIQUE 索引 + `INSERT ... ON DUPLICATE KEY UPDATE`
-  - **Match**：按 `order_id` 业务去重（orderbook 自带）
+  - **trade-dump**：MySQL UNIQUE 索引 + `INSERT ... ON DUPLICATE KEY UPDATE`，`accounts` / `account_logs` 行级 guard 用 `counter_seq_id`，`trades` 用 `(symbol, match_seq_id)`
+  - **Match**：按 `order_id` 业务去重（orderbook 自带），同时拿 `counter_seq_id` 做防重投兜底
+  - **Counter（消费 trade-event）**：内存里维护 `Account.matchSeq` 按 `(user, symbol)` 拦 match 重发
 
 ### 6.5 订单状态机
 
@@ -396,12 +397,12 @@ counter-journal，工作量大，留 backlog。
 ### 10.2 Counter / Match 不直接写 MySQL
 
 - trade-dump 消费 counter-journal + trade-event
-- 按 `UNIQUE (event_type, seq_id)` 幂等写入
+- 按 producer 名义命名的单调字段做幂等写入：counter-journal 用 `counter_seq_id`（accounts/account_logs 的 guard），trade-event 用 `match_seq_id`（trades 的 UNIQUE）
 - MySQL schema（初版）：
-  - `accounts(user_id, asset, available, frozen, updated_at, seq_id)`
+  - `accounts(user_id, asset, available, frozen, updated_at, counter_seq_id, account_version, balance_version)`
   - `orders(order_id, user_id, symbol, side, type, price, qty, filled_qty, status, created_at, updated_at)`
-  - `trades(trade_id, symbol, maker_order_id, taker_order_id, price, qty, taker_side, ts)`
-  - `account_logs(seq_id, user_id, asset, delta, balance_after, biz_type, biz_ref, ts)` — journal 流水镜像
+  - `trades(trade_id, symbol, maker_order_id, taker_order_id, price, qty, taker_side, ts, match_seq_id)`，`UNIQUE KEY (symbol, match_seq_id)`
+  - `account_logs(shard_id, counter_seq_id, asset, user_id, delta_avail, delta_frozen, avail_after, frozen_after, biz_type, biz_ref_id, ts)` — journal 流水镜像，PK `(shard_id, counter_seq_id, asset)`
   - 可按 user_id / symbol 分库分表（MVP 先单库）
 
 ### 10.3 读路径

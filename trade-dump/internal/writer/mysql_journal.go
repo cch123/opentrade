@@ -15,9 +15,9 @@ import (
 //                 (freeze row re-insert is no-op; status updates are separate
 //                  UPDATE statements applied in event order)
 //   - accounts  : INSERT ... ON DUPLICATE KEY UPDATE ...
-//                 guarded by seq_id (replays with a smaller seq are ignored)
+//                 guarded by counter_seq_id (replays with a smaller seq are ignored)
 //   - account_logs : INSERT ... ON DUPLICATE KEY UPDATE shard_id=shard_id
-//                    (PK is (shard_id, seq_id, asset))
+//                    (PK is (shard_id, counter_seq_id, asset))
 func (m *MySQL) ApplyJournalBatch(ctx context.Context, batch JournalBatch) error {
 	if batch.IsEmpty() {
 		return nil
@@ -124,8 +124,9 @@ func insertOrdersChunk(ctx context.Context, tx *sql.Tx, rows []OrderRow) error {
 
 func updateOrderRow(ctx context.Context, tx *sql.Tx, r OrderRow) error {
 	// Single-row UPDATE. MVP expects counter-journal to be consumed in
-	// order (shard-monotonic, single consumer goroutine), so the latest
-	// UPDATE wins by natural order — no seq_id guard needed here.
+	// order (counter-shard-monotonic, single consumer goroutine), so the
+	// latest UPDATE wins by natural order — no counter_seq_id guard needed
+	// here.
 	const q = "UPDATE orders SET status = ?, filled_qty = ?, reject_reason = ?, updated_at = ? WHERE order_id = ?"
 	_, err := tx.ExecContext(ctx, q,
 		r.Status,
@@ -170,22 +171,22 @@ func upsertAccountsChunk(ctx context.Context, tx *sql.Tx, rows []AccountRow) err
 			r.Asset,
 			zeroIfEmpty(r.Available),
 			zeroIfEmpty(r.Frozen),
-			r.SeqID,
+			r.CounterSeqID,
 			r.AccountVersion,
 			r.BalanceVersion,
 		)
 	}
-	// seq_id guard: older events must not overwrite newer state on replay.
-	// account_version / balance_version follow the same guard so the
+	// counter_seq_id guard: older events must not overwrite newer state on
+	// replay. account_version / balance_version follow the same guard so the
 	// double-layer counters (ADR-0048 backlog 方案 B) stay monotonic in
 	// the projection.
 	const updateClause = "" +
-		"available       = IF(VALUES(seq_id) >= seq_id, VALUES(available), available), " +
-		"frozen          = IF(VALUES(seq_id) >= seq_id, VALUES(frozen), frozen), " +
-		"account_version = IF(VALUES(seq_id) >= seq_id, VALUES(account_version), account_version), " +
-		"balance_version = IF(VALUES(seq_id) >= seq_id, VALUES(balance_version), balance_version), " +
-		"seq_id          = IF(VALUES(seq_id) >= seq_id, VALUES(seq_id), seq_id)"
-	q := "INSERT INTO accounts (user_id, asset, available, frozen, seq_id, account_version, balance_version) VALUES " +
+		"available       = IF(VALUES(counter_seq_id) >= counter_seq_id, VALUES(available), available), " +
+		"frozen          = IF(VALUES(counter_seq_id) >= counter_seq_id, VALUES(frozen), frozen), " +
+		"account_version = IF(VALUES(counter_seq_id) >= counter_seq_id, VALUES(account_version), account_version), " +
+		"balance_version = IF(VALUES(counter_seq_id) >= counter_seq_id, VALUES(balance_version), balance_version), " +
+		"counter_seq_id  = IF(VALUES(counter_seq_id) >= counter_seq_id, VALUES(counter_seq_id), counter_seq_id)"
+	q := "INSERT INTO accounts (user_id, asset, available, frozen, counter_seq_id, account_version, balance_version) VALUES " +
 		strings.Join(placeholders, ", ") +
 		" ON DUPLICATE KEY UPDATE " + updateClause
 	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
@@ -198,7 +199,7 @@ func upsertAccountsChunk(ctx context.Context, tx *sql.Tx, rows []AccountRow) err
 // account_logs
 // -----------------------------------------------------------------------------
 
-const accountLogCols = "shard_id, seq_id, asset, user_id, delta_avail, delta_frozen, avail_after, frozen_after, biz_type, biz_ref_id, ts"
+const accountLogCols = "shard_id, counter_seq_id, asset, user_id, delta_avail, delta_frozen, avail_after, frozen_after, biz_type, biz_ref_id, ts"
 
 func (m *MySQL) applyAccountLogs(ctx context.Context, tx *sql.Tx, rows []AccountLogRow) error {
 	if len(rows) == 0 {
@@ -223,7 +224,7 @@ func insertAccountLogsChunk(ctx context.Context, tx *sql.Tx, rows []AccountLogRo
 		placeholders[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 		args = append(args,
 			r.ShardID,
-			r.SeqID,
+			r.CounterSeqID,
 			r.Asset,
 			r.UserID,
 			zeroIfEmpty(r.DeltaAvail),

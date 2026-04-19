@@ -67,7 +67,7 @@ func TestConcurrentUsersRunInParallel(t *testing.T) {
 	}
 }
 
-func TestShardSeqMonotonic(t *testing.T) {
+func TestCounterSeqMonotonic(t *testing.T) {
 	s := New(WithQueueCapacity(64))
 
 	var wg sync.WaitGroup
@@ -160,11 +160,11 @@ func TestQueueFullReturnsError(t *testing.T) {
 	<-errCh
 }
 
-func TestSetShardSeq(t *testing.T) {
+func TestSetCounterSeq(t *testing.T) {
 	s := New()
-	s.SetShardSeq(100)
-	if s.ShardSeq() != 100 {
-		t.Fatalf("ShardSeq = %d, want 100", s.ShardSeq())
+	s.SetCounterSeq(100)
+	if s.CounterSeq() != 100 {
+		t.Fatalf("CounterSeq = %d, want 100", s.CounterSeq())
 	}
 	var seq uint64
 	_, _ = s.Execute("u1", func(s uint64) (any, error) { seq = s; return nil, nil })

@@ -14,9 +14,14 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 // into trades / kline / depth sub-engines).
 // -----------------------------------------------------------------------------
 
+// quote_seq_id is the quote-engine-global monotonic sequence stamped on
+// every emitted market-data event. Consumers use it to detect gaps and to
+// align periodic DepthSnapshot frames against the incremental DepthUpdate
+// stream (ADR-0038).
 message MarketDataEvent {
   EventMeta meta = 1;
   string symbol = 2;
+  uint64 quote_seq_id = 3;
 
   oneof payload {
     PublicTrade   public_trade   = 10;

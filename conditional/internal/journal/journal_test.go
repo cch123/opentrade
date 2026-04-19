@@ -62,8 +62,8 @@ func TestConvertMapsAllFields(t *testing.T) {
 	if !u.TrailingActive || u.TrailingWatermark != "115" || u.ActivationPrice != "110" {
 		t.Fatalf("trailing fields: %+v", u)
 	}
-	if u.Meta == nil || u.Meta.SeqId != 7 || u.Meta.ProducerId != "conditional-inst" {
-		t.Fatalf("meta: %+v", u.Meta)
+	if u.Meta == nil || u.ConditionalSeqId != 7 || u.Meta.ProducerId != "conditional-inst" {
+		t.Fatalf("meta: %+v conditional_seq_id: %d", u.Meta, u.ConditionalSeqId)
 	}
 	if u.Meta.TsUnixMs <= 0 {
 		t.Fatalf("expected ts_unix_ms set")

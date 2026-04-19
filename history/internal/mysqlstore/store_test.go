@@ -196,7 +196,7 @@ func TestListAccountLogs_Basic(t *testing.T) {
 	store := NewStoreWithDB(db, time.Second)
 
 	cols := []string{
-		"shard_id", "seq_id", "asset", "user_id",
+		"shard_id", "counter_seq_id", "asset", "user_id",
 		"delta_avail", "delta_frozen", "avail_after", "frozen_after",
 		"biz_type", "biz_ref_id", "ts",
 	}

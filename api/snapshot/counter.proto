@@ -22,7 +22,7 @@ option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
 message CounterShardSnapshot {
   uint32 version = 1;
   int32  shard_id = 2;
-  uint64 shard_seq = 3;
+  uint64 counter_seq = 3;
   int64  timestamp_ms = 4;
 
   repeated CounterAccount accounts = 5;

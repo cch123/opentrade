@@ -70,7 +70,7 @@ const Version = 1
 type Snapshot struct {
 	Version   int                        `json:"version"`
 	TakenAtMs int64                      `json:"taken_at_ms"`
-	Seq       uint64                     `json:"seq"`
+	QuoteSeq  uint64                     `json:"quote_seq"`
 	Offsets   map[int32]int64            `json:"offsets"`           // partition → next-to-consume
 	Symbols   map[string]*SymbolSnapshot `json:"symbols,omitempty"` // symbol → state
 }
@@ -227,7 +227,7 @@ func toProto(s *Snapshot) *snapshotpb.QuoteSnapshot {
 	pb := &snapshotpb.QuoteSnapshot{
 		Version:   uint32(s.Version),
 		TakenAtMs: s.TakenAtMs,
-		Seq:       s.Seq,
+		QuoteSeq:  s.QuoteSeq,
 		Offsets:   s.Offsets,
 	}
 	if len(s.Symbols) > 0 {
@@ -294,7 +294,7 @@ func fromProto(pb *snapshotpb.QuoteSnapshot) *Snapshot {
 	s := &Snapshot{
 		Version:   int(pb.Version),
 		TakenAtMs: pb.TakenAtMs,
-		Seq:       pb.Seq,
+		QuoteSeq:  pb.QuoteSeq,
 		Offsets:   pb.Offsets,
 	}
 	if len(pb.Symbols) > 0 {

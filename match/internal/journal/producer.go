@@ -199,7 +199,7 @@ func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Outpu
 			p.logger.Error("publish trade-event batch",
 				zap.Int("batch", len(batch)),
 				zap.String("first_symbol", batch[0].Symbol),
-				zap.Uint64("first_seq_id", batch[0].SeqID),
+				zap.Uint64("first_match_seq_id", batch[0].MatchSeq),
 				zap.Error(err))
 		}
 		batch = batch[:0]

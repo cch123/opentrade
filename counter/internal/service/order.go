@@ -101,7 +101,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 		}
 	}
 
-	v, err := s.seq.Execute(req.UserID, func(seqID uint64) (any, error) {
+	v, err := s.seq.Execute(req.UserID, func(counterSeq uint64) (any, error) {
 		// Re-check dedup inside the sequencer window.
 		if req.ClientOrderID != "" {
 			if existing := s.state.Orders().LookupActiveByCOID(req.UserID, req.ClientOrderID); existing != nil {
@@ -171,7 +171,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 		expectedAccVer := acc.Version() + 1
 
 		journalEvt, orderEvt, err := journal.BuildPlaceOrderEvents(journal.PlaceOrderEventInput{
-			SeqID:          seqID,
+			CounterSeqID:   counterSeq,
 			TsUnixMS:       now,
 			ProducerID:     s.cfg.ProducerID,
 			AccountVersion: expectedAccVer,
@@ -223,7 +223,7 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 		return nil, ErrWrongShard
 	}
 
-	v, err := s.seq.Execute(req.UserID, func(seqID uint64) (any, error) {
+	v, err := s.seq.Execute(req.UserID, func(counterSeq uint64) (any, error) {
 		o := s.state.Orders().Get(req.OrderID)
 		if o == nil {
 			return &CancelOrderResult{
@@ -257,7 +257,7 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 		// Cancel doesn't touch balances, so AccountVersion is the current
 		// value — a stable witness, not a post-mutation projection.
 		journalEvt, orderEvt := journal.BuildCancelEvents(journal.CancelOrderEventInput{
-			SeqID:          seqID,
+			CounterSeqID:   counterSeq,
 			TsUnixMS:       time.Now().UnixMilli(),
 			ProducerID:     s.cfg.ProducerID,
 			AccountVersion: s.state.Account(req.UserID).Version(),

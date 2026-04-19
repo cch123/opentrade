@@ -294,16 +294,16 @@ func tradeRoleToString(r historypb.TradeRole) string {
 
 func accountLogToJSON(l *historypb.AccountLog) map[string]any {
 	return map[string]any{
-		"shard_id":     l.ShardId,
-		"seq_id":       l.SeqId,
-		"asset":        l.Asset,
-		"delta_avail":  l.DeltaAvail,
-		"delta_frozen": l.DeltaFrozen,
-		"avail_after":  l.AvailAfter,
-		"frozen_after": l.FrozenAfter,
-		"biz_type":     l.BizType,
-		"biz_ref_id":   l.BizRefId,
-		"ts":           l.TsUnixMs,
+		"shard_id":       l.ShardId,
+		"counter_seq_id": l.CounterSeqId,
+		"asset":          l.Asset,
+		"delta_avail":    l.DeltaAvail,
+		"delta_frozen":   l.DeltaFrozen,
+		"avail_after":    l.AvailAfter,
+		"frozen_after":   l.FrozenAfter,
+		"biz_type":       l.BizType,
+		"biz_ref_id":     l.BizRefId,
+		"ts":             l.TsUnixMs,
 	}
 }
 

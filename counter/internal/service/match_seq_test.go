@@ -10,7 +10,7 @@ import (
 )
 
 // TestMatchSeqGuard_DuplicateTradeSkipped verifies that replaying the same
-// trade-event (same Meta.SeqId) after the first application is silently
+// trade-event (same MatchSeqId) after the first application is silently
 // skipped — the second call must not move balances again nor emit a second
 // settlement journal entry.
 func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
@@ -37,7 +37,8 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 	}
 
 	tradeEvt := &eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 42},
+		Meta:       &eventpb.EventMeta{},
+		MatchSeqId: 42,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId:             "BTC-USDT:1",
 			Symbol:              "BTC-USDT",
@@ -96,7 +97,8 @@ func TestMatchSeqGuard_DifferentSymbolsIndependent(t *testing.T) {
 
 	// Prime BTC-USDT with seq=100 by accepting an order.
 	evtBTC := &eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 100},
+		Meta:       &eventpb.EventMeta{},
+		MatchSeqId: 100,
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
 			UserId: "u1", OrderId: 999, Symbol: "BTC-USDT",
 		}},
@@ -107,7 +109,8 @@ func TestMatchSeqGuard_DifferentSymbolsIndependent(t *testing.T) {
 	// Now an ETH-USDT event with a numerically lower seq should still pass:
 	// separate symbol, guard is keyed by (user, symbol).
 	evtETH := &eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 50},
+		Meta:       &eventpb.EventMeta{},
+		MatchSeqId: 50,
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
 			UserId: "u1", OrderId: 998, Symbol: "ETH-USDT",
 		}},

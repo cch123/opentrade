@@ -149,14 +149,14 @@ func (p *Producer) drain() {
 // convert builds the proto event from the engine's in-memory twin. Kept
 // exported via ConvertForTest so unit tests can exercise the mapping
 // without spinning up a Kafka client.
-func convert(c *engine.Conditional, seqID uint64, producerID string) *eventpb.ConditionalUpdate {
+func convert(c *engine.Conditional, conditionalSeq uint64, producerID string) *eventpb.ConditionalUpdate {
 	nowMs := time.Now().UnixMilli()
 	u := &eventpb.ConditionalUpdate{
 		Meta: &eventpb.EventMeta{
-			SeqId:      seqID,
 			TsUnixMs:   nowMs,
 			ProducerId: producerID,
 		},
+		ConditionalSeqId:    conditionalSeq,
 		Id:                  c.ID,
 		ClientConditionalId: c.ClientCondID,
 		UserId:              c.UserID,

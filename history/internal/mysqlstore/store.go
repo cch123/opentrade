@@ -387,18 +387,18 @@ func (s *Store) ListAccountLogs(ctx context.Context, f AccountLogsFilter, rawCur
 	if rawCursor != "" {
 		conds = append(conds,
 			"(ts < ? OR (ts = ? AND (shard_id < ? OR "+
-				"(shard_id = ? AND (seq_id < ? OR (seq_id = ? AND asset < ?))))))")
-		args = append(args, cur.Ts, cur.Ts, cur.ShardID, cur.ShardID, cur.SeqID, cur.SeqID, cur.Asset)
+				"(shard_id = ? AND (counter_seq_id < ? OR (counter_seq_id = ? AND asset < ?))))))")
+		args = append(args, cur.Ts, cur.Ts, cur.ShardID, cur.ShardID, cur.CounterSeqID, cur.CounterSeqID, cur.Asset)
 	}
 
 	q := `
-		SELECT shard_id, seq_id, asset, user_id,
+		SELECT shard_id, counter_seq_id, asset, user_id,
 		       CAST(delta_avail AS CHAR), CAST(delta_frozen AS CHAR),
 		       CAST(avail_after AS CHAR), CAST(frozen_after AS CHAR),
 		       biz_type, biz_ref_id, ts
 		FROM account_logs
 		WHERE ` + strings.Join(conds, " AND ") + `
-		ORDER BY ts DESC, shard_id DESC, seq_id DESC, asset DESC
+		ORDER BY ts DESC, shard_id DESC, counter_seq_id DESC, asset DESC
 		LIMIT ?`
 	args = append(args, limit+1)
 
@@ -425,10 +425,10 @@ func (s *Store) ListAccountLogs(ctx context.Context, f AccountLogsFilter, rawCur
 		last := out[limit-1]
 		out = out[:limit]
 		c, err := cursor.Encode(cursor.AccountLogsCursor{
-			Ts:      last.TsUnixMs,
-			ShardID: last.ShardId,
-			SeqID:   last.SeqId,
-			Asset:   last.Asset,
+			Ts:           last.TsUnixMs,
+			ShardID:      last.ShardId,
+			CounterSeqID: last.CounterSeqId,
+			Asset:        last.Asset,
 		})
 		if err != nil {
 			return nil, "", err
@@ -658,7 +658,7 @@ func scanConditional(r rowScanner) (*historypb.Conditional, error) {
 func scanAccountLog(r rowScanner) (*historypb.AccountLog, error) {
 	var l historypb.AccountLog
 	if err := r.Scan(
-		&l.ShardId, &l.SeqId, &l.Asset, &l.UserId,
+		&l.ShardId, &l.CounterSeqId, &l.Asset, &l.UserId,
 		&l.DeltaAvail, &l.DeltaFrozen, &l.AvailAfter, &l.FrozenAfter,
 		&l.BizType, &l.BizRefId, &l.TsUnixMs,
 	); err != nil {

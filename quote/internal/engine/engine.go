@@ -122,10 +122,10 @@ func (e *Engine) Capture() *snapshot.Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	snap := &snapshot.Snapshot{
-		Version: snapshot.Version,
-		Seq:     e.seq.Load(),
-		Offsets: make(map[int32]int64, len(e.offsets)),
-		Symbols: make(map[string]*snapshot.SymbolSnapshot),
+		Version:  snapshot.Version,
+		QuoteSeq: e.seq.Load(),
+		Offsets:  make(map[int32]int64, len(e.offsets)),
+		Symbols:  make(map[string]*snapshot.SymbolSnapshot),
 	}
 	for p, off := range e.offsets {
 		snap.Offsets[p] = off
@@ -195,7 +195,7 @@ func (e *Engine) Restore(snap *snapshot.Snapshot) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.seq.Store(snap.Seq)
+	e.seq.Store(snap.QuoteSeq)
 	e.offsets = make(map[int32]int64, len(snap.Offsets))
 	for p, off := range snap.Offsets {
 		e.offsets[p] = off
@@ -389,8 +389,8 @@ func (e *Engine) bookFor(symbol string) *depth.Book {
 
 func (e *Engine) stamp(m *eventpb.MarketDataEvent) {
 	m.Meta = &eventpb.EventMeta{
-		SeqId:      e.seq.Add(1),
 		TsUnixMs:   e.cfg.Clock(),
 		ProducerId: e.cfg.ProducerID,
 	}
+	m.QuoteSeqId = e.seq.Add(1)
 }

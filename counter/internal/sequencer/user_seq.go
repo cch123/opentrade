@@ -25,11 +25,11 @@ const (
 var ErrQueueFull = errors.New("sequencer: user queue full")
 
 // UserSequencer serializes per-user work items while allowing different users
-// to run in parallel. The shard-level seq id (ADR-0018) is assigned to every
-// submitted task just before the callback executes.
+// to run in parallel. The counter-shard-scoped monotonic seq (ADR-0018) is
+// assigned to every submitted task just before the callback executes.
 type UserSequencer struct {
-	shardSeq atomic.Uint64
-	users    sync.Map // user_id → *userQueue
+	counterSeq atomic.Uint64
+	users      sync.Map // user_id → *userQueue
 
 	idleTimeout   time.Duration
 	queueCapacity int
@@ -60,16 +60,16 @@ func New(opts ...Option) *UserSequencer {
 	return s
 }
 
-// ShardSeq returns the current shard-level monotonic seq id.
-func (s *UserSequencer) ShardSeq() uint64 { return s.shardSeq.Load() }
+// CounterSeq returns the current counter-shard-scoped monotonic seq.
+func (s *UserSequencer) CounterSeq() uint64 { return s.counterSeq.Load() }
 
-// SetShardSeq sets the starting seq id. Call before submitting any tasks
-// (typically used to restore from a snapshot).
-func (s *UserSequencer) SetShardSeq(seq uint64) { s.shardSeq.Store(seq) }
+// SetCounterSeq sets the starting seq value. Call before submitting any
+// tasks (typically used to restore from a snapshot).
+func (s *UserSequencer) SetCounterSeq(seq uint64) { s.counterSeq.Store(seq) }
 
 // Execute enqueues fn on userID's FIFO queue and blocks until it runs.
-// The callback receives a freshly allocated shard-level monotonic seq id.
-// Returns ErrQueueFull if the user's channel is full.
+// The callback receives a freshly allocated counter-shard-scoped monotonic
+// seq. Returns ErrQueueFull if the user's channel is full.
 //
 // fn MUST NOT block indefinitely: it holds the user's serializer until it
 // returns. All I/O inside fn (Kafka produce, etc.) should have a finite
@@ -78,7 +78,7 @@ func (s *UserSequencer) SetShardSeq(seq uint64) { s.shardSeq.Store(seq) }
 // Ordering matters: we send on uq.tasks first, then CAS(Idle→Running).
 // This sequence is required by the worker handoff protocol documented
 // on drain — reversing it can orphan a task.
-func (s *UserSequencer) Execute(userID string, fn func(seqID uint64) (any, error)) (any, error) {
+func (s *UserSequencer) Execute(userID string, fn func(counterSeq uint64) (any, error)) (any, error) {
 	uq := s.getOrCreate(userID)
 	t := &task{fn: fn, resp: make(chan taskResult, 1)}
 
@@ -119,7 +119,7 @@ type userQueue struct {
 }
 
 type task struct {
-	fn   func(seqID uint64) (any, error)
+	fn   func(counterSeq uint64) (any, error)
 	resp chan taskResult
 }
 
@@ -250,7 +250,7 @@ func (uq *userQueue) drain(s *UserSequencer) {
 			if !ok {
 				return // defensive: nothing closes uq.tasks today.
 			}
-			seq := s.shardSeq.Add(1)
+			seq := s.counterSeq.Add(1)
 			v, err := t.fn(seq)
 			t.resp <- taskResult{v: v, err: err}
 			if !idle.Stop() {

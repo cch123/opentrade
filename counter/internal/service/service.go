@@ -198,13 +198,13 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 
 	// Fast-path: skip the sequencer if this transfer_id was recently applied.
 	// ADR-0048 backlog item 4 方案 A — the response lacks balance_after /
-	// seq_id (see dedupResult). Callers that need the post-transfer balance
-	// must follow up with QueryBalance.
+	// counter_seq_id (see dedupResult). Callers that need the post-transfer
+	// balance must follow up with QueryBalance.
 	if s.state.Account(req.UserID).TransferSeen(req.TransferID) {
 		return dedupResult(req.TransferID), nil
 	}
 
-	v, err := s.seq.Execute(req.UserID, func(seq uint64) (any, error) {
+	v, err := s.seq.Execute(req.UserID, func(counterSeq uint64) (any, error) {
 		acc := s.state.Account(req.UserID)
 		// Re-check inside the sequencer so concurrent arrivals of the same
 		// transfer_id collapse to one CONFIRMED + (N-1) DUPLICATED.
@@ -221,7 +221,7 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 				TransferID:   req.TransferID,
 				Status:       engine.TransferStatusRejected,
 				RejectReason: cerr.Error(),
-				SeqID:        seq,
+				CounterSeqID: counterSeq,
 			}, nil
 		}
 
@@ -234,7 +234,7 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 
 		// Build + publish counter-journal event.
 		evt, err := journal.BuildTransferEvent(journal.TransferEventInput{
-			SeqID:          seq,
+			CounterSeqID:   counterSeq,
 			ProducerID:     s.cfg.ProducerID,
 			AccountVersion: expectedAccVer,
 			Req:            req,
@@ -259,7 +259,7 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 			TransferID:   req.TransferID,
 			Status:       engine.TransferStatusConfirmed,
 			BalanceAfter: acc.Balance(req.Asset), // read back to pick up bumped version
-			SeqID:        seq,
+			CounterSeqID: counterSeq,
 		}, nil
 	})
 	if err != nil {

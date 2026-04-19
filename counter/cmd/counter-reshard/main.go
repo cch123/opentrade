@@ -19,11 +19,11 @@
 //     attribute them to the correct new shard. Operator is expected to run
 //     this during a maintenance window; any in-flight Transfer must be
 //     tolerant of "dedup miss → re-apply" (TransferRequest idempotency is
-//     already enforced by ComputeTransfer + the journal seq_id guard).
-//   - ShardSeq on every output = max(input ShardSeqs). Safe: trade-dump's
+//     already enforced by ComputeTransfer + the journal counter_seq_id guard).
+//   - CounterSeq on every output = max(input CounterSeqs). Safe: trade-dump's
 //     accounts projection keys by (shard_id, user, asset) so a fresh new
 //     shard_id starts its own seq space anyway; taking the max just avoids
-//     collisions with any tooling that cared about "max seq ever seen".
+//     collisions with any tooling that cared about "max counter_seq ever seen".
 package main
 
 import (
@@ -101,8 +101,8 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "reshard: %d users, %d orders, dropped %d dedup entries\n",
 		report.Users, report.Orders, report.DroppedDedup)
-	fmt.Fprintf(os.Stderr, "        input shard_seq max=%d → applied to all %d outputs\n",
-		report.MaxShardSeq, cfg.toM)
+	fmt.Fprintf(os.Stderr, "        input counter_seq max=%d → applied to all %d outputs\n",
+		report.MaxCounterSeq, cfg.toM)
 	for _, o := range outputs {
 		fmt.Fprintf(os.Stderr, "  new shard %d: %d accounts, %d orders\n",
 			o.ShardID, len(o.Accounts), len(o.Orders))
@@ -129,10 +129,10 @@ func main() {
 
 // Report summarizes the migration for logging.
 type Report struct {
-	Users        int
-	Orders       int
-	DroppedDedup int
-	MaxShardSeq  uint64
+	Users         int
+	Orders        int
+	DroppedDedup  int
+	MaxCounterSeq uint64
 }
 
 // reshard takes inputs (one per OLD shard) and produces `toM` outputs routed
@@ -151,8 +151,8 @@ func reshard(inputs []*snapshot.ShardSnapshot, toM int, nowMs int64) ([]*snapsho
 		if in == nil {
 			continue
 		}
-		if in.ShardSeq > rep.MaxShardSeq {
-			rep.MaxShardSeq = in.ShardSeq
+		if in.CounterSeq > rep.MaxCounterSeq {
+			rep.MaxCounterSeq = in.CounterSeq
 		}
 		for _, acc := range in.Accounts {
 			dst := shard.Index(acc.UserID, toM)
@@ -167,7 +167,7 @@ func reshard(inputs []*snapshot.ShardSnapshot, toM int, nowMs int64) ([]*snapsho
 		rep.DroppedDedup += len(in.Dedup)
 	}
 	for _, o := range outputs {
-		o.ShardSeq = rep.MaxShardSeq
+		o.CounterSeq = rep.MaxCounterSeq
 	}
 	return outputs, rep
 }

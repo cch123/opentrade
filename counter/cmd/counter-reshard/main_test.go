@@ -14,7 +14,7 @@ func TestReshard_RoutesUsersToNewShard(t *testing.T) {
 	users := []string{"alice", "bob", "carol", "dave", "eve", "frank", "gwen"}
 	inputs := []*snapshot.ShardSnapshot{
 		{
-			Version: snapshot.Version, ShardID: 0, ShardSeq: 100,
+			Version: snapshot.Version, ShardID: 0, CounterSeq: 100,
 			Accounts: []snapshot.AccountSnapshot{
 				{UserID: users[0], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "1"}}},
 				{UserID: users[2], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "2"}}},
@@ -27,7 +27,7 @@ func TestReshard_RoutesUsersToNewShard(t *testing.T) {
 			Dedup: []snapshot.DedupEntrySnapshot{{Key: "tx-1", ExpiresUnix: 1}},
 		},
 		{
-			Version: snapshot.Version, ShardID: 1, ShardSeq: 90,
+			Version: snapshot.Version, ShardID: 1, CounterSeq: 90,
 			Accounts: []snapshot.AccountSnapshot{
 				{UserID: users[1], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "10"}}},
 				{UserID: users[3], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "20"}}},
@@ -47,15 +47,15 @@ func TestReshard_RoutesUsersToNewShard(t *testing.T) {
 	if rep.DroppedDedup != 1 {
 		t.Errorf("report dropped dedup = %d, want 1", rep.DroppedDedup)
 	}
-	if rep.MaxShardSeq != 100 {
-		t.Errorf("max shard seq = %d, want 100", rep.MaxShardSeq)
+	if rep.MaxCounterSeq != 100 {
+		t.Errorf("max counter seq = %d, want 100", rep.MaxCounterSeq)
 	}
 	for i, o := range outputs {
 		if o.ShardID != i {
 			t.Errorf("output[%d].ShardID = %d", i, o.ShardID)
 		}
-		if o.ShardSeq != 100 {
-			t.Errorf("output[%d].ShardSeq = %d, want 100", i, o.ShardSeq)
+		if o.CounterSeq != 100 {
+			t.Errorf("output[%d].CounterSeq = %d, want 100", i, o.CounterSeq)
 		}
 		if o.TimestampMS != 1234 {
 			t.Errorf("output[%d].TimestampMS = %d", i, o.TimestampMS)
@@ -99,7 +99,7 @@ func TestReshard_RoutesUsersToNewShard(t *testing.T) {
 func TestReshard_IdempotentFromSameTotal(t *testing.T) {
 	// Two input shards for fromN=2, same hashing for toM=2.
 	mk := func(shardID int, users ...string) *snapshot.ShardSnapshot {
-		s := &snapshot.ShardSnapshot{Version: snapshot.Version, ShardID: shardID, ShardSeq: uint64(shardID * 10)}
+		s := &snapshot.ShardSnapshot{Version: snapshot.Version, ShardID: shardID, CounterSeq: uint64(shardID * 10)}
 		for _, u := range users {
 			s.Accounts = append(s.Accounts, snapshot.AccountSnapshot{UserID: u})
 		}

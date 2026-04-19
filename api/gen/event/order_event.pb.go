@@ -22,8 +22,9 @@ const (
 )
 
 type OrderEvent struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Meta  *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Meta         *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	CounterSeqId uint64                 `protobuf:"varint,2,opt,name=counter_seq_id,json=counterSeqId,proto3" json:"counter_seq_id,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*OrderEvent_Placed
@@ -68,6 +69,13 @@ func (x *OrderEvent) GetMeta() *EventMeta {
 		return x.Meta
 	}
 	return nil
+}
+
+func (x *OrderEvent) GetCounterSeqId() uint64 {
+	if x != nil {
+		return x.CounterSeqId
+	}
+	return 0
 }
 
 func (x *OrderEvent) GetPayload() isOrderEvent_Payload {
@@ -305,10 +313,11 @@ var File_event_order_event_proto protoreflect.FileDescriptor
 
 const file_event_order_event_proto_rawDesc = "" +
 	"\n" +
-	"\x17event/order_event.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xb7\x01\n" +
+	"\x17event/order_event.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xdd\x01\n" +
 	"\n" +
 	"OrderEvent\x12.\n" +
-	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x126\n" +
+	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12$\n" +
+	"\x0ecounter_seq_id\x18\x02 \x01(\x04R\fcounterSeqId\x126\n" +
 	"\x06placed\x18\n" +
 	" \x01(\v2\x1c.opentrade.event.OrderPlacedH\x00R\x06placed\x126\n" +
 	"\x06cancel\x18\v \x01(\v2\x1c.opentrade.event.OrderCancelH\x00R\x06cancelB\t\n" +

@@ -25,7 +25,7 @@ type CounterShardSnapshot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
 	ShardId       int32                  `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	ShardSeq      uint64                 `protobuf:"varint,3,opt,name=shard_seq,json=shardSeq,proto3" json:"shard_seq,omitempty"`
+	CounterSeq    uint64                 `protobuf:"varint,3,opt,name=counter_seq,json=counterSeq,proto3" json:"counter_seq,omitempty"`
 	TimestampMs   int64                  `protobuf:"varint,4,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"`
 	Accounts      []*CounterAccount      `protobuf:"bytes,5,rep,name=accounts,proto3" json:"accounts,omitempty"`
 	Orders        []*CounterOrder        `protobuf:"bytes,6,rep,name=orders,proto3" json:"orders,omitempty"`
@@ -80,9 +80,9 @@ func (x *CounterShardSnapshot) GetShardId() int32 {
 	return 0
 }
 
-func (x *CounterShardSnapshot) GetShardSeq() uint64 {
+func (x *CounterShardSnapshot) GetCounterSeq() uint64 {
 	if x != nil {
-		return x.ShardSeq
+		return x.CounterSeq
 	}
 	return 0
 }
@@ -645,11 +645,12 @@ var File_snapshot_counter_proto protoreflect.FileDescriptor
 
 const file_snapshot_counter_proto_rawDesc = "" +
 	"\n" +
-	"\x16snapshot/counter.proto\x12\x12opentrade.snapshot\"\xd0\x03\n" +
+	"\x16snapshot/counter.proto\x12\x12opentrade.snapshot\"\xd4\x03\n" +
 	"\x14CounterShardSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x05R\ashardId\x12\x1b\n" +
-	"\tshard_seq\x18\x03 \x01(\x04R\bshardSeq\x12!\n" +
+	"\bshard_id\x18\x02 \x01(\x05R\ashardId\x12\x1f\n" +
+	"\vcounter_seq\x18\x03 \x01(\x04R\n" +
+	"counterSeq\x12!\n" +
 	"\ftimestamp_ms\x18\x04 \x01(\x03R\vtimestampMs\x12>\n" +
 	"\baccounts\x18\x05 \x03(\v2\".opentrade.snapshot.CounterAccountR\baccounts\x128\n" +
 	"\x06orders\x18\x06 \x03(\v2 .opentrade.snapshot.CounterOrderR\x06orders\x12;\n" +

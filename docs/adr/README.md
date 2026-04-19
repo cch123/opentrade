@@ -43,6 +43,7 @@
 | [0007](0007-async-matching-result.md) | 下单 API 返回"已受理"，撮合结果通过 WS 异步推送 | Accepted |
 | [0008](0008-sidecar-persistence-trade-dump.md) | Counter/Match 不直接写 MySQL，通过 trade-dump 旁路持久化 | Accepted |
 | [0024](0024-trade-event-order-accepted-extension.md) | 扩展 trade-event.OrderAccepted 以支持行情重建 | Accepted |
+| [0051](0051-typed-producer-sequence-naming.md) | 事件单调序按 producer 命名（counter_seq_id / match_seq_id / quote_seq_id / conditional_seq_id） | Accepted |
 
 ### 分片与路由
 

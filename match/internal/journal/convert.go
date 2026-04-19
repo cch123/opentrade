@@ -107,10 +107,10 @@ func OrderEventToInternal(pb *eventpb.OrderEvent, src sequencer.SourceMeta) (*se
 func OutputToTradeEvent(out *sequencer.Output, producerID string) (*eventpb.TradeEvent, error) {
 	te := &eventpb.TradeEvent{
 		Meta: &eventpb.EventMeta{
-			SeqId:      out.SeqID,
 			TsUnixMs:   time.Now().UnixMilli(),
 			ProducerId: producerID,
 		},
+		MatchSeqId: out.MatchSeq,
 	}
 	switch out.Kind {
 	case sequencer.OutputOrderAccepted:
@@ -136,7 +136,7 @@ func OutputToTradeEvent(out *sequencer.Output, producerID string) (*eventpb.Trad
 	case sequencer.OutputTrade:
 		te.Payload = &eventpb.TradeEvent_Trade{
 			Trade: &eventpb.Trade{
-				TradeId:             fmt.Sprintf("%s:%d", out.Symbol, out.SeqID),
+				TradeId:             fmt.Sprintf("%s:%d", out.Symbol, out.MatchSeq),
 				Symbol:              out.Symbol,
 				Price:               out.Price.String(),
 				Qty:                 out.Qty.String(),

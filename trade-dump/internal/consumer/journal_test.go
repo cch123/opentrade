@@ -21,7 +21,8 @@ func mustMarshalJournal(t *testing.T, m proto.Message) []byte {
 
 func TestDecodeJournalBatch_DropsMalformed(t *testing.T) {
 	good := &eventpb.CounterJournalEvent{
-		Meta: &eventpb.EventMeta{SeqId: 1, ProducerId: "counter-shard-0-main"},
+		Meta:         &eventpb.EventMeta{ProducerId: "counter-shard-0-main"},
+		CounterSeqId: 1,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
 			UserId: "u1", TransferId: "t1", Asset: "USDT",
 			Amount: "1", Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,

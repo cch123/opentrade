@@ -557,7 +557,7 @@ func tryRestoreSnapshot(w *sequencer.SymbolWorker, cfg Config, logger *zap.Logge
 	}
 	logger.Info("restored from snapshot",
 		zap.String("symbol", w.Symbol()),
-		zap.Uint64("seq_id", snap.SeqID),
+		zap.Uint64("match_seq_id", snap.MatchSeqID),
 		zap.Int("orders", len(snap.Orders)),
 		zap.Int("partitions", len(snap.Offsets)))
 	return nil

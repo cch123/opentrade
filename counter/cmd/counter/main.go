@@ -548,7 +548,7 @@ func tryRestoreSnapshot(cfg Config, state *engine.ShardState, seq *sequencer.Use
 	logger.Info("restored from snapshot",
 		zap.Int("shard_id", cfg.ShardID),
 		zap.Int("version", snap.Version),
-		zap.Uint64("shard_seq", snap.ShardSeq),
+		zap.Uint64("counter_seq", snap.CounterSeq),
 		zap.Int("accounts", len(snap.Accounts)),
 		zap.Int("orders", len(snap.Orders)),
 		zap.Int("partitions", len(offsets)))

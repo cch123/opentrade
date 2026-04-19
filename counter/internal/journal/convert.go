@@ -20,7 +20,7 @@ import (
 // balance so the emitted event reflects the new authoritative state.
 // BalanceAfter.Version likewise carries the per-asset counter.
 type TransferEventInput struct {
-	SeqID          uint64
+	CounterSeqID   uint64
 	TsUnixMS       int64
 	TraceID        string
 	ProducerID     string
@@ -42,12 +42,12 @@ func BuildTransferEvent(in TransferEventInput) (*eventpb.CounterJournalEvent, er
 	}
 	return &eventpb.CounterJournalEvent{
 		Meta: &eventpb.EventMeta{
-			SeqId:      in.SeqID,
 			TsUnixMs:   ts,
 			TraceId:    in.TraceID,
 			ProducerId: in.ProducerID,
 		},
 		AccountVersion: in.AccountVersion,
+		CounterSeqId:   in.CounterSeqID,
 		Payload: &eventpb.CounterJournalEvent_Transfer{
 			Transfer: &eventpb.TransferEvent{
 				UserId:     in.Req.UserID,
@@ -92,7 +92,7 @@ func transferTypeToProto(t engine.TransferType) (eventpb.TransferEvent_TransferT
 
 // PlaceOrderEventInput is the input to BuildPlaceOrderEvents.
 type PlaceOrderEventInput struct {
-	SeqID          uint64
+	CounterSeqID   uint64
 	TsUnixMS       int64
 	TraceID        string
 	ProducerID     string
@@ -125,9 +125,10 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 
 	journal := &eventpb.CounterJournalEvent{
 		Meta: &eventpb.EventMeta{
-			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
+			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
 		AccountVersion: in.AccountVersion,
+		CounterSeqId:   in.CounterSeqID,
 		Payload: &eventpb.CounterJournalEvent_Freeze{
 			Freeze: &eventpb.FreezeEvent{
 				UserId:        o.UserID,
@@ -154,8 +155,9 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 
 	orderEvt := &eventpb.OrderEvent{
 		Meta: &eventpb.EventMeta{
-			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
+			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
+		CounterSeqId: in.CounterSeqID,
 		Payload: &eventpb.OrderEvent_Placed{
 			Placed: &eventpb.OrderPlaced{
 				UserId:        o.UserID,
@@ -177,7 +179,7 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 
 // CancelOrderEventInput is the input to BuildCancelEvents.
 type CancelOrderEventInput struct {
-	SeqID          uint64
+	CounterSeqID   uint64
 	TsUnixMS       int64
 	TraceID        string
 	ProducerID     string
@@ -196,9 +198,10 @@ func BuildCancelEvents(in CancelOrderEventInput) (*eventpb.CounterJournalEvent, 
 	}
 	journal := &eventpb.CounterJournalEvent{
 		Meta: &eventpb.EventMeta{
-			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
+			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
 		AccountVersion: in.AccountVersion,
+		CounterSeqId:   in.CounterSeqID,
 		Payload: &eventpb.CounterJournalEvent_CancelReq{
 			CancelReq: &eventpb.CancelRequested{
 				UserId:  o.UserID,
@@ -209,8 +212,9 @@ func BuildCancelEvents(in CancelOrderEventInput) (*eventpb.CounterJournalEvent, 
 	}
 	orderEvt := &eventpb.OrderEvent{
 		Meta: &eventpb.EventMeta{
-			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
+			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
+		CounterSeqId: in.CounterSeqID,
 		Payload: &eventpb.OrderEvent_Cancel{
 			Cancel: &eventpb.OrderCancel{
 				UserId:  o.UserID,
@@ -224,7 +228,7 @@ func BuildCancelEvents(in CancelOrderEventInput) (*eventpb.CounterJournalEvent, 
 
 // SettlementEventInput is the input to BuildSettlementEvent.
 type SettlementEventInput struct {
-	SeqID          uint64
+	CounterSeqID   uint64
 	TsUnixMS       int64
 	TraceID        string
 	ProducerID     string
@@ -253,9 +257,10 @@ func BuildSettlementEvent(in SettlementEventInput) (*eventpb.CounterJournalEvent
 	}
 	return &eventpb.CounterJournalEvent{
 		Meta: &eventpb.EventMeta{
-			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
+			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
 		AccountVersion: in.AccountVersion,
+		CounterSeqId:   in.CounterSeqID,
 		Payload: &eventpb.CounterJournalEvent_Settlement{
 			Settlement: &eventpb.SettlementEvent{
 				UserId:        in.Party.UserID,
@@ -295,7 +300,7 @@ func BuildSettlementEvent(in SettlementEventInput) (*eventpb.CounterJournalEvent
 // where it was — consumers using it as a cache handle see the value as a
 // stable witness of the account's state at this moment.
 type OrderStatusEventInput struct {
-	SeqID          uint64
+	CounterSeqID   uint64
 	TsUnixMS       int64
 	TraceID        string
 	ProducerID     string
@@ -318,9 +323,10 @@ func BuildOrderStatusEvent(in OrderStatusEventInput) *eventpb.CounterJournalEven
 	}
 	return &eventpb.CounterJournalEvent{
 		Meta: &eventpb.EventMeta{
-			SeqId: in.SeqID, TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
+			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
 		},
 		AccountVersion: in.AccountVersion,
+		CounterSeqId:   in.CounterSeqID,
 		Payload: &eventpb.CounterJournalEvent_OrderStatus{
 			OrderStatus: &eventpb.OrderStatusEvent{
 				UserId:       in.UserID,

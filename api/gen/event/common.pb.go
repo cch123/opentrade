@@ -319,12 +319,13 @@ func (RejectReason) EnumDescriptor() ([]byte, []int) {
 	return file_event_common_proto_rawDescGZIP(), []int{4}
 }
 
-// Envelope metadata carried by every event. seq_id semantics vary by topic:
-//   - counter-journal: shard-level monotonic
-//   - trade-event:     per-symbol monotonic
+// Envelope metadata carried by every event. The producer-specific monotonic
+// sequence is NOT carried here — each event type embeds its own typed field
+// (counter_seq_id / match_seq_id / quote_seq_id / conditional_seq_id) so the
+// producer is unambiguous at the call site. Tag 1 is reserved to prevent
+// accidental reuse of the old seq_id field.
 type EventMeta struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SeqId         uint64                 `protobuf:"varint,1,opt,name=seq_id,json=seqId,proto3" json:"seq_id,omitempty"`
 	TsUnixMs      int64                  `protobuf:"varint,2,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`    // event generation time (wall clock, informational only)
 	TraceId       string                 `protobuf:"bytes,3,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`          // end-to-end request trace id
 	ProducerId    string                 `protobuf:"bytes,4,opt,name=producer_id,json=producerId,proto3" json:"producer_id,omitempty"` // e.g. counter-shard-3-main, match-shard-0-main
@@ -362,13 +363,6 @@ func (*EventMeta) Descriptor() ([]byte, []int) {
 	return file_event_common_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *EventMeta) GetSeqId() uint64 {
-	if x != nil {
-		return x.SeqId
-	}
-	return 0
-}
-
 func (x *EventMeta) GetTsUnixMs() int64 {
 	if x != nil {
 		return x.TsUnixMs
@@ -394,14 +388,13 @@ var File_event_common_proto protoreflect.FileDescriptor
 
 const file_event_common_proto_rawDesc = "" +
 	"\n" +
-	"\x12event/common.proto\x12\x0fopentrade.event\"|\n" +
-	"\tEventMeta\x12\x15\n" +
-	"\x06seq_id\x18\x01 \x01(\x04R\x05seqId\x12\x1c\n" +
+	"\x12event/common.proto\x12\x0fopentrade.event\"s\n" +
+	"\tEventMeta\x12\x1c\n" +
 	"\n" +
 	"ts_unix_ms\x18\x02 \x01(\x03R\btsUnixMs\x12\x19\n" +
 	"\btrace_id\x18\x03 \x01(\tR\atraceId\x12\x1f\n" +
 	"\vproducer_id\x18\x04 \x01(\tR\n" +
-	"producerId*9\n" +
+	"producerIdJ\x04\b\x01\x10\x02R\x06seq_id*9\n" +
 	"\x04Side\x12\x14\n" +
 	"\x10SIDE_UNSPECIFIED\x10\x00\x12\f\n" +
 	"\bSIDE_BUY\x10\x01\x12\r\n" +

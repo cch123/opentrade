@@ -24,7 +24,7 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 	snap := &ShardSnapshot{
 		Version:     Version,
 		ShardID:     0,
-		ShardSeq:    99,
+		CounterSeq:  99,
 		TimestampMS: 1,
 		Accounts: []AccountSnapshot{{
 			UserID: "u1",
@@ -40,7 +40,7 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ShardID != 0 || got.ShardSeq != 99 || len(got.Accounts) != 1 {
+	if got.ShardID != 0 || got.CounterSeq != 99 || len(got.Accounts) != 1 {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 }
@@ -49,8 +49,8 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 // formats live on disk, Load prefers the proto file (ADR-0049 probe order).
 func TestSaveLoadRoundTrip_ProtoPreferredOverJSON(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "counter-shard-0")
-	protoSnap := &ShardSnapshot{Version: Version, ShardID: 0, ShardSeq: 7}
-	jsonSnap := &ShardSnapshot{Version: Version, ShardID: 0, ShardSeq: 42}
+	protoSnap := &ShardSnapshot{Version: Version, ShardID: 0, CounterSeq: 7}
+	jsonSnap := &ShardSnapshot{Version: Version, ShardID: 0, CounterSeq: 42}
 	if err := Save(base, protoSnap, FormatProto); err != nil {
 		t.Fatal(err)
 	}
@@ -61,8 +61,8 @@ func TestSaveLoadRoundTrip_ProtoPreferredOverJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ShardSeq != 7 {
-		t.Fatalf("expected proto (seq=7) to win over json (seq=42), got %d", got.ShardSeq)
+	if got.CounterSeq != 7 {
+		t.Fatalf("expected proto (seq=7) to win over json (seq=42), got %d", got.CounterSeq)
 	}
 }
 
@@ -70,7 +70,7 @@ func TestSaveLoadRoundTrip_ProtoPreferredOverJSON(t *testing.T) {
 // Load still returns it so the first-start-after-upgrade works.
 func TestLoad_JSONOnlyMigration(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "counter-shard-0")
-	snap := &ShardSnapshot{Version: Version, ShardID: 0, ShardSeq: 42}
+	snap := &ShardSnapshot{Version: Version, ShardID: 0, CounterSeq: 42}
 	if err := Save(base, snap, FormatJSON); err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +78,8 @@ func TestLoad_JSONOnlyMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ShardSeq != 42 {
-		t.Fatalf("json-only load: got seq=%d", got.ShardSeq)
+	if got.CounterSeq != 42 {
+		t.Fatalf("json-only load: got seq=%d", got.CounterSeq)
 	}
 }
 
@@ -98,7 +98,7 @@ func TestCaptureRestore(t *testing.T) {
 			t.Fatalf("seed transfer: %v", err)
 		}
 	}
-	seq.SetShardSeq(42)
+	seq.SetCounterSeq(42)
 	dt.Set("tx-1", "cached-response")
 
 	// Prime LastMatchSeq on two symbols for u1 (ADR-0048 backlog item 2).
@@ -126,8 +126,8 @@ func TestCaptureRestore(t *testing.T) {
 		t.Fatalf("Restore: %v", err)
 	}
 
-	if seq2.ShardSeq() != 42 {
-		t.Fatalf("shard seq = %d, want 42", seq2.ShardSeq())
+	if seq2.CounterSeq() != 42 {
+		t.Fatalf("counter seq = %d, want 42", seq2.CounterSeq())
 	}
 	if bal := state2.Balance("u1", "USDT"); bal.Available.String() != "60" || bal.Frozen.String() != "40" {
 		t.Fatalf("restored u1 USDT = %+v", bal)

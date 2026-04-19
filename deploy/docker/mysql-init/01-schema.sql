@@ -1,19 +1,26 @@
 -- OpenTrade MySQL schema (MVP-0 skeleton — full tables land in MVP-7)
 --
--- Naming:
---   seq_id = monotonic event id attached to the source Kafka event
---   All monetary values stored as DECIMAL(36, 18) (string at the API boundary)
+-- Naming convention for monotonic sequence columns: each column carries the
+-- name of the *producer* that assigns the value, so a bare column name in a
+-- query plan is unambiguous about who owns the monotonicity.
+--
+--   counter_seq_id     - counter shard-scoped, assigned by counter UserSequencer
+--   match_seq_id       - per-symbol, assigned by match SymbolWorker
+--   conditional_seq_id - conditional service global, used as upsert guard
+--
+-- All monetary values are stored as DECIMAL(36, 18) (string at the API boundary).
 
 -- account_version / balance_version are the ADR-0048 backlog "双层 version"
 -- counters (方案 B): account-level bumps on any of the user's balance
 -- mutations, balance-level bumps only on this (user, asset) mutation.
--- Both are guarded by seq_id on upsert so replays don't rewind them.
+-- All three counters are guarded by counter_seq_id on upsert so replays
+-- don't rewind them.
 CREATE TABLE IF NOT EXISTS accounts (
     user_id          VARCHAR(64)     NOT NULL,
     asset            VARCHAR(32)     NOT NULL,
     available        DECIMAL(36, 18) NOT NULL DEFAULT 0,
     frozen           DECIMAL(36, 18) NOT NULL DEFAULT 0,
-    seq_id           BIGINT UNSIGNED NOT NULL,
+    counter_seq_id   BIGINT UNSIGNED NOT NULL,
     account_version  BIGINT UNSIGNED NOT NULL DEFAULT 0,
     balance_version  BIGINT UNSIGNED NOT NULL DEFAULT 0,
     updated_at       DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -52,9 +59,9 @@ CREATE TABLE IF NOT EXISTS trades (
     taker_order_id  BIGINT UNSIGNED NOT NULL,
     taker_side      TINYINT         NOT NULL,
     ts              BIGINT          NOT NULL,
-    symbol_seq_id   BIGINT UNSIGNED NOT NULL,
+    match_seq_id    BIGINT UNSIGNED NOT NULL,
     PRIMARY KEY (trade_id),
-    UNIQUE KEY uk_symbol_seq (symbol, symbol_seq_id),
+    UNIQUE KEY uk_symbol_match_seq (symbol, match_seq_id),
     KEY idx_symbol_ts (symbol, ts),
     KEY idx_user (maker_user_id, ts),
     KEY idx_user2 (taker_user_id, ts)
@@ -62,27 +69,28 @@ CREATE TABLE IF NOT EXISTS trades (
 
 -- account_logs — per-asset journal mirror. One CounterJournalEvent may
 -- generate multiple rows (SettlementEvent touches both base and quote), so
--- the PK includes `asset` to keep the (shard, seq) → multi-row expansion
--- idempotent.
+-- the PK includes `asset` to keep the (shard, counter_seq_id) → multi-row
+-- expansion idempotent.
 CREATE TABLE IF NOT EXISTS account_logs (
-    shard_id     INT             NOT NULL,
-    seq_id       BIGINT UNSIGNED NOT NULL,
-    asset        VARCHAR(32)     NOT NULL,
-    user_id      VARCHAR(64)     NOT NULL,
-    delta_avail  DECIMAL(36, 18) NOT NULL,
-    delta_frozen DECIMAL(36, 18) NOT NULL,
-    avail_after  DECIMAL(36, 18) NOT NULL,
-    frozen_after DECIMAL(36, 18) NOT NULL,
-    biz_type     VARCHAR(32)     NOT NULL,
-    biz_ref_id   VARCHAR(128)    NOT NULL DEFAULT '',
-    ts           BIGINT          NOT NULL,
-    PRIMARY KEY (shard_id, seq_id, asset),
+    shard_id       INT             NOT NULL,
+    counter_seq_id BIGINT UNSIGNED NOT NULL,
+    asset          VARCHAR(32)     NOT NULL,
+    user_id        VARCHAR(64)     NOT NULL,
+    delta_avail    DECIMAL(36, 18) NOT NULL,
+    delta_frozen   DECIMAL(36, 18) NOT NULL,
+    avail_after    DECIMAL(36, 18) NOT NULL,
+    frozen_after   DECIMAL(36, 18) NOT NULL,
+    biz_type       VARCHAR(32)     NOT NULL,
+    biz_ref_id     VARCHAR(128)    NOT NULL DEFAULT '',
+    ts             BIGINT          NOT NULL,
+    PRIMARY KEY (shard_id, counter_seq_id, asset),
     KEY idx_user_ts (user_id, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- conditionals — last-state-wins projection of conditional-event (ADR-0047).
--- trade-dump upserts by PK (id) and guards with seq_id so out-of-order /
--- duplicate replays from HA handover never overwrite fresher state.
+-- trade-dump upserts by PK (id) and guards with last_update_ms (wall-clock
+-- emit timestamp; conditional_seq_id is also carried on-wire, but the wall
+-- clock is the authoritative ordering for this projection — see below).
 -- Type / status stored as TINYINT mirroring rpc/conditional enum values.
 CREATE TABLE IF NOT EXISTS conditionals (
     id                    BIGINT UNSIGNED NOT NULL,

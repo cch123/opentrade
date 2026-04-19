@@ -19,18 +19,19 @@ func mustMarshal(t *testing.T, m proto.Message) []byte {
 	return b
 }
 
-func makeTradeEvent(seqID uint64) *eventpb.TradeEvent {
+func makeTradeEvent(matchSeq uint64) *eventpb.TradeEvent {
 	return &eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: seqID, TsUnixMs: int64(1_700_000_000_000 + seqID)},
+		Meta:       &eventpb.EventMeta{TsUnixMs: int64(1_700_000_000_000 + matchSeq)},
+		MatchSeqId: matchSeq,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
-			TradeId:      "BTC-USDT:" + itoa(seqID),
+			TradeId:      "BTC-USDT:" + itoa(matchSeq),
 			Symbol:       "BTC-USDT",
 			Price:        "42000",
 			Qty:          "0.5",
 			MakerUserId:  "maker",
-			MakerOrderId: 10 + seqID,
+			MakerOrderId: 10 + matchSeq,
 			TakerUserId:  "taker",
-			TakerOrderId: 20 + seqID,
+			TakerOrderId: 20 + matchSeq,
 			TakerSide:    eventpb.Side_SIDE_BUY,
 		}},
 	}
@@ -55,13 +56,15 @@ func TestDecodeBatch_KeepsTradesDropsOthers(t *testing.T) {
 	records := []*kgo.Record{
 		{Value: mustMarshal(t, makeTradeEvent(1))},
 		{Value: mustMarshal(t, &eventpb.TradeEvent{
-			Meta:    &eventpb.EventMeta{SeqId: 2},
-			Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{OrderId: 5}},
+			Meta:       &eventpb.EventMeta{},
+			MatchSeqId: 2,
+			Payload:    &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{OrderId: 5}},
 		})},
 		{Value: mustMarshal(t, makeTradeEvent(3))},
 		{Value: mustMarshal(t, &eventpb.TradeEvent{
-			Meta:    &eventpb.EventMeta{SeqId: 4},
-			Payload: &eventpb.TradeEvent_Cancelled{Cancelled: &eventpb.OrderCancelled{OrderId: 6}},
+			Meta:       &eventpb.EventMeta{},
+			MatchSeqId: 4,
+			Payload:    &eventpb.TradeEvent_Cancelled{Cancelled: &eventpb.OrderCancelled{OrderId: 6}},
 		})},
 	}
 	rows := decodeBatch(records, logger)
@@ -69,7 +72,7 @@ func TestDecodeBatch_KeepsTradesDropsOthers(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows: got %d want 2", len(rows))
 	}
-	if rows[0].SymbolSeqID != 1 || rows[1].SymbolSeqID != 3 {
+	if rows[0].MatchSeqID != 1 || rows[1].MatchSeqID != 3 {
 		t.Errorf("order: %+v", rows)
 	}
 	if rows[0].TradeID != "BTC-USDT:1" || rows[1].TradeID != "BTC-USDT:3" {
@@ -84,7 +87,7 @@ func TestDecodeBatch_SkipsMalformed(t *testing.T) {
 		{Value: mustMarshal(t, makeTradeEvent(7))},
 	}
 	rows := decodeBatch(records, logger)
-	if len(rows) != 1 || rows[0].SymbolSeqID != 7 {
+	if len(rows) != 1 || rows[0].MatchSeqID != 7 {
 		t.Fatalf("rows: %+v", rows)
 	}
 }

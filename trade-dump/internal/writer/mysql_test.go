@@ -31,7 +31,7 @@ func sampleRow(seqID uint64) TradeRow {
 		TakerOrderID: 20 + seqID,
 		TakerSide:    1,
 		TS:           int64(1_700_000_000_000 + seqID),
-		SymbolSeqID:  seqID,
+		MatchSeqID:   seqID,
 	}
 }
 
@@ -67,7 +67,7 @@ func TestInsertTrades_SingleChunk(t *testing.T) {
 	rows := []TradeRow{sampleRow(1), sampleRow(2)}
 
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO trades (trade_id, symbol, price, qty, maker_user_id, maker_order_id, taker_user_id, taker_order_id, taker_side, ts, symbol_seq_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE trade_id = trade_id").
+	mock.ExpectExec("INSERT INTO trades (trade_id, symbol, price, qty, maker_user_id, maker_order_id, taker_user_id, taker_order_id, taker_side, ts, match_seq_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE trade_id = trade_id").
 		WithArgs(
 			"BTC-USDT:1", "BTC-USDT", "42000", "0.5", "maker", uint64(11), "taker", uint64(21), int8(1), int64(1_700_000_000_001), uint64(1),
 			"BTC-USDT:2", "BTC-USDT", "42000", "0.5", "maker", uint64(12), "taker", uint64(22), int8(1), int64(1_700_000_000_002), uint64(2),

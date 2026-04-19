@@ -44,7 +44,8 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 	preBTC := state.Balance("alice", "BTC")
 
 	tradeEvt := &eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 42},
+		Meta:       &eventpb.EventMeta{},
+		MatchSeqId: 42,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId:             "BTC-USDT:1",
 			Symbol:              "BTC-USDT",
@@ -110,7 +111,8 @@ func TestSelfTradeReplayIdempotent(t *testing.T) {
 	})
 
 	tradeEvt := &eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 7},
+		Meta:       &eventpb.EventMeta{},
+		MatchSeqId: 7,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId: "BTC-USDT:1", Symbol: "BTC-USDT",
 			Price: "100", Qty: "1",

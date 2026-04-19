@@ -21,9 +21,13 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// match_seq_id is the per-symbol monotonic sequence assigned by the match
+// SymbolWorker. Used by counter as the (user, symbol) replay guard
+// (Account.matchSeq) and by trade-dump as the trades.match_seq_id row guard.
 type TradeEvent struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Meta  *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Meta       *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	MatchSeqId uint64                 `protobuf:"varint,2,opt,name=match_seq_id,json=matchSeqId,proto3" json:"match_seq_id,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*TradeEvent_Accepted
@@ -71,6 +75,13 @@ func (x *TradeEvent) GetMeta() *EventMeta {
 		return x.Meta
 	}
 	return nil
+}
+
+func (x *TradeEvent) GetMatchSeqId() uint64 {
+	if x != nil {
+		return x.MatchSeqId
+	}
+	return 0
 }
 
 func (x *TradeEvent) GetPayload() isTradeEvent_Payload {
@@ -608,10 +619,12 @@ var File_event_trade_event_proto protoreflect.FileDescriptor
 
 const file_event_trade_event_proto_rawDesc = "" +
 	"\n" +
-	"\x17event/trade_event.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xef\x02\n" +
+	"\x17event/trade_event.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\x91\x03\n" +
 	"\n" +
 	"TradeEvent\x12.\n" +
-	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12<\n" +
+	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12 \n" +
+	"\fmatch_seq_id\x18\x02 \x01(\x04R\n" +
+	"matchSeqId\x12<\n" +
 	"\baccepted\x18\n" +
 	" \x01(\v2\x1e.opentrade.event.OrderAcceptedH\x00R\baccepted\x12<\n" +
 	"\brejected\x18\v \x01(\v2\x1e.opentrade.event.OrderRejectedH\x00R\brejected\x12.\n" +

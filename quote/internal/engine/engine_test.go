@@ -21,7 +21,8 @@ func newTestEngine(t *testing.T) *Engine {
 func TestHandle_Accepted_EmitsDepthUpdate(t *testing.T) {
 	e := newTestEngine(t)
 	evts := e.Handle(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 1, TsUnixMs: 120_001},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 120_001},
+		MatchSeqId: 1,
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
 			UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",
 			Side: eventpb.Side_SIDE_BUY, Price: "100", RemainingQty: "2",
@@ -46,14 +47,16 @@ func TestHandle_Trade_EmitsPublicTradeKlineAndDepth(t *testing.T) {
 	e := newTestEngine(t)
 	// Seed the book with a maker.
 	_ = e.Handle(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 1, TsUnixMs: 120_000},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 120_000},
+		MatchSeqId: 1,
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
 			OrderId: 50, Symbol: "BTC-USDT",
 			Side: eventpb.Side_SIDE_SELL, Price: "101", RemainingQty: "5",
 		}},
 	})
 	evts := e.Handle(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{SeqId: 2, TsUnixMs: 130_000},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 130_000},
+		MatchSeqId: 2,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId: "BTC-USDT:2", Symbol: "BTC-USDT",
 			Price: "101", Qty: "2",
@@ -85,8 +88,8 @@ func TestHandle_Trade_EmitsPublicTradeKlineAndDepth(t *testing.T) {
 		t.Errorf("expected 1 depth update for maker level: %+v", kinds)
 	}
 	for _, ev := range evts {
-		if ev.Meta == nil || ev.Meta.SeqId == 0 {
-			t.Errorf("every event must be stamped with meta: %+v", ev)
+		if ev.Meta == nil || ev.QuoteSeqId == 0 {
+			t.Errorf("every event must be stamped with meta + quote_seq_id: %+v", ev)
 		}
 	}
 }

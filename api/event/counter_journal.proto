@@ -31,6 +31,10 @@ message BalanceSnapshot {
 
 // Event envelope for counter-journal.
 //
+// counter_seq_id is the counter-shard-scoped monotonic sequence assigned by
+// the counter UserSequencer. Used by trade-dump as the per-row idempotency
+// guard for accounts / account_logs (see ADR-0028).
+//
 // account_version is the user-level monotonic counter (bumped on any of
 // this user's balance mutations, ADR-0048 backlog: 双层 version 方案 B).
 // Sent on every event; unchanged on OrderStatus / CancelRequested which
@@ -39,6 +43,7 @@ message BalanceSnapshot {
 message CounterJournalEvent {
   EventMeta meta = 1;
   uint64 account_version = 2;
+  uint64 counter_seq_id = 3;
 
   oneof payload {
     FreezeEvent       freeze        = 10;

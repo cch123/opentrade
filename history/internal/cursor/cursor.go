@@ -28,13 +28,13 @@ type TradesCursor struct {
 }
 
 // AccountLogsCursor paginates ListAccountLogs. `account_logs` orders by
-// (ts DESC, shard_id DESC, seq_id DESC, asset DESC) — a unique key to
-// ensure strict monotonicity on the cursor boundary.
+// (ts DESC, shard_id DESC, counter_seq_id DESC, asset DESC) — a unique key
+// to ensure strict monotonicity on the cursor boundary.
 type AccountLogsCursor struct {
-	Ts      int64  `json:"t"`
-	ShardID int32  `json:"s"`
-	SeqID   uint64 `json:"q"`
-	Asset   string `json:"a"`
+	Ts           int64  `json:"t"`
+	ShardID      int32  `json:"s"`
+	CounterSeqID uint64 `json:"q"`
+	Asset        string `json:"a"`
 }
 
 // ConditionalsCursor paginates ListConditionals. `conditionals` orders by

@@ -10,10 +10,10 @@ import (
 
 func TestBuildTransferEvent(t *testing.T) {
 	in := TransferEventInput{
-		SeqID:      17,
-		TsUnixMS:   1000,
-		TraceID:    "trace-1",
-		ProducerID: "counter-shard-0-main",
+		CounterSeqID: 17,
+		TsUnixMS:     1000,
+		TraceID:      "trace-1",
+		ProducerID:   "counter-shard-0-main",
 		Req: engine.TransferRequest{
 			TransferID: "tx-1",
 			UserID:     "u1",
@@ -32,8 +32,8 @@ func TestBuildTransferEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	if cje.Meta.SeqId != 17 || cje.Meta.ProducerId != "counter-shard-0-main" || cje.Meta.TraceId != "trace-1" {
-		t.Fatalf("meta = %+v", cje.Meta)
+	if cje.CounterSeqId != 17 || cje.Meta.ProducerId != "counter-shard-0-main" || cje.Meta.TraceId != "trace-1" {
+		t.Fatalf("meta = %+v counter_seq_id = %d", cje.Meta, cje.CounterSeqId)
 	}
 	te := cje.GetTransfer()
 	if te == nil {

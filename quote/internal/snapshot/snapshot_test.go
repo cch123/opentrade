@@ -21,7 +21,7 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 	src := &Snapshot{
 		Version:   Version,
 		TakenAtMs: 1700,
-		Seq:       42,
+		QuoteSeq:  42,
 		Offsets:   map[int32]int64{0: 100, 1: 205},
 		Symbols: map[string]*SymbolSnapshot{
 			"BTC-USDT": {

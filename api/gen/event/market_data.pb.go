@@ -80,10 +80,15 @@ func (KlineInterval) EnumDescriptor() ([]byte, []int) {
 	return file_event_market_data_proto_rawDescGZIP(), []int{0}
 }
 
+// quote_seq_id is the quote-engine-global monotonic sequence stamped on
+// every emitted market-data event. Consumers use it to detect gaps and to
+// align periodic DepthSnapshot frames against the incremental DepthUpdate
+// stream (ADR-0038).
 type MarketDataEvent struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Meta   *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
-	Symbol string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Meta       *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	Symbol     string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	QuoteSeqId uint64                 `protobuf:"varint,3,opt,name=quote_seq_id,json=quoteSeqId,proto3" json:"quote_seq_id,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*MarketDataEvent_PublicTrade
@@ -138,6 +143,13 @@ func (x *MarketDataEvent) GetSymbol() string {
 		return x.Symbol
 	}
 	return ""
+}
+
+func (x *MarketDataEvent) GetQuoteSeqId() uint64 {
+	if x != nil {
+		return x.QuoteSeqId
+	}
+	return 0
 }
 
 func (x *MarketDataEvent) GetPayload() isMarketDataEvent_Payload {
@@ -708,10 +720,12 @@ var File_event_market_data_proto protoreflect.FileDescriptor
 
 const file_event_market_data_proto_rawDesc = "" +
 	"\n" +
-	"\x17event/market_data.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xb9\x03\n" +
+	"\x17event/market_data.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xdb\x03\n" +
 	"\x0fMarketDataEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x16\n" +
-	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12A\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12 \n" +
+	"\fquote_seq_id\x18\x03 \x01(\x04R\n" +
+	"quoteSeqId\x12A\n" +
 	"\fpublic_trade\x18\n" +
 	" \x01(\v2\x1c.opentrade.event.PublicTradeH\x00R\vpublicTrade\x12A\n" +
 	"\fkline_update\x18\v \x01(\v2\x1c.opentrade.event.KlineUpdateH\x00R\vklineUpdate\x12A\n" +

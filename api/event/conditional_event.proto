@@ -19,10 +19,10 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 //   state change in engine ───▶  conditional-event ───▶ journal consumer ──▶ conditionals table (upsert, seq-guarded)
 //
 // Each event carries the *post-change* full snapshot of the conditional so
-// trade-dump can idempotently upsert by id with last-write-wins on seq_id.
-// That keeps the projection robust against duplicate emissions during HA
-// handover — the consumer side dedups by seq_id without needing producer
-// transactions.
+// trade-dump can idempotently upsert by id with last-write-wins on
+// conditional_seq_id. That keeps the projection robust against duplicate
+// emissions during HA handover — the consumer side dedups by
+// conditional_seq_id without needing producer transactions.
 //
 // Enums mirror the rpc/conditional.proto values 1:1. They are redeclared
 // here (with `EVENT_` prefix) to keep event/ from depending on rpc/; the
@@ -51,9 +51,11 @@ enum ConditionalEventStatus {
 }
 
 // ConditionalUpdate is the post-change full snapshot of one conditional.
-// seq_id in EventMeta is a service-global monotonic id (sharded by
-// conditional id space is not required; the service runs as a single
-// logical shard today).
+//
+// conditional_seq_id is a service-global monotonic id assigned by the
+// conditional service (sharded by conditional id space is not required;
+// the service runs as a single logical shard today). trade-dump uses it
+// as the upsert guard on the conditionals table.
 message ConditionalUpdate {
   EventMeta meta = 1;
 
@@ -87,4 +89,6 @@ message ConditionalUpdate {
   string activation_price = 21;
   string trailing_watermark = 22;
   bool trailing_active = 23;
+
+  uint64 conditional_seq_id = 24;
 }

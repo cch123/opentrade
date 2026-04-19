@@ -20,8 +20,8 @@
 //   - Detecting rows only in MySQL (projection lag / out-of-shard rows)
 //   - Auto-repair or alerting — the operator reads logs
 //   - Comparing against SUM(account_logs); the `accounts` projection is
-//     already maintained with seq_id guards by trade-dump (ADR-0028), so
-//     any drift there would light up trade-dump tests before reaching us
+//     already maintained with counter_seq_id guards by trade-dump (ADR-0028),
+//     so any drift there would light up trade-dump tests before reaching us
 package reconcile
 
 import (

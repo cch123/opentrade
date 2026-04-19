@@ -59,11 +59,14 @@ enum RejectReason {
   REJECT_REASON_INTERNAL = 99;
 }
 
-// Envelope metadata carried by every event. seq_id semantics vary by topic:
-//   - counter-journal: shard-level monotonic
-//   - trade-event:     per-symbol monotonic
+// Envelope metadata carried by every event. The producer-specific monotonic
+// sequence is NOT carried here — each event type embeds its own typed field
+// (counter_seq_id / match_seq_id / quote_seq_id / conditional_seq_id) so the
+// producer is unambiguous at the call site. Tag 1 is reserved to prevent
+// accidental reuse of the old seq_id field.
 message EventMeta {
-  uint64 seq_id = 1;
+  reserved 1;
+  reserved "seq_id";
   int64 ts_unix_ms = 2;   // event generation time (wall clock, informational only)
   string trace_id = 3;    // end-to-end request trace id
   string producer_id = 4; // e.g. counter-shard-3-main, match-shard-0-main
