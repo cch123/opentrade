@@ -26,6 +26,7 @@ const (
 	CounterService_QueryBalance_FullMethodName       = "/opentrade.rpc.counter.CounterService/QueryBalance"
 	CounterService_Reserve_FullMethodName            = "/opentrade.rpc.counter.CounterService/Reserve"
 	CounterService_ReleaseReservation_FullMethodName = "/opentrade.rpc.counter.CounterService/ReleaseReservation"
+	CounterService_AdminCancelOrders_FullMethodName  = "/opentrade.rpc.counter.CounterService/AdminCancelOrders"
 )
 
 // CounterServiceClient is the client API for CounterService service.
@@ -60,6 +61,17 @@ type CounterServiceClient interface {
 	// reservation record. Idempotent: unknown ref_ids return accepted=false
 	// without error.
 	ReleaseReservation(ctx context.Context, in *ReleaseReservationRequest, opts ...grpc.CallOption) (*ReleaseReservationResponse, error)
+	// AdminCancelOrders bulk-cancels live orders in this shard that match
+	// the filter. At least one of user_id / symbol must be non-empty. The
+	// call walks this shard's in-memory OrderStore, filters to active +
+	// non-PENDING_CANCEL orders, then runs the normal per-order Cancel
+	// path (per-user sequencer) so Match sees the same OrderCancelEvent
+	// stream as a user-initiated cancel (ADR-0052).
+	//
+	// Caller authenticates with an admin-role API-Key (BFF /admin/cancel-
+	// orders). Cross-shard fan-out happens at BFF level: if only a symbol
+	// is given, BFF calls every shard in parallel.
+	AdminCancelOrders(ctx context.Context, in *AdminCancelOrdersRequest, opts ...grpc.CallOption) (*AdminCancelOrdersResponse, error)
 }
 
 type counterServiceClient struct {
@@ -140,6 +152,16 @@ func (c *counterServiceClient) ReleaseReservation(ctx context.Context, in *Relea
 	return out, nil
 }
 
+func (c *counterServiceClient) AdminCancelOrders(ctx context.Context, in *AdminCancelOrdersRequest, opts ...grpc.CallOption) (*AdminCancelOrdersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminCancelOrdersResponse)
+	err := c.cc.Invoke(ctx, CounterService_AdminCancelOrders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CounterServiceServer is the server API for CounterService service.
 // All implementations must embed UnimplementedCounterServiceServer
 // for forward compatibility.
@@ -172,6 +194,17 @@ type CounterServiceServer interface {
 	// reservation record. Idempotent: unknown ref_ids return accepted=false
 	// without error.
 	ReleaseReservation(context.Context, *ReleaseReservationRequest) (*ReleaseReservationResponse, error)
+	// AdminCancelOrders bulk-cancels live orders in this shard that match
+	// the filter. At least one of user_id / symbol must be non-empty. The
+	// call walks this shard's in-memory OrderStore, filters to active +
+	// non-PENDING_CANCEL orders, then runs the normal per-order Cancel
+	// path (per-user sequencer) so Match sees the same OrderCancelEvent
+	// stream as a user-initiated cancel (ADR-0052).
+	//
+	// Caller authenticates with an admin-role API-Key (BFF /admin/cancel-
+	// orders). Cross-shard fan-out happens at BFF level: if only a symbol
+	// is given, BFF calls every shard in parallel.
+	AdminCancelOrders(context.Context, *AdminCancelOrdersRequest) (*AdminCancelOrdersResponse, error)
 	mustEmbedUnimplementedCounterServiceServer()
 }
 
@@ -202,6 +235,9 @@ func (UnimplementedCounterServiceServer) Reserve(context.Context, *ReserveReques
 }
 func (UnimplementedCounterServiceServer) ReleaseReservation(context.Context, *ReleaseReservationRequest) (*ReleaseReservationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseReservation not implemented")
+}
+func (UnimplementedCounterServiceServer) AdminCancelOrders(context.Context, *AdminCancelOrdersRequest) (*AdminCancelOrdersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdminCancelOrders not implemented")
 }
 func (UnimplementedCounterServiceServer) mustEmbedUnimplementedCounterServiceServer() {}
 func (UnimplementedCounterServiceServer) testEmbeddedByValue()                        {}
@@ -350,6 +386,24 @@ func _CounterService_ReleaseReservation_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CounterService_AdminCancelOrders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminCancelOrdersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CounterServiceServer).AdminCancelOrders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CounterService_AdminCancelOrders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CounterServiceServer).AdminCancelOrders(ctx, req.(*AdminCancelOrdersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CounterService_ServiceDesc is the grpc.ServiceDesc for CounterService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -384,6 +438,10 @@ var CounterService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReleaseReservation",
 			Handler:    _CounterService_ReleaseReservation_Handler,
+		},
+		{
+			MethodName: "AdminCancelOrders",
+			Handler:    _CounterService_AdminCancelOrders_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

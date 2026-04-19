@@ -30,6 +30,8 @@ import (
 	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/bff/internal/rest"
 	bffws "github.com/xargin/opentrade/bff/internal/ws"
+	"github.com/xargin/opentrade/pkg/adminaudit"
+	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
 )
 
@@ -66,6 +68,15 @@ type Config struct {
 	// History service endpoint (ADR-0046). Empty disables the
 	// /v1/orders, /v1/trades, /v1/account-logs endpoints with 503.
 	HistoryAddr string
+
+	// Admin plane (ADR-0052). AdminAPIKeysFile empty = /admin/* returns
+	// 404. EtcdEndpoints empty = /admin/symbols returns 503. AuditLogPath
+	// is required when AdminAPIKeysFile is set (fail-closed: no audit =
+	// no admin plane).
+	AdminAPIKeysFile string
+	EtcdEndpoints    []string
+	EtcdPrefix       string
+	AuditLogPath     string
 
 	Env               string
 	LogLevel          string
@@ -165,6 +176,29 @@ func main() {
 		outer.Handle("/ws", authMW(proxy.Handler()))
 		logger.Info("ws reverse-proxy enabled", zap.String("upstream", cfg.PushWSURL))
 	}
+
+	adminSrv, adminAuthMW, auditLogger, etcdSource, err := buildAdminPlane(cfg, counter, logger)
+	if err != nil {
+		logger.Fatal("admin plane init", zap.Error(err))
+	}
+	if adminSrv != nil {
+		outer.Handle("/admin/", adminAuthMW(auth.RequireAdmin(adminSrv.Handler())))
+		logger.Info("admin plane enabled",
+			zap.String("admin_api_keys_file", cfg.AdminAPIKeysFile),
+			zap.String("audit_log", cfg.AuditLogPath),
+			zap.Bool("etcd_configured", etcdSource != nil))
+	}
+	defer func() {
+		if auditLogger != nil {
+			if err := auditLogger.Close(); err != nil {
+				logger.Warn("audit close", zap.Error(err))
+			}
+		}
+		if etcdSource != nil {
+			_ = etcdSource.Close()
+		}
+	}()
+
 	outer.Handle("/", srv.Handler())
 
 	httpSrv := &http.Server{
@@ -234,6 +268,52 @@ func maybeDialHistory(ctx context.Context, addr string, logger *zap.Logger) (*gr
 	}
 	logger.Info("history endpoint configured", zap.String("addr", addr))
 	return conn, c, nil
+}
+
+// buildAdminPlane wires the ADR-0052 admin endpoints. Returns (nil, nil,
+// nil, nil, nil) when the admin plane is disabled (no --admin-api-keys-
+// file). Otherwise returns the AdminServer, its dedicated auth middleware
+// (admin-role API-Key only), the audit logger, and the optional etcd
+// source so callers can defer Close().
+func buildAdminPlane(cfg Config, counter client.Counter, logger *zap.Logger) (*rest.AdminServer, func(http.Handler) http.Handler, adminaudit.Logger, *etcdcfg.EtcdSource, error) {
+	if cfg.AdminAPIKeysFile == "" {
+		return nil, nil, nil, nil, nil
+	}
+	if cfg.AuditLogPath == "" {
+		return nil, nil, nil, nil, fmt.Errorf("admin plane enabled but --audit-log is empty; refusing to start without an audit trail")
+	}
+	store, err := auth.NewMemoryStore(cfg.AdminAPIKeysFile, auth.RoleAdmin)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("admin api keys: %w", err)
+	}
+	adminMW, err := auth.AdminMiddleware(store, logger)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("admin middleware: %w", err)
+	}
+	audit, err := adminaudit.Open(cfg.AuditLogPath)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("audit log open: %w", err)
+	}
+	var etcdSrc *etcdcfg.EtcdSource
+	var adminEtcd rest.AdminEtcdSource
+	if len(cfg.EtcdEndpoints) > 0 {
+		prefix := cfg.EtcdPrefix
+		if prefix == "" {
+			prefix = etcdcfg.DefaultPrefix
+		}
+		src, err := etcdcfg.NewEtcdSource(etcdcfg.EtcdConfig{
+			Endpoints: cfg.EtcdEndpoints,
+			Prefix:    prefix,
+		})
+		if err != nil {
+			_ = audit.Close()
+			return nil, nil, nil, nil, fmt.Errorf("etcd source: %w", err)
+		}
+		etcdSrc = src
+		adminEtcd = src
+	}
+	srv := rest.NewAdminServer(counter, adminEtcd, audit, logger)
+	return srv, adminMW, audit, etcdSrc, nil
 }
 
 // buildAuthMiddleware turns the flag set into a configured auth middleware.
@@ -356,9 +436,15 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.APIKeysFile, "api-keys-file", "", "JSON file listing {key,secret,user_id} entries for --auth-mode=api-key|mixed")
 	flag.StringVar(&cfg.ConditionalAddr, "conditional", "", "Conditional service gRPC endpoint (empty disables /v1/conditional; ADR-0040)")
 	flag.StringVar(&cfg.HistoryAddr, "history", "", "History service gRPC endpoint (empty disables /v1/orders,/v1/trades,/v1/account-logs; ADR-0046)")
+	var etcdEndpointsCSV string
+	flag.StringVar(&cfg.AdminAPIKeysFile, "admin-api-keys-file", "", "JSON file of admin-role API-Key entries; empty disables /admin/* (ADR-0052)")
+	flag.StringVar(&etcdEndpointsCSV, "etcd", "", "comma-separated etcd endpoints for /admin/symbols CRUD (empty disables symbol endpoints)")
+	flag.StringVar(&cfg.EtcdPrefix, "etcd-prefix", "", "etcd key prefix for symbol configs (default /cex/match/symbols/)")
+	flag.StringVar(&cfg.AuditLogPath, "audit-log", "", "JSONL audit log file for admin plane (required when --admin-api-keys-file is set; ADR-0052)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
+	cfg.EtcdEndpoints = splitCSV(etcdEndpointsCSV)
 
 	if shardsCSV != "" {
 		cfg.CounterShards = splitCSV(shardsCSV)

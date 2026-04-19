@@ -1,0 +1,92 @@
+package service
+
+import (
+	"context"
+	"errors"
+
+	"go.uber.org/zap"
+
+	"github.com/xargin/opentrade/counter/internal/engine"
+)
+
+// ErrAdminCancelFilterEmpty is returned when neither user_id nor symbol is
+// supplied. A completely empty filter would cancel every open order on the
+// shard — we require an explicit commitment to that scope.
+var ErrAdminCancelFilterEmpty = errors.New("service: admin cancel requires user_id or symbol")
+
+// AdminCancelFilter narrows the set of orders to cancel. Empty strings
+// mean "match any".
+type AdminCancelFilter struct {
+	UserID string
+	Symbol string
+}
+
+// AdminCancelResult is the Service-level response for AdminCancelOrders.
+type AdminCancelResult struct {
+	Cancelled uint32
+	Skipped   uint32
+}
+
+// AdminCancelOrders walks the shard's OrderStore, selects active orders
+// matching the filter, and routes each one through the standard
+// CancelOrder path (per-user sequencer + Kafka txn).
+//
+// Failures on individual cancellations are logged and counted as Skipped;
+// the overall call only returns an error on filter validation or when
+// PlaceOrder deps are not wired.
+func (s *Service) AdminCancelOrders(ctx context.Context, filter AdminCancelFilter) (*AdminCancelResult, error) {
+	if s.txn == nil {
+		return nil, ErrOrderDepsNotConfigured
+	}
+	if filter.UserID == "" && filter.Symbol == "" {
+		return nil, ErrAdminCancelFilterEmpty
+	}
+	// When UserID is given, verify shard ownership before touching state.
+	// Without a user filter, the call iterates every user owned by this
+	// shard — OwnsUser is checked implicitly by CancelOrder below.
+	if filter.UserID != "" && !s.OwnsUser(filter.UserID) {
+		return nil, ErrWrongShard
+	}
+
+	snapshot := s.state.Orders().All() // clone slice
+
+	targets := make([]*engine.Order, 0, len(snapshot))
+	var skipped uint32
+	for _, o := range snapshot {
+		if filter.UserID != "" && o.UserID != filter.UserID {
+			continue
+		}
+		if filter.Symbol != "" && o.Symbol != filter.Symbol {
+			continue
+		}
+		// Re-verify ownership when iterating all users (no user filter):
+		// a cross-user symbol cancel must not reach into foreign shards.
+		if filter.UserID == "" && !s.OwnsUser(o.UserID) {
+			continue
+		}
+		if o.Status.IsTerminal() || o.Status == engine.OrderStatusPendingCancel {
+			skipped++
+			continue
+		}
+		targets = append(targets, o)
+	}
+
+	var cancelled uint32
+	for _, o := range targets {
+		res, err := s.CancelOrder(ctx, CancelOrderRequest{UserID: o.UserID, OrderID: o.ID})
+		if err != nil {
+			s.logger.Warn("admin cancel: per-order CancelOrder failed",
+				zap.String("user", o.UserID),
+				zap.Uint64("order", o.ID),
+				zap.Error(err))
+			skipped++
+			continue
+		}
+		if res.Accepted {
+			cancelled++
+		} else {
+			skipped++
+		}
+	}
+	return &AdminCancelResult{Cancelled: cancelled, Skipped: skipped}, nil
+}

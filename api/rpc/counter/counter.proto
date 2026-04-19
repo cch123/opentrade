@@ -46,6 +46,18 @@ service CounterService {
   // reservation record. Idempotent: unknown ref_ids return accepted=false
   // without error.
   rpc ReleaseReservation(ReleaseReservationRequest) returns (ReleaseReservationResponse);
+
+  // AdminCancelOrders bulk-cancels live orders in this shard that match
+  // the filter. At least one of user_id / symbol must be non-empty. The
+  // call walks this shard's in-memory OrderStore, filters to active +
+  // non-PENDING_CANCEL orders, then runs the normal per-order Cancel
+  // path (per-user sequencer) so Match sees the same OrderCancelEvent
+  // stream as a user-initiated cancel (ADR-0052).
+  //
+  // Caller authenticates with an admin-role API-Key (BFF /admin/cancel-
+  // orders). Cross-shard fan-out happens at BFF level: if only a symbol
+  // is given, BFF calls every shard in parallel.
+  rpc AdminCancelOrders(AdminCancelOrdersRequest) returns (AdminCancelOrdersResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -212,4 +224,27 @@ message ReleaseReservationResponse {
   bool accepted = 2;
   string asset = 3;
   string amount = 4;
+}
+
+// -----------------------------------------------------------------------------
+// Admin (ADR-0052)
+// -----------------------------------------------------------------------------
+
+message AdminCancelOrdersRequest {
+  // At least one of user_id / symbol must be non-empty. Both set = filter
+  // intersection (this user's orders on this symbol).
+  string user_id = 1;
+  string symbol = 2;
+  // Free-form explanation recorded alongside the admin audit log entry.
+  // Does not reach counter-journal; only the BFF audit file sees it.
+  string reason = 3;
+}
+
+message AdminCancelOrdersResponse {
+  // Orders successfully transitioned to PENDING_CANCEL (forwarded to Match).
+  uint32 cancelled = 1;
+  // Orders that matched the filter but were already terminal / pending cancel.
+  uint32 skipped = 2;
+  // Numeric shard id (Config.ShardID) so the BFF fan-out can report per-shard.
+  int32 shard_id = 3;
 }

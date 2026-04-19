@@ -1242,6 +1242,133 @@ func (x *ReleaseReservationResponse) GetAmount() string {
 	return ""
 }
 
+type AdminCancelOrdersRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// At least one of user_id / symbol must be non-empty. Both set = filter
+	// intersection (this user's orders on this symbol).
+	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol string `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	// Free-form explanation recorded alongside the admin audit log entry.
+	// Does not reach counter-journal; only the BFF audit file sees it.
+	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminCancelOrdersRequest) Reset() {
+	*x = AdminCancelOrdersRequest{}
+	mi := &file_rpc_counter_counter_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminCancelOrdersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminCancelOrdersRequest) ProtoMessage() {}
+
+func (x *AdminCancelOrdersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_counter_counter_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminCancelOrdersRequest.ProtoReflect.Descriptor instead.
+func (*AdminCancelOrdersRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *AdminCancelOrdersRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *AdminCancelOrdersRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *AdminCancelOrdersRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type AdminCancelOrdersResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Orders successfully transitioned to PENDING_CANCEL (forwarded to Match).
+	Cancelled uint32 `protobuf:"varint,1,opt,name=cancelled,proto3" json:"cancelled,omitempty"`
+	// Orders that matched the filter but were already terminal / pending cancel.
+	Skipped uint32 `protobuf:"varint,2,opt,name=skipped,proto3" json:"skipped,omitempty"`
+	// Numeric shard id (Config.ShardID) so the BFF fan-out can report per-shard.
+	ShardId       int32 `protobuf:"varint,3,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminCancelOrdersResponse) Reset() {
+	*x = AdminCancelOrdersResponse{}
+	mi := &file_rpc_counter_counter_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminCancelOrdersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminCancelOrdersResponse) ProtoMessage() {}
+
+func (x *AdminCancelOrdersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_counter_counter_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminCancelOrdersResponse.ProtoReflect.Descriptor instead.
+func (*AdminCancelOrdersResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *AdminCancelOrdersResponse) GetCancelled() uint32 {
+	if x != nil {
+		return x.Cancelled
+	}
+	return 0
+}
+
+func (x *AdminCancelOrdersResponse) GetSkipped() uint32 {
+	if x != nil {
+		return x.Skipped
+	}
+	return 0
+}
+
+func (x *AdminCancelOrdersResponse) GetShardId() int32 {
+	if x != nil {
+		return x.ShardId
+	}
+	return 0
+}
+
 var File_rpc_counter_counter_proto protoreflect.FileDescriptor
 
 const file_rpc_counter_counter_proto_rawDesc = "" +
@@ -1340,7 +1467,15 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\x0ereservation_id\x18\x01 \x01(\tR\rreservationId\x12\x1a\n" +
 	"\baccepted\x18\x02 \x01(\bR\baccepted\x12\x14\n" +
 	"\x05asset\x18\x03 \x01(\tR\x05asset\x12\x16\n" +
-	"\x06amount\x18\x04 \x01(\tR\x06amount*\x9a\x01\n" +
+	"\x06amount\x18\x04 \x01(\tR\x06amount\"c\n" +
+	"\x18AdminCancelOrdersRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"n\n" +
+	"\x19AdminCancelOrdersResponse\x12\x1c\n" +
+	"\tcancelled\x18\x01 \x01(\rR\tcancelled\x12\x18\n" +
+	"\askipped\x18\x02 \x01(\rR\askipped\x12\x19\n" +
+	"\bshard_id\x18\x03 \x01(\x05R\ashardId*\x9a\x01\n" +
 	"\fTransferType\x12\x1d\n" +
 	"\x19TRANSFER_TYPE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15TRANSFER_TYPE_DEPOSIT\x10\x01\x12\x1a\n" +
@@ -1351,7 +1486,7 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\x1bTRANSFER_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19TRANSFER_STATUS_CONFIRMED\x10\x01\x12\x1c\n" +
 	"\x18TRANSFER_STATUS_REJECTED\x10\x02\x12\x1e\n" +
-	"\x1aTRANSFER_STATUS_DUPLICATED\x10\x032\xd7\x05\n" +
+	"\x1aTRANSFER_STATUS_DUPLICATED\x10\x032\xcf\x06\n" +
 	"\x0eCounterService\x12a\n" +
 	"\n" +
 	"PlaceOrder\x12(.opentrade.rpc.counter.PlaceOrderRequest\x1a).opentrade.rpc.counter.PlaceOrderResponse\x12d\n" +
@@ -1361,7 +1496,8 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"QueryOrder\x12(.opentrade.rpc.counter.QueryOrderRequest\x1a).opentrade.rpc.counter.QueryOrderResponse\x12g\n" +
 	"\fQueryBalance\x12*.opentrade.rpc.counter.QueryBalanceRequest\x1a+.opentrade.rpc.counter.QueryBalanceResponse\x12X\n" +
 	"\aReserve\x12%.opentrade.rpc.counter.ReserveRequest\x1a&.opentrade.rpc.counter.ReserveResponse\x12y\n" +
-	"\x12ReleaseReservation\x120.opentrade.rpc.counter.ReleaseReservationRequest\x1a1.opentrade.rpc.counter.ReleaseReservationResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/counter;counterrpcb\x06proto3"
+	"\x12ReleaseReservation\x120.opentrade.rpc.counter.ReleaseReservationRequest\x1a1.opentrade.rpc.counter.ReleaseReservationResponse\x12v\n" +
+	"\x11AdminCancelOrders\x12/.opentrade.rpc.counter.AdminCancelOrdersRequest\x1a0.opentrade.rpc.counter.AdminCancelOrdersResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/counter;counterrpcb\x06proto3"
 
 var (
 	file_rpc_counter_counter_proto_rawDescOnce sync.Once
@@ -1376,7 +1512,7 @@ func file_rpc_counter_counter_proto_rawDescGZIP() []byte {
 }
 
 var file_rpc_counter_counter_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_rpc_counter_counter_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_rpc_counter_counter_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_rpc_counter_counter_proto_goTypes = []any{
 	(TransferType)(0),                  // 0: opentrade.rpc.counter.TransferType
 	(TransferStatus)(0),                // 1: opentrade.rpc.counter.TransferStatus
@@ -1395,24 +1531,26 @@ var file_rpc_counter_counter_proto_goTypes = []any{
 	(*ReserveResponse)(nil),            // 14: opentrade.rpc.counter.ReserveResponse
 	(*ReleaseReservationRequest)(nil),  // 15: opentrade.rpc.counter.ReleaseReservationRequest
 	(*ReleaseReservationResponse)(nil), // 16: opentrade.rpc.counter.ReleaseReservationResponse
-	(event.Side)(0),                    // 17: opentrade.event.Side
-	(event.OrderType)(0),               // 18: opentrade.event.OrderType
-	(event.TimeInForce)(0),             // 19: opentrade.event.TimeInForce
-	(event.InternalOrderStatus)(0),     // 20: opentrade.event.InternalOrderStatus
+	(*AdminCancelOrdersRequest)(nil),   // 17: opentrade.rpc.counter.AdminCancelOrdersRequest
+	(*AdminCancelOrdersResponse)(nil),  // 18: opentrade.rpc.counter.AdminCancelOrdersResponse
+	(event.Side)(0),                    // 19: opentrade.event.Side
+	(event.OrderType)(0),               // 20: opentrade.event.OrderType
+	(event.TimeInForce)(0),             // 21: opentrade.event.TimeInForce
+	(event.InternalOrderStatus)(0),     // 22: opentrade.event.InternalOrderStatus
 }
 var file_rpc_counter_counter_proto_depIdxs = []int32{
-	17, // 0: opentrade.rpc.counter.PlaceOrderRequest.side:type_name -> opentrade.event.Side
-	18, // 1: opentrade.rpc.counter.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
-	19, // 2: opentrade.rpc.counter.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
+	19, // 0: opentrade.rpc.counter.PlaceOrderRequest.side:type_name -> opentrade.event.Side
+	20, // 1: opentrade.rpc.counter.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
+	21, // 2: opentrade.rpc.counter.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
 	0,  // 3: opentrade.rpc.counter.TransferRequest.type:type_name -> opentrade.rpc.counter.TransferType
 	1,  // 4: opentrade.rpc.counter.TransferResponse.status:type_name -> opentrade.rpc.counter.TransferStatus
-	17, // 5: opentrade.rpc.counter.QueryOrderResponse.side:type_name -> opentrade.event.Side
-	18, // 6: opentrade.rpc.counter.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
-	19, // 7: opentrade.rpc.counter.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
-	20, // 8: opentrade.rpc.counter.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
+	19, // 5: opentrade.rpc.counter.QueryOrderResponse.side:type_name -> opentrade.event.Side
+	20, // 6: opentrade.rpc.counter.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
+	21, // 7: opentrade.rpc.counter.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
+	22, // 8: opentrade.rpc.counter.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
 	12, // 9: opentrade.rpc.counter.QueryBalanceResponse.balances:type_name -> opentrade.rpc.counter.Balance
-	17, // 10: opentrade.rpc.counter.ReserveRequest.side:type_name -> opentrade.event.Side
-	18, // 11: opentrade.rpc.counter.ReserveRequest.order_type:type_name -> opentrade.event.OrderType
+	19, // 10: opentrade.rpc.counter.ReserveRequest.side:type_name -> opentrade.event.Side
+	20, // 11: opentrade.rpc.counter.ReserveRequest.order_type:type_name -> opentrade.event.OrderType
 	2,  // 12: opentrade.rpc.counter.CounterService.PlaceOrder:input_type -> opentrade.rpc.counter.PlaceOrderRequest
 	4,  // 13: opentrade.rpc.counter.CounterService.CancelOrder:input_type -> opentrade.rpc.counter.CancelOrderRequest
 	6,  // 14: opentrade.rpc.counter.CounterService.Transfer:input_type -> opentrade.rpc.counter.TransferRequest
@@ -1420,15 +1558,17 @@ var file_rpc_counter_counter_proto_depIdxs = []int32{
 	10, // 16: opentrade.rpc.counter.CounterService.QueryBalance:input_type -> opentrade.rpc.counter.QueryBalanceRequest
 	13, // 17: opentrade.rpc.counter.CounterService.Reserve:input_type -> opentrade.rpc.counter.ReserveRequest
 	15, // 18: opentrade.rpc.counter.CounterService.ReleaseReservation:input_type -> opentrade.rpc.counter.ReleaseReservationRequest
-	3,  // 19: opentrade.rpc.counter.CounterService.PlaceOrder:output_type -> opentrade.rpc.counter.PlaceOrderResponse
-	5,  // 20: opentrade.rpc.counter.CounterService.CancelOrder:output_type -> opentrade.rpc.counter.CancelOrderResponse
-	7,  // 21: opentrade.rpc.counter.CounterService.Transfer:output_type -> opentrade.rpc.counter.TransferResponse
-	9,  // 22: opentrade.rpc.counter.CounterService.QueryOrder:output_type -> opentrade.rpc.counter.QueryOrderResponse
-	11, // 23: opentrade.rpc.counter.CounterService.QueryBalance:output_type -> opentrade.rpc.counter.QueryBalanceResponse
-	14, // 24: opentrade.rpc.counter.CounterService.Reserve:output_type -> opentrade.rpc.counter.ReserveResponse
-	16, // 25: opentrade.rpc.counter.CounterService.ReleaseReservation:output_type -> opentrade.rpc.counter.ReleaseReservationResponse
-	19, // [19:26] is the sub-list for method output_type
-	12, // [12:19] is the sub-list for method input_type
+	17, // 19: opentrade.rpc.counter.CounterService.AdminCancelOrders:input_type -> opentrade.rpc.counter.AdminCancelOrdersRequest
+	3,  // 20: opentrade.rpc.counter.CounterService.PlaceOrder:output_type -> opentrade.rpc.counter.PlaceOrderResponse
+	5,  // 21: opentrade.rpc.counter.CounterService.CancelOrder:output_type -> opentrade.rpc.counter.CancelOrderResponse
+	7,  // 22: opentrade.rpc.counter.CounterService.Transfer:output_type -> opentrade.rpc.counter.TransferResponse
+	9,  // 23: opentrade.rpc.counter.CounterService.QueryOrder:output_type -> opentrade.rpc.counter.QueryOrderResponse
+	11, // 24: opentrade.rpc.counter.CounterService.QueryBalance:output_type -> opentrade.rpc.counter.QueryBalanceResponse
+	14, // 25: opentrade.rpc.counter.CounterService.Reserve:output_type -> opentrade.rpc.counter.ReserveResponse
+	16, // 26: opentrade.rpc.counter.CounterService.ReleaseReservation:output_type -> opentrade.rpc.counter.ReleaseReservationResponse
+	18, // 27: opentrade.rpc.counter.CounterService.AdminCancelOrders:output_type -> opentrade.rpc.counter.AdminCancelOrdersResponse
+	20, // [20:28] is the sub-list for method output_type
+	12, // [12:20] is the sub-list for method input_type
 	12, // [12:12] is the sub-list for extension type_name
 	12, // [12:12] is the sub-list for extension extendee
 	0,  // [0:12] is the sub-list for field type_name
@@ -1445,7 +1585,7 @@ func file_rpc_counter_counter_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_counter_counter_proto_rawDesc), len(file_rpc_counter_counter_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

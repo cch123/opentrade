@@ -27,8 +27,13 @@ import (
 //
 //	{"keys": [
 //	  {"key": "...hex...", "secret": "...hex...", "user_id": "alice"},
-//	  ...
+//	  {"key": "...hex...", "secret": "...hex...", "user_id": "ops-bot", "role": "admin"}
 //	]}
+//
+// The optional `role` field (ADR-0052) tags a key with "user" (default
+// when absent) or "admin". Admin keys authenticate /admin/* endpoints via
+// RequireAdmin; user keys do not. In practice admin entries live in a
+// separate file (--admin-api-keys-file) so ops can rotate them out-of-band.
 //
 // MVP: file is read at startup, rotation requires a BFF restart. A
 // live-reload watcher + /admin/keys endpoints are future work.
@@ -38,10 +43,20 @@ import (
 // is treated as a replay / clock-drift attempt.
 const RecvWindow = 5 * time.Second
 
-// APIKeyStore resolves an api-key to its (secret, user_id) tuple. Any
-// implementation must be safe for concurrent reads.
+// Role tags an API-Key's authorization level. "user" is the default and
+// covers every /v1/* endpoint. "admin" is additionally authorized for
+// /admin/* endpoints guarded by RequireAdmin (ADR-0052).
+const (
+	RoleUser  = "user"
+	RoleAdmin = "admin"
+)
+
+// APIKeyStore resolves an api-key to its (secret, user_id, role) tuple. Any
+// implementation must be safe for concurrent reads. Role is "" when the
+// store does not differentiate (legacy callers); middleware treats "" as
+// RoleUser.
 type APIKeyStore interface {
-	Lookup(key string) (secret []byte, userID string, ok bool)
+	Lookup(key string) (secret []byte, userID string, role string, ok bool)
 }
 
 // -----------------------------------------------------------------------------
@@ -52,28 +67,35 @@ type apiKeyRecord struct {
 	Key    string `json:"key"`
 	Secret string `json:"secret"`
 	UserID string `json:"user_id"`
+	// Role is optional; absent / "" means RoleUser.
+	Role string `json:"role,omitempty"`
 }
 
 type apiKeysFile struct {
 	Keys []apiKeyRecord `json:"keys"`
 }
 
+type memoryStoreEntry struct {
+	secret []byte
+	user   string
+	role   string
+}
+
 type memoryStore struct {
 	mu sync.RWMutex
-	m  map[string]struct {
-		secret []byte
-		user   string
-	}
+	m  map[string]memoryStoreEntry
 }
 
 // NewMemoryStore loads an APIKeyStore from a JSON file. Duplicate keys in
 // the file are an error (ambiguous resolution). Returns an empty store for
 // an empty path so the flag `--api-keys-file=""` means "no api-key auth".
-func NewMemoryStore(path string) (APIKeyStore, error) {
-	s := &memoryStore{m: make(map[string]struct {
-		secret []byte
-		user   string
-	})}
+//
+// When allowedRoles is non-empty, every loaded entry's role must belong to
+// it (empty role string normalises to RoleUser for this check). Used by
+// --admin-api-keys-file to refuse a mis-tagged file that would accidentally
+// grant admin to user-level keys (or vice versa).
+func NewMemoryStore(path string, allowedRoles ...string) (APIKeyStore, error) {
+	s := &memoryStore{m: make(map[string]memoryStoreEntry)}
 	if path == "" {
 		return s, nil
 	}
@@ -90,6 +112,10 @@ func NewMemoryStore(path string) (APIKeyStore, error) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return nil, fmt.Errorf("auth: decode api keys: %w", err)
 	}
+	allowed := map[string]struct{}{}
+	for _, r := range allowedRoles {
+		allowed[r] = struct{}{}
+	}
 	for _, r := range parsed.Keys {
 		if r.Key == "" || r.Secret == "" || r.UserID == "" {
 			return nil, fmt.Errorf("auth: api key entry missing field: %+v", r)
@@ -97,23 +123,36 @@ func NewMemoryStore(path string) (APIKeyStore, error) {
 		if _, dup := s.m[r.Key]; dup {
 			return nil, fmt.Errorf("auth: duplicate api key %q", r.Key)
 		}
-		s.m[r.Key] = struct {
-			secret []byte
-			user   string
-		}{secret: []byte(r.Secret), user: r.UserID}
+		role := r.Role
+		if role == "" {
+			role = RoleUser
+		}
+		if role != RoleUser && role != RoleAdmin {
+			return nil, fmt.Errorf("auth: api key %q: unknown role %q", r.Key, r.Role)
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[role]; !ok {
+				return nil, fmt.Errorf("auth: api key %q role %q not allowed in this file", r.Key, role)
+			}
+		}
+		s.m[r.Key] = memoryStoreEntry{
+			secret: []byte(r.Secret),
+			user:   r.UserID,
+			role:   role,
+		}
 	}
 	return s, nil
 }
 
 // Lookup implements APIKeyStore.
-func (s *memoryStore) Lookup(key string) ([]byte, string, bool) {
+func (s *memoryStore) Lookup(key string) ([]byte, string, string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	v, ok := s.m[key]
 	if !ok {
-		return nil, "", false
+		return nil, "", "", false
 	}
-	return v.secret, v.user, true
+	return v.secret, v.user, v.role, true
 }
 
 // -----------------------------------------------------------------------------
@@ -135,34 +174,35 @@ var (
 )
 
 // VerifyAPIKeyRequest authenticates an incoming request against store. On
-// success returns the authenticated user_id. The request body is read in
-// full; caller should restore it afterward if downstream handlers need it.
+// success returns the authenticated user_id and role ("" normalises to
+// RoleUser). The request body is read in full; caller should restore it
+// afterward if downstream handlers need it.
 //
 // The signing string is `rawQueryWithoutSignature + "|" + body`. The
 // separator keeps empty-body GETs unambiguously distinct from a POST whose
 // body starts with `&`.
-func VerifyAPIKeyRequest(r *http.Request, store APIKeyStore, now time.Time) (string, error) {
+func VerifyAPIKeyRequest(r *http.Request, store APIKeyStore, now time.Time) (string, string, error) {
 	key := r.Header.Get(HeaderAPIKey)
 	if key == "" {
-		return "", ErrAPIKeyMissing
+		return "", "", ErrAPIKeyMissing
 	}
-	secret, userID, ok := store.Lookup(key)
+	secret, userID, role, ok := store.Lookup(key)
 	if !ok {
-		return "", ErrAPIKeyUnknown
+		return "", "", ErrAPIKeyUnknown
 	}
 	q := r.URL.Query()
 	sigHex := q.Get("signature")
 	tsStr := q.Get("timestamp")
 	if sigHex == "" || tsStr == "" {
-		return "", fmt.Errorf("%w: timestamp + signature required", ErrAPIKeyBadSig)
+		return "", "", fmt.Errorf("%w: timestamp + signature required", ErrAPIKeyBadSig)
 	}
 	ts, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil {
-		return "", fmt.Errorf("%w: bad timestamp: %v", ErrAPIKeyBadSig, err)
+		return "", "", fmt.Errorf("%w: bad timestamp: %v", ErrAPIKeyBadSig, err)
 	}
 	diff := now.UnixMilli() - ts
 	if diff < -int64(RecvWindow/time.Millisecond) || diff > int64(RecvWindow/time.Millisecond) {
-		return "", ErrAPIKeyStale
+		return "", "", ErrAPIKeyStale
 	}
 
 	// Build the signing string: drop `signature`, keep all other params
@@ -170,7 +210,7 @@ func VerifyAPIKeyRequest(r *http.Request, store APIKeyStore, now time.Time) (str
 	signingQuery := queryWithoutSignature(r.URL.RawQuery)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return "", fmt.Errorf("%w: body read: %v", ErrAPIKeyBadSig, err)
+		return "", "", fmt.Errorf("%w: body read: %v", ErrAPIKeyBadSig, err)
 	}
 	// Restore body for downstream handlers.
 	_ = r.Body.Close()
@@ -182,9 +222,12 @@ func VerifyAPIKeyRequest(r *http.Request, store APIKeyStore, now time.Time) (str
 	mac.Write(body)
 	expected := hex.EncodeToString(mac.Sum(nil))
 	if !hmac.Equal([]byte(expected), []byte(sigHex)) {
-		return "", ErrAPIKeyBadSig
+		return "", "", ErrAPIKeyBadSig
 	}
-	return userID, nil
+	if role == "" {
+		role = RoleUser
+	}
+	return userID, role, nil
 }
 
 // queryWithoutSignature strips the `signature=` key/value pair from raw,

@@ -30,6 +30,12 @@
 - **Kafka consumer group offset 作为权威** — Counter / Match 都废掉 `CommitUncommittedOffsets`；snapshot 里的 per-partition `Offsets` 是唯一恢复权威。**Why not**：consumer group commit 和 snapshot 落盘不原子，会产生"offset 已 commit 但 snapshot 还是旧的"窗口，导致漏事件。**关联**：[ADR-0048](./adr/0048-snapshot-offset-atomicity.md)。
 - **Reservation 事件进 counter-journal** — Reserve / ReleaseReservation 只随 snapshot 持久化，不进 journal。**Why not**：条件单触发前 reservation 变化频率低 + 调用方（conditional）有自己的 journal；双写会造成事件风暴 + 放大 journal 体积。**关联**：[ADR-0041](./adr/0041-counter-reservations.md)。
 
+## Admin / Ops 层
+
+- **Admin 操作做成 etcd 直写 UI** — 运维不获得"裸写 etcd key"的 GUI / 简化工具。**Why not**：绕过审计（谁写了什么不可追溯）、绕过校验（可写非法 JSON / 冲突的 shard 归属）、绕过幂等（同一操作重放副作用未定义）。所有 admin 写操作都走 BFF `/admin/*` 路由，强制跑审计 + 校验 + 合法态校验。**关联**：[ADR-0052](./adr/0052-admin-console.md)。
+- **Admin 直接操纵 balance（绕过 Transfer）** — 不提供"admin 设置某用户 USDT 余额 = X"的后门。FREEZE / UNFREEZE / DEPOSIT / WITHDRAW 全部走 Counter `Transfer` RPC（ADR-0011），任何账户变动都产生 counter-journal 事件 + trade-dump 投影。**Why not**：Counter 是账户真值的单一入口（ADR-0001），一旦允许 admin 写路径绕过事件链路，对账 + 重放 + snapshot 恢复的一致性保证全部失效。**关联**：[ADR-0011](./adr/0011-counter-transfer-interface.md) / [ADR-0052](./adr/0052-admin-console.md)。
+- **独立 admin-gateway 服务（MVP）** — 目前 admin 平面复用 BFF（`/admin/*` 前缀 + RequireAdmin 中间件），不拆独立进程。**Why not**：MVP 阶段 admin 流量稀疏（人工 + 少量 ops bot），复用 BFF 的 auth / rate-limit / access log 成本远低于新服务的运维开销。非永久拒绝——当 admin 流量 > 10% trading 流量或合规要求 ops plane 物理隔离时重评估。**关联**：[ADR-0052 备选方案 A](./adr/0052-admin-console.md)。
+
 ## 依赖层
 
 - **Redis / Memcached** — 进程内 cache（BFF market-data cache）够用；外部 KV 只有 etcd（选主）和 Kafka（事件）。**Why not**：少一个运维 footprint；Redis 的常见用法（热缓存、rate limiter）都可以用 in-process map + token bucket 覆盖。

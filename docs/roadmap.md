@@ -32,6 +32,7 @@
 | [MVP-14f](#mvp-14f-conditional-trailing) | 条件单 Trailing Stop | ✅ | `TRAILING_STOP_LOSS` + `trailing_delta_bps` + 可选 `activation_price`；引擎实时追 watermark |
 | [MVP-15](#mvp-15-history) | history / query 服务 | ✅ | 独立只读服务读 trade-dump 的 MySQL 投影（orders / trades / account_logs），BFF 历史接口改走它 |
 | [MVP-16](#mvp-16-conditional-history) | 条件单长期历史 | ✅ | `conditional-event` topic + trade-dump 投影 `conditionals`；history 新增 `ListConditionals` / `GetConditional` |
+| [MVP-17](#mvp-17-admin-console) | 管理台 / Admin console | ✅ | BFF `/admin/*` + role-tagged API-Key + JSONL 审计；symbol CRUD 走 etcd；`AdminCancelOrders` RPC 做按 user / 按 symbol 批量撤单 |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
 
@@ -256,6 +257,19 @@
 - BFF `GET /v1/conditional?scope=active|terminal|all`：active → conditional gRPC；terminal/all → history gRPC；`include_inactive=true` 保留 MVP-14 兼容（history 未部署时回落 conditional.IncludeInactive）
 - `GET /v1/conditional/:id`：Counter-first + history-fallback on NotFound
 - history JSON 响应打 `source="history"` 标记；字段名与 conditional 服务一致（`placed_order_id` 等）
+
+### MVP-17  管理台 / Admin console  {#mvp-17-admin-console}
+
+- **ADR** [0052](./adr/0052-admin-console.md)
+- `bff/internal/rest/admin.go` 新 `AdminServer`，挂 `/admin/*`：
+  - `GET /admin/symbols` / `GET /admin/symbols/{symbol}` / `PUT /admin/symbols/{symbol}` / `DELETE /admin/symbols/{symbol}` — 直接操作 etcd `/cex/match/symbols/<symbol>`（ADR-0030 的 `curl etcdctl` 占位 runbook 落地成 REST）
+  - `POST /admin/cancel-orders {"user_id":"?","symbol":"?","reason":"..."}` — 至少需要一个过滤维度；user_id 给了走单 shard，否则 fan-out 到所有 shard
+- 认证：`bff/internal/auth/apikey.go` 加 `role` 字段（`user` 默认 / `admin`）；`auth.RequireAdmin` 守卫；`--admin-api-keys-file` 独立文件，`NewMemoryStore(path, auth.RoleAdmin)` 强制 role 白名单，防 user key 被塞进 admin 文件
+- 审计：`pkg/adminaudit` JSONL append-only logger，每次管理操作都强制先落盘再回包；审计写失败 → 500（ADR-0052 §3: "审计缺失阻塞管理操作"）
+- Counter 侧：`AdminCancelOrders(user_id?, symbol?, reason)` RPC + `counter/internal/service/admin.go` 遍历 `OrderStore.All()` 按过滤器 + active 过滤，逐笔走现有 `CancelOrder` 的 sequencer 路径（每笔一笔 cancel 的 sugar，不新增状态机）
+- BFF `ShardedCounter` 新 `BroadcastAdminCancelOrders` 跨 shard 并发调用 + 结果汇总；symbol-only 场景 BFF 层 fan-out
+- 新 flag：`--admin-api-keys-file` / `--etcd` / `--etcd-prefix` / `--audit-log`；前者未设置 = `/admin/*` 返回 404，admin 平面完全关闭
+- `pkg/etcdcfg` 加 `Writer` interface + `EtcdSource.Put/Delete` + `MemorySource.PutCtx/DeleteCtx` + `ValidateSymbol`；为 BFF admin 处理器提供服务端写路径
 
 ---
 

@@ -286,6 +286,28 @@ func (s *Server) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (*
 	}, nil
 }
 
+// AdminCancelOrders implements CounterService.AdminCancelOrders (ADR-0052).
+func (s *Server) AdminCancelOrders(ctx context.Context, req *counterrpc.AdminCancelOrdersRequest) (*counterrpc.AdminCancelOrdersResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+	res, err := s.svc.AdminCancelOrders(ctx, service.AdminCancelFilter{
+		UserID: req.UserId,
+		Symbol: req.Symbol,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrAdminCancelFilterEmpty) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, mapServiceError(err)
+	}
+	return &counterrpc.AdminCancelOrdersResponse{
+		Cancelled: res.Cancelled,
+		Skipped:   res.Skipped,
+		ShardId:   int32(s.svc.ShardID()),
+	}, nil
+}
+
 // ReleaseReservation implements CounterService.ReleaseReservation (ADR-0041).
 func (s *Server) ReleaseReservation(ctx context.Context, req *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error) {
 	if req == nil {

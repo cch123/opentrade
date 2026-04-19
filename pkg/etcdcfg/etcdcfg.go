@@ -75,6 +75,37 @@ type Source interface {
 	Close() error
 }
 
+// Writer is the subset of Source used by admin-plane CRUD (ADR-0052). Only
+// EtcdSource / MemorySource implement it today; callers that don't need
+// writes can keep depending on Source.
+type Writer interface {
+	// Put upserts cfg under symbol. Returns the revision after the write.
+	Put(ctx context.Context, symbol string, cfg SymbolConfig) (revision int64, err error)
+
+	// Delete removes symbol. Returns (false, revAtCallTime, nil) when the
+	// key did not exist.
+	Delete(ctx context.Context, symbol string) (existed bool, revision int64, err error)
+}
+
+// ErrInvalidSymbol is returned when a symbol name fails basic validation
+// (empty, contains '/' which would break the etcd key layout, or NUL byte).
+var ErrInvalidSymbol = errors.New("etcdcfg: invalid symbol")
+
+// ValidateSymbol applies the same check Put / Delete use so BFF admin
+// handlers can surface a clean 400.
+func ValidateSymbol(symbol string) error {
+	if symbol == "" {
+		return ErrInvalidSymbol
+	}
+	for i := 0; i < len(symbol); i++ {
+		c := symbol[i]
+		if c == '/' || c == 0 || c == ' ' || c == '\n' || c == '\r' || c == '\t' {
+			return ErrInvalidSymbol
+		}
+	}
+	return nil
+}
+
 // -----------------------------------------------------------------------------
 // JSON codec (exposed for tests / integration tooling)
 // -----------------------------------------------------------------------------
@@ -172,6 +203,34 @@ func (s *EtcdSource) List(ctx context.Context) (map[string]SymbolConfig, int64, 
 		out[symbol] = cfg
 	}
 	return out, resp.Header.Revision, nil
+}
+
+// Put upserts cfg under symbol (ADR-0052).
+func (s *EtcdSource) Put(ctx context.Context, symbol string, cfg SymbolConfig) (int64, error) {
+	if err := ValidateSymbol(symbol); err != nil {
+		return 0, err
+	}
+	value, err := json.Marshal(cfg)
+	if err != nil {
+		return 0, fmt.Errorf("etcdcfg: encode: %w", err)
+	}
+	resp, err := s.client.Put(ctx, s.prefix+symbol, string(value))
+	if err != nil {
+		return 0, fmt.Errorf("etcdcfg: put: %w", err)
+	}
+	return resp.Header.Revision, nil
+}
+
+// Delete removes symbol. Returns existed=false when the key was absent.
+func (s *EtcdSource) Delete(ctx context.Context, symbol string) (bool, int64, error) {
+	if err := ValidateSymbol(symbol); err != nil {
+		return false, 0, err
+	}
+	resp, err := s.client.Delete(ctx, s.prefix+symbol)
+	if err != nil {
+		return false, 0, fmt.Errorf("etcdcfg: delete: %w", err)
+	}
+	return resp.Deleted > 0, resp.Header.Revision, nil
 }
 
 // Watch streams changes starting at fromRevision.

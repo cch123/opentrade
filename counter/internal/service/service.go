@@ -164,6 +164,9 @@ func (s *Service) HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent
 	return nil
 }
 
+// ShardID returns the numeric shard id stamped on this Service.
+func (s *Service) ShardID() int { return s.cfg.ShardID }
+
 // OwnsUser reports whether userID belongs to this shard. Returns true when
 // TotalShards==0 (guard disabled).
 func (s *Service) OwnsUser(userID string) bool {

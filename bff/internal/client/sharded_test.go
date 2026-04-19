@@ -13,12 +13,17 @@ import (
 
 // fakeCounter records which shard was invoked.
 type fakeCounter struct {
-	id        int
-	placeHits int
+	id         int
+	placeHits  int
 	cancelHits int
 	queryHits  int
 	xferHits   int
 	balanceHits int
+	// adminCancelResult is returned from AdminCancelOrders. Tests set it
+	// per-shard to exercise fan-out aggregation.
+	adminCancelResult *counterrpc.AdminCancelOrdersResponse
+	adminCancelErr    error
+	adminCancelHits   int
 }
 
 func (f *fakeCounter) PlaceOrder(ctx context.Context, in *counterrpc.PlaceOrderRequest, opts ...grpc.CallOption) (*counterrpc.PlaceOrderResponse, error) {
@@ -44,6 +49,17 @@ func (f *fakeCounter) Transfer(ctx context.Context, in *counterrpc.TransferReque
 func (f *fakeCounter) QueryBalance(ctx context.Context, in *counterrpc.QueryBalanceRequest, opts ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error) {
 	f.balanceHits++
 	return &counterrpc.QueryBalanceResponse{}, nil
+}
+
+func (f *fakeCounter) AdminCancelOrders(ctx context.Context, in *counterrpc.AdminCancelOrdersRequest, opts ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error) {
+	f.adminCancelHits++
+	if f.adminCancelErr != nil {
+		return nil, f.adminCancelErr
+	}
+	if f.adminCancelResult != nil {
+		return f.adminCancelResult, nil
+	}
+	return &counterrpc.AdminCancelOrdersResponse{ShardId: int32(f.id)}, nil
 }
 
 func TestNewSharded_RejectsEmptyAndNil(t *testing.T) {
@@ -121,3 +137,55 @@ var _ Counter = (*ShardedCounter)(nil)
 
 // Pacify unused import warnings when running with -run-none.
 var _ = errors.New
+
+func TestShardedCounter_AdminCancelByUserRoutesToOneShard(t *testing.T) {
+	shards := []Counter{&fakeCounter{id: 0}, &fakeCounter{id: 1}}
+	sc, _ := NewSharded(shards)
+	userID := "ada"
+	expected := shard.Index(userID, 2)
+	_, err := sc.AdminCancelOrders(context.Background(), &counterrpc.AdminCancelOrdersRequest{UserId: userID, Symbol: "BTC-USDT"})
+	if err != nil {
+		t.Fatalf("admin cancel: %v", err)
+	}
+	owner := shards[expected].(*fakeCounter)
+	other := shards[1-expected].(*fakeCounter)
+	if owner.adminCancelHits != 1 || other.adminCancelHits != 0 {
+		t.Fatalf("hits: owner=%d other=%d", owner.adminCancelHits, other.adminCancelHits)
+	}
+}
+
+func TestShardedCounter_AdminCancelBySymbolFansOut(t *testing.T) {
+	f0 := &fakeCounter{id: 0, adminCancelResult: &counterrpc.AdminCancelOrdersResponse{Cancelled: 3, Skipped: 1, ShardId: 0}}
+	f1 := &fakeCounter{id: 1, adminCancelResult: &counterrpc.AdminCancelOrdersResponse{Cancelled: 5, Skipped: 0, ShardId: 1}}
+	sc, _ := NewSharded([]Counter{f0, f1})
+
+	agg, err := sc.AdminCancelOrders(context.Background(), &counterrpc.AdminCancelOrdersRequest{Symbol: "BTC-USDT"})
+	if err != nil {
+		t.Fatalf("admin cancel: %v", err)
+	}
+	if agg.Cancelled != 8 || agg.Skipped != 1 {
+		t.Fatalf("agg = %+v", agg)
+	}
+	if f0.adminCancelHits != 1 || f1.adminCancelHits != 1 {
+		t.Fatalf("fan-out miss: f0=%d f1=%d", f0.adminCancelHits, f1.adminCancelHits)
+	}
+}
+
+func TestShardedCounter_BroadcastSurfacesFirstError(t *testing.T) {
+	f0 := &fakeCounter{id: 0, adminCancelErr: errors.New("shard 0 down")}
+	f1 := &fakeCounter{id: 1, adminCancelResult: &counterrpc.AdminCancelOrdersResponse{Cancelled: 2}}
+	sc, _ := NewSharded([]Counter{f0, f1})
+	results, err := sc.BroadcastAdminCancelOrders(context.Background(), &counterrpc.AdminCancelOrdersRequest{Symbol: "X"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if len(results) != 2 {
+		t.Fatalf("results len = %d", len(results))
+	}
+	if results[0] != nil {
+		t.Errorf("errored shard must be nil, got %+v", results[0])
+	}
+	if results[1] == nil || results[1].Cancelled != 2 {
+		t.Errorf("ok shard: %+v", results[1])
+	}
+}

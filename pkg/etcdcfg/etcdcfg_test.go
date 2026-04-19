@@ -150,3 +150,71 @@ func TestMemorySource_ClosedOnCancel(t *testing.T) {
 		t.Fatal("timeout")
 	}
 }
+
+func TestValidateSymbol(t *testing.T) {
+	cases := []struct {
+		in string
+		ok bool
+	}{
+		{"BTC-USDT", true},
+		{"ETH_USDT", true},
+		{"abc.def", true},
+		{"", false},
+		{"a/b", false},
+		{"a b", false},
+		{"a\nb", false},
+		{"a\x00b", false},
+	}
+	for _, c := range cases {
+		err := ValidateSymbol(c.in)
+		if (err == nil) != c.ok {
+			t.Errorf("%q: ok=%v err=%v", c.in, c.ok, err)
+		}
+	}
+}
+
+func TestMemorySource_PutCtxDeleteCtx(t *testing.T) {
+	s := NewMemorySource()
+	ctx := context.Background()
+
+	rev1, err := s.PutCtx(ctx, "BTC-USDT", SymbolConfig{Shard: "match-0", Trading: true})
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if rev1 <= 0 {
+		t.Fatalf("want rev > 0, got %d", rev1)
+	}
+
+	cfgs, rev2, err := s.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev2 != rev1 {
+		t.Fatalf("revs: put=%d list=%d", rev1, rev2)
+	}
+	if cfgs["BTC-USDT"].Shard != "match-0" {
+		t.Fatalf("list: %+v", cfgs)
+	}
+
+	existed, _, err := s.DeleteCtx(ctx, "BTC-USDT")
+	if err != nil || !existed {
+		t.Fatalf("delete: existed=%v err=%v", existed, err)
+	}
+	existed, _, err = s.DeleteCtx(ctx, "BTC-USDT")
+	if err != nil || existed {
+		t.Fatalf("idempotent delete: existed=%v err=%v", existed, err)
+	}
+
+	if _, err := s.PutCtx(ctx, "bad/sym", SymbolConfig{}); err == nil {
+		t.Fatal("expected invalid-symbol error")
+	}
+}
+
+func TestMemorySource_PutCtxCancelled(t *testing.T) {
+	s := NewMemorySource()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.PutCtx(ctx, "BTC-USDT", SymbolConfig{}); err == nil {
+		t.Fatal("expected cancelled error")
+	}
+}

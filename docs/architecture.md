@@ -65,8 +65,8 @@
 
 | 模块 | 职责 | 不负责 |
 |---|---|---|
-| **BFF** | REST 下单/撤单/查询；WebSocket 网关；鉴权挂载点（header / JWT / API-Key，ADR-0039）；滑动窗口限流；market-data cache 供重连补齐（ADR-0038） | 业务状态 |
-| **counter** | 账户余额、冻结、解冻；sequencer（同用户串行）；clientOrderId 去重；订单生命周期状态；费率接口；`Transfer`（deposit/withdraw/freeze/unfreeze）；`Reserve` / `ReleaseReservation` / `PlaceOrder(reservation_id)` 为条件单预留资金（ADR-0041） | orderbook、撮合逻辑、行情订阅 |
+| **BFF** | REST 下单/撤单/查询；WebSocket 网关；鉴权挂载点（header / JWT / API-Key，ADR-0039）；滑动窗口限流；market-data cache 供重连补齐（ADR-0038）；`/admin/*` ops 平面（symbol CRUD / 批量撤单 / JSONL 审计，ADR-0052） | 业务状态 |
+| **counter** | 账户余额、冻结、解冻；sequencer（同用户串行）；clientOrderId 去重；订单生命周期状态；费率接口；`Transfer`（deposit/withdraw/freeze/unfreeze）；`Reserve` / `ReleaseReservation` / `PlaceOrder(reservation_id)` 为条件单预留资金（ADR-0041）；`AdminCancelOrders(user_id?, symbol?)` 按过滤器批量撤单，每笔走正常 sequencer 路径（ADR-0052） | orderbook、撮合逻辑、行情订阅 |
 | **match** | 内存 orderbook（per symbol 单线程）；撮合规则；成交事件生成 | 余额、权限、费率计算 |
 | **push** | WebSocket 连接维持；订阅关系管理；私有数据（订单/账户）+ 公共行情扇出；coalesce 可替代流 + per-conn token bucket（ADR-0037） | 行情计算、业务状态 |
 | **quote**（旁路） | 消费 trade-event → 生成增量深度、逐笔、K 线（含 gap 填充）；发布 market-data；state snapshot 热重启（ADR-0036） | 连接推送 |

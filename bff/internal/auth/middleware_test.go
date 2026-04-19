@@ -116,3 +116,67 @@ func TestMiddleware_UnknownModeFails(t *testing.T) {
 		t.Fatal("expected error for unknown mode")
 	}
 }
+
+func TestMiddleware_APIKey_AttachesRole(t *testing.T) {
+	store := &fakeStore{m: map[string]struct{ s, u, role string }{
+		"K": {s: "S", u: "ops", role: RoleAdmin},
+	}}
+	now := time.Unix(1_700_000_000, 0)
+	rawQ := "timestamp=" + itoa(now.UnixMilli())
+	sig := SignAPIKeyRequest([]byte("S"), rawQ, nil)
+
+	// Terminal handler records both user id and role.
+	var gotUser, gotRole string
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if uid, err := UserID(r.Context()); err == nil {
+			gotUser = uid
+		}
+		gotRole = Role(r.Context())
+	})
+	mw, err := NewMiddleware(Config{
+		Mode:        ModeAPIKey,
+		APIKeyStore: store,
+		Now:         func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/admin/ping?"+rawQ+"&signature="+sig, nil)
+	r.Header.Set(HeaderAPIKey, "K")
+	mw(h).ServeHTTP(httptest.NewRecorder(), r)
+
+	if gotUser != "ops" || gotRole != RoleAdmin {
+		t.Fatalf("user=%q role=%q", gotUser, gotRole)
+	}
+}
+
+func TestRequireAdmin_BlocksUserRole(t *testing.T) {
+	h := RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	// No role in ctx → defaults to RoleUser → 403.
+	r := httptest.NewRequest("GET", "/admin/x", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, r)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("anon: got %d, want 403", rr.Code)
+	}
+
+	// Explicit user role → 403.
+	r2 := httptest.NewRequest("GET", "/admin/x", nil)
+	r2 = r2.WithContext(WithRole(r2.Context(), RoleUser))
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, r2)
+	if rr2.Code != http.StatusForbidden {
+		t.Fatalf("user: got %d, want 403", rr2.Code)
+	}
+
+	// Admin role → 200.
+	r3 := httptest.NewRequest("GET", "/admin/x", nil)
+	r3 = r3.WithContext(WithRole(r3.Context(), RoleAdmin))
+	rr3 := httptest.NewRecorder()
+	h.ServeHTTP(rr3, r3)
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("admin: got %d, want 200", rr3.Code)
+	}
+}

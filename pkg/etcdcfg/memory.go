@@ -65,23 +65,50 @@ func (s *MemorySource) Watch(ctx context.Context, fromRevision int64) (<-chan Ev
 
 // Put writes cfg for symbol and notifies watchers.
 func (s *MemorySource) Put(symbol string, cfg SymbolConfig) {
+	_, _ = s.PutCtx(context.Background(), symbol, cfg)
+}
+
+// Delete removes symbol and notifies watchers.
+func (s *MemorySource) Delete(symbol string) {
+	_, _, _ = s.DeleteCtx(context.Background(), symbol)
+}
+
+// PutCtx is the Writer-compatible variant that validates symbol and
+// returns the revision. Ctx is honoured only as a cancel signal to stay
+// consistent with EtcdSource; no network I/O happens here.
+func (s *MemorySource) PutCtx(ctx context.Context, symbol string, cfg SymbolConfig) (int64, error) {
+	if err := ValidateSymbol(symbol); err != nil {
+		return 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.revision++
 	s.data[symbol] = cfg
 	s.broadcast(Event{Type: EventPut, Symbol: symbol, Config: cfg}, s.revision)
+	return s.revision, nil
 }
 
-// Delete removes symbol and notifies watchers.
-func (s *MemorySource) Delete(symbol string) {
+// DeleteCtx is the Writer-compatible variant that validates symbol and
+// returns (existed, revision, err).
+func (s *MemorySource) DeleteCtx(ctx context.Context, symbol string) (bool, int64, error) {
+	if err := ValidateSymbol(symbol); err != nil {
+		return false, 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, 0, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.revision++
 	if _, ok := s.data[symbol]; !ok {
-		return
+		return false, s.revision, nil
 	}
 	delete(s.data, symbol)
 	s.broadcast(Event{Type: EventDelete, Symbol: symbol}, s.revision)
+	return true, s.revision, nil
 }
 
 func (s *MemorySource) broadcast(evt Event, rev int64) {

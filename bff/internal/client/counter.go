@@ -20,6 +20,7 @@ type Counter interface {
 	QueryOrder(ctx context.Context, in *counterrpc.QueryOrderRequest, opts ...grpc.CallOption) (*counterrpc.QueryOrderResponse, error)
 	Transfer(ctx context.Context, in *counterrpc.TransferRequest, opts ...grpc.CallOption) (*counterrpc.TransferResponse, error)
 	QueryBalance(ctx context.Context, in *counterrpc.QueryBalanceRequest, opts ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error)
+	AdminCancelOrders(ctx context.Context, in *counterrpc.AdminCancelOrdersRequest, opts ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error)
 }
 
 // Dial opens a plaintext gRPC connection to a Counter shard endpoint.

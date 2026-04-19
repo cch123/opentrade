@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"google.golang.org/grpc"
 
@@ -70,4 +71,61 @@ func (s *ShardedCounter) Transfer(ctx context.Context, in *counterrpc.TransferRe
 // QueryBalance dispatches to the user's shard.
 func (s *ShardedCounter) QueryBalance(ctx context.Context, in *counterrpc.QueryBalanceRequest, opts ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error) {
 	return s.pick(in.UserId).QueryBalance(ctx, in, opts...)
+}
+
+// AdminCancelOrders dispatches admin batch-cancel. With user_id it goes to
+// that user's single shard; without a user filter it fans out across every
+// shard so a symbol-only cancel drains the book. The caller sees an
+// aggregated response; per-shard counts are discarded (BFF handler adds
+// them back from ShardResults).
+func (s *ShardedCounter) AdminCancelOrders(ctx context.Context, in *counterrpc.AdminCancelOrdersRequest, opts ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error) {
+	if in.UserId != "" {
+		return s.pick(in.UserId).AdminCancelOrders(ctx, in, opts...)
+	}
+	results, err := s.BroadcastAdminCancelOrders(ctx, in, opts...)
+	if err != nil {
+		return nil, err
+	}
+	agg := &counterrpc.AdminCancelOrdersResponse{}
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		agg.Cancelled += r.Cancelled
+		agg.Skipped += r.Skipped
+	}
+	// ShardId on the aggregate is meaningless; leave zero.
+	return agg, nil
+}
+
+// BroadcastAdminCancelOrders calls every shard in parallel and returns the
+// per-shard responses in shard-id order. Shards that error return nil at
+// their slot and their error gets surfaced via the accompanying error;
+// this keeps partial-success visible to the caller.
+func (s *ShardedCounter) BroadcastAdminCancelOrders(ctx context.Context, in *counterrpc.AdminCancelOrdersRequest, opts ...grpc.CallOption) ([]*counterrpc.AdminCancelOrdersResponse, error) {
+	out := make([]*counterrpc.AdminCancelOrdersResponse, len(s.clients))
+	errs := make([]error, len(s.clients))
+	var wg sync.WaitGroup
+	wg.Add(len(s.clients))
+	for i, c := range s.clients {
+		i, c := i, c
+		go func() {
+			defer wg.Done()
+			resp, err := c.AdminCancelOrders(ctx, in, opts...)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			out[i] = resp
+		}()
+	}
+	wg.Wait()
+	var first error
+	for _, e := range errs {
+		if e != nil {
+			first = e
+			break
+		}
+	}
+	return out, first
 }

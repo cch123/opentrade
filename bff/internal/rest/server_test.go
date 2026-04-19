@@ -24,11 +24,12 @@ import (
 // -----------------------------------------------------------------------------
 
 type fakeCounter struct {
-	placeFn    func(*counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error)
-	cancelFn   func(*counterrpc.CancelOrderRequest) (*counterrpc.CancelOrderResponse, error)
-	queryFn    func(*counterrpc.QueryOrderRequest) (*counterrpc.QueryOrderResponse, error)
-	transferFn func(*counterrpc.TransferRequest) (*counterrpc.TransferResponse, error)
-	balanceFn  func(*counterrpc.QueryBalanceRequest) (*counterrpc.QueryBalanceResponse, error)
+	placeFn       func(*counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error)
+	cancelFn      func(*counterrpc.CancelOrderRequest) (*counterrpc.CancelOrderResponse, error)
+	queryFn       func(*counterrpc.QueryOrderRequest) (*counterrpc.QueryOrderResponse, error)
+	transferFn    func(*counterrpc.TransferRequest) (*counterrpc.TransferResponse, error)
+	balanceFn     func(*counterrpc.QueryBalanceRequest) (*counterrpc.QueryBalanceResponse, error)
+	adminCancelFn func(*counterrpc.AdminCancelOrdersRequest) (*counterrpc.AdminCancelOrdersResponse, error)
 }
 
 func (f *fakeCounter) PlaceOrder(_ context.Context, req *counterrpc.PlaceOrderRequest, _ ...grpc.CallOption) (*counterrpc.PlaceOrderResponse, error) {
@@ -45,6 +46,12 @@ func (f *fakeCounter) Transfer(_ context.Context, req *counterrpc.TransferReques
 }
 func (f *fakeCounter) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceRequest, _ ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error) {
 	return f.balanceFn(req)
+}
+func (f *fakeCounter) AdminCancelOrders(_ context.Context, req *counterrpc.AdminCancelOrdersRequest, _ ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error) {
+	if f.adminCancelFn == nil {
+		return &counterrpc.AdminCancelOrdersResponse{}, nil
+	}
+	return f.adminCancelFn(req)
 }
 
 func newServer(fc *fakeCounter) *Server {
