@@ -28,7 +28,7 @@
 
 ### 2026-04-19
 
-- **[user]** 缺管理台 / ops admin 平面 — "现在好像还少了管理台，就是一些后台的功能，比如币对上下架，按用户，按 symbol 批量撤单之类的功能？"。分流：作为 MVP-17 落地最小集 A+B+E（symbol CRUD + 批量撤单 + admin auth + JSONL 审计），C/D 推迟；走 (i) BFF-integrated 方案（非独立 admin-gateway）。状态：`shipped`。去向：[ADR-0052](./adr/0052-admin-console.md) + [roadmap.md MVP-17](./roadmap.md#mvp-17-admin-console)。
+- **[user]** 缺管理台 / ops admin 平面 — "现在好像还少了管理台，就是一些后台的功能，比如币对上下架，按用户，按 symbol 批量撤单之类的功能？"。后续 user 反馈："分拆开，这种是对内的，和 2c 的可不能放在一起"。分流：作为 MVP-17 落地最小集 A+B+E（symbol CRUD + 批量撤单 + admin auth + JSONL 审计），C/D 推迟；**走独立 `admin-gateway` 服务**（第一版 BFF-integrated commit c8b3eb1 已废，user 明确要求进程隔离）。状态：`shipped`。去向：[ADR-0052](./adr/0052-admin-console.md) + [roadmap.md MVP-17](./roadmap.md#mvp-17-admin-console)。
 - **[user]** Counter 在线 re-shard / 用户分片热迁移 — "用户和 shard 该怎么映射呢，比如一开始我规模小只有一个 shard，后面变多了，10 个 shard，原来的用户咋迁移分片呢？是在 bff 里热迁移还是怎么搞呢；redis cluster 的那个 slot 迁移机制不知道是不是能参考"。状态：`researching`。去向：[roadmap.md §填坑/Backlog §待办 【待调研】](./roadmap.md#填坑--backlog)。
 - **[user]** match→user 推送消息合并策略 — 担心一笔 taker 吃 N 个 maker 时 WS 消息爆炸（200 条量级）。状态：`researching`。去向：[private-push-merge-research.md](./private-push-merge-research.md) + [roadmap.md 【待调研】](./roadmap.md#填坑--backlog)。
 - **[user]** match 在 order book 找不到订单时应回消息给 counter — "match 撮合侧收到 cancel 但 book 里没这个 order 时，应该回消息给 counter 告知'不存在'"，让 counter 能 `unfreezeResidual` + 转 CANCELED。后续 user 进一步提出应成为 match 的不变量："正常和异常情况下都去 emit 一个带 seq_id 的事件"。状态：`shipped`。去向：[bugs.md §Fixed 2026-04-19](./bugs.md#fixed)。

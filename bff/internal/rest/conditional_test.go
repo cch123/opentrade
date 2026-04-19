@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc"
 
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
-	"github.com/xargin/opentrade/bff/internal/auth"
+	"github.com/xargin/opentrade/pkg/auth"
 )
 
 // fakeConditional lets tests drive the server without a live gRPC service.

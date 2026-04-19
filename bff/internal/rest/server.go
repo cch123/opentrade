@@ -10,7 +10,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/bff/internal/auth"
+	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/bff/internal/client"
 	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/bff/internal/ratelimit"

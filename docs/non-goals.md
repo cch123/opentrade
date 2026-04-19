@@ -32,9 +32,9 @@
 
 ## Admin / Ops 层
 
-- **Admin 操作做成 etcd 直写 UI** — 运维不获得"裸写 etcd key"的 GUI / 简化工具。**Why not**：绕过审计（谁写了什么不可追溯）、绕过校验（可写非法 JSON / 冲突的 shard 归属）、绕过幂等（同一操作重放副作用未定义）。所有 admin 写操作都走 BFF `/admin/*` 路由，强制跑审计 + 校验 + 合法态校验。**关联**：[ADR-0052](./adr/0052-admin-console.md)。
+- **Admin 操作做成 etcd 直写 UI** — 运维不获得"裸写 etcd key"的 GUI / 简化工具。**Why not**：绕过审计（谁写了什么不可追溯）、绕过校验（可写非法 JSON / 冲突的 shard 归属）、绕过幂等（同一操作重放副作用未定义）。所有 admin 写操作都走 admin-gateway `/admin/*` 路由，强制跑审计 + 校验 + 合法态校验。**关联**：[ADR-0052](./adr/0052-admin-console.md)。
 - **Admin 直接操纵 balance（绕过 Transfer）** — 不提供"admin 设置某用户 USDT 余额 = X"的后门。FREEZE / UNFREEZE / DEPOSIT / WITHDRAW 全部走 Counter `Transfer` RPC（ADR-0011），任何账户变动都产生 counter-journal 事件 + trade-dump 投影。**Why not**：Counter 是账户真值的单一入口（ADR-0001），一旦允许 admin 写路径绕过事件链路，对账 + 重放 + snapshot 恢复的一致性保证全部失效。**关联**：[ADR-0011](./adr/0011-counter-transfer-interface.md) / [ADR-0052](./adr/0052-admin-console.md)。
-- **独立 admin-gateway 服务（MVP）** — 目前 admin 平面复用 BFF（`/admin/*` 前缀 + RequireAdmin 中间件），不拆独立进程。**Why not**：MVP 阶段 admin 流量稀疏（人工 + 少量 ops bot），复用 BFF 的 auth / rate-limit / access log 成本远低于新服务的运维开销。非永久拒绝——当 admin 流量 > 10% trading 流量或合规要求 ops plane 物理隔离时重评估。**关联**：[ADR-0052 备选方案 A](./adr/0052-admin-console.md)。
+- **Admin 平面与 BFF 同进程** — `admin-gateway` 是独立 Go module + 独立进程（默认监听 `:8090`），不和 BFF（`:8080`）共享 mux / middleware / goroutine pool。**Why not**：BFF 是 2C 公网入口、admin 是 ops 内网入口；同进程意味着运维网段策略无法分离、blast radius 互相牵连、access log / metrics / rate-limit 混在一起。曾短暂走过 BFF-integrated（commit c8b3eb1 已废），user 明确反馈"对内的和 2c 的不能放一起"。**关联**：[ADR-0052 §决策](./adr/0052-admin-console.md)。
 
 ## 依赖层
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
-	"github.com/xargin/opentrade/bff/internal/auth"
+	"github.com/xargin/opentrade/pkg/auth"
 )
 
 // ---------------------------------------------------------------------------

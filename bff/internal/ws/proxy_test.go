@@ -13,7 +13,7 @@ import (
 	"github.com/coder/websocket"
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/bff/internal/auth"
+	"github.com/xargin/opentrade/pkg/auth"
 	bffws "github.com/xargin/opentrade/bff/internal/ws"
 )
 

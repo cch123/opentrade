@@ -12,7 +12,7 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
-	"github.com/xargin/opentrade/bff/internal/auth"
+	"github.com/xargin/opentrade/pkg/auth"
 )
 
 type placeConditionalBody struct {

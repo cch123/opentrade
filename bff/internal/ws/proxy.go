@@ -19,7 +19,7 @@ import (
 	"github.com/coder/websocket"
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/bff/internal/auth"
+	"github.com/xargin/opentrade/pkg/auth"
 )
 
 // Config tunes the proxy.

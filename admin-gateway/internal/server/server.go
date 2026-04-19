@@ -1,80 +1,103 @@
-package rest
+// Package server hosts admin-gateway's /admin/* HTTP handlers (ADR-0052).
+//
+// admin-gateway is a separate process from BFF — ops / internal plane,
+// not 2C. It dials the same Counter shards as BFF but only calls the
+// admin-only RPCs; symbol lifecycle (CRUD) goes straight to etcd under
+// the match shard-config key prefix. Every mutating call is recorded to
+// the audit log *before* it returns, so the JSONL file is a strict
+// prefix of committed state.
+package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
-	"github.com/xargin/opentrade/bff/internal/auth"
-	"github.com/xargin/opentrade/bff/internal/client"
+	"github.com/xargin/opentrade/admin-gateway/internal/counterclient"
 	"github.com/xargin/opentrade/pkg/adminaudit"
+	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
+	"github.com/xargin/opentrade/pkg/shard"
 )
 
-// AdminServer hosts /admin/* endpoints (ADR-0052). Construction is
-// independent from Server so admin concerns don't leak into the user plane.
-type AdminServer struct {
-	counter client.Counter
-	etcd    AdminEtcdSource // nil when --etcd is empty; symbol endpoints 503
-	audit   adminaudit.Logger
-	logger  *zap.Logger
-
-	// Admin ops touch etcd + Kafka via gRPC; 5s is plenty in a healthy
-	// cluster and we don't want to wedge on a dead shard.
-	requestTimeout time.Duration
-}
-
-// AdminEtcdSource is the subset of etcdcfg we need for admin CRUD. It combines
-// Writer (Put/Delete) with List (so GET can return the current state).
-// etcdcfg.EtcdSource and etcdcfg.MemorySource both satisfy it.
-type AdminEtcdSource interface {
+// EtcdSource is the subset of etcdcfg we need for admin CRUD (Writer +
+// List). etcdcfg.EtcdSource / MemorySource both satisfy via the shim below.
+type EtcdSource interface {
 	List(ctx context.Context) (map[string]etcdcfg.SymbolConfig, int64, error)
 	Put(ctx context.Context, symbol string, cfg etcdcfg.SymbolConfig) (int64, error)
 	Delete(ctx context.Context, symbol string) (bool, int64, error)
 }
 
-// memorySourceAdminShim adapts *etcdcfg.MemorySource (which keeps its
-// pre-ctx Put/Delete helpers for tests) to the AdminEtcdSource interface.
-type memorySourceAdminShim struct{ s *etcdcfg.MemorySource }
+// NewMemoryShim wraps etcdcfg.MemorySource so tests can share a single
+// source across the admin plane and match-side watchers.
+func NewMemoryShim(s *etcdcfg.MemorySource) EtcdSource { return memoryShim{s: s} }
 
-// NewMemoryAdminShim wraps a MemorySource so BFF admin handler tests can
-// share a single Source instance across the admin plane and any watchers.
-func NewMemoryAdminShim(s *etcdcfg.MemorySource) AdminEtcdSource { return memorySourceAdminShim{s: s} }
+type memoryShim struct{ s *etcdcfg.MemorySource }
 
-func (m memorySourceAdminShim) List(ctx context.Context) (map[string]etcdcfg.SymbolConfig, int64, error) {
+func (m memoryShim) List(ctx context.Context) (map[string]etcdcfg.SymbolConfig, int64, error) {
 	return m.s.List(ctx)
 }
-func (m memorySourceAdminShim) Put(ctx context.Context, symbol string, cfg etcdcfg.SymbolConfig) (int64, error) {
+func (m memoryShim) Put(ctx context.Context, symbol string, cfg etcdcfg.SymbolConfig) (int64, error) {
 	return m.s.PutCtx(ctx, symbol, cfg)
 }
-func (m memorySourceAdminShim) Delete(ctx context.Context, symbol string) (bool, int64, error) {
+func (m memoryShim) Delete(ctx context.Context, symbol string) (bool, int64, error) {
 	return m.s.DeleteCtx(ctx, symbol)
 }
 
-// NewAdminServer wires an AdminServer. counter is required (used for
-// /admin/cancel-orders). etcd may be nil — then /admin/symbols returns
-// 503. audit is required: admin-plane calls must always be auditable.
-func NewAdminServer(counter client.Counter, etcd AdminEtcdSource, audit adminaudit.Logger, logger *zap.Logger) *AdminServer {
-	if audit == nil {
-		audit = adminaudit.NopLogger{}
-	}
-	return &AdminServer{
-		counter:        counter,
-		etcd:           etcd,
-		audit:          audit,
-		logger:         logger,
-		requestTimeout: 5 * time.Second,
-	}
+// Server is the admin-plane HTTP handler set.
+type Server struct {
+	shardedCounter *counterclient.Sharded
+	etcd           EtcdSource
+	audit          adminaudit.Logger
+	logger         *zap.Logger
+	requestTimeout time.Duration
 }
 
-// Handler mounts the admin routes. The returned handler expects the caller
-// to wrap it with auth middleware + RequireAdmin externally (so we don't
-// duplicate the middleware chain wiring from main.go).
-func (s *AdminServer) Handler() http.Handler {
+// Config bundles dependencies.
+type Config struct {
+	Counter        *counterclient.Sharded // required for /admin/cancel-orders
+	Etcd           EtcdSource             // optional; nil → /admin/symbols 503
+	Audit          adminaudit.Logger      // required; NopLogger accepted
+	Logger         *zap.Logger
+	RequestTimeout time.Duration // default 5s
+}
+
+// New wires a Server. Counter and Audit are required; missing Etcd
+// surfaces 503 on /admin/symbols without blocking the process.
+func New(cfg Config) (*Server, error) {
+	if cfg.Counter == nil {
+		return nil, fmt.Errorf("admin server: counter is required")
+	}
+	if cfg.Audit == nil {
+		cfg.Audit = adminaudit.NopLogger{}
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = zap.NewNop()
+	}
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = 5 * time.Second
+	}
+	return &Server{
+		shardedCounter: cfg.Counter,
+		etcd:           cfg.Etcd,
+		audit:          cfg.Audit,
+		logger:         cfg.Logger,
+		requestTimeout: cfg.RequestTimeout,
+	}, nil
+}
+
+// Handler mounts admin routes. The caller is expected to wrap the
+// returned handler with auth.AdminMiddleware(store, logger) +
+// auth.RequireAdmin at the outer layer so every route is gated on
+// role=admin API-Key. /admin/healthz is a special case — mount it
+// outside the RequireAdmin chain if you want public readiness probes.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /admin/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -104,7 +127,7 @@ type putSymbolBody struct {
 	Version string `json:"version,omitempty"`
 }
 
-func (s *AdminServer) handleListSymbols(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListSymbols(w http.ResponseWriter, r *http.Request) {
 	if s.etcd == nil {
 		writeError(w, http.StatusServiceUnavailable, "etcd not configured")
 		return
@@ -126,7 +149,7 @@ func (s *AdminServer) handleListSymbols(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func (s *AdminServer) handleGetSymbol(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetSymbol(w http.ResponseWriter, r *http.Request) {
 	if s.etcd == nil {
 		writeError(w, http.StatusServiceUnavailable, "etcd not configured")
 		return
@@ -154,7 +177,7 @@ func (s *AdminServer) handleGetSymbol(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *AdminServer) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
 	if s.etcd == nil {
 		writeError(w, http.StatusServiceUnavailable, "etcd not configured")
 		return
@@ -200,7 +223,7 @@ func (s *AdminServer) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"revision": rev, "symbol": symbol})
 }
 
-func (s *AdminServer) handleDeleteSymbol(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDeleteSymbol(w http.ResponseWriter, r *http.Request) {
 	if s.etcd == nil {
 		writeError(w, http.StatusServiceUnavailable, "etcd not configured")
 		return
@@ -244,7 +267,7 @@ type cancelOrdersBody struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-func (s *AdminServer) handleCancelOrders(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCancelOrders(w http.ResponseWriter, r *http.Request) {
 	var body cancelOrdersBody
 	if err := readJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -255,7 +278,6 @@ func (s *AdminServer) handleCancelOrders(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	sharded, isSharded := s.counter.(*client.ShardedCounter)
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
 
@@ -266,18 +288,32 @@ func (s *AdminServer) handleCancelOrders(w http.ResponseWriter, r *http.Request)
 		rpcErr         error
 	)
 
-	if body.UserID == "" && isSharded {
-		// Symbol-only fan-out: show per-shard counts to the caller.
-		results, err := sharded.BroadcastAdminCancelOrders(ctx, &counterrpc.AdminCancelOrdersRequest{
-			UserId: body.UserID,
-			Symbol: body.Symbol,
-			Reason: body.Reason,
-		})
+	req := &counterrpc.AdminCancelOrdersRequest{
+		UserId: body.UserID,
+		Symbol: body.Symbol,
+		Reason: body.Reason,
+	}
+
+	if body.UserID != "" {
+		// Single shard: xxhash-route the user (same fn BFF uses).
+		shardID := shard.Index(body.UserID, s.shardedCounter.Shards())
+		resp, err := s.shardedCounter.Shard(shardID).AdminCancelOrders(ctx, req)
+		rpcErr = err
+		if resp != nil {
+			totalCancelled = resp.Cancelled
+			totalSkipped = resp.Skipped
+			shardResults = append(shardResults, map[string]any{
+				"shard_id": resp.ShardId, "cancelled": resp.Cancelled, "skipped": resp.Skipped,
+			})
+		}
+	} else {
+		// Symbol-only: fan-out, per-shard counts visible to caller.
+		results, err := s.shardedCounter.BroadcastAdminCancelOrders(ctx, req)
 		rpcErr = err
 		for i, r := range results {
 			if r == nil {
 				shardResults = append(shardResults, map[string]any{
-					"shard_id": i, "error": shardErr(rpcErr, i, results),
+					"shard_id": i, "error": shardErrString(rpcErr, i, results),
 				})
 				continue
 			}
@@ -285,20 +321,6 @@ func (s *AdminServer) handleCancelOrders(w http.ResponseWriter, r *http.Request)
 			totalSkipped += r.Skipped
 			shardResults = append(shardResults, map[string]any{
 				"shard_id": r.ShardId, "cancelled": r.Cancelled, "skipped": r.Skipped,
-			})
-		}
-	} else {
-		resp, err := s.counter.AdminCancelOrders(ctx, &counterrpc.AdminCancelOrdersRequest{
-			UserId: body.UserID,
-			Symbol: body.Symbol,
-			Reason: body.Reason,
-		})
-		rpcErr = err
-		if resp != nil {
-			totalCancelled = resp.Cancelled
-			totalSkipped = resp.Skipped
-			shardResults = append(shardResults, map[string]any{
-				"shard_id": resp.ShardId, "cancelled": resp.Cancelled, "skipped": resp.Skipped,
 			})
 		}
 	}
@@ -318,7 +340,7 @@ func (s *AdminServer) handleCancelOrders(w http.ResponseWriter, r *http.Request)
 	}
 	if err := s.writeAudit(r, adminaudit.Entry{
 		Op:     "admin.cancel-orders",
-		Target: adminCancelTarget(body),
+		Target: cancelTarget(body),
 		Params: params,
 		Status: statusFromErr(rpcErr),
 		Error:  errString(rpcErr),
@@ -327,7 +349,7 @@ func (s *AdminServer) handleCancelOrders(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if rpcErr != nil {
-		writeGRPCError(w, rpcErr)
+		writeError(w, http.StatusBadGateway, rpcErr.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -338,10 +360,10 @@ func (s *AdminServer) handleCancelOrders(w http.ResponseWriter, r *http.Request)
 }
 
 // ---------------------------------------------------------------------------
-// audit helpers
+// audit / helpers
 // ---------------------------------------------------------------------------
 
-func (s *AdminServer) writeAudit(r *http.Request, e adminaudit.Entry) error {
+func (s *Server) writeAudit(r *http.Request, e adminaudit.Entry) error {
 	if e.AdminID == "" {
 		if uid, err := auth.UserID(r.Context()); err == nil {
 			e.AdminID = uid
@@ -370,10 +392,7 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// shardErr surfaces the aggregated error onto the specific shard slot that
-// failed. For MVP all that matters is "this shard errored" — we don't try
-// to demultiplex which shard produced which error beyond that.
-func shardErr(agg error, i int, results []*counterrpc.AdminCancelOrdersResponse) string {
+func shardErrString(agg error, i int, results []*counterrpc.AdminCancelOrdersResponse) string {
 	if agg == nil {
 		return ""
 	}
@@ -383,7 +402,7 @@ func shardErr(agg error, i int, results []*counterrpc.AdminCancelOrdersResponse)
 	return agg.Error()
 }
 
-func adminCancelTarget(b cancelOrdersBody) string {
+func cancelTarget(b cancelOrdersBody) string {
 	switch {
 	case b.UserID != "" && b.Symbol != "":
 		return b.UserID + "|" + b.Symbol
@@ -394,3 +413,31 @@ func adminCancelTarget(b cancelOrdersBody) string {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// HTTP JSON primitives (duplicated from BFF so admin-gateway has no
+// dependency on BFF's internal packages — cross-process boundary).
+// ---------------------------------------------------------------------------
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]any{"error": msg})
+}
+
+func readJSON(r *http.Request, out any) error {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(out)
+}
+
+func clientIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if i := strings.LastIndex(host, ":"); i > 0 {
+		host = host[:i]
+	}
+	return host
+}

@@ -16,7 +16,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
-	"github.com/xargin/opentrade/bff/internal/auth"
+	"github.com/xargin/opentrade/pkg/auth"
 )
 
 // -----------------------------------------------------------------------------
