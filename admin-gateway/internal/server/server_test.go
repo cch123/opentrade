@@ -289,6 +289,221 @@ func TestPutSymbol_ScheduledChangeValidated(t *testing.T) {
 	}
 }
 
+// ---- M1.b precision rollout tests ------------------------------------------
+
+// seedSymbolWithTiers writes a symbol into the MemorySource with the given
+// tier list and a specified precision version.
+func seedSymbolWithTiers(t *testing.T, mem *etcdcfg.MemorySource, symbol string, tiers []etcdcfg.PrecisionTier, ver uint64) {
+	t.Helper()
+	_, err := mem.PutCtx(context.Background(), symbol, etcdcfg.SymbolConfig{
+		Shard:            "match-0",
+		Trading:          true,
+		BaseAsset:        "BTC",
+		QuoteAsset:       "USDT",
+		PrecisionVersion: ver,
+		Tiers:            tiers,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSchedulePrecision_ValidSplit(t *testing.T) {
+	srv, mem, auditPath, _ := newTestServer(t)
+	// Seed single open tier.
+	seedSymbolWithTiers(t, mem, "BTC-USDT", singleTierFixture(), 1)
+
+	// Split [0, +∞) into [0, 1000) + [1000, +∞).
+	split := []etcdcfg.PrecisionTier{
+		{
+			PriceFrom: dec.New("0"), PriceTo: dec.New("1000"),
+			TickSize: dec.New("0.01"), StepSize: dec.New("0.00001"),
+		},
+		{
+			PriceFrom: dec.New("1000"), PriceTo: dec.New("0"),
+			TickSize: dec.New("1"), StepSize: dec.New("0.0001"),
+		},
+	}
+	effective, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	body := etcdcfg.PrecisionChange{
+		EffectiveAt:         effective,
+		NewTiers:            split,
+		NewPrecisionVersion: 2,
+		Reason:              "BTC price band expansion",
+	}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, adminReq("PUT", "/admin/symbols/BTC-USDT/precision", body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// etcd reflects the staged change but current tiers are untouched.
+	cfgs, _, _ := mem.List(context.Background())
+	got := cfgs["BTC-USDT"]
+	if got.ScheduledChange == nil {
+		t.Fatal("ScheduledChange was not staged")
+	}
+	if len(got.ScheduledChange.NewTiers) != 2 {
+		t.Errorf("new_tier_count=%d", len(got.ScheduledChange.NewTiers))
+	}
+	if got.ScheduledChange.NewPrecisionVersion != 2 {
+		t.Errorf("NewPrecisionVersion=%d", got.ScheduledChange.NewPrecisionVersion)
+	}
+	if len(got.Tiers) != 1 {
+		t.Errorf("current tiers should remain 1-deep until EffectiveAt: got %d", len(got.Tiers))
+	}
+	if got.PrecisionVersion != 1 {
+		t.Errorf("PrecisionVersion should remain 1 until rollout: got %d", got.PrecisionVersion)
+	}
+
+	// Audit recorded.
+	entries, _ := adminaudit.ReadAll(auditPath)
+	if len(entries) != 1 || entries[0].Op != "admin.precision.schedule" {
+		t.Fatalf("audit: %+v", entries)
+	}
+	if v, ok := entries[0].Params["new_tier_count"].(float64); !ok || int(v) != 2 {
+		t.Errorf("audit new_tier_count=%v", entries[0].Params["new_tier_count"])
+	}
+}
+
+func TestSchedulePrecision_MergeRejected(t *testing.T) {
+	srv, mem, _, _ := newTestServer(t)
+	// Seed with two tiers at boundary 1000.
+	twoTier := []etcdcfg.PrecisionTier{
+		{PriceFrom: dec.New("0"), PriceTo: dec.New("1000"), TickSize: dec.New("0.01"), StepSize: dec.New("0.00001")},
+		{PriceFrom: dec.New("1000"), PriceTo: dec.New("0"), TickSize: dec.New("1"), StepSize: dec.New("0.0001")},
+	}
+	seedSymbolWithTiers(t, mem, "BTC-USDT", twoTier, 1)
+
+	// Attempt to merge back to single tier — drops boundary 1000.
+	effective, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	body := etcdcfg.PrecisionChange{
+		EffectiveAt:         effective,
+		NewTiers:            singleTierFixture(),
+		NewPrecisionVersion: 2,
+	}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, adminReq("PUT", "/admin/symbols/BTC-USDT/precision", body))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "drop old boundary") {
+		t.Errorf("error missing evolution reason: %s", rr.Body.String())
+	}
+	// No schedule should be staged.
+	cfgs, _, _ := mem.List(context.Background())
+	if cfgs["BTC-USDT"].ScheduledChange != nil {
+		t.Error("ScheduledChange must not be staged on validation failure")
+	}
+}
+
+func TestSchedulePrecision_WrongVersion(t *testing.T) {
+	srv, mem, _, _ := newTestServer(t)
+	seedSymbolWithTiers(t, mem, "BTC-USDT", singleTierFixture(), 5)
+
+	effective, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	body := etcdcfg.PrecisionChange{
+		EffectiveAt:         effective,
+		NewTiers:            singleTierFixture(),
+		NewPrecisionVersion: 7, // want 6 (= 5 + 1)
+	}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, adminReq("PUT", "/admin/symbols/BTC-USDT/precision", body))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "must equal current (5) + 1 = 6") {
+		t.Errorf("error: %s", rr.Body.String())
+	}
+}
+
+func TestSchedulePrecision_SymbolNotFound(t *testing.T) {
+	srv, _, _, _ := newTestServer(t)
+	effective, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	body := etcdcfg.PrecisionChange{
+		EffectiveAt: effective, NewTiers: singleTierFixture(), NewPrecisionVersion: 1,
+	}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, adminReq("PUT", "/admin/symbols/NOPE-USDT/precision", body))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSchedulePrecision_MissingEffectiveAt(t *testing.T) {
+	srv, mem, _, _ := newTestServer(t)
+	seedSymbolWithTiers(t, mem, "BTC-USDT", singleTierFixture(), 1)
+	body := etcdcfg.PrecisionChange{
+		// EffectiveAt zero
+		NewTiers: singleTierFixture(), NewPrecisionVersion: 2,
+	}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, adminReq("PUT", "/admin/symbols/BTC-USDT/precision", body))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "effective_at") {
+		t.Errorf("error: %s", rr.Body.String())
+	}
+}
+
+func TestCancelSchedulePrecision_ClearsPending(t *testing.T) {
+	srv, mem, auditPath, _ := newTestServer(t)
+	seedSymbolWithTiers(t, mem, "BTC-USDT", singleTierFixture(), 1)
+	// Stage a valid change.
+	effective, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	split := []etcdcfg.PrecisionTier{
+		{PriceFrom: dec.New("0"), PriceTo: dec.New("1000"), TickSize: dec.New("0.01"), StepSize: dec.New("0.00001")},
+		{PriceFrom: dec.New("1000"), PriceTo: dec.New("0"), TickSize: dec.New("1"), StepSize: dec.New("0.0001")},
+	}
+	body := etcdcfg.PrecisionChange{EffectiveAt: effective, NewTiers: split, NewPrecisionVersion: 2}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, adminReq("PUT", "/admin/symbols/BTC-USDT/precision", body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("seed schedule: %d", rr.Code)
+	}
+
+	// Cancel.
+	rr2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr2, adminReq("DELETE", "/admin/symbols/BTC-USDT/precision", nil))
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("cancel status=%d body=%s", rr2.Code, rr2.Body.String())
+	}
+	var out struct {
+		HadScheduled bool `json:"had_scheduled"`
+	}
+	_ = json.Unmarshal(rr2.Body.Bytes(), &out)
+	if !out.HadScheduled {
+		t.Error("had_scheduled should be true after cancelling a staged change")
+	}
+	cfgs, _, _ := mem.List(context.Background())
+	if cfgs["BTC-USDT"].ScheduledChange != nil {
+		t.Error("ScheduledChange should be nil after cancel")
+	}
+	entries, _ := adminaudit.ReadAll(auditPath)
+	if len(entries) != 2 || entries[1].Op != "admin.precision.cancel_schedule" {
+		t.Errorf("audit: %+v", entries)
+	}
+}
+
+func TestCancelSchedulePrecision_Idempotent(t *testing.T) {
+	srv, mem, _, _ := newTestServer(t)
+	seedSymbolWithTiers(t, mem, "BTC-USDT", singleTierFixture(), 1)
+	// No pending change.
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, adminReq("DELETE", "/admin/symbols/BTC-USDT/precision", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var out struct {
+		HadScheduled bool `json:"had_scheduled"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out.HadScheduled {
+		t.Error("had_scheduled should be false when nothing was pending")
+	}
+}
+
 func TestDeleteSymbol_IdempotentAndAudited(t *testing.T) {
 	srv, mem, auditPath, _ := newTestServer(t)
 	_, _ = mem.PutCtx(context.Background(), "ETH-USDT", etcdcfg.SymbolConfig{Shard: "match-1", Trading: true})

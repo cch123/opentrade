@@ -106,6 +106,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/symbols/{symbol}", s.handleGetSymbol)
 	mux.HandleFunc("PUT /admin/symbols/{symbol}", s.handlePutSymbol)
 	mux.HandleFunc("DELETE /admin/symbols/{symbol}", s.handleDeleteSymbol)
+	// ADR-0053 M1.b: precision rollout protocol — schedule a tier
+	// migration that takes effect at a future EffectiveAt. Separate from
+	// the bulk PUT /admin/symbols/{symbol} so evolution (vs first install)
+	// can enforce ValidateTierEvolution.
+	mux.HandleFunc("PUT /admin/symbols/{symbol}/precision", s.handleSchedulePrecision)
+	mux.HandleFunc("DELETE /admin/symbols/{symbol}/precision", s.handleCancelSchedulePrecision)
 	mux.HandleFunc("POST /admin/cancel-orders", s.handleCancelOrders)
 	return mux
 }
@@ -340,6 +346,159 @@ func (s *Server) handleDeleteSymbol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"revision": rev, "existed": true})
+}
+
+// ---------------------------------------------------------------------------
+// Precision rollout (ADR-0053 M1.b)
+// ---------------------------------------------------------------------------
+
+// handleSchedulePrecision stages a PrecisionChange on an existing symbol.
+// Unlike PUT /admin/symbols/{symbol} (which does a blanket replace and is
+// appropriate for first install / M2 backfill), this endpoint enforces
+// ValidateTierEvolution against the current Tiers — merges / deletes /
+// boundary shifts are rejected here.
+//
+// Body: etcdcfg.PrecisionChange JSON.
+// Success: 200 with the stored PrecisionChange echo. The change is visible
+// immediately in GET /admin/symbols/{symbol}.ScheduledChange; match /
+// counter watchers are responsible for enacting the swap at EffectiveAt
+// (out of scope for M1.b).
+func (s *Server) handleSchedulePrecision(w http.ResponseWriter, r *http.Request) {
+	if s.etcd == nil {
+		writeError(w, http.StatusServiceUnavailable, "etcd not configured")
+		return
+	}
+	symbol := r.PathValue("symbol")
+	if err := etcdcfg.ValidateSymbol(symbol); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var change etcdcfg.PrecisionChange
+	if err := readJSON(r, &change); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Fetch current cfg — schedule is only valid against an existing symbol.
+	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+	defer cancel()
+	cfgs, _, err := s.etcd.List(ctx)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	current, ok := cfgs[symbol]
+	if !ok {
+		writeError(w, http.StatusNotFound, "symbol not found — use PUT /admin/symbols/{symbol} for first install")
+		return
+	}
+
+	// Validate the change payload itself.
+	if err := etcdcfg.ValidateTiers(change.NewTiers); err != nil {
+		writeError(w, http.StatusBadRequest, "new_tiers: "+err.Error())
+		return
+	}
+	// Evolution rule: only subdivide / append. Merges & deletes rejected.
+	if err := etcdcfg.ValidateTierEvolution(current.Tiers, change.NewTiers); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Version must strictly bump by 1 — idempotency key for the rollout.
+	wantVer := current.PrecisionVersion + 1
+	if change.NewPrecisionVersion != wantVer {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"new_precision_version must equal current (%d) + 1 = %d, got %d",
+			current.PrecisionVersion, wantVer, change.NewPrecisionVersion))
+		return
+	}
+	if change.EffectiveAt.IsZero() {
+		writeError(w, http.StatusBadRequest, "effective_at is required")
+		return
+	}
+
+	// Stage the change onto the existing cfg and write back.
+	changeCopy := change
+	current.ScheduledChange = &changeCopy
+	rev, putErr := s.etcd.Put(ctx, symbol, current)
+
+	params := map[string]any{
+		"effective_at":          change.EffectiveAt.Format(time.RFC3339),
+		"new_precision_version": change.NewPrecisionVersion,
+		"new_tier_count":        len(change.NewTiers),
+	}
+	if change.Reason != "" {
+		params["reason"] = change.Reason
+	}
+	if err := s.writeAudit(r, adminaudit.Entry{
+		Op:     "admin.precision.schedule",
+		Target: symbol,
+		Params: params,
+		Status: statusFromErr(putErr),
+		Error:  errString(putErr),
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("audit write failed: %v (put err: %v)", err, putErr))
+		return
+	}
+	if putErr != nil {
+		writeError(w, http.StatusBadGateway, putErr.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"revision":         rev,
+		"symbol":           symbol,
+		"scheduled_change": change,
+	})
+}
+
+// handleCancelSchedulePrecision clears a pending PrecisionChange. Idempotent:
+// returns 200 with scheduled=false whether or not a change was pending.
+func (s *Server) handleCancelSchedulePrecision(w http.ResponseWriter, r *http.Request) {
+	if s.etcd == nil {
+		writeError(w, http.StatusServiceUnavailable, "etcd not configured")
+		return
+	}
+	symbol := r.PathValue("symbol")
+	if err := etcdcfg.ValidateSymbol(symbol); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+	defer cancel()
+	cfgs, _, err := s.etcd.List(ctx)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	current, ok := cfgs[symbol]
+	if !ok {
+		writeError(w, http.StatusNotFound, "symbol not found")
+		return
+	}
+	hadChange := current.ScheduledChange != nil
+	current.ScheduledChange = nil
+	rev, putErr := s.etcd.Put(ctx, symbol, current)
+
+	if err := s.writeAudit(r, adminaudit.Entry{
+		Op:     "admin.precision.cancel_schedule",
+		Target: symbol,
+		Params: map[string]any{"had_scheduled_change": hadChange},
+		Status: statusFromErr(putErr),
+		Error:  errString(putErr),
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("audit write failed: %v (put err: %v)", err, putErr))
+		return
+	}
+	if putErr != nil {
+		writeError(w, http.StatusBadGateway, putErr.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"revision":         rev,
+		"symbol":           symbol,
+		"had_scheduled":    hadChange,
+	})
 }
 
 // ---------------------------------------------------------------------------
