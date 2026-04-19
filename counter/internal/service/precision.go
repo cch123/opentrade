@@ -9,19 +9,19 @@ package service
 // sequence number (ADR-0018 rule: rejected PlaceOrder paths short-circuit
 // outside the sequencer).
 //
-// Scope (M3 minimal):
+// Scope (M3 + M3.b):
 //   - LIMIT: full validation (tick, lot, min/max qty, min notional)
 //   - MARKET buy by quote (ADR-0035 quoteOrderQty): quote_step_size /
 //     min_quote_qty / min_quote_amount. Tier[0] is used for lookup because
 //     Counter doesn't subscribe to market data (no mid-price). For
 //     single-tier symbols (M2 default) this is exact; multi-tier symbols
-//     will be revisited in M3.b when we wire in a mid-price source.
-//   - MARKET by base: SKIPPED — requires a reference price to locate the
-//     tier, which Counter lacks today. Ops should keep StepSize +
-//     MarketMinQty / MarketMaxQty tight enough that the match engine's
-//     deterministic rules are acceptable, or push the client through the
-//     ADR-0035 Path B (BFF-translated LIMIT+IOC) which *does* carry Price
-//     and therefore goes through the LIMIT branch.
+//     await a mid-price source.
+//   - MARKET by base (M3.b): if req.ReferencePrice is present (BFF fills
+//     from its market-data cache), we run step + min/max qty +
+//     min-quote-amount (reference*qty) just like LIMIT. When
+//     ReferencePrice is zero (cold BFF, no cached depth), we fall back to
+//     the M3 behaviour of skipping this kind to avoid rejecting orders
+//     we genuinely can't validate.
 
 import (
 	"github.com/xargin/opentrade/counter/internal/engine"
@@ -74,8 +74,16 @@ func validatePrecision(cfg etcdcfg.SymbolConfig, req PlaceOrderRequest) (etcdcfg
 			QuoteQty: req.QuoteQty,
 		})
 	case etcdcfg.OrderKindMarketByBase:
-		// Intentionally skipped in M3. See file-level docstring.
-		return etcdcfg.RejectNone, true
+		// M3.b: only validate when BFF supplied a reference price. This
+		// keeps M3 semantics during cold-start / BFF-cache-miss windows.
+		if !dec.IsPositive(req.ReferencePrice) {
+			return etcdcfg.RejectNone, true
+		}
+		return etcdcfg.ValidateOrderAgainstTier(cfg, etcdcfg.OrderValidation{
+			Kind:  etcdcfg.OrderKindMarketByBase,
+			Price: req.ReferencePrice,
+			Qty:   req.Qty,
+		})
 	}
 	return etcdcfg.RejectNone, true
 }

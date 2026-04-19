@@ -360,17 +360,26 @@ func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderR
 	if err != nil {
 		return service.PlaceOrderRequest{}, fmt.Errorf("invalid quote_qty %q: %w", req.QuoteQty, err)
 	}
+	var refPrice dec.Decimal
+	if req.ReferencePrice != "" {
+		p, perr := dec.Parse(req.ReferencePrice)
+		if perr != nil {
+			return service.PlaceOrderRequest{}, fmt.Errorf("invalid reference_price %q: %w", req.ReferencePrice, perr)
+		}
+		refPrice = p
+	}
 	return service.PlaceOrderRequest{
-		UserID:        req.UserId,
-		ClientOrderID: req.ClientOrderId,
-		Symbol:        req.Symbol,
-		Side:          side,
-		OrderType:     ot,
-		TIF:           tif,
-		Price:         price,
-		Qty:           qty,
-		QuoteQty:      quoteQty,
-		ReservationID: req.ReservationId,
+		UserID:         req.UserId,
+		ClientOrderID:  req.ClientOrderId,
+		Symbol:         req.Symbol,
+		Side:           side,
+		OrderType:      ot,
+		TIF:            tif,
+		Price:          price,
+		Qty:            qty,
+		QuoteQty:       quoteQty,
+		ReservationID:  req.ReservationId,
+		ReferencePrice: refPrice,
 	}, nil
 }
 

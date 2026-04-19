@@ -38,6 +38,12 @@ type PlaceOrderRequest struct {
 	// (asset, amount) must match ComputeFreeze for this order shape or
 	// the call is rejected (ADR-0041).
 	ReservationID string
+	// ReferencePrice (ADR-0053 M3.b) is an optional best-effort mid-price
+	// supplied by BFF from its market-data cache. Used only for MARKET by
+	// base precision validation (to multiply with qty for MinQuoteAmount
+	// check). Zero = unavailable; counter then skips the MinQuoteAmount
+	// branch for MarketByBase (M3 legacy behaviour).
+	ReferencePrice dec.Decimal
 }
 
 // PlaceOrderResult is the response payload.

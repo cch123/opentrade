@@ -16,6 +16,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/pkg/auth"
 )
 
@@ -194,6 +195,98 @@ func TestPlaceOrder_MarketSellForwarded(t *testing.T) {
 	}
 	if seen.Qty != "0.5" {
 		t.Errorf("qty forwarded = %q", seen.Qty)
+	}
+}
+
+// ADR-0053 M3.b: BFF pulls best bid/ask from market cache and sends mid
+// as reference_price so counter can enforce MARKET-by-base precision.
+func TestPlaceOrder_ReferencePriceFilledFromDepthCache(t *testing.T) {
+	cache := marketcache.New(marketcache.Config{})
+	cache.PutDepthSnapshot(&eventpb.DepthSnapshot{
+		Symbol: "BTC-USDT",
+		Bids:   []*eventpb.DepthLevel{{Price: "49990", Qty: "0.5"}},
+		Asks:   []*eventpb.DepthLevel{{Price: "50010", Qty: "0.5"}},
+	})
+
+	var seen *counterrpc.PlaceOrderRequest
+	fc := &fakeCounter{
+		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			seen = req
+			return &counterrpc.PlaceOrderResponse{OrderId: 1, Accepted: true}, nil
+		},
+	}
+	srv := NewServer(Config{
+		UserRateLimit:  100, UserRateWindow: time.Second,
+		IPRateLimit:    100, IPRateWindow:   time.Second,
+		RequestTimeout: time.Second,
+	}, fc, cache, nil, nil, zap.NewNop())
+
+	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if seen.ReferencePrice != "50000" {
+		t.Errorf("reference_price=%q want 50000 (= (49990+50010)/2)", seen.ReferencePrice)
+	}
+}
+
+// Cold BFF (no cache at all): reference_price stays empty, counter falls
+// back to M3 behaviour of skipping MARKET-by-base precision.
+func TestPlaceOrder_ReferencePriceEmptyWhenNoCache(t *testing.T) {
+	var seen *counterrpc.PlaceOrderRequest
+	fc := &fakeCounter{
+		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			seen = req
+			return &counterrpc.PlaceOrderResponse{OrderId: 1, Accepted: true}, nil
+		},
+	}
+	srv := newServer(fc) // newServer passes market=nil
+	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if seen.ReferencePrice != "" {
+		t.Errorf("reference_price=%q, want empty", seen.ReferencePrice)
+	}
+}
+
+// Cache exists but hasn't observed the symbol yet (e.g. just restarted,
+// depth event not replayed): reference_price empty, same fallback.
+func TestPlaceOrder_ReferencePriceEmptyWhenSnapshotMissing(t *testing.T) {
+	cache := marketcache.New(marketcache.Config{})
+	// No PutDepthSnapshot for BTC-USDT.
+
+	var seen *counterrpc.PlaceOrderRequest
+	fc := &fakeCounter{
+		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			seen = req
+			return &counterrpc.PlaceOrderResponse{OrderId: 1, Accepted: true}, nil
+		},
+	}
+	srv := NewServer(Config{
+		UserRateLimit:  100, UserRateWindow: time.Second,
+		IPRateLimit:    100, IPRateWindow:   time.Second,
+		RequestTimeout: time.Second,
+	}, fc, cache, nil, nil, zap.NewNop())
+
+	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if seen.ReferencePrice != "" {
+		t.Errorf("reference_price=%q, want empty", seen.ReferencePrice)
 	}
 }
 

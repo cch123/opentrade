@@ -48,6 +48,31 @@ func applySlippage(lastPrice string, bps int, side eventpb.Side) (string, error)
 	return out.Truncate(8).String(), nil
 }
 
+// bestEffortMidPrice returns (bestBid+bestAsk)/2 from BFF's market cache as
+// a decimal string, or "" when a mid-price cannot be derived (no cache, no
+// snapshot yet, or one side empty). Counter treats "" as "reference price
+// unavailable" and falls back to the ADR-0053 M3 behaviour of skipping
+// MARKET-by-base precision (safer than over-rejecting during BFF cold
+// start).
+func (s *Server) bestEffortMidPrice(symbol string) string {
+	if s.market == nil {
+		return ""
+	}
+	snap := s.market.DepthSnapshot(symbol)
+	if snap == nil || len(snap.Bids) == 0 || len(snap.Asks) == 0 {
+		return ""
+	}
+	bid, err := decimal.NewFromString(snap.Bids[0].Price)
+	if err != nil || bid.Sign() <= 0 {
+		return ""
+	}
+	ask, err := decimal.NewFromString(snap.Asks[0].Price)
+	if err != nil || ask.Sign() <= 0 {
+		return ""
+	}
+	return bid.Add(ask).Div(decimal.NewFromInt(2)).Truncate(12).String()
+}
+
 type placeOrderBody struct {
 	ClientOrderID string `json:"client_order_id,omitempty"`
 	Symbol        string `json:"symbol"`
@@ -150,16 +175,25 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-0053 M3.b: best-effort mid-price for counter-side MARKET-by-base
+	// precision validation. Only relevant when a MARKET-sell or MARKET-buy-
+	// by-qty path reaches counter (i.e. not the LIMIT+IOC slippage-
+	// protected rewrite, which already carries a hard Price). We compute it
+	// unconditionally; counter ignores reference_price for LIMIT /
+	// MarketBuyByQuote anyway.
+	referencePrice := s.bestEffortMidPrice(body.Symbol)
+
 	resp, err := s.counter.PlaceOrder(r.Context(), &counterrpc.PlaceOrderRequest{
-		UserId:        userID,
-		ClientOrderId: body.ClientOrderID,
-		Symbol:        body.Symbol,
-		Side:          side,
-		OrderType:     ot,
-		Tif:           tif,
-		Price:         body.Price,
-		Qty:           body.Qty,
-		QuoteQty:      body.QuoteQty,
+		UserId:         userID,
+		ClientOrderId:  body.ClientOrderID,
+		Symbol:         body.Symbol,
+		Side:           side,
+		OrderType:      ot,
+		Tif:            tif,
+		Price:          body.Price,
+		Qty:            body.Qty,
+		QuoteQty:       body.QuoteQty,
+		ReferencePrice: referencePrice,
 	})
 	if err != nil {
 		writeGRPCError(w, err)

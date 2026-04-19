@@ -149,8 +149,15 @@ type PlaceOrderRequest struct {
 	// order using the already-frozen balance. Only the conditional-order
 	// service sets this today.
 	ReservationId string `protobuf:"bytes,10,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Reference price (ADR-0053 M3.b). Optional. BFF fills this with a
+	// best-effort mid-price from its market-data cache so Counter can
+	// enforce MARKET-by-base precision filters (MinQuoteAmount etc.) that
+	// otherwise have no price to multiply qty against. Empty string =
+	// unavailable (BFF has no cached depth yet, e.g. right after restart)
+	// → Counter falls back to M3 behaviour (skip MarketByBase check).
+	ReferencePrice string `protobuf:"bytes,11,opt,name=reference_price,json=referencePrice,proto3" json:"reference_price,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PlaceOrderRequest) Reset() {
@@ -249,6 +256,13 @@ func (x *PlaceOrderRequest) GetQuoteQty() string {
 func (x *PlaceOrderRequest) GetReservationId() string {
 	if x != nil {
 		return x.ReservationId
+	}
+	return ""
+}
+
+func (x *PlaceOrderRequest) GetReferencePrice() string {
+	if x != nil {
+		return x.ReferencePrice
 	}
 	return ""
 }
@@ -1373,7 +1387,7 @@ var File_rpc_counter_counter_proto protoreflect.FileDescriptor
 
 const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\n" +
-	"\x19rpc/counter/counter.proto\x12\x15opentrade.rpc.counter\x1a\x12event/common.proto\"\xee\x02\n" +
+	"\x19rpc/counter/counter.proto\x12\x15opentrade.rpc.counter\x1a\x12event/common.proto\"\x97\x03\n" +
 	"\x11PlaceOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x16\n" +
@@ -1386,7 +1400,8 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\x03qty\x18\b \x01(\tR\x03qty\x12\x1b\n" +
 	"\tquote_qty\x18\t \x01(\tR\bquoteQty\x12%\n" +
 	"\x0ereservation_id\x18\n" +
-	" \x01(\tR\rreservationId\"\xa2\x01\n" +
+	" \x01(\tR\rreservationId\x12'\n" +
+	"\x0freference_price\x18\v \x01(\tR\x0ereferencePrice\"\xa2\x01\n" +
 	"\x12PlaceOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x1a\n" +

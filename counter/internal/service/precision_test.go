@@ -126,19 +126,58 @@ func TestValidatePrecision_MarketBuyByQuote(t *testing.T) {
 	}
 }
 
-// ADR-0053 M3 explicitly skips MARKET-by-base precision validation (no
-// reference price in counter). This test guards against future regression
-// that might over-eagerly reject or silently mis-route.
-func TestValidatePrecision_MarketByBaseSkippedInM3(t *testing.T) {
+// ADR-0053 M3: without a ReferencePrice (BFF cache miss / cold start),
+// MARKET-by-base precision validation is skipped to avoid rejecting orders
+// we can't fairly evaluate.
+func TestValidatePrecision_MarketByBaseSkipsWithoutReferencePrice(t *testing.T) {
 	cfg := precisionFixtureCfg()
 	req := PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
 		Side: engine.SideAsk, OrderType: engine.OrderTypeMarket,
 		Qty: dec.New("0.00000001"), // deliberately violates MinQty
+		// ReferencePrice not set
 	}
 	reason, pass := validatePrecision(cfg, req)
 	if !pass || reason != etcdcfg.RejectNone {
-		t.Errorf("M3 should not enforce MarketByBase precision yet; got reason=%s pass=%v", reason, pass)
+		t.Errorf("no ReferencePrice should skip; got reason=%s pass=%v", reason, pass)
+	}
+}
+
+// ADR-0053 M3.b: with a ReferencePrice supplied (BFF filled from depth
+// cache), MARKET-by-base gets the full lot / min-qty / min-amount
+// treatment.
+func TestValidatePrecision_MarketByBaseEnforcedWithReferencePrice(t *testing.T) {
+	cfg := precisionFixtureCfg()
+	cases := []struct {
+		name string
+		qty  string
+		ref  string
+		want etcdcfg.RejectReason
+		pass bool
+	}{
+		{"valid", "0.001", "50000", etcdcfg.RejectNone, true},
+		{"bad-step", "0.0000001", "50000", etcdcfg.RejectInvalidLotSize, false},
+		{"below-market-min-qty", "0.00005", "50000", etcdcfg.RejectMinQty, false},
+		{"below-min-quote-amount", "0.0001", "40000", etcdcfg.RejectMinQuoteAmount, false}, // 4 < 5
+		{"valid-at-boundary", "0.0001", "50000", etcdcfg.RejectNone, true},                 // 5 == 5
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := PlaceOrderRequest{
+				UserID: "u1", Symbol: "BTC-USDT",
+				Side:           engine.SideAsk,
+				OrderType:      engine.OrderTypeMarket,
+				Qty:            dec.New(c.qty),
+				ReferencePrice: dec.New(c.ref),
+			}
+			reason, pass := validatePrecision(cfg, req)
+			if pass != c.pass {
+				t.Errorf("pass=%v want=%v (reason=%s)", pass, c.pass, reason)
+			}
+			if !c.pass && reason != c.want {
+				t.Errorf("reason=%s want=%s", reason, c.want)
+			}
+		})
 	}
 }
 

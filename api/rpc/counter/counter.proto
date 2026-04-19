@@ -83,6 +83,13 @@ message PlaceOrderRequest {
   // order using the already-frozen balance. Only the conditional-order
   // service sets this today.
   string reservation_id = 10;
+  // Reference price (ADR-0053 M3.b). Optional. BFF fills this with a
+  // best-effort mid-price from its market-data cache so Counter can
+  // enforce MARKET-by-base precision filters (MinQuoteAmount etc.) that
+  // otherwise have no price to multiply qty against. Empty string =
+  // unavailable (BFF has no cached depth yet, e.g. right after restart)
+  // → Counter falls back to M3 behaviour (skip MarketByBase check).
+  string reference_price = 11;
 }
 
 message PlaceOrderResponse {
