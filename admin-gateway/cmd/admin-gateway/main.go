@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/xargin/opentrade/admin-gateway/internal/counterclient"
+	"github.com/xargin/opentrade/admin-gateway/internal/rollout"
 	"github.com/xargin/opentrade/admin-gateway/internal/server"
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/auth"
@@ -48,6 +49,10 @@ type Config struct {
 	// deploys should always set this; absence is a dev-only mode.
 	EtcdEndpoints []string
 	EtcdPrefix    string
+
+	// ADR-0053 M4: precision rollout executor. Active only when etcd is
+	// configured. Zero disables (dev only); must be >= 1s otherwise.
+	RolloutScanInterval time.Duration
 
 	Env      string
 	LogLevel string
@@ -143,6 +148,29 @@ func main() {
 		}
 	}()
 
+	// ADR-0053 M4: precision rollout executor. Runs only when etcd is
+	// configured (no etcd → no Tiers → no schedule → nothing to execute).
+	if etcdSource != nil && cfg.RolloutScanInterval > 0 {
+		runner, err := rollout.New(rollout.Config{
+			Etcd:         etcdSource,
+			Audit:        audit,
+			Logger:       logger,
+			ScanInterval: cfg.RolloutScanInterval,
+		})
+		if err != nil {
+			logger.Fatal("rollout runner", zap.Error(err))
+		}
+		go func() {
+			if err := runner.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("rollout runner exited", zap.Error(err))
+			}
+		}()
+		logger.Info("precision rollout executor started",
+			zap.Duration("scan_interval", cfg.RolloutScanInterval))
+	} else if etcdSource != nil {
+		logger.Info("precision rollout disabled (--rollout-scan-interval=0)")
+	}
+
 	adminSrv, err := server.New(server.Config{
 		Counter:        sharded,
 		Etcd:           etcdShim,
@@ -223,12 +251,13 @@ func (s etcdSrcShim) Delete(ctx context.Context, symbol string) (bool, int64, er
 
 func parseFlags() Config {
 	cfg := Config{
-		HTTPAddr:          ":8090",
-		ReadHeaderTimeout: 5 * time.Second,
-		ShutdownGrace:     5 * time.Second,
-		RequestTimeout:    5 * time.Second,
-		Env:               "dev",
-		LogLevel:          "info",
+		HTTPAddr:            ":8090",
+		ReadHeaderTimeout:   5 * time.Second,
+		ShutdownGrace:       5 * time.Second,
+		RequestTimeout:      5 * time.Second,
+		RolloutScanInterval: 5 * time.Second,
+		Env:                 "dev",
+		LogLevel:            "info",
 	}
 	var shardsCSV, etcdCSV string
 	flag.StringVar(&cfg.HTTPAddr, "http-addr", cfg.HTTPAddr, "HTTP listen address (default :8090 — distinct from BFF :8080)")
@@ -238,6 +267,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.AuditLogPath, "audit-log", "", "JSONL audit log file (required)")
 	flag.StringVar(&etcdCSV, "etcd", "", "comma-separated etcd endpoints for /admin/symbols CRUD (empty disables symbol endpoints)")
 	flag.StringVar(&cfg.EtcdPrefix, "etcd-prefix", "", "etcd key prefix for symbol configs (default /cex/match/symbols/)")
+	flag.DurationVar(&cfg.RolloutScanInterval, "rollout-scan-interval", cfg.RolloutScanInterval,
+		"ADR-0053 M4 precision rollout scan tick (0 disables; min 1s otherwise)")
 	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", cfg.RequestTimeout, "per-admin-request timeout")
 	flag.DurationVar(&cfg.ShutdownGrace, "shutdown-grace", cfg.ShutdownGrace, "graceful shutdown timeout")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "dev | prod")
@@ -261,6 +292,9 @@ func (c *Config) validate() error {
 	}
 	if c.AuditLogPath == "" {
 		return fmt.Errorf("--audit-log is required (no unaudited admin ops)")
+	}
+	if c.RolloutScanInterval > 0 && c.RolloutScanInterval < time.Second {
+		return fmt.Errorf("--rollout-scan-interval must be 0 (disabled) or >= 1s")
 	}
 	return nil
 }
