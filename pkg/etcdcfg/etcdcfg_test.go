@@ -2,8 +2,13 @@ package etcdcfg
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/xargin/opentrade/pkg/dec"
 )
 
 func TestDecodeValue(t *testing.T) {
@@ -19,6 +24,11 @@ func TestDecodeValue(t *testing.T) {
 			SymbolConfig{Shard: "match-0", Trading: false}, false},
 		{"missing-optional", `{"shard":"match-0"}`,
 			SymbolConfig{Shard: "match-0"}, false},
+		// ADR-0053 M0: old JSON format (pre-precision fields) must
+		// round-trip into the expanded struct with zero-value precision
+		// fields — this is the "compatibility mode" gate.
+		{"pre-adr0053-format", `{"shard":"match-1","trading":true,"version":"v2"}`,
+			SymbolConfig{Shard: "match-1", Trading: true, Version: "v2"}, false},
 		{"empty", "", SymbolConfig{}, true},
 		{"bad-json", "{not-json", SymbolConfig{}, true},
 	}
@@ -28,7 +38,7 @@ func TestDecodeValue(t *testing.T) {
 			if (err != nil) != c.wantErr {
 				t.Fatalf("err=%v wantErr=%v", err, c.wantErr)
 			}
-			if err == nil && got != c.want {
+			if err == nil && !reflect.DeepEqual(got, c.want) {
 				t.Errorf("got %+v want %+v", got, c.want)
 			}
 		})
@@ -216,5 +226,111 @@ func TestMemorySource_PutCtxCancelled(t *testing.T) {
 	cancel()
 	if _, err := s.PutCtx(ctx, "BTC-USDT", SymbolConfig{}); err == nil {
 		t.Fatal("expected cancelled error")
+	}
+}
+
+// ADR-0053 M0: a SymbolConfig with no precision fields should marshal back
+// to the legacy JSON shape (no tiers / base_asset / precision_version keys),
+// so live etcd values stay byte-identical on round-trip through admin writes.
+func TestSymbolConfig_LegacyMarshalUnchanged(t *testing.T) {
+	cfg := SymbolConfig{Shard: "match-0", Trading: true, Version: "v1"}
+	buf, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(buf)
+	for _, banned := range []string{"tiers", "base_asset", "quote_asset", "precision_version", "scheduled_change"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("legacy cfg marshalled to %q, must not contain %q", got, banned)
+		}
+	}
+}
+
+// Round-trip a full precision-carrying SymbolConfig: marshal → unmarshal
+// must recover the exact struct (including Decimal values).
+func TestSymbolConfig_PrecisionRoundTrip(t *testing.T) {
+	effective, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	original := SymbolConfig{
+		Shard:            "match-0",
+		Trading:          true,
+		Version:          "v3",
+		BaseAsset:        "BTC",
+		QuoteAsset:       "USDT",
+		PrecisionVersion: 2,
+		Tiers: []PrecisionTier{
+			{
+				PriceFrom:                     dec.New("0"),
+				PriceTo:                       dec.New("0"),
+				TickSize:                      dec.New("0.01"),
+				StepSize:                      dec.New("0.00001"),
+				QuoteStepSize:                 dec.New("0.01"),
+				MinQty:                        dec.New("0.0001"),
+				MaxQty:                        dec.New("1000"),
+				MinQuoteQty:                   dec.New("1"),
+				MinQuoteAmount:                dec.New("5"),
+				MarketMinQty:                  dec.New("0.0001"),
+				MarketMaxQty:                  dec.New("500"),
+				EnforceMinQuoteAmountOnMarket: true,
+				AvgPriceMins:                  5,
+			},
+		},
+		ScheduledChange: &PrecisionChange{
+			EffectiveAt:         effective,
+			NewPrecisionVersion: 3,
+			Reason:              "price surge",
+			NewTiers: []PrecisionTier{
+				{
+					PriceFrom: dec.New("0"),
+					PriceTo:   dec.New("0"),
+					TickSize:  dec.New("0.1"),
+					StepSize:  dec.New("0.0001"),
+				},
+			},
+		},
+	}
+	buf, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored SymbolConfig
+	if err := json.Unmarshal(buf, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Use DeepEqual after normalising Decimal — shopspring/decimal's zero
+	// state and JSON-roundtripped state can differ internally (value=nil
+	// vs value=bigInt(0)), so compare via String() for each decimal.
+	if !jsonEqual(t, original, restored) {
+		t.Errorf("round-trip mismatch:\n got=%+v\nwant=%+v", restored, original)
+	}
+	// HasPrecision should survive the trip.
+	if !restored.HasPrecision() {
+		t.Error("restored cfg lost Tiers → HasPrecision=false")
+	}
+}
+
+// jsonEqual is a DeepEqual that tolerates Decimal internal representation
+// drift by re-marshalling both sides and comparing bytes.
+func jsonEqual(t *testing.T, a, b any) bool {
+	t.Helper()
+	ba, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(ba) == string(bb)
+}
+
+// Compatibility: a cfg with zero-valued precision fields (omitempty) must
+// NOT emit precision keys, so legacy watchers parsing old formats don't
+// suddenly see unfamiliar keys.
+func TestSymbolConfig_ZeroPrecisionOmitted(t *testing.T) {
+	cfg := SymbolConfig{Shard: "match-0", Trading: true}
+	buf, _ := json.Marshal(cfg)
+	want := `{"shard":"match-0","trading":true}`
+	if string(buf) != want {
+		t.Errorf("got  %s\nwant %s", string(buf), want)
 	}
 }

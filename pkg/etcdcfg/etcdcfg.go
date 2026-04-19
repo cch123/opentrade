@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xargin/opentrade/pkg/dec"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -25,6 +26,11 @@ import (
 const DefaultPrefix = "/cex/match/symbols/"
 
 // SymbolConfig is the JSON value stored at each symbol key.
+//
+// Precision fields (ADR-0053) are additive and zero-value = compatibility
+// mode: the match / counter runtimes skip all precision validation when
+// Tiers is empty, preserving pre-ADR-0053 behaviour. M2 of the migration
+// backfills Tiers; M3 flips the per-symbol strict flag.
 type SymbolConfig struct {
 	// Shard identifies the match instance that owns this symbol. Operators
 	// set this to the instance's --shard-id (e.g. "match-0"). The match
@@ -37,11 +43,115 @@ type SymbolConfig struct {
 	// Version is a free-form tag for canary rollouts; ignored by the
 	// runtime but surfaced in logs.
 	Version string `json:"version,omitempty"`
+
+	// BaseAsset / QuoteAsset identify the traded pair's constituent assets
+	// (e.g. "BTC" / "USDT"). Empty = compatibility mode, inferred by callers
+	// where needed. Populated by admin-gateway during M2 backfill.
+	BaseAsset  string `json:"base_asset,omitempty"`
+	QuoteAsset string `json:"quote_asset,omitempty"`
+
+	// PrecisionVersion monotonically increases on every precision change so
+	// downstream consumers can distinguish orders admitted pre- vs post-
+	// switch. Zero = compatibility mode (no precision regime).
+	PrecisionVersion uint64 `json:"precision_version,omitempty"`
+
+	// Tiers describes the precision ranges keyed by mid-price at order
+	// admission. Must pass ValidateTiers. Empty = compatibility mode.
+	Tiers []PrecisionTier `json:"tiers,omitempty"`
+
+	// ScheduledChange, when non-nil, describes the next pending tier
+	// migration (ADR-0053 § 6 rollout protocol). Match / counter consult it
+	// to schedule the atomic switch at EffectiveAt.
+	ScheduledChange *PrecisionChange `json:"scheduled_change,omitempty"`
 }
 
 // Owned reports whether this symbol should run on shardID right now.
 func (c SymbolConfig) Owned(shardID string) bool {
 	return c.Shard == shardID && c.Trading
+}
+
+// HasPrecision reports whether the config carries any tier information at
+// all. Callers use this as the "compatibility mode" predicate: no tiers =
+// skip precision validation entirely.
+func (c SymbolConfig) HasPrecision() bool {
+	return len(c.Tiers) > 0
+}
+
+// PrecisionTier describes one precision range within a symbol's Tiers list.
+// Field names follow ADR-0053's glossary (direct English, not Binance-style
+// filter nesting) — see docs/adr/0053 § Glossary for the industry mapping.
+//
+// Validation lives in ValidateTiers / ValidateTierEvolution. Zero values
+// on optional fields (Min/Max guardrails, QuoteStepSize, MinQuoteAmount)
+// mean "no check for this axis".
+type PrecisionTier struct {
+	// PriceFrom / PriceTo describe the half-open range [PriceFrom, PriceTo)
+	// over which this tier applies. PriceTo == 0 means "+∞" and is legal
+	// only on the last tier. First tier's PriceFrom must be 0.
+	PriceFrom dec.Decimal `json:"price_from"`
+	PriceTo   dec.Decimal `json:"price_to"`
+
+	// TickSize: minimum price increment. Limit-order Price must be a
+	// multiple of TickSize.
+	TickSize dec.Decimal `json:"tick_size"`
+
+	// StepSize: minimum base-asset qty increment (limit orders + MARKET
+	// sell + MARKET buy by base). Qty must be a multiple of StepSize.
+	StepSize dec.Decimal `json:"step_size"`
+
+	// QuoteStepSize: minimum quote-asset qty increment (MARKET buy by
+	// quote, ADR-0035). QuoteQty must be a multiple of QuoteStepSize.
+	// Zero = no quote-step check.
+	QuoteStepSize dec.Decimal `json:"quote_step_size,omitempty"`
+
+	// MinQty / MaxQty: base-qty lower / upper guardrails. Zero = no
+	// check for that side.
+	MinQty dec.Decimal `json:"min_qty,omitempty"`
+	MaxQty dec.Decimal `json:"max_qty,omitempty"`
+
+	// MinQuoteQty: quote-qty lower bound for MARKET buy by quote. Zero =
+	// no check.
+	MinQuoteQty dec.Decimal `json:"min_quote_qty,omitempty"`
+
+	// MinQuoteAmount: minimum order amount (price × qty). Equivalent to
+	// Binance MIN_NOTIONAL / Bybit minOrderAmt — see ADR-0053 Glossary.
+	// Zero = no check.
+	MinQuoteAmount dec.Decimal `json:"min_quote_amount,omitempty"`
+
+	// MarketMinQty / MarketMaxQty: MARKET-order-specific base-qty
+	// guardrails (Binance MARKET_LOT_SIZE). Zero = fall back to
+	// MinQty / MaxQty respectively.
+	MarketMinQty dec.Decimal `json:"market_min_qty,omitempty"`
+	MarketMaxQty dec.Decimal `json:"market_max_qty,omitempty"`
+
+	// EnforceMinQuoteAmountOnMarket: when true, MARKET orders must also
+	// clear MinQuoteAmount (estimated via rolling average price supplied
+	// by caller). Binance MIN_NOTIONAL.applyToMarket equivalent.
+	EnforceMinQuoteAmountOnMarket bool `json:"enforce_min_quote_amount_on_market,omitempty"`
+
+	// AvgPriceMins: rolling-window minutes for estimating MARKET amount
+	// when EnforceMinQuoteAmountOnMarket is true. Consumed by the quote
+	// service; zero means "use server default" (5 minutes).
+	AvgPriceMins uint32 `json:"avg_price_mins,omitempty"`
+}
+
+// PrecisionChange describes a scheduled tier migration (ADR-0053 § 6).
+// admin-gateway stages it via PUT /admin/symbols/{symbol}/precision;
+// match / counter watch etcd for it and execute the swap at EffectiveAt.
+type PrecisionChange struct {
+	// EffectiveAt is the absolute UTC moment the new tiers take over.
+	EffectiveAt time.Time `json:"effective_at"`
+
+	// NewTiers is the tier list to install. Must pass ValidateTiers on
+	// its own and ValidateTierEvolution(old.Tiers, NewTiers).
+	NewTiers []PrecisionTier `json:"new_tiers"`
+
+	// NewPrecisionVersion must equal the pre-change PrecisionVersion + 1;
+	// acts as an idempotency key during rollout.
+	NewPrecisionVersion uint64 `json:"new_precision_version"`
+
+	// Reason is free-form text persisted to admin audit logs (ADR-0052).
+	Reason string `json:"reason,omitempty"`
 }
 
 // EventType distinguishes Put from Delete.
