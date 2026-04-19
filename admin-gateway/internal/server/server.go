@@ -119,12 +119,43 @@ type symbolJSON struct {
 	Shard   string `json:"shard"`
 	Trading bool   `json:"trading"`
 	Version string `json:"version,omitempty"`
+
+	// Precision block (ADR-0053). Omitted entirely when the symbol has no
+	// tiers — legacy clients see no new fields.
+	BaseAsset        string                    `json:"base_asset,omitempty"`
+	QuoteAsset       string                    `json:"quote_asset,omitempty"`
+	PrecisionVersion uint64                    `json:"precision_version,omitempty"`
+	Tiers            []etcdcfg.PrecisionTier   `json:"tiers,omitempty"`
+	ScheduledChange  *etcdcfg.PrecisionChange  `json:"scheduled_change,omitempty"`
 }
 
+func symbolJSONFrom(symbol string, c etcdcfg.SymbolConfig) symbolJSON {
+	return symbolJSON{
+		Symbol:           symbol,
+		Shard:            c.Shard,
+		Trading:          c.Trading,
+		Version:          c.Version,
+		BaseAsset:        c.BaseAsset,
+		QuoteAsset:       c.QuoteAsset,
+		PrecisionVersion: c.PrecisionVersion,
+		Tiers:            c.Tiers,
+		ScheduledChange:  c.ScheduledChange,
+	}
+}
+
+// putSymbolBody is the PUT /admin/symbols/{symbol} request body. Precision
+// fields (ADR-0053) are optional — legacy PUTs that only send shard /
+// trading / version continue to work untouched (M0 compatibility).
 type putSymbolBody struct {
 	Shard   string `json:"shard"`
 	Trading bool   `json:"trading"`
 	Version string `json:"version,omitempty"`
+
+	BaseAsset        string                    `json:"base_asset,omitempty"`
+	QuoteAsset       string                    `json:"quote_asset,omitempty"`
+	PrecisionVersion uint64                    `json:"precision_version,omitempty"`
+	Tiers            []etcdcfg.PrecisionTier   `json:"tiers,omitempty"`
+	ScheduledChange  *etcdcfg.PrecisionChange  `json:"scheduled_change,omitempty"`
 }
 
 func (s *Server) handleListSymbols(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +172,7 @@ func (s *Server) handleListSymbols(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]symbolJSON, 0, len(cfgs))
 	for sym, c := range cfgs {
-		out = append(out, symbolJSON{Symbol: sym, Shard: c.Shard, Trading: c.Trading, Version: c.Version})
+		out = append(out, symbolJSONFrom(sym, c))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"revision": rev,
@@ -173,7 +204,7 @@ func (s *Server) handleGetSymbol(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"revision": rev,
-		"symbol":   symbolJSON{Symbol: symbol, Shard: c.Shard, Trading: c.Trading, Version: c.Version},
+		"symbol":   symbolJSONFrom(symbol, c),
 	})
 }
 
@@ -197,14 +228,64 @@ func (s *Server) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-0053 M1.a: validate precision payload before touching etcd. Tiers
+	// empty = compatibility mode, skip. ScheduledChange's NewTiers must
+	// also be self-consistent; evolution (vs. existing Tiers) is enforced
+	// by M1.b via the dedicated /precision endpoint, not here — this
+	// endpoint is for first install / bulk backfill (M2) and fully trusts
+	// the admin's input for tier shape, only structural validity.
+	if len(body.Tiers) > 0 {
+		if err := etcdcfg.ValidateTiers(body.Tiers); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if body.ScheduledChange != nil {
+		if err := etcdcfg.ValidateTiers(body.ScheduledChange.NewTiers); err != nil {
+			writeError(w, http.StatusBadRequest, "scheduled_change: "+err.Error())
+			return
+		}
+		if body.ScheduledChange.NewPrecisionVersion == 0 {
+			writeError(w, http.StatusBadRequest, "scheduled_change.new_precision_version must be > 0")
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
 	rev, putErr := s.etcd.Put(ctx, symbol, etcdcfg.SymbolConfig{
-		Shard: body.Shard, Trading: body.Trading, Version: body.Version,
+		Shard:            body.Shard,
+		Trading:          body.Trading,
+		Version:          body.Version,
+		BaseAsset:        body.BaseAsset,
+		QuoteAsset:       body.QuoteAsset,
+		PrecisionVersion: body.PrecisionVersion,
+		Tiers:            body.Tiers,
+		ScheduledChange:  body.ScheduledChange,
 	})
 	params := map[string]any{"shard": body.Shard, "trading": body.Trading}
 	if body.Version != "" {
 		params["version"] = body.Version
+	}
+	if body.BaseAsset != "" {
+		params["base_asset"] = body.BaseAsset
+	}
+	if body.QuoteAsset != "" {
+		params["quote_asset"] = body.QuoteAsset
+	}
+	if body.PrecisionVersion != 0 {
+		params["precision_version"] = body.PrecisionVersion
+	}
+	if n := len(body.Tiers); n > 0 {
+		params["tier_count"] = n
+	}
+	if body.ScheduledChange != nil {
+		params["scheduled_change"] = map[string]any{
+			"effective_at":          body.ScheduledChange.EffectiveAt.Format(time.RFC3339),
+			"new_precision_version": body.ScheduledChange.NewPrecisionVersion,
+			"new_tier_count":        len(body.ScheduledChange.NewTiers),
+			"reason":                body.ScheduledChange.Reason,
+		}
 	}
 	if err := s.writeAudit(r, adminaudit.Entry{
 		Op:     "admin.symbol.put",
@@ -220,7 +301,11 @@ func (s *Server) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, putErr.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"revision": rev, "symbol": symbol})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"revision":          rev,
+		"symbol":            symbol,
+		"precision_version": body.PrecisionVersion,
+	})
 }
 
 func (s *Server) handleDeleteSymbol(w http.ResponseWriter, r *http.Request) {
