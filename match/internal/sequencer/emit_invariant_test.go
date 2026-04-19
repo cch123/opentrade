@@ -1,24 +1,24 @@
 package sequencer
 
-// Static lint for the "every input produces an output with match_seq" invariant.
+// ARCH-001: match 每个 input 必须产出带 match_seq 的 output。
 //
 // 规则：`*SymbolWorker` 上任何 `handle*` 方法（dispatcher `handle` 除外）的每个显式
 // `return` 语句，都必须在同一执行路径上有一个前置的 `w.emit(...)` 直接调用。
 // 违反 = 下游（counter / quote / trade-dump）可能拿不到 match_seq 字段，
-// 无法做 dedup / 无法关闭 PENDING_CANCEL 之类的协议回合（见 docs/bugs.md
-// 2026-04-19 的 cancel-miss bug）。
+// 无法做 dedup / 无法关闭 PENDING_CANCEL 之类的协议回合。
+//
+// 动机 / 历史：见 docs/bugs.md 2026-04-19 cancel-miss bug + docs/arch-guards.md ARCH-001。
 //
 // 分析范围：
-//  - 仅当前 package (sequencer)，因为 emit 的 receiver 是 *SymbolWorker。
-//  - 词法级（不是严格 CFG）：track "在走到当前语句之前，是否在同一块 / 祖先块的前置语句里
-//    看到过一次直接 emit"。for / range 体内的 emit 不对外传播（0 次迭代假设），
-//    if / switch / select 各分支独立分析并继承父块状态。
+//  - 仅当前 package (sequencer)，因为 emit 的 receiver 是 *SymbolWorker
+//  - 词法级 must-analysis（不是严格 CFG）：track "在走到当前语句之前，是否在同一块
+//    或祖先块的前置语句里看到过一次直接 emit"。for / range 体内的 emit 不对外传播
+//    （0 次迭代假设），if / switch / select 各分支独立分析并继承父块状态
 //  - panic / goto / break / continue 不特别处理：目的是抓"显式 return 之前没 emit"，
-//    其它退出方式（panic）不会让下游卡住。
-//  - 函数尾部隐式 return 不检查（绝大多数 handler 最后一个 case 都显式 emit 过）。
+//    其它退出方式（panic）不会让下游卡住
+//  - 函数尾部隐式 return 不检查（绝大多数 handler 最后一个 case 都显式 emit 过）
 //
-// 绕过（罕见场景）：加注释 `// match:emit-ok <reason>` 到该 return 语句的同一行，
-// 触发跳过。绕过必须给出理由，否则下一位维护者看不懂。
+// 绕过：`// arch:ARCH-001-ok <reason>` 到 return 同一行。绕过必须给出理由。
 
 import (
 	"fmt"
@@ -93,15 +93,15 @@ func (w *SymbolWorker) handleBogus(evt *Event) {
 	}
 }
 
-// TestMatchEmitInvariantAllowsAnnotation verifies the // match:emit-ok escape
-// hatch. Used when a handler legitimately returns without emit (e.g. the
-// dispatcher itself, or a path that panics).
+// TestMatchEmitInvariantAllowsAnnotation verifies the // arch:ARCH-001-ok
+// escape hatch. Used when a handler legitimately returns without emit
+// (e.g. the dispatcher itself, or a path that panics).
 func TestMatchEmitInvariantAllowsAnnotation(t *testing.T) {
 	src := `package sequencer
 
 func (w *SymbolWorker) handleAnnotated(evt *Event) {
 	if evt == nil {
-		return // match:emit-ok dispatcher-like routing guard
+		return // arch:ARCH-001-ok dispatcher-like routing guard
 	}
 	w.emit(&Output{})
 }
@@ -163,8 +163,8 @@ func findEmitViolations(fn *ast.FuncDecl, recvName string, fset *token.FileSet, 
 					violations = append(violations, fmt.Sprintf(
 						"%s: %s: return with no preceding w.emit() — "+
 							"match requires every input to produce an output with match_seq "+
-							"(see docs/bugs.md 2026-04-19 cancel-miss). "+
-							"If intentional, annotate the return with `// match:emit-ok <reason>`.",
+							"(see docs/arch-guards.md ARCH-001 + docs/bugs.md 2026-04-19 cancel-miss). "+
+							"If intentional, annotate the return with `// arch:ARCH-001-ok <reason>`.",
 						pos, fn.Name.Name))
 				}
 			}
@@ -238,13 +238,14 @@ func recurseChildBlocks(stmt ast.Stmt, emittedBefore bool, walk func(*ast.BlockS
 	}
 }
 
-// collectEmitOkLines finds every source line carrying a `match:emit-ok`
-// comment. Returning from such a line is allowed without a preceding emit.
+// collectEmitOkLines finds every source line carrying an `arch:ARCH-001-ok`
+// escape-hatch comment. Returning from such a line is allowed without a
+// preceding emit.
 func collectEmitOkLines(file *ast.File, fset *token.FileSet) map[int]bool {
 	out := map[int]bool{}
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if strings.Contains(c.Text, "match:emit-ok") {
+			if strings.Contains(c.Text, "arch:ARCH-001-ok") {
 				out[fset.Position(c.Slash).Line] = true
 			}
 		}
