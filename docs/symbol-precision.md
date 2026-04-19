@@ -89,16 +89,18 @@
 
 | 下单请求 | 判定 | 原因 |
 |---|---|---|
-| `LIMIT buy 0.001 BTC @ 50000.00` | ✅ 通过 | 价格、数量都合规,金额 `50 USDT ≥ 5` |
-| `LIMIT buy 0.0001 BTC @ 50000.00` | ✅ 通过 | 金额 `5 USDT = MinQuoteAmount`,等于边界通过(判定是 `< 5` 才拒) |
-| `LIMIT buy 0.00009 BTC @ 50000.00` | ❌ `MinQuoteAmount` | 金额 `4.5 USDT < 5` |
-| `LIMIT buy 0.001 BTC @ 50000.005` | ❌ `InvalidPriceTick` | 价格不是 0.01 的整数倍 |
-| `LIMIT buy 0.0000001 BTC @ 50000.00` | ❌ `InvalidLotSize` | 数量不是 0.00001 的整数倍 |
+| `LIMIT buy 0.001 BTC @ 50000.00` | ✅ 通过 | 价格/数量/金额(`50 USDT ≥ 5`)都合规 |
+| `LIMIT buy 0.0001 BTC @ 50000.00` | ✅ 通过 | 金额 `5 USDT = MinQuoteAmount` 刚好等于边界(判定是 `< 5` 才拒) |
+| `LIMIT buy 0.0001 BTC @ 40000.00` | ❌ `MinQuoteAmount` | 数量/价格都合规,但金额 `4 USDT < 5` |
+| `LIMIT buy 0.001 BTC @ 50000.005` | ❌ `InvalidPriceTick` | 价格不是 `0.01` 的整数倍 |
+| `LIMIT buy 0.0000001 BTC @ 50000.00` | ❌ `InvalidLotSize` | 数量不是 `0.00001` 的整数倍 |
 | `LIMIT buy 0.00001 BTC @ 50000.00` | ❌ `MinQty` | 数量 `0.00001 < MinQty 0.0001` |
-| `MARKET buy 100 USDT` | ✅ 通过 | 100 是 0.01 倍数、≥ 1、≥ 5 |
-| `MARKET buy 0.5 USDT` | ❌ `MinQuoteQty` | 0.5 < 1 |
-| `MARKET buy 3 USDT` | ❌ `MinQuoteAmount` | 3 ≥ MinQuoteQty 1,但 < MinQuoteAmount 5 |
-| `MARKET buy 100.001 USDT` | ❌ `InvalidQuoteStep` | 100.001 不是 0.01 倍数 |
+| `MARKET buy 100 USDT`(按金额) | ✅ 通过 | `100` 是 `0.01` 倍数、≥ MinQuoteQty 1、≥ MinQuoteAmount 5 |
+| `MARKET buy 0.5 USDT` | ❌ `MinQuoteQty` | `0.5 < MinQuoteQty 1` |
+| `MARKET buy 3 USDT` | ❌ `MinQuoteAmount` | `3 ≥ MinQuoteQty 1` 通过,但 `3 < MinQuoteAmount 5` |
+| `MARKET buy 100.001 USDT` | ❌ `InvalidQuoteStep` | `100.001` 不是 `0.01` 倍数 |
+
+> **校验顺序**(理解 reject reason 用):Tick → Step → MinQty → MaxQty → MinQuoteAmount。先被谁拦就报谁的 reason。例如 `0.00009 BTC` 数量上既不够 MinQty 又不够 MinQuoteAmount,实际报 `MinQty`(更早那一层)。
 
 ### 字段之间的关系图
 
