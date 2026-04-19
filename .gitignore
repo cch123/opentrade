@@ -12,6 +12,12 @@ bin/
 /quote/quote
 /trade-dump/trade-dump
 
+# Root-level stray binaries produced by `go build ./tools/<name>/...`
+# from the repo root (cwd-produced binary, not the intended install path).
+/precision-cli
+/tui
+/web
+
 # Go
 /vendor/
 *.prof

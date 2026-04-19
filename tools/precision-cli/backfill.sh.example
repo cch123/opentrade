@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# ADR-0053 M2 — bulk precision backfill template.
+#
+# For each symbol in SYMBOLS, calls `opentrade-cli precision recommend` and
+# PUTs the result via admin-gateway. Default is DRY-RUN (prints curl cmds
+# only); flip APPLY=1 to actually submit.
+#
+# Prerequisites:
+#   - opentrade-cli in PATH (build: go build -o opentrade-cli ./tools/precision-cli)
+#   - Admin API key with role=admin
+#   - admin-gateway reachable at $ADMIN_URL
+#
+# Usage:
+#   ADMIN_URL=http://admin-gateway:8090 \
+#   ADMIN_KEY="key|secret" \
+#   APPLY=1 \
+#   ./backfill.sh
+#
+# Layout of SYMBOLS: <symbol>:<base>:<quote>:<typical_price>[:shard]
+# Shard defaults to match-0 when omitted.
+
+set -euo pipefail
+
+ADMIN_URL="${ADMIN_URL:-http://localhost:8090}"
+ADMIN_KEY="${ADMIN_KEY:-}"
+APPLY="${APPLY:-0}"
+
+# Edit this list per rollout. Prices are typical spot mid (7-day median
+# is a safe source — ops team fills in).
+SYMBOLS=(
+    "BTC-USDT:BTC:USDT:50000:match-0"
+    "ETH-USDT:ETH:USDT:3000:match-0"
+    "SOL-USDT:SOL:USDT:150:match-0"
+    "DOGE-USDT:DOGE:USDT:0.1:match-1"
+    "SHIB-USDT:SHIB:USDT:0.00002:match-1"
+)
+
+if [[ "$APPLY" == "1" && -z "$ADMIN_KEY" ]]; then
+    echo "ERROR: ADMIN_KEY is required when APPLY=1" >&2
+    exit 2
+fi
+
+for entry in "${SYMBOLS[@]}"; do
+    IFS=':' read -r sym base quote price shard <<< "$entry"
+    shard="${shard:-match-0}"
+
+    echo
+    echo "=== $sym (price=$price shard=$shard) ==="
+
+    body=$(opentrade-cli precision recommend \
+        --symbol "$sym" --base "$base" --quote "$quote" \
+        --price "$price" --shard "$shard" --pretty=false)
+
+    if [[ "$APPLY" == "1" ]]; then
+        curl -fsS -X PUT "${ADMIN_URL}/admin/symbols/${sym}" \
+            -H "X-API-Key: ${ADMIN_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$body"
+        echo " → applied"
+    else
+        echo "# DRY RUN — re-run with APPLY=1 to submit"
+        echo "curl -X PUT ${ADMIN_URL}/admin/symbols/${sym} \\"
+        echo "     -H 'X-API-Key: ***' -d '$body'"
+    fi
+done
