@@ -80,6 +80,12 @@ type Service struct {
 	idgen     IDGen
 	logger    *zap.Logger
 
+	// symbolLookup, when non-nil, is consulted during PlaceOrder to
+	// enforce ADR-0053 precision filters (M3). Nil = compatibility mode
+	// (no filter applied). Wired by main via SetSymbolLookup after the
+	// etcd symbol-config watcher starts.
+	symbolLookup SymbolLookup
+
 	// offsets records the trade-event topic's next-to-consume offset per
 	// partition (ADR-0048). Advanced from HandleTradeRecord after the
 	// handler has mutated state, read by snapshot.Capture; guarded by
@@ -106,6 +112,14 @@ func New(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt 
 func (s *Service) SetOrderDeps(txn TxnPublisher, idgen IDGen) {
 	s.txn = txn
 	s.idgen = idgen
+}
+
+// SetSymbolLookup wires the ADR-0053 M3 precision source. Passing nil (or
+// never calling this method) keeps PlaceOrder in compatibility mode — no
+// precision filter is enforced. Ops enables enforcement by pointing this
+// at an etcd-backed registry (see main.go).
+func (s *Service) SetSymbolLookup(fn SymbolLookup) {
+	s.symbolLookup = fn
 }
 
 // Offsets returns a copy of the per-partition trade-event offsets. Safe to

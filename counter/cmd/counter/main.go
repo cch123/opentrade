@@ -49,7 +49,9 @@ import (
 	"github.com/xargin/opentrade/counter/internal/server"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/counter/internal/snapshot"
+	"github.com/xargin/opentrade/counter/internal/symregistry"
 	"github.com/xargin/opentrade/pkg/election"
+	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
 )
@@ -233,6 +235,36 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		ProducerID:  cfg.InstanceID,
 	}, state, userSeq, dt, txnProducer, logger)
 	svc.SetOrderDeps(txnProducer, idg)
+
+	// ADR-0053 M3: wire per-symbol precision lookup. When etcd is
+	// configured (same endpoints as election), spawn a watcher goroutine
+	// that keeps the registry in sync with /cex/match/symbols/*. Without
+	// etcd endpoints the registry stays nil and PlaceOrder runs in
+	// compatibility mode.
+	if len(cfg.EtcdEndpoints) > 0 {
+		symSrc, err := etcdcfg.NewEtcdSource(etcdcfg.EtcdConfig{
+			Endpoints: cfg.EtcdEndpoints,
+		})
+		if err != nil {
+			logger.Warn("symbol registry: etcd dial failed, precision stays in compat mode",
+				zap.Error(err))
+		} else {
+			defer func() { _ = symSrc.Close() }()
+			registry := symregistry.New()
+			go func() {
+				if err := registry.Run(ctx, symSrc); err != nil &&
+					!errors.Is(err, context.Canceled) {
+					logger.Error("symbol registry watch exited", zap.Error(err))
+				}
+			}()
+			svc.SetSymbolLookup(registry.Get)
+			logger.Info("symbol registry wired for precision enforcement",
+				zap.Strings("etcd", cfg.EtcdEndpoints))
+		}
+	} else {
+		logger.Info("no etcd endpoints; precision enforcement disabled (compat mode)")
+	}
+
 	// Inject the snapshot's trade-event offsets so advanceOffset has a
 	// correct baseline. Cold start / v1 snapshot → nil → consumer will
 	// fall back to AtStart below.

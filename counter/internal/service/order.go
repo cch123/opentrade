@@ -89,6 +89,22 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 		}, nil
 	}
 
+	// ADR-0053 M3: per-symbol precision filter (tick / lot / min-qty /
+	// min-amount). Runs before the sequencer so rejects don't burn a
+	// counter seq. Compatibility mode: nil lookup or symbol without Tiers
+	// falls straight through.
+	if s.symbolLookup != nil {
+		if cfg, ok := s.symbolLookup(req.Symbol); ok {
+			if reason, pass := validatePrecision(cfg, req); !pass {
+				return &PlaceOrderResult{
+					ClientOrderID: req.ClientOrderID,
+					Accepted:      false,
+					RejectReason:  string(reason),
+				}, nil
+			}
+		}
+	}
+
 	// Fast-path: active-COID dedup without grabbing the sequencer.
 	if req.ClientOrderID != "" {
 		if existing := s.state.Orders().LookupActiveByCOID(req.UserID, req.ClientOrderID); existing != nil {
