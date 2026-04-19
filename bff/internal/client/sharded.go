@@ -98,6 +98,13 @@ func (s *ShardedCounter) AdminCancelOrders(ctx context.Context, in *counterrpc.A
 	return agg, nil
 }
 
+// CancelMyOrders dispatches to the user's shard. Unlike AdminCancelOrders,
+// there is no fan-out path: the RPC requires a user_id and a single shard
+// owns every live order for that user.
+func (s *ShardedCounter) CancelMyOrders(ctx context.Context, in *counterrpc.CancelMyOrdersRequest, opts ...grpc.CallOption) (*counterrpc.CancelMyOrdersResponse, error) {
+	return s.pick(in.UserId).CancelMyOrders(ctx, in, opts...)
+}
+
 // BroadcastAdminCancelOrders calls every shard in parallel and returns the
 // per-shard responses in shard-id order. Shards that error return nil at
 // their slot and their error gets surfaced via the accompanying error;

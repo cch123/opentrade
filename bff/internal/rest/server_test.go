@@ -31,6 +31,7 @@ type fakeCounter struct {
 	transferFn    func(*counterrpc.TransferRequest) (*counterrpc.TransferResponse, error)
 	balanceFn     func(*counterrpc.QueryBalanceRequest) (*counterrpc.QueryBalanceResponse, error)
 	adminCancelFn func(*counterrpc.AdminCancelOrdersRequest) (*counterrpc.AdminCancelOrdersResponse, error)
+	myCancelFn    func(*counterrpc.CancelMyOrdersRequest) (*counterrpc.CancelMyOrdersResponse, error)
 }
 
 func (f *fakeCounter) PlaceOrder(_ context.Context, req *counterrpc.PlaceOrderRequest, _ ...grpc.CallOption) (*counterrpc.PlaceOrderResponse, error) {
@@ -53,6 +54,12 @@ func (f *fakeCounter) AdminCancelOrders(_ context.Context, req *counterrpc.Admin
 		return &counterrpc.AdminCancelOrdersResponse{}, nil
 	}
 	return f.adminCancelFn(req)
+}
+func (f *fakeCounter) CancelMyOrders(_ context.Context, req *counterrpc.CancelMyOrdersRequest, _ ...grpc.CallOption) (*counterrpc.CancelMyOrdersResponse, error) {
+	if f.myCancelFn == nil {
+		return &counterrpc.CancelMyOrdersResponse{}, nil
+	}
+	return f.myCancelFn(req)
 }
 
 func newServer(fc *fakeCounter) *Server {
@@ -467,5 +474,64 @@ func TestTransferAndBalance(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("balance code = %d", rr.Code)
+	}
+}
+
+func TestCancelMyOrders_ForwardsUserAndSymbol(t *testing.T) {
+	var seen *counterrpc.CancelMyOrdersRequest
+	fc := &fakeCounter{
+		myCancelFn: func(req *counterrpc.CancelMyOrdersRequest) (*counterrpc.CancelMyOrdersResponse, error) {
+			seen = req
+			return &counterrpc.CancelMyOrdersResponse{Cancelled: 3, Skipped: 1}, nil
+		},
+	}
+	srv := newServer(fc)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/orders?symbol=BTC-USDT", nil)
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if seen == nil || seen.UserId != "u1" || seen.Symbol != "BTC-USDT" {
+		t.Fatalf("forwarded req = %+v", seen)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp["cancelled"].(float64) != 3 || resp["skipped"].(float64) != 1 {
+		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+func TestCancelMyOrders_NoSymbolDefaultsToAll(t *testing.T) {
+	var seen *counterrpc.CancelMyOrdersRequest
+	fc := &fakeCounter{
+		myCancelFn: func(req *counterrpc.CancelMyOrdersRequest) (*counterrpc.CancelMyOrdersResponse, error) {
+			seen = req
+			return &counterrpc.CancelMyOrdersResponse{}, nil
+		},
+	}
+	srv := newServer(fc)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/orders", nil)
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if seen == nil || seen.UserId != "u1" || seen.Symbol != "" {
+		t.Fatalf("forwarded req = %+v", seen)
+	}
+}
+
+func TestCancelMyOrders_MissingAuth(t *testing.T) {
+	srv := newServer(&fakeCounter{})
+	req := httptest.NewRequest(http.MethodDelete, "/v1/orders", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("code = %d", rr.Code)
 	}
 }

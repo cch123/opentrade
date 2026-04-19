@@ -208,6 +208,31 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCancelMyOrders bulk-cancels the caller's live orders on their
+// Counter shard. Optional `?symbol=X` narrows the scope to one symbol;
+// absent query means "every open order for this user". Returns the
+// per-shard counts (no fan-out — a user lives on a single shard).
+func (s *Server) handleCancelMyOrders(w http.ResponseWriter, r *http.Request) {
+	userID, err := auth.UserID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	symbol := r.URL.Query().Get("symbol")
+	resp, err := s.counter.CancelMyOrders(r.Context(), &counterrpc.CancelMyOrdersRequest{
+		UserId: userID,
+		Symbol: symbol,
+	})
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cancelled": resp.Cancelled,
+		"skipped":   resp.Skipped,
+	})
+}
+
 func (s *Server) handleCancelOrder(w http.ResponseWriter, r *http.Request) {
 	userID, err := auth.UserID(r.Context())
 	if err != nil {

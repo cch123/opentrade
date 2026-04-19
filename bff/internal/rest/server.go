@@ -66,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/order", s.handlePlaceOrder)
 	mux.HandleFunc("DELETE /v1/order/{order_id}", s.handleCancelOrder)
+	mux.HandleFunc("DELETE /v1/orders", s.handleCancelMyOrders)
 	mux.HandleFunc("GET /v1/order/{order_id}", s.handleQueryOrder)
 	mux.HandleFunc("POST /v1/transfer", s.handleTransfer)
 	mux.HandleFunc("GET /v1/account", s.handleQueryBalance)

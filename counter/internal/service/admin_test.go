@@ -125,6 +125,50 @@ func TestAdminCancel_AlreadyPendingCancelIsSkipped(t *testing.T) {
 	}
 }
 
+func TestCancelMyOrders_UserScope(t *testing.T) {
+	svc, ids := place3Orders(t)
+	res, err := svc.CancelMyOrders(context.Background(), "u1", "")
+	if err != nil {
+		t.Fatalf("cancel my orders: %v", err)
+	}
+	if res.Cancelled != 2 || res.Skipped != 0 {
+		t.Fatalf("cancelled=%d skipped=%d", res.Cancelled, res.Skipped)
+	}
+	// u2's order must stay live — a user can only clear their own book.
+	if o := svc.state.Orders().Get(ids[2]); o.Status == engine.OrderStatusPendingCancel {
+		t.Fatal("u2 order cancelled by u1's CancelMyOrders")
+	}
+}
+
+func TestCancelMyOrders_SymbolScope(t *testing.T) {
+	svc, ids := place3Orders(t)
+	res, err := svc.CancelMyOrders(context.Background(), "u1", "BTC-USDT")
+	if err != nil {
+		t.Fatalf("cancel my orders: %v", err)
+	}
+	if res.Cancelled != 1 {
+		t.Fatalf("cancelled=%d, want 1", res.Cancelled)
+	}
+	// Only u1/BTC-USDT cancelled; u1/ETH-USDT and u2/BTC-USDT untouched.
+	if s := svc.state.Orders().Get(ids[0]).Status; s != engine.OrderStatusPendingCancel {
+		t.Fatalf("u1/BTC-USDT status = %v", s)
+	}
+	if s := svc.state.Orders().Get(ids[1]).Status; s == engine.OrderStatusPendingCancel {
+		t.Fatal("u1/ETH-USDT cancelled by BTC-USDT scope")
+	}
+	if s := svc.state.Orders().Get(ids[2]).Status; s == engine.OrderStatusPendingCancel {
+		t.Fatal("u2/BTC-USDT cancelled by u1's CancelMyOrders")
+	}
+}
+
+func TestCancelMyOrders_MissingUserIDRejected(t *testing.T) {
+	svc, _ := place3Orders(t)
+	_, err := svc.CancelMyOrders(context.Background(), "", "")
+	if !errors.Is(err, ErrMissingUserID) {
+		t.Fatalf("err = %v, want ErrMissingUserID", err)
+	}
+}
+
 func TestAdminCancel_WrongShardForUser(t *testing.T) {
 	svc, _ := place3Orders(t)
 	// Flip the service into a 2-shard world where u1 hashes to shard 1 (not

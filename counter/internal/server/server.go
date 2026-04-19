@@ -308,6 +308,23 @@ func (s *Server) AdminCancelOrders(ctx context.Context, req *counterrpc.AdminCan
 	}, nil
 }
 
+// CancelMyOrders implements CounterService.CancelMyOrders. User-facing
+// bulk cancel: user_id is required, symbol optional (empty = every active
+// order owned by the user on this shard).
+func (s *Server) CancelMyOrders(ctx context.Context, req *counterrpc.CancelMyOrdersRequest) (*counterrpc.CancelMyOrdersResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+	res, err := s.svc.CancelMyOrders(ctx, req.UserId, req.Symbol)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &counterrpc.CancelMyOrdersResponse{
+		Cancelled: res.Cancelled,
+		Skipped:   res.Skipped,
+	}, nil
+}
+
 // ReleaseReservation implements CounterService.ReleaseReservation (ADR-0041).
 func (s *Server) ReleaseReservation(ctx context.Context, req *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error) {
 	if req == nil {

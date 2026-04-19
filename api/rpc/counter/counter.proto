@@ -58,6 +58,16 @@ service CounterService {
   // orders). Cross-shard fan-out happens at BFF level: if only a symbol
   // is given, BFF calls every shard in parallel.
   rpc AdminCancelOrders(AdminCancelOrdersRequest) returns (AdminCancelOrdersResponse);
+
+  // CancelMyOrders bulk-cancels the caller's own live orders on this
+  // shard. user_id is required (and must hash to this shard); symbol is
+  // optional — when empty, every active order owned by the user is
+  // cancelled. Shares the same per-order Cancel path as CancelOrder /
+  // AdminCancelOrders, so Match sees a normal OrderCancelEvent stream
+  // and the idempotency rules (PENDING_CANCEL + terminal auto-skip)
+  // apply. This is the user-facing counterpart to AdminCancelOrders;
+  // BFF routes it to the single shard owning user_id (no fan-out).
+  rpc CancelMyOrders(CancelMyOrdersRequest) returns (CancelMyOrdersResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -254,4 +264,22 @@ message AdminCancelOrdersResponse {
   uint32 skipped = 2;
   // Numeric shard id (Config.ShardID) so the BFF fan-out can report per-shard.
   int32 shard_id = 3;
+}
+
+// -----------------------------------------------------------------------------
+// User-facing bulk cancel
+// -----------------------------------------------------------------------------
+
+message CancelMyOrdersRequest {
+  // Required; must hash to this shard.
+  string user_id = 1;
+  // Optional; empty means "every active order for this user on this shard".
+  string symbol = 2;
+}
+
+message CancelMyOrdersResponse {
+  // Orders successfully transitioned to PENDING_CANCEL (forwarded to Match).
+  uint32 cancelled = 1;
+  // Orders that matched but were already terminal / pending cancel.
+  uint32 skipped = 2;
 }

@@ -21,7 +21,9 @@ type AdminCancelFilter struct {
 	Symbol string
 }
 
-// AdminCancelResult is the Service-level response for AdminCancelOrders.
+// AdminCancelResult is the Service-level response for bulk cancel calls.
+// Shared by AdminCancelOrders (operator path) and CancelMyOrders (user
+// path) since the post-filter execution is identical.
 type AdminCancelResult struct {
 	Cancelled uint32
 	Skipped   uint32
@@ -35,17 +37,40 @@ type AdminCancelResult struct {
 // the overall call only returns an error on filter validation or when
 // PlaceOrder deps are not wired.
 func (s *Service) AdminCancelOrders(ctx context.Context, filter AdminCancelFilter) (*AdminCancelResult, error) {
-	if s.txn == nil {
-		return nil, ErrOrderDepsNotConfigured
-	}
 	if filter.UserID == "" && filter.Symbol == "" {
 		return nil, ErrAdminCancelFilterEmpty
 	}
 	// When UserID is given, verify shard ownership before touching state.
 	// Without a user filter, the call iterates every user owned by this
-	// shard — OwnsUser is checked implicitly by CancelOrder below.
+	// shard — OwnsUser is checked implicitly inside the loop.
 	if filter.UserID != "" && !s.OwnsUser(filter.UserID) {
 		return nil, ErrWrongShard
+	}
+	return s.cancelOrdersMatching(ctx, filter)
+}
+
+// CancelMyOrders is the user-facing bulk cancel. user_id is required and
+// must hash to this shard; symbol is optional (empty = every active order
+// owned by the user). Shares the post-filter execution with
+// AdminCancelOrders but enforces a stricter precondition (no admin-style
+// "symbol only" scope).
+func (s *Service) CancelMyOrders(ctx context.Context, userID, symbol string) (*AdminCancelResult, error) {
+	if userID == "" {
+		return nil, ErrMissingUserID
+	}
+	if !s.OwnsUser(userID) {
+		return nil, ErrWrongShard
+	}
+	return s.cancelOrdersMatching(ctx, AdminCancelFilter{UserID: userID, Symbol: symbol})
+}
+
+// cancelOrdersMatching is the shared execution body: snapshot the order
+// store, narrow by filter, then run the standard CancelOrder path on each
+// match. Callers are responsible for validating the filter shape and
+// shard ownership before invoking.
+func (s *Service) cancelOrdersMatching(ctx context.Context, filter AdminCancelFilter) (*AdminCancelResult, error) {
+	if s.txn == nil {
+		return nil, ErrOrderDepsNotConfigured
 	}
 
 	snapshot := s.state.Orders().All() // clone slice
@@ -75,7 +100,7 @@ func (s *Service) AdminCancelOrders(ctx context.Context, filter AdminCancelFilte
 	for _, o := range targets {
 		res, err := s.CancelOrder(ctx, CancelOrderRequest{UserID: o.UserID, OrderID: o.ID})
 		if err != nil {
-			s.logger.Warn("admin cancel: per-order CancelOrder failed",
+			s.logger.Warn("bulk cancel: per-order CancelOrder failed",
 				zap.String("user", o.UserID),
 				zap.Uint64("order", o.ID),
 				zap.Error(err))

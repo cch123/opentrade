@@ -24,6 +24,8 @@ type fakeCounter struct {
 	adminCancelResult *counterrpc.AdminCancelOrdersResponse
 	adminCancelErr    error
 	adminCancelHits   int
+	myCancelHits      int
+	lastMyCancelReq   *counterrpc.CancelMyOrdersRequest
 }
 
 func (f *fakeCounter) PlaceOrder(ctx context.Context, in *counterrpc.PlaceOrderRequest, opts ...grpc.CallOption) (*counterrpc.PlaceOrderResponse, error) {
@@ -60,6 +62,12 @@ func (f *fakeCounter) AdminCancelOrders(ctx context.Context, in *counterrpc.Admi
 		return f.adminCancelResult, nil
 	}
 	return &counterrpc.AdminCancelOrdersResponse{ShardId: int32(f.id)}, nil
+}
+
+func (f *fakeCounter) CancelMyOrders(ctx context.Context, in *counterrpc.CancelMyOrdersRequest, opts ...grpc.CallOption) (*counterrpc.CancelMyOrdersResponse, error) {
+	f.myCancelHits++
+	f.lastMyCancelReq = in
+	return &counterrpc.CancelMyOrdersResponse{}, nil
 }
 
 func TestNewSharded_RejectsEmptyAndNil(t *testing.T) {
