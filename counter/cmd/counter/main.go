@@ -85,6 +85,11 @@ type Config struct {
 	ReconInterval   time.Duration
 	ReconBatchSize  int
 
+	// DefaultMaxOpenLimitOrders is the ADR-0054 fallback when a symbol's
+	// SymbolConfig.MaxOpenLimitOrders is zero. 0 disables the cap entirely
+	// (compatibility mode). Operators should leave the default 100.
+	DefaultMaxOpenLimitOrders uint32
+
 	Env      string
 	LogLevel string
 }
@@ -230,9 +235,10 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 
 	svc := service.New(service.Config{
-		ShardID:     cfg.ShardID,
-		TotalShards: cfg.TotalShards,
-		ProducerID:  cfg.InstanceID,
+		ShardID:                   cfg.ShardID,
+		TotalShards:               cfg.TotalShards,
+		ProducerID:                cfg.InstanceID,
+		DefaultMaxOpenLimitOrders: cfg.DefaultMaxOpenLimitOrders,
 	}, state, userSeq, dt, txnProducer, logger)
 	svc.SetOrderDeps(txnProducer, idg)
 
@@ -451,10 +457,11 @@ func parseFlags() Config {
 		HAMode:           "disabled",
 		LeaseTTL:         10,
 		CampaignBackoff:  2 * time.Second,
-		ReconInterval:    time.Hour,
-		ReconBatchSize:   200,
-		Env:              "dev",
-		LogLevel:         "info",
+		ReconInterval:             time.Hour,
+		ReconBatchSize:            200,
+		DefaultMaxOpenLimitOrders: 100, // ADR-0054
+		Env:                       "dev",
+		LogLevel:                  "info",
 	}
 	var brokersStr, etcdStr, snapshotFormatStr string
 	flag.IntVar(&cfg.ShardID, "shard-id", 0, "shard id (0..total-shards-1)")
@@ -479,12 +486,15 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", "", "MySQL DSN for hourly balance reconcile (empty disables; ADR-0008)")
 	flag.DurationVar(&cfg.ReconInterval, "recon-interval", cfg.ReconInterval, "balance audit cadence (primary only; 0 disables even when DSN set)")
 	flag.IntVar(&cfg.ReconBatchSize, "recon-batch", cfg.ReconBatchSize, "user ids per reconcile SELECT batch")
+	var defaultMaxOpenLimitOrders uint
+	flag.UintVar(&defaultMaxOpenLimitOrders, "default-max-open-limit-orders", uint(cfg.DefaultMaxOpenLimitOrders), "ADR-0054 fallback per-(user, symbol) LIMIT cap when SymbolConfig.MaxOpenLimitOrders is zero (0 disables cap; default 100)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
 
 	cfg.Brokers = splitCSV(brokersStr)
 	cfg.EtcdEndpoints = splitCSV(etcdStr)
+	cfg.DefaultMaxOpenLimitOrders = uint32(defaultMaxOpenLimitOrders)
 	// --snapshot-format + OPENTRADE_SNAPSHOT_FORMAT env override (ADR-0049).
 	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
 		snapshotFormatStr = envFmt

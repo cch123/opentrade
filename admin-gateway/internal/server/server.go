@@ -157,12 +157,21 @@ type putSymbolBody struct {
 	Trading bool   `json:"trading"`
 	Version string `json:"version,omitempty"`
 
-	BaseAsset        string                    `json:"base_asset,omitempty"`
-	QuoteAsset       string                    `json:"quote_asset,omitempty"`
-	PrecisionVersion uint64                    `json:"precision_version,omitempty"`
-	Tiers            []etcdcfg.PrecisionTier   `json:"tiers,omitempty"`
-	ScheduledChange  *etcdcfg.PrecisionChange  `json:"scheduled_change,omitempty"`
+	BaseAsset        string                   `json:"base_asset,omitempty"`
+	QuoteAsset       string                   `json:"quote_asset,omitempty"`
+	PrecisionVersion uint64                   `json:"precision_version,omitempty"`
+	Tiers            []etcdcfg.PrecisionTier  `json:"tiers,omitempty"`
+	ScheduledChange  *etcdcfg.PrecisionChange `json:"scheduled_change,omitempty"`
+
+	// ADR-0054 order slot limits. Zero = use service default.
+	MaxOpenLimitOrders         uint32 `json:"max_open_limit_orders,omitempty"`
+	MaxActiveConditionalOrders uint32 `json:"max_active_conditional_orders,omitempty"`
 }
+
+// maxOrderSlotUpper caps the two ADR-0054 slot fields. 10_000 is several
+// orders of magnitude above any realistic MM deployment and guards against
+// typos (100_000 instead of 100).
+const maxOrderSlotUpper = 10_000
 
 func (s *Server) handleListSymbols(w http.ResponseWriter, r *http.Request) {
 	if s.etcd == nil {
@@ -256,18 +265,30 @@ func (s *Server) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// ADR-0054 order slot sanity: non-zero fields must fit in a reasonable
+	// range. Zero means "use service default".
+	if body.MaxOpenLimitOrders > maxOrderSlotUpper {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("max_open_limit_orders must be <= %d", maxOrderSlotUpper))
+		return
+	}
+	if body.MaxActiveConditionalOrders > maxOrderSlotUpper {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("max_active_conditional_orders must be <= %d", maxOrderSlotUpper))
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
 	rev, putErr := s.etcd.Put(ctx, symbol, etcdcfg.SymbolConfig{
-		Shard:            body.Shard,
-		Trading:          body.Trading,
-		Version:          body.Version,
-		BaseAsset:        body.BaseAsset,
-		QuoteAsset:       body.QuoteAsset,
-		PrecisionVersion: body.PrecisionVersion,
-		Tiers:            body.Tiers,
-		ScheduledChange:  body.ScheduledChange,
+		Shard:                      body.Shard,
+		Trading:                    body.Trading,
+		Version:                    body.Version,
+		BaseAsset:                  body.BaseAsset,
+		QuoteAsset:                 body.QuoteAsset,
+		PrecisionVersion:           body.PrecisionVersion,
+		Tiers:                      body.Tiers,
+		ScheduledChange:            body.ScheduledChange,
+		MaxOpenLimitOrders:         body.MaxOpenLimitOrders,
+		MaxActiveConditionalOrders: body.MaxActiveConditionalOrders,
 	})
 	params := map[string]any{"shard": body.Shard, "trading": body.Trading}
 	if body.Version != "" {

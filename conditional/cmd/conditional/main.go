@@ -80,6 +80,17 @@ type Config struct {
 	LeaseTTL        int
 	CampaignBackoff time.Duration
 
+	// DefaultMaxActiveConditionalOrders is the ADR-0054 fallback cap per
+	// (user, symbol) when a SymbolConfig.MaxActiveConditionalOrders is
+	// zero. Zero disables the cap (compat mode).
+	DefaultMaxActiveConditionalOrders uint32
+
+	// EtcdSymbolPrefix, when non-empty, starts a watcher that wires
+	// etcd-backed SymbolConfig lookups into the engine so ADR-0054 caps
+	// can be tuned per-symbol. Defaults to the shared prefix used by
+	// match / counter (ADR-0030).
+	EtcdSymbolPrefix string
+
 	Env      string
 	LogLevel string
 }
@@ -209,7 +220,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 
 	eng := engine.New(engine.Config{
-		TerminalHistoryLimit: cfg.TerminalHistoryLimit,
+		TerminalHistoryLimit:              cfg.TerminalHistoryLimit,
+		DefaultMaxActiveConditionalOrders: cfg.DefaultMaxActiveConditionalOrders,
+		// SymbolLookup left nil for MVP — only the default cap applies.
+		// Per-symbol override via etcd SymbolConfig is backlog (see
+		// ADR-0054 backlog memory).
 	}, idg, placer, placer, logger)
 
 	var jProducer *journal.Producer
@@ -428,14 +443,16 @@ func parseFlags() Config {
 		SnapshotDir:          "./data/conditional",
 		SnapshotInterval:     30 * time.Second,
 		SnapshotFormat:       snapshot.FormatProto, // ADR-0049
-		TerminalHistoryLimit: 1000,
-		ExpirySweepInterval:  5 * time.Second,
-		IDGenShard:           900, // deliberately out of counter's 0..99 range
-		HAMode:               "disabled",
-		LeaseTTL:             10,
-		CampaignBackoff:      2 * time.Second,
-		Env:                  "dev",
-		LogLevel:             "info",
+		TerminalHistoryLimit:              1000,
+		ExpirySweepInterval:               5 * time.Second,
+		IDGenShard:                        900, // deliberately out of counter's 0..99 range
+		HAMode:                            "disabled",
+		LeaseTTL:                          10,
+		CampaignBackoff:                   2 * time.Second,
+		DefaultMaxActiveConditionalOrders: 10, // ADR-0054
+		EtcdSymbolPrefix:                  "",
+		Env:                               "dev",
+		LogLevel:                          "info",
 	}
 	var brokersStr, shardsStr, etcdStr, snapshotFormatStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (grpc client id / default group suffix)")
@@ -457,6 +474,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ElectionPath, "election-path", "", "etcd election key (default /cex/conditional/leader)")
 	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "etcd session TTL seconds")
 	flag.DurationVar(&cfg.CampaignBackoff, "campaign-backoff", cfg.CampaignBackoff, "wait between failed Campaigns")
+	var defaultMaxActiveCond uint
+	flag.UintVar(&defaultMaxActiveCond, "default-max-active-conditional-orders", uint(cfg.DefaultMaxActiveConditionalOrders), "ADR-0054 fallback per-(user, symbol) pending conditional cap when SymbolConfig.MaxActiveConditionalOrders is zero (0 disables; default 10)")
+	flag.StringVar(&cfg.EtcdSymbolPrefix, "etcd-symbol-prefix", cfg.EtcdSymbolPrefix, "etcd prefix for SymbolConfig lookups (ADR-0054 per-symbol cap override); empty disables lookup")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
@@ -464,6 +484,7 @@ func parseFlags() Config {
 	cfg.Brokers = splitCSV(brokersStr)
 	cfg.CounterShards = splitCSV(shardsStr)
 	cfg.EtcdEndpoints = splitCSV(etcdStr)
+	cfg.DefaultMaxActiveConditionalOrders = uint32(defaultMaxActiveCond)
 	// --snapshot-format + OPENTRADE_SNAPSHOT_FORMAT env override (ADR-0049).
 	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
 		snapshotFormatStr = envFmt

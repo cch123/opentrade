@@ -22,12 +22,17 @@ type OrderStore struct {
 	mu           sync.RWMutex
 	byID         map[uint64]*Order
 	activeByCOID map[string]uint64 // (user_id + "|" + clientOrderId) → order_id
+	// activeLimits counts active LIMIT orders per (user_id, symbol) for the
+	// ADR-0054 slot cap. Active = Status non-terminal && Type == LIMIT.
+	// Derived index — rebuilt from byID on restore; not persisted.
+	activeLimits map[string]map[string]int // user_id → symbol → count
 }
 
 func newOrderStore() *OrderStore {
 	return &OrderStore{
 		byID:         make(map[uint64]*Order),
 		activeByCOID: make(map[string]uint64),
+		activeLimits: make(map[string]map[string]int),
 	}
 }
 
@@ -70,6 +75,9 @@ func (s *OrderStore) Insert(o *Order) error {
 		s.activeByCOID[key] = o.ID
 	}
 	s.byID[o.ID] = o
+	if countsAsActiveLimit(o) {
+		s.incActiveLimit(o.UserID, o.Symbol)
+	}
 	return nil
 }
 
@@ -85,6 +93,12 @@ func (s *OrderStore) UpdateStatus(id uint64, newStatus OrderStatus, updatedAtMS 
 	prev := o.Status
 	if !prev.IsTerminal() && newStatus.IsTerminal() && o.ClientOrderID != "" {
 		delete(s.activeByCOID, coidKey(o.UserID, o.ClientOrderID))
+	}
+	// ADR-0054 activeLimits: the counter tracks "active LIMIT" which is the
+	// conjunction (Type == LIMIT) && (!Status.IsTerminal()). A transition
+	// only moves the counter if it crosses the terminal boundary.
+	if o.Type == OrderTypeLimit && !prev.IsTerminal() && newStatus.IsTerminal() {
+		s.decActiveLimit(o.UserID, o.Symbol)
 	}
 	if newStatus == OrderStatusPendingCancel {
 		o.PreCancelStatus = prev
@@ -150,6 +164,54 @@ func (s *OrderStore) RestoreInsert(o *Order) {
 	s.byID[o.ID] = o
 	if o.ClientOrderID != "" && !o.Status.IsTerminal() {
 		s.activeByCOID[coidKey(o.UserID, o.ClientOrderID)] = o.ID
+	}
+	if countsAsActiveLimit(o) {
+		s.incActiveLimit(o.UserID, o.Symbol)
+	}
+}
+
+// CountActiveLimits returns the number of active LIMIT orders the user
+// currently holds on symbol (ADR-0054). Used by PlaceOrder to enforce
+// per-(user, symbol) slot caps. O(1); takes RLock.
+func (s *OrderStore) CountActiveLimits(userID, symbol string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	bySymbol, ok := s.activeLimits[userID]
+	if !ok {
+		return 0
+	}
+	return bySymbol[symbol]
+}
+
+// countsAsActiveLimit reports whether the order occupies a slot in the
+// ADR-0054 MaxOpenLimitOrders counter.
+func countsAsActiveLimit(o *Order) bool {
+	return o.Type == OrderTypeLimit && !o.Status.IsTerminal()
+}
+
+// incActiveLimit / decActiveLimit maintain the per-(user, symbol) counter.
+// Caller must hold s.mu exclusively. decActiveLimit drops empty maps to
+// avoid leaking memory for users that churn through many symbols.
+func (s *OrderStore) incActiveLimit(userID, symbol string) {
+	bySymbol, ok := s.activeLimits[userID]
+	if !ok {
+		bySymbol = make(map[string]int)
+		s.activeLimits[userID] = bySymbol
+	}
+	bySymbol[symbol]++
+}
+
+func (s *OrderStore) decActiveLimit(userID, symbol string) {
+	bySymbol, ok := s.activeLimits[userID]
+	if !ok {
+		return
+	}
+	bySymbol[symbol]--
+	if bySymbol[symbol] <= 0 {
+		delete(bySymbol, symbol)
+	}
+	if len(bySymbol) == 0 {
+		delete(s.activeLimits, userID)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/etcdcfg"
 )
 
 // Order-service errors.
@@ -133,6 +134,28 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 					Accepted:      false,
 					ReceivedAtMS:  existing.CreatedAt,
 				}, nil
+			}
+		}
+
+		// ADR-0054: enforce per-(user, symbol) active LIMIT cap. MARKET
+		// orders are not counted (they're terminal the moment the sequencer
+		// releases). Dedup hits return above, so a repeated client_order_id
+		// never double-counts.
+		if req.OrderType == engine.OrderTypeLimit {
+			cap := s.cfg.DefaultMaxOpenLimitOrders
+			if s.symbolLookup != nil {
+				if cfg, ok := s.symbolLookup(req.Symbol); ok && cfg.MaxOpenLimitOrders > 0 {
+					cap = cfg.MaxOpenLimitOrders
+				}
+			}
+			if cap > 0 {
+				if n := s.state.Orders().CountActiveLimits(req.UserID, req.Symbol); uint32(n) >= cap {
+					return &PlaceOrderResult{
+						ClientOrderID: req.ClientOrderID,
+						Accepted:      false,
+						RejectReason:  string(etcdcfg.RejectMaxOpenLimitOrders),
+					}, nil
+				}
 			}
 		}
 

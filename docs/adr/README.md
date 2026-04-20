@@ -93,6 +93,8 @@
 | [0020](0020-order-state-machine.md) | 订单状态机：内部 8 态 + 外部 6 态（Binance 风格） | Accepted |
 | [0034](0034-market-orders-client-side-translation.md) | MARKET 单由客户端翻译为 LIMIT+IOC，后端不承载 | Superseded by 0035 |
 | [0035](0035-market-orders-native-server-side.md) | MARKET 单服务端原生支持 + 可选 BFF 滑点保护翻译 | Accepted |
+| [0053](0053-symbol-precision-and-tiered-evolution.md) | Symbol 精度治理 + 分层精度演进（tick / lot / min-quote-amount） | Accepted |
+| [0054](0054-per-symbol-order-slots.md) | 单用户 per-symbol 挂单数上限（Limit / Conditional 双槽位） | Accepted |
 
 ### 行情与推送
 

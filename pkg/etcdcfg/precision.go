@@ -48,6 +48,10 @@ const (
 	// RejectMinQuoteAmount: price*qty (or reference*qty for MARKET with
 	// EnforceMinQuoteAmountOnMarket=true) below tier.MinQuoteAmount.
 	RejectMinQuoteAmount RejectReason = "min_quote_amount"
+	// RejectMaxOpenLimitOrders: the caller would exceed the per-(user,
+	// symbol) active-LIMIT-order cap (ADR-0054, SymbolConfig
+	// MaxOpenLimitOrders or service default).
+	RejectMaxOpenLimitOrders RejectReason = "max_open_limit_orders_exceeded"
 )
 
 // FloorToStep returns the largest multiple of step that does not exceed v.

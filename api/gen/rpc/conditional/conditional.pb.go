@@ -108,6 +108,11 @@ const (
 	// EXPIRED: expires_at_unix_ms passed before any trigger (ADR-0043).
 	// Terminal; reservation (if any) was released by the expiry sweeper.
 	ConditionalStatus_CONDITIONAL_STATUS_EXPIRED ConditionalStatus = 5
+	// EXPIRED_IN_MATCH: trigger fired but Counter rejected the derived LIMIT
+	// order because the user's per-(user, symbol) MAX_OPEN_LIMIT_ORDERS slot
+	// is full (ADR-0054). Terminal; reservation (if any) was released. Named
+	// after Binance's equivalent spot-filter status.
+	ConditionalStatus_CONDITIONAL_STATUS_EXPIRED_IN_MATCH ConditionalStatus = 6
 )
 
 // Enum value maps for ConditionalStatus.
@@ -119,14 +124,16 @@ var (
 		3: "CONDITIONAL_STATUS_CANCELED",
 		4: "CONDITIONAL_STATUS_REJECTED",
 		5: "CONDITIONAL_STATUS_EXPIRED",
+		6: "CONDITIONAL_STATUS_EXPIRED_IN_MATCH",
 	}
 	ConditionalStatus_value = map[string]int32{
-		"CONDITIONAL_STATUS_UNSPECIFIED": 0,
-		"CONDITIONAL_STATUS_PENDING":     1,
-		"CONDITIONAL_STATUS_TRIGGERED":   2,
-		"CONDITIONAL_STATUS_CANCELED":    3,
-		"CONDITIONAL_STATUS_REJECTED":    4,
-		"CONDITIONAL_STATUS_EXPIRED":     5,
+		"CONDITIONAL_STATUS_UNSPECIFIED":      0,
+		"CONDITIONAL_STATUS_PENDING":          1,
+		"CONDITIONAL_STATUS_TRIGGERED":        2,
+		"CONDITIONAL_STATUS_CANCELED":         3,
+		"CONDITIONAL_STATUS_REJECTED":         4,
+		"CONDITIONAL_STATUS_EXPIRED":          5,
+		"CONDITIONAL_STATUS_EXPIRED_IN_MATCH": 6,
 	}
 )
 
@@ -1117,14 +1124,15 @@ const file_rpc_conditional_conditional_proto_rawDesc = "" +
 	" CONDITIONAL_TYPE_STOP_LOSS_LIMIT\x10\x02\x12 \n" +
 	"\x1cCONDITIONAL_TYPE_TAKE_PROFIT\x10\x03\x12&\n" +
 	"\"CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT\x10\x04\x12'\n" +
-	"#CONDITIONAL_TYPE_TRAILING_STOP_LOSS\x10\x05*\xdb\x01\n" +
+	"#CONDITIONAL_TYPE_TRAILING_STOP_LOSS\x10\x05*\x84\x02\n" +
 	"\x11ConditionalStatus\x12\"\n" +
 	"\x1eCONDITIONAL_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCONDITIONAL_STATUS_PENDING\x10\x01\x12 \n" +
 	"\x1cCONDITIONAL_STATUS_TRIGGERED\x10\x02\x12\x1f\n" +
 	"\x1bCONDITIONAL_STATUS_CANCELED\x10\x03\x12\x1f\n" +
 	"\x1bCONDITIONAL_STATUS_REJECTED\x10\x04\x12\x1e\n" +
-	"\x1aCONDITIONAL_STATUS_EXPIRED\x10\x052\xf0\x04\n" +
+	"\x1aCONDITIONAL_STATUS_EXPIRED\x10\x05\x12'\n" +
+	"#CONDITIONAL_STATUS_EXPIRED_IN_MATCH\x10\x062\xf0\x04\n" +
 	"\x12ConditionalService\x12{\n" +
 	"\x10PlaceConditional\x122.opentrade.rpc.conditional.PlaceConditionalRequest\x1a3.opentrade.rpc.conditional.PlaceConditionalResponse\x12~\n" +
 	"\x11CancelConditional\x123.opentrade.rpc.conditional.CancelConditionalRequest\x1a4.opentrade.rpc.conditional.CancelConditionalResponse\x12{\n" +

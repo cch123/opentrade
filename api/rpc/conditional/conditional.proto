@@ -90,6 +90,11 @@ enum ConditionalStatus {
   // EXPIRED: expires_at_unix_ms passed before any trigger (ADR-0043).
   // Terminal; reservation (if any) was released by the expiry sweeper.
   CONDITIONAL_STATUS_EXPIRED = 5;
+  // EXPIRED_IN_MATCH: trigger fired but Counter rejected the derived LIMIT
+  // order because the user's per-(user, symbol) MAX_OPEN_LIMIT_ORDERS slot
+  // is full (ADR-0054). Terminal; reservation (if any) was released. Named
+  // after Binance's equivalent spot-filter status.
+  CONDITIONAL_STATUS_EXPIRED_IN_MATCH = 6;
 }
 
 // -----------------------------------------------------------------------------

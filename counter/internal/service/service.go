@@ -67,6 +67,11 @@ type Config struct {
 	// guard (every user is considered owned — legacy single-shard mode
 	// retained for tests and pre-MVP-8 deployments).
 	TotalShards int
+	// DefaultMaxOpenLimitOrders is the ADR-0054 cap applied when a symbol's
+	// SymbolConfig.MaxOpenLimitOrders is zero (or symbolLookup is nil).
+	// Zero here = compatibility mode (cap disabled). main supplies 100 by
+	// default; tests leave zero for skip-the-check behaviour.
+	DefaultMaxOpenLimitOrders uint32
 }
 
 // Service executes Counter business operations.

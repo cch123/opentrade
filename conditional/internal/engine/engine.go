@@ -37,6 +37,7 @@ import (
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/etcdcfg"
 )
 
 // -----------------------------------------------------------------------------
@@ -148,7 +149,25 @@ type Config struct {
 	TerminalHistoryLimit int
 	// Clock overrides time.Now — tests only.
 	Clock func() time.Time
+	// DefaultMaxActiveConditionalOrders is the ADR-0054 fallback cap when a
+	// symbol's SymbolConfig.MaxActiveConditionalOrders is zero (or
+	// SymbolLookup is nil). Zero here = compatibility mode (cap disabled).
+	// Production defaults to 10 (per ADR); tests leave zero to skip.
+	DefaultMaxActiveConditionalOrders uint32
+	// SymbolLookup, when non-nil, returns per-symbol config for the cap
+	// above (and future tunables). Wired by main after the etcd watcher
+	// starts; nil = compatibility mode.
+	SymbolLookup SymbolLookup
 }
+
+// SymbolLookup returns the SymbolConfig for a symbol, or ok=false if
+// unknown. Mirrors counter/internal/service.SymbolLookup.
+type SymbolLookup func(symbol string) (etcdcfg.SymbolConfig, bool)
+
+// ErrMaxActiveConditionalOrdersExceeded is returned by Place / PlaceOCO
+// when the caller would exceed the per-(user, symbol) untriggered
+// conditional cap (ADR-0054).
+var ErrMaxActiveConditionalOrdersExceeded = errors.New("conditional: max active conditional orders exceeded")
 
 // JournalSink receives a post-change clone of a Conditional after every
 // state transition (PENDING / TRIGGERED / CANCELED / REJECTED / EXPIRED).
@@ -175,6 +194,10 @@ type Engine struct {
 	ocoByClient map[string]string // client_oco_id → oco_group_id (ADR-0044)
 	lastPrice  map[string]dec.Decimal
 	offsets    map[int32]int64
+	// activeConditionals counts pending conditionals per (user, symbol) for
+	// the ADR-0054 slot cap. Derived index, rebuilt from pending on
+	// Restore — not persisted.
+	activeConditionals map[string]map[string]int
 
 	journal JournalSink // may be nil; set via SetJournal at main wiring time (ADR-0047)
 }
@@ -218,18 +241,68 @@ func New(cfg Config, idgen IDGen, placer OrderPlacer, reserver Reservations, log
 		cfg.TerminalHistoryLimit = 0
 	}
 	return &Engine{
-		cfg:         cfg,
-		idgen:       idgen,
-		placer:      placer,
-		reserver:    reserver,
-		logger:      logger,
-		pending:     make(map[uint64]*Conditional),
-		terminals:   make(map[uint64]*Conditional),
-		byClient:    make(map[string]uint64),
-		ocoByClient: make(map[string]string),
-		lastPrice:   make(map[string]dec.Decimal),
-		offsets:     make(map[int32]int64),
+		cfg:                cfg,
+		idgen:              idgen,
+		placer:             placer,
+		reserver:           reserver,
+		logger:             logger,
+		pending:            make(map[uint64]*Conditional),
+		terminals:          make(map[uint64]*Conditional),
+		byClient:           make(map[string]uint64),
+		ocoByClient:        make(map[string]string),
+		lastPrice:          make(map[string]dec.Decimal),
+		offsets:            make(map[int32]int64),
+		activeConditionals: make(map[string]map[string]int),
 	}
+}
+
+// capActiveConditionalsLocked returns the per-(user, symbol) pending cap
+// for ADR-0054. Callers must hold e.mu. Zero means no cap (compat mode).
+func (e *Engine) capActiveConditionalsLocked(symbol string) uint32 {
+	cap := e.cfg.DefaultMaxActiveConditionalOrders
+	if e.cfg.SymbolLookup != nil {
+		if cfg, ok := e.cfg.SymbolLookup(symbol); ok && cfg.MaxActiveConditionalOrders > 0 {
+			cap = cfg.MaxActiveConditionalOrders
+		}
+	}
+	return cap
+}
+
+// incActiveConditionalLocked / decActiveConditionalLocked maintain the
+// per-(user, symbol) pending counter. Callers must hold e.mu.
+func (e *Engine) incActiveConditionalLocked(userID, symbol string) {
+	bySymbol, ok := e.activeConditionals[userID]
+	if !ok {
+		bySymbol = make(map[string]int)
+		e.activeConditionals[userID] = bySymbol
+	}
+	bySymbol[symbol]++
+}
+
+func (e *Engine) decActiveConditionalLocked(userID, symbol string) {
+	bySymbol, ok := e.activeConditionals[userID]
+	if !ok {
+		return
+	}
+	bySymbol[symbol]--
+	if bySymbol[symbol] <= 0 {
+		delete(bySymbol, symbol)
+	}
+	if len(bySymbol) == 0 {
+		delete(e.activeConditionals, userID)
+	}
+}
+
+// CountActiveConditionals returns the number of pending conditionals user
+// currently holds on symbol. Used by tests and for admin surfacing.
+func (e *Engine) CountActiveConditionals(userID, symbol string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bySymbol, ok := e.activeConditionals[userID]
+	if !ok {
+		return 0
+	}
+	return bySymbol[symbol]
 }
 
 // -----------------------------------------------------------------------------
@@ -293,7 +366,22 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceConditionalRequest
 			}
 		}
 	}
+	// ADR-0054 slot cap. Inside the lock so concurrent Places can't both
+	// slip past a near-full bucket. We release the reservation before
+	// returning to keep Counter's Frozen in sync.
+	if cap := e.capActiveConditionalsLocked(c.Symbol); cap > 0 {
+		n := 0
+		if bySymbol := e.activeConditionals[c.UserID]; bySymbol != nil {
+			n = bySymbol[c.Symbol]
+		}
+		if uint32(n) >= cap {
+			e.mu.Unlock()
+			e.bestEffortRelease(ctx, c.UserID, refID)
+			return 0, 0, false, ErrMaxActiveConditionalOrdersExceeded
+		}
+	}
 	e.pending[c.ID] = c
+	e.incActiveConditionalLocked(c.UserID, c.Symbol)
 	if c.ClientCondID != "" {
 		e.byClient[c.ClientCondID] = c.ID
 	}
@@ -401,8 +489,24 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID, clientOCOID string, legs 
 			return gid, legResults, false, nil
 		}
 	}
+	// ADR-0054 slot cap: all OCO legs share (user, symbol), so the group
+	// must fit in one go. Legs are reserved → roll back all on cap miss.
+	if cap := e.capActiveConditionalsLocked(parsed[0].Symbol); cap > 0 {
+		n := 0
+		if bySymbol := e.activeConditionals[parsed[0].UserID]; bySymbol != nil {
+			n = bySymbol[parsed[0].Symbol]
+		}
+		if uint32(n+len(parsed)) > cap {
+			e.mu.Unlock()
+			for _, r := range reserved {
+				e.bestEffortRelease(ctx, r.UserID, e.refIDFor(r.ID))
+			}
+			return "", nil, false, ErrMaxActiveConditionalOrdersExceeded
+		}
+	}
 	for _, c := range parsed {
 		e.pending[c.ID] = c
+		e.incActiveConditionalLocked(c.UserID, c.Symbol)
 		if c.ClientCondID != "" {
 			e.byClient[c.ClientCondID] = c.ID
 		}
@@ -660,8 +764,16 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 	c.TriggeredAtMs = triggeredAtMs
 	failed := false
 	if err != nil {
-		c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED
-		c.RejectReason = cleanRejectReason(err)
+		reason := cleanRejectReason(err)
+		c.RejectReason = reason
+		// ADR-0054: Counter's per-(user, symbol) MAX_OPEN_LIMIT_ORDERS
+		// reject gets its own terminal status so clients (and audit tools)
+		// can distinguish "user slot full" from generic rejections.
+		if reason == string(etcdcfg.RejectMaxOpenLimitOrders) {
+			c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED_IN_MATCH
+		} else {
+			c.Status = condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED
+		}
 		failed = true
 		if e.logger != nil {
 			e.logger.Warn("conditional trigger rejected",
@@ -720,18 +832,21 @@ func (e *Engine) Snapshot() (pending []*Conditional, terminals []*Conditional, o
 }
 
 // Restore replaces in-memory state. Engine must be fresh (no prior writes)
-// or callers must accept replacement semantics.
+// or callers must accept replacement semantics. ADR-0054: the
+// activeConditionals index is derived from pending and rebuilt here.
 func (e *Engine) Restore(pending, terminals []*Conditional, offsets map[int32]int64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.pending = make(map[uint64]*Conditional, len(pending))
 	e.byClient = make(map[string]uint64, len(pending))
+	e.activeConditionals = make(map[string]map[string]int)
 	for _, c := range pending {
 		cp := *c
 		e.pending[cp.ID] = &cp
 		if cp.ClientCondID != "" {
 			e.byClient[cp.ClientCondID] = cp.ID
 		}
+		e.incActiveConditionalLocked(cp.UserID, cp.Symbol)
 	}
 	e.terminals = make(map[uint64]*Conditional, len(terminals))
 	e.termOrder = make([]uint64, 0, len(terminals))
@@ -1176,6 +1291,9 @@ func (e *Engine) lookupLocked(id uint64) *Conditional {
 // graduateLocked moves a conditional from pending to the terminals map +
 // FIFO list, trimming to TerminalHistoryLimit. Caller must hold e.mu.
 func (e *Engine) graduateLocked(c *Conditional) {
+	if _, wasPending := e.pending[c.ID]; wasPending {
+		e.decActiveConditionalLocked(c.UserID, c.Symbol)
+	}
 	delete(e.pending, c.ID)
 	if e.cfg.TerminalHistoryLimit == 0 {
 		// Still record it so in-flight Query / List responses see the

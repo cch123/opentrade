@@ -63,6 +63,21 @@ type SymbolConfig struct {
 	// migration (ADR-0053 § 6 rollout protocol). Match / counter consult it
 	// to schedule the atomic switch at EffectiveAt.
 	ScheduledChange *PrecisionChange `json:"scheduled_change,omitempty"`
+
+	// MaxOpenLimitOrders caps the number of active LIMIT orders a single
+	// user may hold on this symbol (ADR-0054). Active = Status is not
+	// terminal (PendingNew / New / PartiallyFilled / PendingCancel).
+	// Zero = use Counter's DefaultMaxOpenLimitOrders (100).
+	// Industry equivalents: Binance MAX_NUM_ORDERS, OKX maxLimitOrders.
+	MaxOpenLimitOrders uint32 `json:"max_open_limit_orders,omitempty"`
+
+	// MaxActiveConditionalOrders caps the number of untriggered conditional
+	// orders (STOP_LOSS / TAKE_PROFIT / TRAILING_STOP / OCO) a single user
+	// may hold on this symbol (ADR-0054). Zero = use Conditional service's
+	// DefaultMaxActiveConditionalOrders (10). MARKET orders and conditional
+	// orders already graduated to Counter LIMIT do not count.
+	// Industry equivalents: Binance MAX_NUM_ALGO_ORDERS, OKX maxTriggerOrders.
+	MaxActiveConditionalOrders uint32 `json:"max_active_conditional_orders,omitempty"`
 }
 
 // Owned reports whether this symbol should run on shardID right now.

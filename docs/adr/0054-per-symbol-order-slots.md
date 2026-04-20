@@ -1,9 +1,10 @@
 # ADR-0054: 单用户 per-symbol 挂单数上限（Limit / Conditional 双槽位）
 
-- 状态: Proposed
+- 状态: Accepted
 - 日期: 2026-04-19
 - 决策者: xargin, Claude
 - 相关 ADR: 0030（match etcd symbol sharding）、0040（conditional order service）、0041（counter reservations）、0044（conditional OCO）、0045（trailing stop）、0048（snapshot/offset 原子绑定）、0052（admin console）、0053（symbol 精度治理）
+- 实施: M1-M5 落地（见本 ADR "落地顺序"段，M6 admin UI 为后续 UI 小项）
 
 ## 术语 (Glossary)
 
