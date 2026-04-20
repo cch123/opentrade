@@ -46,6 +46,13 @@ import (
 	"github.com/xargin/opentrade/pkg/logx"
 )
 
+// orderBookFullTopNMax caps the OrderBook Full frame depth cap per side
+// (ADR-0055). 500 is generous for MVP (5× Binance default depth=100, 10×
+// OKX books50, 2.5× OKX books400). Raise if a concrete product need
+// appears — but first consider the OKX-style multi-depth channels route
+// (ADR-0055 "未来工作" 多档位频道).
+const orderBookFullTopNMax = 500
+
 type Config struct {
 	InstanceID string
 	ShardID    string
@@ -502,7 +509,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
 	flag.StringVar(&cfg.MarketDataTopic, "market-data-topic", cfg.MarketDataTopic, "market-data topic name (ADR-0055: Match publishes OrderBook Full / Delta here)")
 	flag.DurationVar(&cfg.OrderBookFullInterval, "orderbook-full-interval", cfg.OrderBookFullInterval, "how often to emit OrderBook Full frames per symbol (ADR-0055)")
-	flag.IntVar(&cfg.OrderBookFullTopN, "orderbook-full-top-n", cfg.OrderBookFullTopN, "OrderBook Full frame depth cap per side (ADR-0055; 0 = full book)")
+	flag.IntVar(&cfg.OrderBookFullTopN, "orderbook-full-top-n", cfg.OrderBookFullTopN, "OrderBook Full frame depth cap per side (ADR-0055; must be in [1, 500])")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default match-{instance-id})")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "how often to snapshot each symbol")
@@ -560,6 +567,13 @@ func (c *Config) validate() error {
 	}
 	if c.HAMode == "auto" && len(c.EtcdEndpoints) == 0 {
 		return fmt.Errorf("--etcd required when --ha-mode=auto")
+	}
+	// ADR-0055: Full frames carry at most orderBookFullTopN price levels per
+	// side. A "full book" dump (n <= 0) on a deep market is a bandwidth
+	// footgun — tens of thousands of levels × 2 sides every T seconds melts
+	// market-data retention. Clamp to [1, orderBookFullTopNMax].
+	if c.OrderBookFullTopN <= 0 || c.OrderBookFullTopN > orderBookFullTopNMax {
+		return fmt.Errorf("orderbook-full-top-n must be in [1, %d], got %d", orderBookFullTopNMax, c.OrderBookFullTopN)
 	}
 	return nil
 }
