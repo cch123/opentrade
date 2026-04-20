@@ -136,3 +136,4 @@
 |---|---|---|
 | [0012](0012-multi-module-monorepo.md) | 采用 multi-module monorepo + Go workspace | Accepted |
 | [0013](0013-tech-stack-choices.md) | 核心技术选型：franz-go、etcd-v3、shopspring/decimal、zap | Accepted |
+| [0056](0056-symbol-config-via-mysql.md) | Symbol 配置存储从 etcd 迁到独立 MySQL（版本位点轻量 poll；leader election 仍在 etcd） | Proposed |
