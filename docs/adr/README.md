@@ -105,6 +105,7 @@
 | [0028](0028-trade-dump-journal-projection.md) | trade-dump 投影 counter-journal 到 orders / accounts / account_logs | Accepted |
 | [0036](0036-quote-state-snapshot.md) | Quote 引擎状态 snapshot + 热重启 | Accepted |
 | [0037](0037-push-coalesce-rate-limit.md) | Push 端 coalesce + per-conn rate limit | Accepted |
+| [0055](0055-match-as-orderbook-authority-bybit-style.md) | Match 作为 orderbook 权威方，直出 Full + Delta；Quote 降级为无状态转发（参考 Bybit） | Proposed |
 
 ### BFF 与网关
 
