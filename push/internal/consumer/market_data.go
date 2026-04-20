@@ -120,9 +120,9 @@ func (c *MarketDataConsumer) dispatch(rec *kgo.Record) {
 // for a MarketDataEvent. Returns ("", nil, false) for unknown / unsupported
 // events. The bool is true when the frame is safe to coalesce — i.e. the
 // latest payload fully subsumes any in-flight older one. Today only
-// KlineUpdate qualifies: DepthUpdate carries an incremental diff (losing one
-// means a stale level), KlineClosed is a transition event, PublicTrade is
-// per-fill.
+// KlineUpdate and OrderBook Full qualify: OrderBook Delta carries an
+// incremental diff (losing one means a stale level), KlineClosed is a
+// transition event, PublicTrade is per-fill.
 func buildStreamFrame(evt *eventpb.MarketDataEvent) (string, json.RawMessage, bool) {
 	symbol := evt.Symbol
 	switch p := evt.Payload.(type) {
@@ -135,24 +135,11 @@ func buildStreamFrame(evt *eventpb.MarketDataEvent) (string, json.RawMessage, bo
 			return "", nil, false
 		}
 		return "trade@" + symbol, b, false
-	case *eventpb.MarketDataEvent_DepthUpdate:
-		if p.DepthUpdate == nil {
+	case *eventpb.MarketDataEvent_OrderBook:
+		if p.OrderBook == nil {
 			return "", nil, false
 		}
-		b, err := protojson.Marshal(p.DepthUpdate)
-		if err != nil {
-			return "", nil, false
-		}
-		return "depth@" + symbol, b, false
-	case *eventpb.MarketDataEvent_DepthSnapshot:
-		if p.DepthSnapshot == nil {
-			return "", nil, false
-		}
-		b, err := protojson.Marshal(p.DepthSnapshot)
-		if err != nil {
-			return "", nil, false
-		}
-		return "depth.snapshot@" + symbol, b, false
+		return buildOrderBookFrame(symbol, evt.MatchSeqId, p.OrderBook)
 	case *eventpb.MarketDataEvent_KlineUpdate:
 		if p.KlineUpdate == nil || p.KlineUpdate.Kline == nil {
 			return "", nil, false
@@ -176,6 +163,44 @@ func buildStreamFrame(evt *eventpb.MarketDataEvent) (string, json.RawMessage, bo
 	default:
 		return "", nil, false
 	}
+}
+
+// buildOrderBookFrame marshals a Full frame to `depth.snapshot@{symbol}` and
+// a Delta frame to `depth@{symbol}`, attaching match_seq_id for client-side
+// chain validation (ADR-0055). Full is coalescable (a newer Full subsumes an
+// older one); Delta is not.
+func buildOrderBookFrame(symbol string, matchSeq uint64, ob *eventpb.OrderBook) (string, json.RawMessage, bool) {
+	switch d := ob.Data.(type) {
+	case *eventpb.OrderBook_Full:
+		if d.Full == nil {
+			return "", nil, false
+		}
+		b, err := json.Marshal(struct {
+			Symbol     string                     `json:"symbol"`
+			MatchSeqID uint64                     `json:"match_seq_id"`
+			Bids       []*eventpb.OrderBookLevel  `json:"bids"`
+			Asks       []*eventpb.OrderBookLevel  `json:"asks"`
+		}{Symbol: symbol, MatchSeqID: matchSeq, Bids: d.Full.Bids, Asks: d.Full.Asks})
+		if err != nil {
+			return "", nil, false
+		}
+		return "depth.snapshot@" + symbol, b, true
+	case *eventpb.OrderBook_Delta:
+		if d.Delta == nil {
+			return "", nil, false
+		}
+		b, err := json.Marshal(struct {
+			Symbol     string                     `json:"symbol"`
+			MatchSeqID uint64                     `json:"match_seq_id"`
+			Bids       []*eventpb.OrderBookLevel  `json:"bids"`
+			Asks       []*eventpb.OrderBookLevel  `json:"asks"`
+		}{Symbol: symbol, MatchSeqID: matchSeq, Bids: d.Delta.Bids, Asks: d.Delta.Asks})
+		if err != nil {
+			return "", nil, false
+		}
+		return "depth@" + symbol, b, false
+	}
+	return "", nil, false
 }
 
 func klineIntervalLabel(i eventpb.KlineInterval) string {

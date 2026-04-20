@@ -20,9 +20,10 @@ type ConsumerConfig struct {
 	Topic    string // default "market-data"
 }
 
-// Consumer feeds DepthSnapshot + KlineClosed events from Kafka into a
-// Cache. It intentionally ignores DepthUpdate / PublicTrade / KlineUpdate:
-// those streams are for live UI and don't belong in the reconnect snapshot.
+// Consumer feeds OrderBook Full + KlineClosed events from Kafka into a
+// Cache. It intentionally ignores OrderBook Delta / PublicTrade /
+// KlineUpdate: those streams are for live UI and don't belong in the
+// reconnect snapshot.
 type Consumer struct {
 	cli    *kgo.Client
 	cache  *Cache
@@ -98,8 +99,13 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 func (c *Consumer) apply(evt *eventpb.MarketDataEvent) {
 	switch p := evt.Payload.(type) {
-	case *eventpb.MarketDataEvent_DepthSnapshot:
-		c.cache.PutDepthSnapshot(p.DepthSnapshot)
+	case *eventpb.MarketDataEvent_OrderBook:
+		if p.OrderBook == nil {
+			return
+		}
+		if full, ok := p.OrderBook.Data.(*eventpb.OrderBook_Full); ok && full.Full != nil {
+			c.cache.PutOrderBookFull(evt.Symbol, evt.MatchSeqId, full.Full)
+		}
 	case *eventpb.MarketDataEvent_KlineClosed:
 		c.cache.AppendKlineClosed(evt.Symbol, p.KlineClosed)
 	}

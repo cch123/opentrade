@@ -21,6 +21,21 @@ type Book struct {
 	bids   *sideBook
 	asks   *sideBook
 	index  map[uint64]*orderRef
+
+	// dirtyBids / dirtyAsks record the set of prices whose level qty changed
+	// since the last DrainDirty call. Keyed by canonical dec.Decimal.String()
+	// for dedup; value preserves the Decimal for lookup. ADR-0055: Match is
+	// the orderbook authority, Delta frames are the changed-levels snapshot.
+	dirtyBids map[string]dec.Decimal
+	dirtyAsks map[string]dec.Decimal
+}
+
+// Level is a single price level snapshot: the total remaining qty at price.
+// Qty == dec.Zero means the level is empty and should be treated as removed
+// by Delta consumers.
+type Level struct {
+	Price dec.Decimal
+	Qty   dec.Decimal
 }
 
 // orderRef ties an Order to its position in the side book.
@@ -33,10 +48,12 @@ type orderRef struct {
 // NewBook constructs an empty book for the given symbol.
 func NewBook(symbol string) *Book {
 	return &Book{
-		symbol: symbol,
-		bids:   newSideBook(true),
-		asks:   newSideBook(false),
-		index:  make(map[uint64]*orderRef),
+		symbol:    symbol,
+		bids:      newSideBook(true),
+		asks:      newSideBook(false),
+		index:     make(map[uint64]*orderRef),
+		dirtyBids: make(map[string]dec.Decimal),
+		dirtyAsks: make(map[string]dec.Decimal),
 	}
 }
 
@@ -68,6 +85,7 @@ func (b *Book) Insert(o *Order) error {
 	lvl := side.getOrCreate(o.Price)
 	elem := lvl.pushBack(o)
 	b.index[o.ID] = &orderRef{order: o, level: lvl, elem: elem}
+	b.markDirty(o.Side, o.Price)
 	return nil
 }
 
@@ -78,11 +96,14 @@ func (b *Book) Cancel(orderID uint64) (*Order, error) {
 	if !ok {
 		return nil, ErrOrderNotFound
 	}
+	price := ref.level.price
+	side := ref.order.Side
 	ref.level.remove(ref.elem)
 	if ref.level.empty() {
-		b.sideFor(ref.order.Side).removeLevel(ref.level)
+		b.sideFor(side).removeLevel(ref.level)
 	}
 	delete(b.index, orderID)
+	b.markDirty(side, price)
 	return ref.order, nil
 }
 
@@ -133,6 +154,7 @@ func (b *Book) Fill(orderID uint64, qty dec.Decimal) (*Order, bool, error) {
 	}
 	ref.order.Remaining = ref.order.Remaining.Sub(qty)
 	ref.level.reduceQty(qty)
+	b.markDirty(ref.order.Side, ref.level.price)
 	if dec.IsPositive(ref.order.Remaining) {
 		return ref.order, false, nil
 	}
@@ -167,6 +189,60 @@ func (b *Book) LevelQty(side Side, price dec.Decimal) dec.Decimal {
 	return dec.Zero
 }
 
+// TopN returns the top-N price levels for side in best-first order (highest
+// bid / lowest ask first). Returns nil if the side is empty. Callers pass
+// n <= 0 to mean "no limit" (full book). Used by ADR-0055 Full frames.
+func (b *Book) TopN(side Side, n int) []Level {
+	sb := b.sideFor(side)
+	var out []Level
+	if n > 0 {
+		out = make([]Level, 0, n)
+	}
+	sb.walkLevels(func(lvl *priceLevel) bool {
+		out = append(out, Level{Price: lvl.price, Qty: lvl.qty})
+		return n <= 0 || len(out) < n
+	})
+	return out
+}
+
+// DrainDirty returns the levels (per side) that changed since the last
+// DrainDirty call, and clears the dirty sets. Each returned Level carries
+// the current qty at its price; Qty == dec.Zero signals the level is gone.
+// Intended for Delta frame emission (ADR-0055).
+func (b *Book) DrainDirty() (bids, asks []Level) {
+	if len(b.dirtyBids) > 0 {
+		bids = make([]Level, 0, len(b.dirtyBids))
+		for _, price := range b.dirtyBids {
+			bids = append(bids, Level{Price: price, Qty: b.LevelQty(Bid, price)})
+		}
+		for k := range b.dirtyBids {
+			delete(b.dirtyBids, k)
+		}
+	}
+	if len(b.dirtyAsks) > 0 {
+		asks = make([]Level, 0, len(b.dirtyAsks))
+		for _, price := range b.dirtyAsks {
+			asks = append(asks, Level{Price: price, Qty: b.LevelQty(Ask, price)})
+		}
+		for k := range b.dirtyAsks {
+			delete(b.dirtyAsks, k)
+		}
+	}
+	return
+}
+
+// DiscardDirty clears the dirty sets without emitting. Use after the first
+// Full frame on startup so the anchor's levels don't double-emit as an
+// immediate Delta.
+func (b *Book) DiscardDirty() {
+	for k := range b.dirtyBids {
+		delete(b.dirtyBids, k)
+	}
+	for k := range b.dirtyAsks {
+		delete(b.dirtyAsks, k)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -176,4 +252,13 @@ func (b *Book) sideFor(s Side) *sideBook {
 		return b.bids
 	}
 	return b.asks
+}
+
+func (b *Book) markDirty(side Side, price dec.Decimal) {
+	key := price.String()
+	if side == Bid {
+		b.dirtyBids[key] = price
+	} else {
+		b.dirtyAsks[key] = price
+	}
 }

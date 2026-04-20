@@ -49,7 +49,7 @@ func runWorker(t *testing.T, w *SymbolWorker, outbox chan *Output) (collect func
 
 func TestWorkerProcessesInFIFOOrder(t *testing.T) {
 	outbox := make(chan *Output, 16)
-	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox)
+	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
 	// Place ask 100@1, then bid 100@1 — expect one trade.
 	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "m1", orderbook.Ask, "100", "1")})
@@ -76,7 +76,7 @@ func TestWorkerProcessesInFIFOOrder(t *testing.T) {
 
 func TestWorkerCancelEmitsCancelled(t *testing.T) {
 	outbox := make(chan *Output, 16)
-	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox)
+	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
 	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "m1", orderbook.Bid, "100", "2")})
 	w.Submit(&Event{Kind: EventOrderCancel, OrderID: 1, UserID: "m1"})
@@ -103,7 +103,7 @@ func TestWorkerCancelEmitsCancelled(t *testing.T) {
 // with zero FilledQty so Counter can close the loop via its own state.
 func TestWorkerCancelUnknownOrderStillEmits(t *testing.T) {
 	outbox := make(chan *Output, 16)
-	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox)
+	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
 	// Cancel for an order that was never placed on this worker's book.
 	w.Submit(&Event{Kind: EventOrderCancel, Symbol: "BTC-USDT", OrderID: 999, UserID: "u1"})
@@ -131,7 +131,7 @@ func TestWorkerCancelUnknownOrderStillEmits(t *testing.T) {
 
 func TestWorkerDedupDuplicateOrderID(t *testing.T) {
 	outbox := make(chan *Output, 16)
-	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox)
+	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
 	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "m1", orderbook.Bid, "100", "1")})
 	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "m1", orderbook.Bid, "100", "1")})
@@ -150,7 +150,7 @@ func TestWorkerDedupDuplicateOrderID(t *testing.T) {
 
 func TestWorkerRejectsWrongSymbol(t *testing.T) {
 	outbox := make(chan *Output, 8)
-	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox)
+	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
 	o := newLimitOrder(1, "u1", orderbook.Bid, "100", "1")
 	o.Symbol = "ETH-USDT"
@@ -170,7 +170,7 @@ func TestWorkerRejectsWrongSymbol(t *testing.T) {
 
 func TestWorkerSTPRejection(t *testing.T) {
 	outbox := make(chan *Output, 8)
-	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8, STPMode: engine.STPRejectTaker}, outbox)
+	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8, STPMode: engine.STPRejectTaker}, outbox, nil)
 
 	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "u1", orderbook.Ask, "100", "1")})
 	// Same user on the other side would self-trade → rejected.

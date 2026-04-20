@@ -28,7 +28,7 @@ func newFixture(t *testing.T) (*Registry, *journal.Dispatcher, chan *sequencer.O
 				Symbol:  symbol,
 				Inbox:   64,
 				STPMode: engine.STPNone,
-			}, outbox)
+			}, outbox, nil)
 		},
 		Restore: func(w *sequencer.SymbolWorker) error {
 			restores.Add(1)
@@ -118,7 +118,7 @@ func TestRestoreError_AbortsAdd(t *testing.T) {
 	outbox := make(chan *sequencer.Output, 8)
 	reg, err := New(context.Background(), Config{
 		Factory: func(symbol string) *sequencer.SymbolWorker {
-			return sequencer.NewSymbolWorker(sequencer.Config{Symbol: symbol, Inbox: 8}, outbox)
+			return sequencer.NewSymbolWorker(sequencer.Config{Symbol: symbol, Inbox: 8}, outbox, nil)
 		},
 		Restore:    func(*sequencer.SymbolWorker) error { return errors.New("corrupt snapshot") },
 		Dispatcher: dispatcher,
@@ -168,7 +168,7 @@ func TestRemoveSymbol_WaitsForWorkerDone(t *testing.T) {
 	outbox := make(chan *sequencer.Output, 8)
 	reg, err := New(context.Background(), Config{
 		Factory: func(symbol string) *sequencer.SymbolWorker {
-			return sequencer.NewSymbolWorker(sequencer.Config{Symbol: symbol, Inbox: 8}, outbox)
+			return sequencer.NewSymbolWorker(sequencer.Config{Symbol: symbol, Inbox: 8}, outbox, nil)
 		},
 		Snapshot: func(w *sequencer.SymbolWorker) {
 			// If we're invoked, Run has already returned. Flip the flag.

@@ -57,30 +57,36 @@ func TestBuildStreamFrame_KlineKeyIncludesInterval(t *testing.T) {
 	}
 }
 
-func TestBuildStreamFrame_Depth(t *testing.T) {
-	upd := &eventpb.MarketDataEvent{
-		Symbol: "X-Y",
-		Payload: &eventpb.MarketDataEvent_DepthUpdate{DepthUpdate: &eventpb.DepthUpdate{
-			Symbol: "X-Y",
-			Bids:   []*eventpb.DepthLevel{{Price: "1", Qty: "2"}},
+func TestBuildStreamFrame_OrderBook(t *testing.T) {
+	delta := &eventpb.MarketDataEvent{
+		Symbol:     "X-Y",
+		MatchSeqId: 42,
+		Payload: &eventpb.MarketDataEvent_OrderBook{OrderBook: &eventpb.OrderBook{
+			Data: &eventpb.OrderBook_Delta{Delta: &eventpb.OrderBookDelta{
+				Bids: []*eventpb.OrderBookLevel{{Price: "1", Qty: "2"}},
+			}},
 		}},
 	}
-	key, _, coal := buildStreamFrame(upd)
+	key, _, coal := buildStreamFrame(delta)
 	if key != "depth@X-Y" {
-		t.Errorf("depth update key: %q", key)
+		t.Errorf("orderbook delta key: %q", key)
 	}
 	if coal {
-		t.Errorf("depth update must not be coalescable (carries a diff)")
+		t.Errorf("orderbook delta must not be coalescable (carries a diff)")
 	}
-	snap := &eventpb.MarketDataEvent{
-		Symbol: "X-Y",
-		Payload: &eventpb.MarketDataEvent_DepthSnapshot{DepthSnapshot: &eventpb.DepthSnapshot{
-			Symbol: "X-Y",
+	full := &eventpb.MarketDataEvent{
+		Symbol:     "X-Y",
+		MatchSeqId: 43,
+		Payload: &eventpb.MarketDataEvent_OrderBook{OrderBook: &eventpb.OrderBook{
+			Data: &eventpb.OrderBook_Full{Full: &eventpb.OrderBookFull{}},
 		}},
 	}
-	key, _, _ = buildStreamFrame(snap)
+	key, _, coal = buildStreamFrame(full)
 	if key != "depth.snapshot@X-Y" {
-		t.Errorf("depth snapshot key: %q", key)
+		t.Errorf("orderbook full key: %q", key)
+	}
+	if !coal {
+		t.Errorf("orderbook full must be coalescable (newer Full subsumes older)")
 	}
 }
 

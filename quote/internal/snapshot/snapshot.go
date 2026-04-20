@@ -1,8 +1,8 @@
 // Package snapshot serializes Quote's in-memory engine state (per-symbol
-// depth book + kline aggregators + emit sequence + per-partition
-// trade-event offsets) to local disk, so a restart can resume from the
-// saved offsets instead of rescanning the entire topic (ADR-0025 §未来
-// 工作, ADR-0036).
+// kline aggregators + emit sequence + per-partition trade-event offsets)
+// to local disk, so a restart can resume from the saved offsets instead of
+// rescanning the entire topic (ADR-0025 §未来工作, ADR-0036). ADR-0055
+// moved orderbook state to Match; Quote no longer persists depth.
 //
 // ADR-0049: default on-disk format is protobuf (.pb); JSON (.json) stays
 // available as a debug fallback via --snapshot-format=json. Load probes
@@ -76,26 +76,9 @@ type Snapshot struct {
 }
 
 // SymbolSnapshot captures everything engine tracks for one symbol.
+// ADR-0055: Depth removed — Match now owns orderbook state.
 type SymbolSnapshot struct {
-	Depth *DepthSnapshot `json:"depth,omitempty"`
 	Kline *KlineSnapshot `json:"kline,omitempty"`
-}
-
-// DepthSnapshot captures depth.Book state.
-type DepthSnapshot struct {
-	Symbol string           `json:"symbol"`
-	Bids   map[string]string `json:"bids,omitempty"`   // priceKey → qty
-	Asks   map[string]string `json:"asks,omitempty"`   // priceKey → qty
-	Prices map[string]string `json:"prices,omitempty"` // priceKey → price canonical string
-	Orders []OrderRefSnap    `json:"orders,omitempty"`
-}
-
-// OrderRefSnap is a resting order as tracked by depth.Book.
-type OrderRefSnap struct {
-	OrderID   uint64 `json:"order_id"`
-	Side      uint8  `json:"side"` // 1=buy/bid, 2=sell/ask
-	PriceKey  string `json:"price_key"`
-	Remaining string `json:"remaining"`
 }
 
 // KlineSnapshot captures kline.Aggregator state.
@@ -244,26 +227,6 @@ func symbolToProto(s *SymbolSnapshot) *snapshotpb.QuoteSymbolState {
 		return nil
 	}
 	out := &snapshotpb.QuoteSymbolState{}
-	if s.Depth != nil {
-		d := s.Depth
-		out.Depth = &snapshotpb.QuoteDepth{
-			Symbol: d.Symbol,
-			Bids:   d.Bids,
-			Asks:   d.Asks,
-			Prices: d.Prices,
-		}
-		if n := len(d.Orders); n > 0 {
-			out.Depth.Orders = make([]*snapshotpb.QuoteOrderRef, 0, n)
-			for _, o := range d.Orders {
-				out.Depth.Orders = append(out.Depth.Orders, &snapshotpb.QuoteOrderRef{
-					OrderId:   o.OrderID,
-					Side:      uint32(o.Side),
-					PriceKey:  o.PriceKey,
-					Remaining: o.Remaining,
-				})
-			}
-		}
-	}
 	if s.Kline != nil {
 		k := s.Kline
 		out.Kline = &snapshotpb.QuoteKline{Symbol: k.Symbol}
@@ -311,26 +274,6 @@ func symbolFromProto(pb *snapshotpb.QuoteSymbolState) *SymbolSnapshot {
 		return nil
 	}
 	out := &SymbolSnapshot{}
-	if pb.Depth != nil {
-		d := pb.Depth
-		out.Depth = &DepthSnapshot{
-			Symbol: d.Symbol,
-			Bids:   d.Bids,
-			Asks:   d.Asks,
-			Prices: d.Prices,
-		}
-		if n := len(d.Orders); n > 0 {
-			out.Depth.Orders = make([]OrderRefSnap, 0, n)
-			for _, o := range d.Orders {
-				out.Depth.Orders = append(out.Depth.Orders, OrderRefSnap{
-					OrderID:   o.OrderId,
-					Side:      uint8(o.Side),
-					PriceKey:  o.PriceKey,
-					Remaining: o.Remaining,
-				})
-			}
-		}
-	}
 	if pb.Kline != nil {
 		k := pb.Kline
 		out.Kline = &KlineSnapshot{Symbol: k.Symbol}

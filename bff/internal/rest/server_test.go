@@ -209,10 +209,9 @@ func TestPlaceOrder_MarketSellForwarded(t *testing.T) {
 // as reference_price so counter can enforce MARKET-by-base precision.
 func TestPlaceOrder_ReferencePriceFilledFromDepthCache(t *testing.T) {
 	cache := marketcache.New(marketcache.Config{})
-	cache.PutDepthSnapshot(&eventpb.DepthSnapshot{
-		Symbol: "BTC-USDT",
-		Bids:   []*eventpb.DepthLevel{{Price: "49990", Qty: "0.5"}},
-		Asks:   []*eventpb.DepthLevel{{Price: "50010", Qty: "0.5"}},
+	cache.PutOrderBookFull("BTC-USDT", 1, &eventpb.OrderBookFull{
+		Bids: []*eventpb.OrderBookLevel{{Price: "49990", Qty: "0.5"}},
+		Asks: []*eventpb.OrderBookLevel{{Price: "50010", Qty: "0.5"}},
 	})
 
 	var seen *counterrpc.PlaceOrderRequest

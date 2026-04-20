@@ -58,7 +58,7 @@ func (s *Server) bestEffortMidPrice(symbol string) string {
 	if s.market == nil {
 		return ""
 	}
-	snap := s.market.DepthSnapshot(symbol)
+	snap := s.market.OrderBook(symbol)
 	if snap == nil || len(snap.Bids) == 0 || len(snap.Asks) == 0 {
 		return ""
 	}

@@ -3,13 +3,13 @@
 // history (ADR-0038).
 //
 // Scope:
-//   - Latest DepthSnapshot per symbol (overwritten by every incoming
-//     DepthSnapshot event from Quote).
+//   - Latest OrderBook Full per symbol (overwritten by every incoming Full
+//     frame from Match; ADR-0055). Delta frames are ignored — clients that
+//     need incremental updates should subscribe to the live WS stream.
 //   - Ring buffer of the last N KlineClosed per (symbol, interval). Defaults
 //     to 500 per bucket.
 //
-// Out of scope for MVP: PublicTrade history (go to MySQL trades table),
-// DepthUpdate accumulation (clients should use DepthSnapshot + live stream).
+// Out of scope for MVP: PublicTrade history (go to MySQL trades table).
 package marketcache
 
 import (
@@ -25,13 +25,24 @@ type Config struct {
 	KlineBuffer int
 }
 
+// OrderBookSnapshot is the cached view of the most recently received Full
+// frame for a symbol. Bids are descending by price, asks ascending. Kept
+// as a plain struct (not a proto pointer) so the REST handler can mint a
+// JSON response without allocating per request.
+type OrderBookSnapshot struct {
+	Symbol     string
+	MatchSeqID uint64
+	Bids       []*eventpb.OrderBookLevel
+	Asks       []*eventpb.OrderBookLevel
+}
+
 // Cache is safe for concurrent use. It keeps everything in memory; restart
-// repopulates from market-data tail like any other Quote consumer.
+// repopulates from market-data tail like any other consumer.
 type Cache struct {
 	cfg Config
 
 	mu     sync.RWMutex
-	depth  map[string]*eventpb.DepthSnapshot
+	books  map[string]*OrderBookSnapshot
 	klines map[klineKey]*ringBuffer
 }
 
@@ -47,28 +58,35 @@ func New(cfg Config) *Cache {
 	}
 	return &Cache{
 		cfg:    cfg,
-		depth:  make(map[string]*eventpb.DepthSnapshot),
+		books:  make(map[string]*OrderBookSnapshot),
 		klines: make(map[klineKey]*ringBuffer),
 	}
 }
 
-// PutDepthSnapshot replaces the stored snapshot for snap.Symbol.
-func (c *Cache) PutDepthSnapshot(snap *eventpb.DepthSnapshot) {
-	if snap == nil || snap.Symbol == "" {
+// PutOrderBookFull replaces the stored Full snapshot for symbol with the
+// contents of a newly received OrderBook Full frame (ADR-0055).
+func (c *Cache) PutOrderBookFull(symbol string, matchSeqID uint64, full *eventpb.OrderBookFull) {
+	if full == nil || symbol == "" {
 		return
 	}
+	snap := &OrderBookSnapshot{
+		Symbol:     symbol,
+		MatchSeqID: matchSeqID,
+		Bids:       full.Bids,
+		Asks:       full.Asks,
+	}
 	c.mu.Lock()
-	c.depth[snap.Symbol] = snap
+	c.books[symbol] = snap
 	c.mu.Unlock()
 }
 
-// DepthSnapshot returns the latest stored snapshot for symbol, or nil if we
-// have not seen one yet. Caller must treat the returned pointer as
+// OrderBook returns the latest stored Full snapshot for symbol, or nil if
+// we have not seen one yet. Caller must treat the returned pointer as
 // read-only (no copy).
-func (c *Cache) DepthSnapshot(symbol string) *eventpb.DepthSnapshot {
+func (c *Cache) OrderBook(symbol string) *OrderBookSnapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.depth[symbol]
+	return c.books[symbol]
 }
 
 // AppendKlineClosed records a closed bar into the ring buffer for its

@@ -85,7 +85,7 @@ func TestLoad_JSONOnlyMigration(t *testing.T) {
 
 func TestCaptureAndRestoreWorker(t *testing.T) {
 	outbox := make(chan *sequencer.Output, 32)
-	w := sequencer.NewSymbolWorker(sequencer.Config{Symbol: "BTC-USDT", Inbox: 8}, outbox)
+	w := sequencer.NewSymbolWorker(sequencer.Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
 	// Seed with a mixed book.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -132,7 +132,7 @@ func TestCaptureAndRestoreWorker(t *testing.T) {
 
 	// Restore into a fresh worker.
 	outbox2 := make(chan *sequencer.Output, 32)
-	w2 := sequencer.NewSymbolWorker(sequencer.Config{Symbol: "BTC-USDT", Inbox: 8}, outbox2)
+	w2 := sequencer.NewSymbolWorker(sequencer.Config{Symbol: "BTC-USDT", Inbox: 8}, outbox2, nil)
 	if err := Restore(w2, loaded); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestCaptureAndRestoreWorker(t *testing.T) {
 
 func TestRestoreRejectsNonEmptyWorker(t *testing.T) {
 	outbox := make(chan *sequencer.Output, 8)
-	w := sequencer.NewSymbolWorker(sequencer.Config{Symbol: "BTC-USDT", Inbox: 4}, outbox)
+	w := sequencer.NewSymbolWorker(sequencer.Config{Symbol: "BTC-USDT", Inbox: 4}, outbox, nil)
 	// Pre-populate.
 	if err := w.Book().Insert(newLimitOrder(1, "u1", orderbook.Bid, "100", "1")); err != nil {
 		t.Fatal(err)

@@ -7,28 +7,29 @@ import "event/common.proto";
 option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 
 // -----------------------------------------------------------------------------
-// market-data — Quote → Push / BFF clients / analytics subscribers.
+// market-data — Match (OrderBook Full/Delta) + Quote (PublicTrade/Kline) →
+// Push / BFF clients / analytics subscribers.
 //
-// Partition key: symbol (aligned with trade-event partitioning).
-// See ADR-0021 (Quote as standalone service) and ADR-0025 (internal split
-// into trades / kline / depth sub-engines).
+// Partition key: symbol. See:
+//   ADR-0021 (Quote as standalone service for PublicTrade/Kline)
+//   ADR-0055 (Match as orderbook authority; Full + Delta same stream)
 // -----------------------------------------------------------------------------
 
-// quote_seq_id is the quote-engine-global monotonic sequence stamped on
-// every emitted market-data event. Consumers use it to detect gaps and to
-// align periodic DepthSnapshot frames against the incremental DepthUpdate
-// stream (ADR-0038).
+// Seq fields identify which producer stamped the frame:
+//   - quote_seq_id: stamped by Quote for PublicTrade / Kline* payloads.
+//   - match_seq_id: stamped by Match for OrderBook payloads (ADR-0051).
+// Exactly one of the two is non-zero on any given event.
 message MarketDataEvent {
   EventMeta meta = 1;
   string symbol = 2;
   uint64 quote_seq_id = 3;
+  uint64 match_seq_id = 4;
 
   oneof payload {
-    PublicTrade   public_trade   = 10;
-    KlineUpdate   kline_update   = 11;  // current (open) bar, updated on every trade
-    KlineClosed   kline_closed   = 12;  // bar has closed — value is final
-    DepthUpdate   depth_update   = 13;  // incremental level changes
-    DepthSnapshot depth_snapshot = 14;  // periodic full picture for alignment
+    PublicTrade public_trade = 10;
+    KlineUpdate kline_update = 11; // current (open) bar, updated on every trade
+    KlineClosed kline_closed = 12; // bar has closed — value is final
+    OrderBook   order_book   = 15; // Match-authoritative Full or Delta (ADR-0055)
   }
 }
 
@@ -72,25 +73,33 @@ message Kline {
 message KlineUpdate { Kline kline = 1; }
 message KlineClosed { Kline kline = 1; }
 
-// A single price level.
-message DepthLevel {
+// A single orderbook price level. qty="0" in an OrderBookDelta means the
+// level is deleted; OrderBookFull never carries zero-qty levels.
+message OrderBookLevel {
   string price = 1;
-  string qty = 2; // 0 means delete (for DepthUpdate; DepthSnapshot never has 0)
+  string qty = 2;
 }
 
-// DepthUpdate — incremental change since last update/snapshot. Consumers
-// that missed depth events between two snapshots should re-seed from the
-// latest DepthSnapshot.
-message DepthUpdate {
-  string symbol = 1;
-  repeated DepthLevel bids = 2;
-  repeated DepthLevel asks = 3;
+// OrderBookFull — full Top-N state of the book at match_seq_id. Bids are
+// descending by price, asks ascending. Cold-start consumers tail the topic
+// until they see a Full, then apply subsequent Deltas (ADR-0055).
+message OrderBookFull {
+  repeated OrderBookLevel bids = 1;
+  repeated OrderBookLevel asks = 2;
 }
 
-// DepthSnapshot — full state of the top of the book at the time of emission.
-// Emitted periodically (see quote config) so new subscribers can align.
-message DepthSnapshot {
-  string symbol = 1;
-  repeated DepthLevel bids = 2;
-  repeated DepthLevel asks = 3;
+// OrderBookDelta — levels whose qty changed since the previous frame for
+// this symbol. qty="0" signals level removal.
+message OrderBookDelta {
+  repeated OrderBookLevel bids = 1;
+  repeated OrderBookLevel asks = 2;
+}
+
+// OrderBook — oneof wrapper. Match emits Full periodically (every N deltas
+// or T seconds, whichever comes first) and Delta on every orderbook change.
+message OrderBook {
+  oneof data {
+    OrderBookFull  full  = 1;
+    OrderBookDelta delta = 2;
+  }
 }

@@ -9,8 +9,9 @@ option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
 // (original JSON snapshot for hot restart).
 //
 // Wire mirror of quote/internal/snapshot.Snapshot. Decimals stay on-wire as
-// strings so pkg/dec round-trip is identical to JSON form; depth price keys
-// are opaque canonical strings (priceKey), preserved verbatim.
+// strings. ADR-0055: Quote no longer maintains orderbook state, so only
+// per-symbol kline aggregators + per-partition trade-event offsets are
+// snapshotted here.
 // -----------------------------------------------------------------------------
 
 message QuoteSnapshot {
@@ -22,23 +23,10 @@ message QuoteSnapshot {
 }
 
 message QuoteSymbolState {
-  QuoteDepth depth = 1;
+  // tag 1 was QuoteDepth — removed in ADR-0055 (Match owns orderbook now).
+  reserved 1;
+  reserved "depth";
   QuoteKline kline = 2;
-}
-
-message QuoteDepth {
-  string symbol = 1;
-  map<string, string> bids = 2;    // priceKey → qty
-  map<string, string> asks = 3;    // priceKey → qty
-  map<string, string> prices = 4;  // priceKey → canonical price
-  repeated QuoteOrderRef orders = 5;
-}
-
-message QuoteOrderRef {
-  uint64 order_id = 1;
-  uint32 side = 2;                 // 1=bid, 2=ask (internal encoding)
-  string price_key = 3;
-  string remaining = 4;
 }
 
 message QuoteKline {

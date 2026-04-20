@@ -32,35 +32,39 @@ type SymbolWorker struct {
 	symbol string
 	stp    engine.STPMode
 
-	// mu guards book / matchSeq / offsets so snapshot readers (WithStateLocked /
-	// Offsets) can take a consistent view without racing with the worker
-	// goroutine. handle() takes mu for the duration of one event — usually
-	// <100µs but bounded by outbox send (emit → Pump).
+	// mu guards book / matchSeq / bookSeq / offsets so snapshot readers
+	// (WithStateLocked / Offsets) can take a consistent view without racing
+	// with the worker goroutine. handle() takes mu for the duration of one
+	// event — usually <100µs but bounded by outbox send (emit → Pump).
 	mu       sync.Mutex
 	book     *orderbook.Book
 	matchSeq uint64
-	offsets  map[int32]int64 // partition → next-to-consume offset (ADR-0048)
+	bookSeq  uint64           // per-symbol monotonic orderbook seq (ADR-0055)
+	offsets  map[int32]int64  // partition → next-to-consume offset (ADR-0048)
 
-	inbox  chan *Event
-	outbox chan<- *Output
+	inbox    chan *Event
+	outbox   chan<- *Output
+	mdOutbox chan<- *MarketDataOutput // optional; nil disables market-data emission
 
 	done    chan struct{}
 	started bool
 }
 
-// NewSymbolWorker constructs a worker. outbox receives emissions; callers
-// must drain it or give it sufficient capacity.
-func NewSymbolWorker(cfg Config, outbox chan<- *Output) *SymbolWorker {
+// NewSymbolWorker constructs a worker. outbox receives trade-event emissions;
+// callers must drain it or give it sufficient capacity. mdOutbox (optional,
+// ADR-0055) receives market-data OrderBook Delta / Full frames when non-nil.
+func NewSymbolWorker(cfg Config, outbox chan<- *Output, mdOutbox chan<- *MarketDataOutput) *SymbolWorker {
 	if cfg.Inbox <= 0 {
 		cfg.Inbox = 2048
 	}
 	return &SymbolWorker{
-		symbol: cfg.Symbol,
-		book:   orderbook.NewBook(cfg.Symbol),
-		stp:    cfg.STPMode,
-		inbox:  make(chan *Event, cfg.Inbox),
-		outbox: outbox,
-		done:   make(chan struct{}),
+		symbol:   cfg.Symbol,
+		book:     orderbook.NewBook(cfg.Symbol),
+		stp:      cfg.STPMode,
+		inbox:    make(chan *Event, cfg.Inbox),
+		outbox:   outbox,
+		mdOutbox: mdOutbox,
+		done:     make(chan struct{}),
 	}
 }
 
@@ -185,6 +189,21 @@ func (w *SymbolWorker) handle(evt *Event) {
 		}
 		if next := evt.Source.Offset + 1; next > w.offsets[evt.Source.Partition] {
 			w.offsets[evt.Source.Partition] = next
+		}
+	}
+	// ADR-0055: emit one Delta per input event carrying every level that
+	// changed during the mutations above. Skipped when no mdOutbox is wired
+	// (tests / legacy paths) or when no level actually changed (cancel of a
+	// never-resting order, duplicate rejection, symbol mismatch).
+	if w.mdOutbox != nil {
+		bids, asks := w.book.DrainDirty()
+		if len(bids) > 0 || len(asks) > 0 {
+			w.emitMarketData(&MarketDataOutput{
+				Kind:   MDKindDelta,
+				Symbol: w.symbol,
+				Bids:   bids,
+				Asks:   asks,
+			})
 		}
 	}
 }
@@ -357,3 +376,47 @@ func (w *SymbolWorker) emit(out *Output) {
 	}
 	w.outbox <- out
 }
+
+// emitMarketData assigns the next book seq and sends the market-data frame.
+// Must be called with w.mu held. ADR-0055: orderbook seq is independent from
+// trade-event match_seq_id so per-stream gap detection on the orderbook
+// topic works without holes from unrelated trade-event output.
+func (w *SymbolWorker) emitMarketData(md *MarketDataOutput) {
+	w.bookSeq++
+	md.BookSeq = w.bookSeq
+	w.mdOutbox <- md
+}
+
+// EmitFull captures the current top-N orderbook state and emits an MDKindFull
+// frame to the market-data outbox. Takes mu so it can be called from an
+// external ticker goroutine alongside Run. topN <= 0 means "no limit". Does
+// nothing when mdOutbox is nil. ADR-0055: periodic Full + startup anchor.
+func (w *SymbolWorker) EmitFull(topN int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.mdOutbox == nil {
+		return
+	}
+	bids := w.book.TopN(orderbook.Bid, topN)
+	asks := w.book.TopN(orderbook.Ask, topN)
+	// Discard anything the mutations queued: the Full we're about to send
+	// supersedes any pending Delta for the same seq point.
+	w.book.DiscardDirty()
+	w.emitMarketData(&MarketDataOutput{
+		Kind:   MDKindFull,
+		Symbol: w.symbol,
+		Bids:   bids,
+		Asks:   asks,
+	})
+}
+
+// BookSeq returns the current per-symbol orderbook seq (for snapshot /
+// recovery). Takes mu.
+func (w *SymbolWorker) BookSeq() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.bookSeq
+}
+
+// SetBookSeq sets the starting orderbook seq. Must be called before Run.
+func (w *SymbolWorker) SetBookSeq(seq uint64) { w.bookSeq = seq }

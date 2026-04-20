@@ -80,22 +80,23 @@ func (KlineInterval) EnumDescriptor() ([]byte, []int) {
 	return file_event_market_data_proto_rawDescGZIP(), []int{0}
 }
 
-// quote_seq_id is the quote-engine-global monotonic sequence stamped on
-// every emitted market-data event. Consumers use it to detect gaps and to
-// align periodic DepthSnapshot frames against the incremental DepthUpdate
-// stream (ADR-0038).
+// Seq fields identify which producer stamped the frame:
+//   - quote_seq_id: stamped by Quote for PublicTrade / Kline* payloads.
+//   - match_seq_id: stamped by Match for OrderBook payloads (ADR-0051).
+//
+// Exactly one of the two is non-zero on any given event.
 type MarketDataEvent struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	Meta       *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
 	Symbol     string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
 	QuoteSeqId uint64                 `protobuf:"varint,3,opt,name=quote_seq_id,json=quoteSeqId,proto3" json:"quote_seq_id,omitempty"`
+	MatchSeqId uint64                 `protobuf:"varint,4,opt,name=match_seq_id,json=matchSeqId,proto3" json:"match_seq_id,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*MarketDataEvent_PublicTrade
 	//	*MarketDataEvent_KlineUpdate
 	//	*MarketDataEvent_KlineClosed
-	//	*MarketDataEvent_DepthUpdate
-	//	*MarketDataEvent_DepthSnapshot
+	//	*MarketDataEvent_OrderBook
 	Payload       isMarketDataEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -152,6 +153,13 @@ func (x *MarketDataEvent) GetQuoteSeqId() uint64 {
 	return 0
 }
 
+func (x *MarketDataEvent) GetMatchSeqId() uint64 {
+	if x != nil {
+		return x.MatchSeqId
+	}
+	return 0
+}
+
 func (x *MarketDataEvent) GetPayload() isMarketDataEvent_Payload {
 	if x != nil {
 		return x.Payload
@@ -186,19 +194,10 @@ func (x *MarketDataEvent) GetKlineClosed() *KlineClosed {
 	return nil
 }
 
-func (x *MarketDataEvent) GetDepthUpdate() *DepthUpdate {
+func (x *MarketDataEvent) GetOrderBook() *OrderBook {
 	if x != nil {
-		if x, ok := x.Payload.(*MarketDataEvent_DepthUpdate); ok {
-			return x.DepthUpdate
-		}
-	}
-	return nil
-}
-
-func (x *MarketDataEvent) GetDepthSnapshot() *DepthSnapshot {
-	if x != nil {
-		if x, ok := x.Payload.(*MarketDataEvent_DepthSnapshot); ok {
-			return x.DepthSnapshot
+		if x, ok := x.Payload.(*MarketDataEvent_OrderBook); ok {
+			return x.OrderBook
 		}
 	}
 	return nil
@@ -220,12 +219,8 @@ type MarketDataEvent_KlineClosed struct {
 	KlineClosed *KlineClosed `protobuf:"bytes,12,opt,name=kline_closed,json=klineClosed,proto3,oneof"` // bar has closed — value is final
 }
 
-type MarketDataEvent_DepthUpdate struct {
-	DepthUpdate *DepthUpdate `protobuf:"bytes,13,opt,name=depth_update,json=depthUpdate,proto3,oneof"` // incremental level changes
-}
-
-type MarketDataEvent_DepthSnapshot struct {
-	DepthSnapshot *DepthSnapshot `protobuf:"bytes,14,opt,name=depth_snapshot,json=depthSnapshot,proto3,oneof"` // periodic full picture for alignment
+type MarketDataEvent_OrderBook struct {
+	OrderBook *OrderBook `protobuf:"bytes,15,opt,name=order_book,json=orderBook,proto3,oneof"` // Match-authoritative Full or Delta (ADR-0055)
 }
 
 func (*MarketDataEvent_PublicTrade) isMarketDataEvent_Payload() {}
@@ -234,9 +229,7 @@ func (*MarketDataEvent_KlineUpdate) isMarketDataEvent_Payload() {}
 
 func (*MarketDataEvent_KlineClosed) isMarketDataEvent_Payload() {}
 
-func (*MarketDataEvent_DepthUpdate) isMarketDataEvent_Payload() {}
-
-func (*MarketDataEvent_DepthSnapshot) isMarketDataEvent_Payload() {}
+func (*MarketDataEvent_OrderBook) isMarketDataEvent_Payload() {}
 
 // Public trade — a trade stripped of private identities. Direct forward from
 // trade-event.Trade with maker/taker user ids removed.
@@ -538,29 +531,30 @@ func (x *KlineClosed) GetKline() *Kline {
 	return nil
 }
 
-// A single price level.
-type DepthLevel struct {
+// A single orderbook price level. qty="0" in an OrderBookDelta means the
+// level is deleted; OrderBookFull never carries zero-qty levels.
+type OrderBookLevel struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Price         string                 `protobuf:"bytes,1,opt,name=price,proto3" json:"price,omitempty"`
-	Qty           string                 `protobuf:"bytes,2,opt,name=qty,proto3" json:"qty,omitempty"` // 0 means delete (for DepthUpdate; DepthSnapshot never has 0)
+	Qty           string                 `protobuf:"bytes,2,opt,name=qty,proto3" json:"qty,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *DepthLevel) Reset() {
-	*x = DepthLevel{}
+func (x *OrderBookLevel) Reset() {
+	*x = OrderBookLevel{}
 	mi := &file_event_market_data_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DepthLevel) String() string {
+func (x *OrderBookLevel) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DepthLevel) ProtoMessage() {}
+func (*OrderBookLevel) ProtoMessage() {}
 
-func (x *DepthLevel) ProtoReflect() protoreflect.Message {
+func (x *OrderBookLevel) ProtoReflect() protoreflect.Message {
 	mi := &file_event_market_data_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -572,51 +566,50 @@ func (x *DepthLevel) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DepthLevel.ProtoReflect.Descriptor instead.
-func (*DepthLevel) Descriptor() ([]byte, []int) {
+// Deprecated: Use OrderBookLevel.ProtoReflect.Descriptor instead.
+func (*OrderBookLevel) Descriptor() ([]byte, []int) {
 	return file_event_market_data_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *DepthLevel) GetPrice() string {
+func (x *OrderBookLevel) GetPrice() string {
 	if x != nil {
 		return x.Price
 	}
 	return ""
 }
 
-func (x *DepthLevel) GetQty() string {
+func (x *OrderBookLevel) GetQty() string {
 	if x != nil {
 		return x.Qty
 	}
 	return ""
 }
 
-// DepthUpdate — incremental change since last update/snapshot. Consumers
-// that missed depth events between two snapshots should re-seed from the
-// latest DepthSnapshot.
-type DepthUpdate struct {
+// OrderBookFull — full Top-N state of the book at match_seq_id. Bids are
+// descending by price, asks ascending. Cold-start consumers tail the topic
+// until they see a Full, then apply subsequent Deltas (ADR-0055).
+type OrderBookFull struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Symbol        string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	Bids          []*DepthLevel          `protobuf:"bytes,2,rep,name=bids,proto3" json:"bids,omitempty"`
-	Asks          []*DepthLevel          `protobuf:"bytes,3,rep,name=asks,proto3" json:"asks,omitempty"`
+	Bids          []*OrderBookLevel      `protobuf:"bytes,1,rep,name=bids,proto3" json:"bids,omitempty"`
+	Asks          []*OrderBookLevel      `protobuf:"bytes,2,rep,name=asks,proto3" json:"asks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *DepthUpdate) Reset() {
-	*x = DepthUpdate{}
+func (x *OrderBookFull) Reset() {
+	*x = OrderBookFull{}
 	mi := &file_event_market_data_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DepthUpdate) String() string {
+func (x *OrderBookFull) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DepthUpdate) ProtoMessage() {}
+func (*OrderBookFull) ProtoMessage() {}
 
-func (x *DepthUpdate) ProtoReflect() protoreflect.Message {
+func (x *OrderBookFull) ProtoReflect() protoreflect.Message {
 	mi := &file_event_market_data_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -628,57 +621,49 @@ func (x *DepthUpdate) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DepthUpdate.ProtoReflect.Descriptor instead.
-func (*DepthUpdate) Descriptor() ([]byte, []int) {
+// Deprecated: Use OrderBookFull.ProtoReflect.Descriptor instead.
+func (*OrderBookFull) Descriptor() ([]byte, []int) {
 	return file_event_market_data_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *DepthUpdate) GetSymbol() string {
-	if x != nil {
-		return x.Symbol
-	}
-	return ""
-}
-
-func (x *DepthUpdate) GetBids() []*DepthLevel {
+func (x *OrderBookFull) GetBids() []*OrderBookLevel {
 	if x != nil {
 		return x.Bids
 	}
 	return nil
 }
 
-func (x *DepthUpdate) GetAsks() []*DepthLevel {
+func (x *OrderBookFull) GetAsks() []*OrderBookLevel {
 	if x != nil {
 		return x.Asks
 	}
 	return nil
 }
 
-// DepthSnapshot — full state of the top of the book at the time of emission.
-// Emitted periodically (see quote config) so new subscribers can align.
-type DepthSnapshot struct {
+// OrderBookDelta — levels whose qty changed since the previous frame for
+// this symbol. qty="0" signals level removal.
+type OrderBookDelta struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Symbol        string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	Bids          []*DepthLevel          `protobuf:"bytes,2,rep,name=bids,proto3" json:"bids,omitempty"`
-	Asks          []*DepthLevel          `protobuf:"bytes,3,rep,name=asks,proto3" json:"asks,omitempty"`
+	Bids          []*OrderBookLevel      `protobuf:"bytes,1,rep,name=bids,proto3" json:"bids,omitempty"`
+	Asks          []*OrderBookLevel      `protobuf:"bytes,2,rep,name=asks,proto3" json:"asks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *DepthSnapshot) Reset() {
-	*x = DepthSnapshot{}
+func (x *OrderBookDelta) Reset() {
+	*x = OrderBookDelta{}
 	mi := &file_event_market_data_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DepthSnapshot) String() string {
+func (x *OrderBookDelta) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DepthSnapshot) ProtoMessage() {}
+func (*OrderBookDelta) ProtoMessage() {}
 
-func (x *DepthSnapshot) ProtoReflect() protoreflect.Message {
+func (x *OrderBookDelta) ProtoReflect() protoreflect.Message {
 	mi := &file_event_market_data_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -690,48 +675,127 @@ func (x *DepthSnapshot) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DepthSnapshot.ProtoReflect.Descriptor instead.
-func (*DepthSnapshot) Descriptor() ([]byte, []int) {
+// Deprecated: Use OrderBookDelta.ProtoReflect.Descriptor instead.
+func (*OrderBookDelta) Descriptor() ([]byte, []int) {
 	return file_event_market_data_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *DepthSnapshot) GetSymbol() string {
-	if x != nil {
-		return x.Symbol
-	}
-	return ""
-}
-
-func (x *DepthSnapshot) GetBids() []*DepthLevel {
+func (x *OrderBookDelta) GetBids() []*OrderBookLevel {
 	if x != nil {
 		return x.Bids
 	}
 	return nil
 }
 
-func (x *DepthSnapshot) GetAsks() []*DepthLevel {
+func (x *OrderBookDelta) GetAsks() []*OrderBookLevel {
 	if x != nil {
 		return x.Asks
 	}
 	return nil
 }
+
+// OrderBook — oneof wrapper. Match emits Full periodically (every N deltas
+// or T seconds, whichever comes first) and Delta on every orderbook change.
+type OrderBook struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Data:
+	//
+	//	*OrderBook_Full
+	//	*OrderBook_Delta
+	Data          isOrderBook_Data `protobuf_oneof:"data"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OrderBook) Reset() {
+	*x = OrderBook{}
+	mi := &file_event_market_data_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OrderBook) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OrderBook) ProtoMessage() {}
+
+func (x *OrderBook) ProtoReflect() protoreflect.Message {
+	mi := &file_event_market_data_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OrderBook.ProtoReflect.Descriptor instead.
+func (*OrderBook) Descriptor() ([]byte, []int) {
+	return file_event_market_data_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *OrderBook) GetData() isOrderBook_Data {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *OrderBook) GetFull() *OrderBookFull {
+	if x != nil {
+		if x, ok := x.Data.(*OrderBook_Full); ok {
+			return x.Full
+		}
+	}
+	return nil
+}
+
+func (x *OrderBook) GetDelta() *OrderBookDelta {
+	if x != nil {
+		if x, ok := x.Data.(*OrderBook_Delta); ok {
+			return x.Delta
+		}
+	}
+	return nil
+}
+
+type isOrderBook_Data interface {
+	isOrderBook_Data()
+}
+
+type OrderBook_Full struct {
+	Full *OrderBookFull `protobuf:"bytes,1,opt,name=full,proto3,oneof"`
+}
+
+type OrderBook_Delta struct {
+	Delta *OrderBookDelta `protobuf:"bytes,2,opt,name=delta,proto3,oneof"`
+}
+
+func (*OrderBook_Full) isOrderBook_Data() {}
+
+func (*OrderBook_Delta) isOrderBook_Data() {}
 
 var File_event_market_data_proto protoreflect.FileDescriptor
 
 const file_event_market_data_proto_rawDesc = "" +
 	"\n" +
-	"\x17event/market_data.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xdb\x03\n" +
+	"\x17event/market_data.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xae\x03\n" +
 	"\x0fMarketDataEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12 \n" +
 	"\fquote_seq_id\x18\x03 \x01(\x04R\n" +
-	"quoteSeqId\x12A\n" +
+	"quoteSeqId\x12 \n" +
+	"\fmatch_seq_id\x18\x04 \x01(\x04R\n" +
+	"matchSeqId\x12A\n" +
 	"\fpublic_trade\x18\n" +
 	" \x01(\v2\x1c.opentrade.event.PublicTradeH\x00R\vpublicTrade\x12A\n" +
 	"\fkline_update\x18\v \x01(\v2\x1c.opentrade.event.KlineUpdateH\x00R\vklineUpdate\x12A\n" +
-	"\fkline_closed\x18\f \x01(\v2\x1c.opentrade.event.KlineClosedH\x00R\vklineClosed\x12A\n" +
-	"\fdepth_update\x18\r \x01(\v2\x1c.opentrade.event.DepthUpdateH\x00R\vdepthUpdate\x12G\n" +
-	"\x0edepth_snapshot\x18\x0e \x01(\v2\x1e.opentrade.event.DepthSnapshotH\x00R\rdepthSnapshotB\t\n" +
+	"\fkline_closed\x18\f \x01(\v2\x1c.opentrade.event.KlineClosedH\x00R\vklineClosed\x12;\n" +
+	"\n" +
+	"order_book\x18\x0f \x01(\v2\x1a.opentrade.event.OrderBookH\x00R\torderBookB\t\n" +
 	"\apayload\"\xbc\x01\n" +
 	"\vPublicTrade\x12\x19\n" +
 	"\btrade_id\x18\x01 \x01(\tR\atradeId\x12\x16\n" +
@@ -760,19 +824,20 @@ const file_event_market_data_proto_rawDesc = "" +
 	"\vKlineUpdate\x12,\n" +
 	"\x05kline\x18\x01 \x01(\v2\x16.opentrade.event.KlineR\x05kline\";\n" +
 	"\vKlineClosed\x12,\n" +
-	"\x05kline\x18\x01 \x01(\v2\x16.opentrade.event.KlineR\x05kline\"4\n" +
-	"\n" +
-	"DepthLevel\x12\x14\n" +
+	"\x05kline\x18\x01 \x01(\v2\x16.opentrade.event.KlineR\x05kline\"8\n" +
+	"\x0eOrderBookLevel\x12\x14\n" +
 	"\x05price\x18\x01 \x01(\tR\x05price\x12\x10\n" +
-	"\x03qty\x18\x02 \x01(\tR\x03qty\"\x87\x01\n" +
-	"\vDepthUpdate\x12\x16\n" +
-	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12/\n" +
-	"\x04bids\x18\x02 \x03(\v2\x1b.opentrade.event.DepthLevelR\x04bids\x12/\n" +
-	"\x04asks\x18\x03 \x03(\v2\x1b.opentrade.event.DepthLevelR\x04asks\"\x89\x01\n" +
-	"\rDepthSnapshot\x12\x16\n" +
-	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12/\n" +
-	"\x04bids\x18\x02 \x03(\v2\x1b.opentrade.event.DepthLevelR\x04bids\x12/\n" +
-	"\x04asks\x18\x03 \x03(\v2\x1b.opentrade.event.DepthLevelR\x04asks*\xa3\x01\n" +
+	"\x03qty\x18\x02 \x01(\tR\x03qty\"y\n" +
+	"\rOrderBookFull\x123\n" +
+	"\x04bids\x18\x01 \x03(\v2\x1f.opentrade.event.OrderBookLevelR\x04bids\x123\n" +
+	"\x04asks\x18\x02 \x03(\v2\x1f.opentrade.event.OrderBookLevelR\x04asks\"z\n" +
+	"\x0eOrderBookDelta\x123\n" +
+	"\x04bids\x18\x01 \x03(\v2\x1f.opentrade.event.OrderBookLevelR\x04bids\x123\n" +
+	"\x04asks\x18\x02 \x03(\v2\x1f.opentrade.event.OrderBookLevelR\x04asks\"\x82\x01\n" +
+	"\tOrderBook\x124\n" +
+	"\x04full\x18\x01 \x01(\v2\x1e.opentrade.event.OrderBookFullH\x00R\x04full\x127\n" +
+	"\x05delta\x18\x02 \x01(\v2\x1f.opentrade.event.OrderBookDeltaH\x00R\x05deltaB\x06\n" +
+	"\x04data*\xa3\x01\n" +
 	"\rKlineInterval\x12\x1e\n" +
 	"\x1aKLINE_INTERVAL_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11KLINE_INTERVAL_1M\x10\x01\x12\x15\n" +
@@ -794,7 +859,7 @@ func file_event_market_data_proto_rawDescGZIP() []byte {
 }
 
 var file_event_market_data_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_event_market_data_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_event_market_data_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_event_market_data_proto_goTypes = []any{
 	(KlineInterval)(0),      // 0: opentrade.event.KlineInterval
 	(*MarketDataEvent)(nil), // 1: opentrade.event.MarketDataEvent
@@ -802,32 +867,34 @@ var file_event_market_data_proto_goTypes = []any{
 	(*Kline)(nil),           // 3: opentrade.event.Kline
 	(*KlineUpdate)(nil),     // 4: opentrade.event.KlineUpdate
 	(*KlineClosed)(nil),     // 5: opentrade.event.KlineClosed
-	(*DepthLevel)(nil),      // 6: opentrade.event.DepthLevel
-	(*DepthUpdate)(nil),     // 7: opentrade.event.DepthUpdate
-	(*DepthSnapshot)(nil),   // 8: opentrade.event.DepthSnapshot
-	(*EventMeta)(nil),       // 9: opentrade.event.EventMeta
-	(Side)(0),               // 10: opentrade.event.Side
+	(*OrderBookLevel)(nil),  // 6: opentrade.event.OrderBookLevel
+	(*OrderBookFull)(nil),   // 7: opentrade.event.OrderBookFull
+	(*OrderBookDelta)(nil),  // 8: opentrade.event.OrderBookDelta
+	(*OrderBook)(nil),       // 9: opentrade.event.OrderBook
+	(*EventMeta)(nil),       // 10: opentrade.event.EventMeta
+	(Side)(0),               // 11: opentrade.event.Side
 }
 var file_event_market_data_proto_depIdxs = []int32{
-	9,  // 0: opentrade.event.MarketDataEvent.meta:type_name -> opentrade.event.EventMeta
+	10, // 0: opentrade.event.MarketDataEvent.meta:type_name -> opentrade.event.EventMeta
 	2,  // 1: opentrade.event.MarketDataEvent.public_trade:type_name -> opentrade.event.PublicTrade
 	4,  // 2: opentrade.event.MarketDataEvent.kline_update:type_name -> opentrade.event.KlineUpdate
 	5,  // 3: opentrade.event.MarketDataEvent.kline_closed:type_name -> opentrade.event.KlineClosed
-	7,  // 4: opentrade.event.MarketDataEvent.depth_update:type_name -> opentrade.event.DepthUpdate
-	8,  // 5: opentrade.event.MarketDataEvent.depth_snapshot:type_name -> opentrade.event.DepthSnapshot
-	10, // 6: opentrade.event.PublicTrade.taker_side:type_name -> opentrade.event.Side
-	0,  // 7: opentrade.event.Kline.interval:type_name -> opentrade.event.KlineInterval
-	3,  // 8: opentrade.event.KlineUpdate.kline:type_name -> opentrade.event.Kline
-	3,  // 9: opentrade.event.KlineClosed.kline:type_name -> opentrade.event.Kline
-	6,  // 10: opentrade.event.DepthUpdate.bids:type_name -> opentrade.event.DepthLevel
-	6,  // 11: opentrade.event.DepthUpdate.asks:type_name -> opentrade.event.DepthLevel
-	6,  // 12: opentrade.event.DepthSnapshot.bids:type_name -> opentrade.event.DepthLevel
-	6,  // 13: opentrade.event.DepthSnapshot.asks:type_name -> opentrade.event.DepthLevel
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	9,  // 4: opentrade.event.MarketDataEvent.order_book:type_name -> opentrade.event.OrderBook
+	11, // 5: opentrade.event.PublicTrade.taker_side:type_name -> opentrade.event.Side
+	0,  // 6: opentrade.event.Kline.interval:type_name -> opentrade.event.KlineInterval
+	3,  // 7: opentrade.event.KlineUpdate.kline:type_name -> opentrade.event.Kline
+	3,  // 8: opentrade.event.KlineClosed.kline:type_name -> opentrade.event.Kline
+	6,  // 9: opentrade.event.OrderBookFull.bids:type_name -> opentrade.event.OrderBookLevel
+	6,  // 10: opentrade.event.OrderBookFull.asks:type_name -> opentrade.event.OrderBookLevel
+	6,  // 11: opentrade.event.OrderBookDelta.bids:type_name -> opentrade.event.OrderBookLevel
+	6,  // 12: opentrade.event.OrderBookDelta.asks:type_name -> opentrade.event.OrderBookLevel
+	7,  // 13: opentrade.event.OrderBook.full:type_name -> opentrade.event.OrderBookFull
+	8,  // 14: opentrade.event.OrderBook.delta:type_name -> opentrade.event.OrderBookDelta
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_event_market_data_proto_init() }
@@ -840,8 +907,11 @@ func file_event_market_data_proto_init() {
 		(*MarketDataEvent_PublicTrade)(nil),
 		(*MarketDataEvent_KlineUpdate)(nil),
 		(*MarketDataEvent_KlineClosed)(nil),
-		(*MarketDataEvent_DepthUpdate)(nil),
-		(*MarketDataEvent_DepthSnapshot)(nil),
+		(*MarketDataEvent_OrderBook)(nil),
+	}
+	file_event_market_data_proto_msgTypes[8].OneofWrappers = []any{
+		(*OrderBook_Full)(nil),
+		(*OrderBook_Delta)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -849,7 +919,7 @@ func file_event_market_data_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_market_data_proto_rawDesc), len(file_event_market_data_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

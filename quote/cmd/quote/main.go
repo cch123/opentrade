@@ -117,11 +117,8 @@ func main() {
 		}
 	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		runSnapshotTicker(rootCtx, cfg.SnapshotInterval, eng, prod, logger)
-	}()
+	// ADR-0055: depth snapshots are emitted directly by Match as OrderBook
+	// Full frames; Quote no longer schedules a depth ticker.
 
 	// Engine-state persistence ticker (ADR-0036). Cancelled with a separate
 	// context so we can still write a final snapshot on shutdown after the
@@ -144,28 +141,6 @@ func main() {
 		logger.Info("final state snapshot written", zap.String("path", stateSnapshotPath(cfg)))
 	}
 	logger.Info("quote shutdown complete")
-}
-
-func runSnapshotTicker(ctx context.Context, interval time.Duration, eng *engine.Engine, prod *producer.MarketDataProducer, logger *zap.Logger) {
-	if interval <= 0 {
-		return
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			snaps := eng.SnapshotAll()
-			if len(snaps) == 0 {
-				continue
-			}
-			if err := prod.PublishBatch(ctx, snaps); err != nil {
-				logger.Error("snapshot publish", zap.Error(err))
-			}
-		}
-	}
 }
 
 // stateSnapshotPath is the absolute path of the engine-state file.

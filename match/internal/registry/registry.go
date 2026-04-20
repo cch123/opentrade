@@ -38,10 +38,18 @@ type RestoreFn func(*sequencer.SymbolWorker) error
 // replays from an older offset.
 type SnapshotFn func(*sequencer.SymbolWorker)
 
+// AnchorFn runs after Restore succeeds, before the worker joins the
+// Dispatcher and starts Run. Intended for ADR-0055 startup: emit an
+// OrderBook Full frame so every downstream consumer has a freshly
+// published seed for this symbol on the market-data topic. Optional; nil
+// is a no-op.
+type AnchorFn func(*sequencer.SymbolWorker)
+
 // Config bundles the hooks.
 type Config struct {
 	Factory  WorkerFactory
 	Restore  RestoreFn
+	Anchor   AnchorFn
 	Snapshot SnapshotFn
 
 	// Dispatcher is where workers register themselves so the order-event
@@ -101,6 +109,9 @@ func (r *Registry) AddSymbol(symbol string) error {
 		if err := r.cfg.Restore(w); err != nil {
 			return fmt.Errorf("registry: restore %s: %w", symbol, err)
 		}
+	}
+	if r.cfg.Anchor != nil {
+		r.cfg.Anchor(w)
 	}
 	r.cfg.Dispatcher.Register(w)
 

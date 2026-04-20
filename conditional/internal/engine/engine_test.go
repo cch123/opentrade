@@ -390,12 +390,16 @@ func TestHandleRecord_OffsetsAdvance(t *testing.T) {
 func TestHandleRecord_NonPublicTradePayloadIgnored(t *testing.T) {
 	e := newEngine(&fakePlacer{})
 	_, _, _, _ = e.Place(context.Background(), goodReq())
+	// OrderBook (Full or Delta) carries no price → no trigger; but offset
+	// still advances. ADR-0055 replaced the old DepthUpdate payload with
+	// Match-authored OrderBook frames.
 	evt := &eventpb.MarketDataEvent{
-		Symbol:  "BTC-USDT",
-		Payload: &eventpb.MarketDataEvent_DepthUpdate{DepthUpdate: &eventpb.DepthUpdate{Symbol: "BTC-USDT"}},
+		Symbol: "BTC-USDT",
+		Payload: &eventpb.MarketDataEvent_OrderBook{OrderBook: &eventpb.OrderBook{
+			Data: &eventpb.OrderBook_Delta{Delta: &eventpb.OrderBookDelta{}},
+		}},
 	}
 	e.HandleRecord(context.Background(), evt, 0, 1)
-	// DepthUpdate carries no price → no trigger; but offset still advances.
 	if got := e.Offsets()[0]; got != 2 {
 		t.Errorf("offset = %d, want 2", got)
 	}

@@ -6,33 +6,38 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
-func TestDepthSnapshot_LastWriteWins(t *testing.T) {
+func TestOrderBook_LastWriteWins(t *testing.T) {
 	c := New(Config{})
-	first := &eventpb.DepthSnapshot{Symbol: "BTC-USDT",
-		Bids: []*eventpb.DepthLevel{{Price: "99", Qty: "1"}}}
-	second := &eventpb.DepthSnapshot{Symbol: "BTC-USDT",
-		Bids: []*eventpb.DepthLevel{{Price: "100", Qty: "2"}}}
-	c.PutDepthSnapshot(first)
-	c.PutDepthSnapshot(second)
-	got := c.DepthSnapshot("BTC-USDT")
+	first := &eventpb.OrderBookFull{
+		Bids: []*eventpb.OrderBookLevel{{Price: "99", Qty: "1"}},
+	}
+	second := &eventpb.OrderBookFull{
+		Bids: []*eventpb.OrderBookLevel{{Price: "100", Qty: "2"}},
+	}
+	c.PutOrderBookFull("BTC-USDT", 1, first)
+	c.PutOrderBookFull("BTC-USDT", 2, second)
+	got := c.OrderBook("BTC-USDT")
 	if got == nil || got.Bids[0].Price != "100" || got.Bids[0].Qty != "2" {
 		t.Errorf("latest-wins broken: %+v", got)
 	}
+	if got.MatchSeqID != 2 {
+		t.Errorf("match_seq_id: want 2 got %d", got.MatchSeqID)
+	}
 }
 
-func TestDepthSnapshot_UnknownSymbol(t *testing.T) {
+func TestOrderBook_UnknownSymbol(t *testing.T) {
 	c := New(Config{})
-	if got := c.DepthSnapshot("X"); got != nil {
+	if got := c.OrderBook("X"); got != nil {
 		t.Errorf("expected nil, got %+v", got)
 	}
 }
 
-func TestDepthSnapshot_NilInputIgnored(t *testing.T) {
+func TestOrderBook_NilInputIgnored(t *testing.T) {
 	c := New(Config{})
-	c.PutDepthSnapshot(nil)
-	c.PutDepthSnapshot(&eventpb.DepthSnapshot{}) // empty symbol
-	if len(c.depth) != 0 {
-		t.Errorf("expected empty depth map, got %d entries", len(c.depth))
+	c.PutOrderBookFull("BTC-USDT", 1, nil)
+	c.PutOrderBookFull("", 1, &eventpb.OrderBookFull{}) // empty symbol
+	if len(c.books) != 0 {
+		t.Errorf("expected empty book map, got %d entries", len(c.books))
 	}
 }
 

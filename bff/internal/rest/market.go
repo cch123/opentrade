@@ -7,9 +7,10 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
-// GET /v1/depth/{symbol} — returns the latest DepthSnapshot BFF has seen
-// from market-data. Clients call this after a disconnect to resync their
-// local book before resubscribing to the live WS stream (ADR-0038).
+// GET /v1/depth/{symbol} — returns the latest OrderBook Full frame BFF
+// has seen on market-data (ADR-0055). Clients call this after a disconnect
+// to resync their local book before resubscribing to the live WS stream
+// (ADR-0038).
 func (s *Server) handleDepthSnapshot(w http.ResponseWriter, r *http.Request) {
 	if s.market == nil {
 		writeError(w, http.StatusServiceUnavailable, "market-data cache not configured")
@@ -20,17 +21,18 @@ func (s *Server) handleDepthSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "symbol required")
 		return
 	}
-	snap := s.market.DepthSnapshot(symbol)
+	snap := s.market.OrderBook(symbol)
 	if snap == nil {
 		writeError(w, http.StatusNotFound, "no snapshot yet for symbol")
 		return
 	}
 	// protojson would be heavier; the wire form matches the WS payload
-	// (DepthLevel is plain strings), so stock json.Encode is fine here.
+	// (OrderBookLevel is plain strings), so stock json.Encode is fine here.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"symbol": snap.Symbol,
-		"bids":   snap.Bids,
-		"asks":   snap.Asks,
+		"symbol":       snap.Symbol,
+		"match_seq_id": snap.MatchSeqID,
+		"bids":         snap.Bids,
+		"asks":         snap.Asks,
 	})
 }
 

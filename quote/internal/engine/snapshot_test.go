@@ -12,21 +12,22 @@ import (
 
 // TestHandleRecord_AdvancesOffsets verifies that the per-partition offset
 // watermark moves together with state mutation so a post-crash restore
-// skips already-applied records.
+// skips already-applied records. Trade events drive Kline aggregation,
+// which is the only state Quote still maintains post ADR-0055.
 func TestHandleRecord_AdvancesOffsets(t *testing.T) {
 	e := newTestEngine(t)
 	e.HandleRecord(&eventpb.TradeEvent{
 		Meta: &eventpb.EventMeta{TsUnixMs: 120_000},
-		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			OrderId: 1, Symbol: "BTC-USDT",
-			Side: eventpb.Side_SIDE_BUY, Price: "100", RemainingQty: "1",
+		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
+			TradeId: "t1", Symbol: "BTC-USDT", Price: "100", Qty: "1",
+			MakerOrderId: 1, TakerOrderId: 2, TakerSide: eventpb.Side_SIDE_BUY,
 		}},
 	}, 2, 41)
 	e.HandleRecord(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{TsUnixMs: 120_000},
-		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			OrderId: 2, Symbol: "BTC-USDT",
-			Side: eventpb.Side_SIDE_SELL, Price: "101", RemainingQty: "1",
+		Meta: &eventpb.EventMeta{TsUnixMs: 120_500},
+		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
+			TradeId: "t2", Symbol: "BTC-USDT", Price: "101", Qty: "1",
+			MakerOrderId: 3, TakerOrderId: 4, TakerSide: eventpb.Side_SIDE_SELL,
 		}},
 	}, 3, 99)
 
@@ -37,41 +38,32 @@ func TestHandleRecord_AdvancesOffsets(t *testing.T) {
 	}
 }
 
-// TestCaptureRestore_RoundTrip seeds an engine with a few records, captures
-// a snapshot, restores into a fresh engine, and verifies the state behaves
-// identically: the same subsequent record produces the same emitted events.
+// TestCaptureRestore_RoundTrip seeds the engine with trades that build up
+// an open Kline bar, captures, restores into a fresh engine, and verifies
+// the kline state came back intact.
 func TestCaptureRestore_RoundTrip(t *testing.T) {
 	src := newTestEngine(t)
-	// Seed: a bid, an ask, and a trade against the ask to shave its level.
-	src.HandleRecord(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{TsUnixMs: 120_000},
-		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			OrderId: 10, Symbol: "BTC-USDT",
-			Side: eventpb.Side_SIDE_BUY, Price: "99", RemainingQty: "3",
-		}},
-	}, 0, 0)
-	src.HandleRecord(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{TsUnixMs: 120_000},
-		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			OrderId: 11, Symbol: "BTC-USDT",
-			Side: eventpb.Side_SIDE_SELL, Price: "101", RemainingQty: "5",
-		}},
-	}, 0, 1)
 	src.HandleRecord(&eventpb.TradeEvent{
 		Meta: &eventpb.EventMeta{TsUnixMs: 120_000},
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
-			Symbol: "BTC-USDT", Price: "101", Qty: "2",
-			MakerOrderId: 11, TakerOrderId: 20,
-			TakerSide: eventpb.Side_SIDE_BUY,
+			TradeId: "t1", Symbol: "BTC-USDT", Price: "100", Qty: "1",
+			MakerOrderId: 1, TakerOrderId: 2, TakerSide: eventpb.Side_SIDE_BUY,
 		}},
-	}, 0, 2)
+	}, 0, 0)
+	src.HandleRecord(&eventpb.TradeEvent{
+		Meta: &eventpb.EventMeta{TsUnixMs: 121_000},
+		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
+			TradeId: "t2", Symbol: "BTC-USDT", Price: "103", Qty: "2",
+			MakerOrderId: 3, TakerOrderId: 4, TakerSide: eventpb.Side_SIDE_SELL,
+		}},
+	}, 0, 1)
 
 	snap := src.Capture()
-	if snap.Offsets[0] != 3 {
-		t.Fatalf("src offset after 3 records on p0 = %d, want 3", snap.Offsets[0])
+	if snap.Offsets[0] != 2 {
+		t.Fatalf("src offset after 2 records on p0 = %d, want 2", snap.Offsets[0])
 	}
-	if _, ok := snap.Symbols["BTC-USDT"]; !ok {
-		t.Fatal("missing BTC-USDT in snapshot.Symbols")
+	if bt, ok := snap.Symbols["BTC-USDT"]; !ok || bt.Kline == nil {
+		t.Fatal("missing BTC-USDT kline in snapshot.Symbols")
 	}
 
 	dst := New(Config{
@@ -83,29 +75,12 @@ func TestCaptureRestore_RoundTrip(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	// After restore, feeding a follow-up trade that closes order 11 should
-	// remove its remaining qty (3) from the ask level 101.
-	dst.HandleRecord(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{TsUnixMs: 120_000},
-		Payload: &eventpb.TradeEvent_Cancelled{Cancelled: &eventpb.OrderCancelled{
-			OrderId: 11, Symbol: "BTC-USDT",
-		}},
-	}, 0, 3)
-
 	snapAfter := dst.Capture()
-	bt := snapAfter.Symbols["BTC-USDT"]
-	if bt == nil || bt.Depth == nil {
-		t.Fatal("missing depth after restore+cancel")
+	if bt := snapAfter.Symbols["BTC-USDT"]; bt == nil || bt.Kline == nil {
+		t.Fatal("missing kline after restore")
 	}
-	// Bid level 99 still has qty=3; ask level 101 fully gone.
-	if _, ok := bt.Depth.Asks["101"]; ok {
-		t.Errorf("ask 101 should have been removed, got %+v", bt.Depth.Asks)
-	}
-	if q, ok := bt.Depth.Bids["99"]; !ok || q != "3" {
-		t.Errorf("bid 99 should remain at 3, got %q ok=%v", q, ok)
-	}
-	if snapAfter.Offsets[0] != 4 {
-		t.Errorf("dst offset = %d, want 4", snapAfter.Offsets[0])
+	if snapAfter.Offsets[0] != 2 {
+		t.Errorf("dst offset = %d, want 2", snapAfter.Offsets[0])
 	}
 }
 

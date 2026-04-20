@@ -55,10 +55,17 @@ type Config struct {
 	OrderTopicRegex  string // ADR-0050; e.g. `^order-event-.+$`
 	OrderTopicPrefix string // ADR-0050; used to map symbol → topic in snapshot offset hydration
 	TradeTopic       string
+	MarketDataTopic  string        // ADR-0055
 	ConsumerGroup    string
 	SnapshotDir      string
 	SnapshotInterval time.Duration
 	SnapshotFormat   snapshot.Format // ADR-0049
+
+	// ADR-0055 OrderBook Full frame cadence. Downstream consumers cold-start
+	// by tailing `market-data`, discarding Delta until they see a Full; so
+	// retention on that topic must cover at least ~2× FullInterval.
+	OrderBookFullInterval time.Duration
+	OrderBookFullTopN     int
 
 	EtcdEndpoints   []string
 	EtcdPrefix      string
@@ -180,6 +187,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 
 	dispatcher := journal.NewDispatcher()
 	outbox := make(chan *sequencer.Output, 4096)
+	mdOutbox := make(chan *sequencer.MarketDataOutput, 4096) // ADR-0055
 
 	workersCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
@@ -209,6 +217,20 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 	defer producer.Close()
 
+	// ADR-0055: Match-side OrderBook Full/Delta → market-data. Idempotent
+	// mode — missing a Delta is recoverable from the next Full frame.
+	mdProducer, err := journal.NewMarketDataProducer(journal.MarketDataConfig{
+		Brokers:    cfg.Brokers,
+		ClientID:   cfg.InstanceID + "-md",
+		ProducerID: cfg.InstanceID,
+		Topic:      cfg.MarketDataTopic,
+	}, logger)
+	if err != nil {
+		logger.Error("market-data producer", zap.Error(err))
+		return
+	}
+	defer mdProducer.Close()
+
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	defer cancelPump()
 	var pumpWG sync.WaitGroup
@@ -216,6 +238,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	go func() {
 		defer pumpWG.Done()
 		producer.Pump(pumpCtx, outbox)
+	}()
+	pumpWG.Add(1)
+	go func() {
+		defer pumpWG.Done()
+		mdProducer.Pump(pumpCtx, mdOutbox)
 	}()
 
 	reg, err := registry.New(workersCtx, registry.Config{
@@ -225,10 +252,17 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 				Symbol:  symbol,
 				Inbox:   2048,
 				STPMode: engine.STPNone,
-			}, outbox)
+			}, outbox, mdOutbox)
 		},
 		Restore: func(w *sequencer.SymbolWorker) error {
 			return tryRestoreSnapshot(w, cfg, logger)
+		},
+		Anchor: func(w *sequencer.SymbolWorker) {
+			// ADR-0055 startup anchor: emit one Full frame so every
+			// downstream consumer has a freshly published seed before the
+			// first Delta (which happens once Dispatcher.Register hooks the
+			// worker into the order-event flow).
+			w.EmitFull(cfg.OrderBookFullTopN)
 		},
 		Snapshot: func(w *sequencer.SymbolWorker) {
 			// RemoveSymbol path: the worker goroutine is already stopped,
@@ -351,6 +385,12 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	defer cancelSnap()
 	go periodicSnapshot(snapCtx, reg, producer, cfg, logger)
 
+	// --- Periodic OrderBook Full ticker (ADR-0055) ------------------------
+
+	mdCtx, cancelMD := context.WithCancel(context.Background())
+	defer cancelMD()
+	go runFullTicker(mdCtx, reg, cfg, logger)
+
 	// --- Wait for shutdown signal -----------------------------------------
 
 	<-ctx.Done()
@@ -368,9 +408,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	// the same for every remaining symbol.
 	reg.Close()
 	close(outbox)
+	close(mdOutbox)
 
 	pumpWG.Wait()
 	cancelSnap()
+	cancelMD()
 
 	logger.Info("primary stopped")
 }
@@ -427,9 +469,13 @@ func parseFlags() Config {
 		OrderTopicRegex:  "^order-event-.+$", // ADR-0050
 		OrderTopicPrefix: "order-event",
 		TradeTopic:       "trade-event",
+		MarketDataTopic:  "market-data",
 		SnapshotDir:      "./data/match",
 		SnapshotInterval: 60 * time.Second,
 		SnapshotFormat:   snapshot.FormatProto, // ADR-0049
+
+		OrderBookFullInterval: 5 * time.Second,
+		OrderBookFullTopN:     50,
 		EtcdPrefix:       etcdcfg.DefaultPrefix,
 		EtcdDialTimeout:  5 * time.Second,
 		HAMode:           "disabled",
@@ -454,6 +500,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.OrderTopicRegex, "order-topic-regex", cfg.OrderTopicRegex, "regex matching per-symbol order-event topics (ADR-0050; default ^order-event-.+$)")
 	flag.StringVar(&cfg.OrderTopicPrefix, "order-topic-prefix", cfg.OrderTopicPrefix, "per-symbol order-event topic prefix (ADR-0050). Used to map snapshot offsets: worker's symbol → `<prefix>-<symbol>`")
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
+	flag.StringVar(&cfg.MarketDataTopic, "market-data-topic", cfg.MarketDataTopic, "market-data topic name (ADR-0055: Match publishes OrderBook Full / Delta here)")
+	flag.DurationVar(&cfg.OrderBookFullInterval, "orderbook-full-interval", cfg.OrderBookFullInterval, "how often to emit OrderBook Full frames per symbol (ADR-0055)")
+	flag.IntVar(&cfg.OrderBookFullTopN, "orderbook-full-top-n", cfg.OrderBookFullTopN, "OrderBook Full frame depth cap per side (ADR-0055; 0 = full book)")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default match-{instance-id})")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "how often to snapshot each symbol")
@@ -585,6 +634,29 @@ func writeSnapshot(ctx context.Context, w *sequencer.SymbolWorker, producer *jou
 	}
 	snap := snapshot.Capture(w, ts)
 	return snapshot.Save(snapshotPath(cfg, w.Symbol()), snap, cfg.SnapshotFormat)
+}
+
+// runFullTicker periodically emits an OrderBook Full frame for every live
+// worker (ADR-0055). Cold-start consumers tailing market-data find a Full
+// within at most one interval + the producer flush window. The ticker does
+// not block the worker beyond the EmitFull critical section (snapshot of
+// the top-N under the worker's mu).
+func runFullTicker(ctx context.Context, reg *registry.Registry, cfg Config, _ *zap.Logger) {
+	if cfg.OrderBookFullInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(cfg.OrderBookFullInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, w := range reg.Workers() {
+				w.EmitFull(cfg.OrderBookFullTopN)
+			}
+		}
+	}
 }
 
 func periodicSnapshot(ctx context.Context, reg *registry.Registry, producer *journal.TradeProducer, cfg Config, logger *zap.Logger) {

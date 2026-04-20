@@ -99,7 +99,6 @@ func (x *QuoteSnapshot) GetSymbols() map[string]*QuoteSymbolState {
 
 type QuoteSymbolState struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Depth         *QuoteDepth            `protobuf:"bytes,1,opt,name=depth,proto3" json:"depth,omitempty"`
 	Kline         *QuoteKline            `protobuf:"bytes,2,opt,name=kline,proto3" json:"kline,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -135,162 +134,11 @@ func (*QuoteSymbolState) Descriptor() ([]byte, []int) {
 	return file_snapshot_quote_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *QuoteSymbolState) GetDepth() *QuoteDepth {
-	if x != nil {
-		return x.Depth
-	}
-	return nil
-}
-
 func (x *QuoteSymbolState) GetKline() *QuoteKline {
 	if x != nil {
 		return x.Kline
 	}
 	return nil
-}
-
-type QuoteDepth struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Symbol        string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	Bids          map[string]string      `protobuf:"bytes,2,rep,name=bids,proto3" json:"bids,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`     // priceKey → qty
-	Asks          map[string]string      `protobuf:"bytes,3,rep,name=asks,proto3" json:"asks,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`     // priceKey → qty
-	Prices        map[string]string      `protobuf:"bytes,4,rep,name=prices,proto3" json:"prices,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // priceKey → canonical price
-	Orders        []*QuoteOrderRef       `protobuf:"bytes,5,rep,name=orders,proto3" json:"orders,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *QuoteDepth) Reset() {
-	*x = QuoteDepth{}
-	mi := &file_snapshot_quote_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *QuoteDepth) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*QuoteDepth) ProtoMessage() {}
-
-func (x *QuoteDepth) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_quote_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use QuoteDepth.ProtoReflect.Descriptor instead.
-func (*QuoteDepth) Descriptor() ([]byte, []int) {
-	return file_snapshot_quote_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *QuoteDepth) GetSymbol() string {
-	if x != nil {
-		return x.Symbol
-	}
-	return ""
-}
-
-func (x *QuoteDepth) GetBids() map[string]string {
-	if x != nil {
-		return x.Bids
-	}
-	return nil
-}
-
-func (x *QuoteDepth) GetAsks() map[string]string {
-	if x != nil {
-		return x.Asks
-	}
-	return nil
-}
-
-func (x *QuoteDepth) GetPrices() map[string]string {
-	if x != nil {
-		return x.Prices
-	}
-	return nil
-}
-
-func (x *QuoteDepth) GetOrders() []*QuoteOrderRef {
-	if x != nil {
-		return x.Orders
-	}
-	return nil
-}
-
-type QuoteOrderRef struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OrderId       uint64                 `protobuf:"varint,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
-	Side          uint32                 `protobuf:"varint,2,opt,name=side,proto3" json:"side,omitempty"` // 1=bid, 2=ask (internal encoding)
-	PriceKey      string                 `protobuf:"bytes,3,opt,name=price_key,json=priceKey,proto3" json:"price_key,omitempty"`
-	Remaining     string                 `protobuf:"bytes,4,opt,name=remaining,proto3" json:"remaining,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *QuoteOrderRef) Reset() {
-	*x = QuoteOrderRef{}
-	mi := &file_snapshot_quote_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *QuoteOrderRef) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*QuoteOrderRef) ProtoMessage() {}
-
-func (x *QuoteOrderRef) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_quote_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use QuoteOrderRef.ProtoReflect.Descriptor instead.
-func (*QuoteOrderRef) Descriptor() ([]byte, []int) {
-	return file_snapshot_quote_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *QuoteOrderRef) GetOrderId() uint64 {
-	if x != nil {
-		return x.OrderId
-	}
-	return 0
-}
-
-func (x *QuoteOrderRef) GetSide() uint32 {
-	if x != nil {
-		return x.Side
-	}
-	return 0
-}
-
-func (x *QuoteOrderRef) GetPriceKey() string {
-	if x != nil {
-		return x.PriceKey
-	}
-	return ""
-}
-
-func (x *QuoteOrderRef) GetRemaining() string {
-	if x != nil {
-		return x.Remaining
-	}
-	return ""
 }
 
 type QuoteKline struct {
@@ -303,7 +151,7 @@ type QuoteKline struct {
 
 func (x *QuoteKline) Reset() {
 	*x = QuoteKline{}
-	mi := &file_snapshot_quote_proto_msgTypes[4]
+	mi := &file_snapshot_quote_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -315,7 +163,7 @@ func (x *QuoteKline) String() string {
 func (*QuoteKline) ProtoMessage() {}
 
 func (x *QuoteKline) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_quote_proto_msgTypes[4]
+	mi := &file_snapshot_quote_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -328,7 +176,7 @@ func (x *QuoteKline) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuoteKline.ProtoReflect.Descriptor instead.
 func (*QuoteKline) Descriptor() ([]byte, []int) {
-	return file_snapshot_quote_proto_rawDescGZIP(), []int{4}
+	return file_snapshot_quote_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *QuoteKline) GetSymbol() string {
@@ -362,7 +210,7 @@ type QuoteBar struct {
 
 func (x *QuoteBar) Reset() {
 	*x = QuoteBar{}
-	mi := &file_snapshot_quote_proto_msgTypes[5]
+	mi := &file_snapshot_quote_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -374,7 +222,7 @@ func (x *QuoteBar) String() string {
 func (*QuoteBar) ProtoMessage() {}
 
 func (x *QuoteBar) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_quote_proto_msgTypes[5]
+	mi := &file_snapshot_quote_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -387,7 +235,7 @@ func (x *QuoteBar) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuoteBar.ProtoReflect.Descriptor instead.
 func (*QuoteBar) Descriptor() ([]byte, []int) {
-	return file_snapshot_quote_proto_rawDescGZIP(), []int{5}
+	return file_snapshot_quote_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *QuoteBar) GetOpenTimeMs() int64 {
@@ -469,31 +317,9 @@ const file_snapshot_quote_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a`\n" +
 	"\fSymbolsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12:\n" +
-	"\x05value\x18\x02 \x01(\v2$.opentrade.snapshot.QuoteSymbolStateR\x05value:\x028\x01\"~\n" +
+	"\x05value\x18\x02 \x01(\v2$.opentrade.snapshot.QuoteSymbolStateR\x05value:\x028\x01\"U\n" +
 	"\x10QuoteSymbolState\x124\n" +
-	"\x05depth\x18\x01 \x01(\v2\x1e.opentrade.snapshot.QuoteDepthR\x05depth\x124\n" +
-	"\x05kline\x18\x02 \x01(\v2\x1e.opentrade.snapshot.QuoteKlineR\x05kline\"\xcc\x03\n" +
-	"\n" +
-	"QuoteDepth\x12\x16\n" +
-	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12<\n" +
-	"\x04bids\x18\x02 \x03(\v2(.opentrade.snapshot.QuoteDepth.BidsEntryR\x04bids\x12<\n" +
-	"\x04asks\x18\x03 \x03(\v2(.opentrade.snapshot.QuoteDepth.AsksEntryR\x04asks\x12B\n" +
-	"\x06prices\x18\x04 \x03(\v2*.opentrade.snapshot.QuoteDepth.PricesEntryR\x06prices\x129\n" +
-	"\x06orders\x18\x05 \x03(\v2!.opentrade.snapshot.QuoteOrderRefR\x06orders\x1a7\n" +
-	"\tBidsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a7\n" +
-	"\tAsksEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +
-	"\vPricesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"y\n" +
-	"\rQuoteOrderRef\x12\x19\n" +
-	"\border_id\x18\x01 \x01(\x04R\aorderId\x12\x12\n" +
-	"\x04side\x18\x02 \x01(\rR\x04side\x12\x1b\n" +
-	"\tprice_key\x18\x03 \x01(\tR\bpriceKey\x12\x1c\n" +
-	"\tremaining\x18\x04 \x01(\tR\tremaining\"\xb9\x01\n" +
+	"\x05kline\x18\x02 \x01(\v2\x1e.opentrade.snapshot.QuoteKlineR\x05klineJ\x04\b\x01\x10\x02R\x05depth\"\xb9\x01\n" +
 	"\n" +
 	"QuoteKline\x12\x16\n" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12<\n" +
@@ -525,38 +351,28 @@ func file_snapshot_quote_proto_rawDescGZIP() []byte {
 	return file_snapshot_quote_proto_rawDescData
 }
 
-var file_snapshot_quote_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_snapshot_quote_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_snapshot_quote_proto_goTypes = []any{
 	(*QuoteSnapshot)(nil),    // 0: opentrade.snapshot.QuoteSnapshot
 	(*QuoteSymbolState)(nil), // 1: opentrade.snapshot.QuoteSymbolState
-	(*QuoteDepth)(nil),       // 2: opentrade.snapshot.QuoteDepth
-	(*QuoteOrderRef)(nil),    // 3: opentrade.snapshot.QuoteOrderRef
-	(*QuoteKline)(nil),       // 4: opentrade.snapshot.QuoteKline
-	(*QuoteBar)(nil),         // 5: opentrade.snapshot.QuoteBar
-	nil,                      // 6: opentrade.snapshot.QuoteSnapshot.OffsetsEntry
-	nil,                      // 7: opentrade.snapshot.QuoteSnapshot.SymbolsEntry
-	nil,                      // 8: opentrade.snapshot.QuoteDepth.BidsEntry
-	nil,                      // 9: opentrade.snapshot.QuoteDepth.AsksEntry
-	nil,                      // 10: opentrade.snapshot.QuoteDepth.PricesEntry
-	nil,                      // 11: opentrade.snapshot.QuoteKline.BarsEntry
+	(*QuoteKline)(nil),       // 2: opentrade.snapshot.QuoteKline
+	(*QuoteBar)(nil),         // 3: opentrade.snapshot.QuoteBar
+	nil,                      // 4: opentrade.snapshot.QuoteSnapshot.OffsetsEntry
+	nil,                      // 5: opentrade.snapshot.QuoteSnapshot.SymbolsEntry
+	nil,                      // 6: opentrade.snapshot.QuoteKline.BarsEntry
 }
 var file_snapshot_quote_proto_depIdxs = []int32{
-	6,  // 0: opentrade.snapshot.QuoteSnapshot.offsets:type_name -> opentrade.snapshot.QuoteSnapshot.OffsetsEntry
-	7,  // 1: opentrade.snapshot.QuoteSnapshot.symbols:type_name -> opentrade.snapshot.QuoteSnapshot.SymbolsEntry
-	2,  // 2: opentrade.snapshot.QuoteSymbolState.depth:type_name -> opentrade.snapshot.QuoteDepth
-	4,  // 3: opentrade.snapshot.QuoteSymbolState.kline:type_name -> opentrade.snapshot.QuoteKline
-	8,  // 4: opentrade.snapshot.QuoteDepth.bids:type_name -> opentrade.snapshot.QuoteDepth.BidsEntry
-	9,  // 5: opentrade.snapshot.QuoteDepth.asks:type_name -> opentrade.snapshot.QuoteDepth.AsksEntry
-	10, // 6: opentrade.snapshot.QuoteDepth.prices:type_name -> opentrade.snapshot.QuoteDepth.PricesEntry
-	3,  // 7: opentrade.snapshot.QuoteDepth.orders:type_name -> opentrade.snapshot.QuoteOrderRef
-	11, // 8: opentrade.snapshot.QuoteKline.bars:type_name -> opentrade.snapshot.QuoteKline.BarsEntry
-	1,  // 9: opentrade.snapshot.QuoteSnapshot.SymbolsEntry.value:type_name -> opentrade.snapshot.QuoteSymbolState
-	5,  // 10: opentrade.snapshot.QuoteKline.BarsEntry.value:type_name -> opentrade.snapshot.QuoteBar
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	4, // 0: opentrade.snapshot.QuoteSnapshot.offsets:type_name -> opentrade.snapshot.QuoteSnapshot.OffsetsEntry
+	5, // 1: opentrade.snapshot.QuoteSnapshot.symbols:type_name -> opentrade.snapshot.QuoteSnapshot.SymbolsEntry
+	2, // 2: opentrade.snapshot.QuoteSymbolState.kline:type_name -> opentrade.snapshot.QuoteKline
+	6, // 3: opentrade.snapshot.QuoteKline.bars:type_name -> opentrade.snapshot.QuoteKline.BarsEntry
+	1, // 4: opentrade.snapshot.QuoteSnapshot.SymbolsEntry.value:type_name -> opentrade.snapshot.QuoteSymbolState
+	3, // 5: opentrade.snapshot.QuoteKline.BarsEntry.value:type_name -> opentrade.snapshot.QuoteBar
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_snapshot_quote_proto_init() }
@@ -570,7 +386,7 @@ func file_snapshot_quote_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snapshot_quote_proto_rawDesc), len(file_snapshot_quote_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

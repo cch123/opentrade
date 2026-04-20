@@ -1,8 +1,12 @@
-// Package engine wires per-symbol Kline + Depth state and the stateless
-// PublicTrade forwarder into a single Handle(TradeEvent) function that
-// returns the market-data events to emit.
+// Package engine wires per-symbol Kline state and the stateless PublicTrade
+// forwarder into a single Handle(TradeEvent) function that returns the
+// market-data events to emit.
 //
-// Engine is safe for concurrent use: Handle and SnapshotAll take an internal
+// ADR-0055 removed depth responsibilities — orderbook state is owned by
+// Match and published directly to market-data as OrderBook frames. Quote
+// now only handles PublicTrade forwarding and Kline aggregation.
+//
+// Engine is safe for concurrent use: Handle and Capture take an internal
 // mutex so a snapshot ticker can run alongside the trade-event consumer.
 package engine
 
@@ -15,7 +19,6 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/quote/internal/depth"
 	"github.com/xargin/opentrade/quote/internal/kline"
 	"github.com/xargin/opentrade/quote/internal/snapshot"
 	"github.com/xargin/opentrade/quote/internal/trades"
@@ -30,15 +33,14 @@ type Config struct {
 	Clock func() int64
 }
 
-// Engine owns per-symbol Kline aggregators and Depth books and stamps the
-// EventMeta of every emitted MarketDataEvent.
+// Engine owns per-symbol Kline aggregators and stamps the EventMeta of every
+// emitted MarketDataEvent.
 type Engine struct {
 	cfg    Config
 	logger *zap.Logger
 
 	mu     sync.Mutex
 	klines map[string]*kline.Aggregator
-	books  map[string]*depth.Book
 	// offsets tracks the next-to-consume offset per trade-event partition.
 	// Updated under mu alongside state mutation in HandleRecord so Capture
 	// sees state and offsets that are consistent with one another.
@@ -59,7 +61,6 @@ func New(cfg Config, logger *zap.Logger) *Engine {
 		cfg:     cfg,
 		logger:  logger,
 		klines:  make(map[string]*kline.Aggregator),
-		books:   make(map[string]*depth.Book),
 		offsets: make(map[int32]int64),
 	}
 }
@@ -93,27 +94,13 @@ func (e *Engine) HandleRecord(evt *eventpb.TradeEvent, partition int32, offset i
 	return out
 }
 
-// dispatch is the mutex-less inner handler.
+// dispatch is the mutex-less inner handler. Only Trade payloads matter now
+// that depth lives in Match; other payloads have no Quote-side projection.
 func (e *Engine) dispatch(evt *eventpb.TradeEvent) []*eventpb.MarketDataEvent {
-	switch p := evt.Payload.(type) {
-	case *eventpb.TradeEvent_Trade:
+	if p, ok := evt.Payload.(*eventpb.TradeEvent_Trade); ok {
 		return e.handleTrade(evt, p.Trade)
-	case *eventpb.TradeEvent_Accepted:
-		return e.handleAccepted(p.Accepted)
-	case *eventpb.TradeEvent_Cancelled:
-		if p.Cancelled == nil {
-			return nil
-		}
-		return e.handleClosed(p.Cancelled.Symbol, p.Cancelled.OrderId)
-	case *eventpb.TradeEvent_Expired:
-		if p.Expired == nil {
-			return nil
-		}
-		return e.handleClosed(p.Expired.Symbol, p.Expired.OrderId)
-	default:
-		// Rejected orders never rested — no market-data effect.
-		return nil
 	}
+	return nil
 }
 
 // Capture returns a deep copy of the engine's state, offsets and emit seq
@@ -130,56 +117,23 @@ func (e *Engine) Capture() *snapshot.Snapshot {
 	for p, off := range e.offsets {
 		snap.Offsets[p] = off
 	}
-	// Collect symbols from both maps — a symbol may exist in only one of
-	// them (depth-only or kline-only state is possible mid-run).
-	symbols := make(map[string]struct{})
-	for s := range e.books {
-		symbols[s] = struct{}{}
-	}
-	for s := range e.klines {
-		symbols[s] = struct{}{}
-	}
-	for sym := range symbols {
-		ss := &snapshot.SymbolSnapshot{}
-		if book, ok := e.books[sym]; ok {
-			st := book.Capture()
-			ss.Depth = &snapshot.DepthSnapshot{
-				Symbol: sym,
-				Bids:   st.Bids,
-				Asks:   st.Asks,
-				Prices: st.Prices,
-			}
-			if len(st.Orders) > 0 {
-				ss.Depth.Orders = make([]snapshot.OrderRefSnap, len(st.Orders))
-				for i, o := range st.Orders {
-					ss.Depth.Orders[i] = snapshot.OrderRefSnap{
-						OrderID:   o.OrderID,
-						Side:      o.Side,
-						PriceKey:  o.PriceKey,
-						Remaining: o.Remaining,
-					}
-				}
+	for sym, agg := range e.klines {
+		st := agg.Capture()
+		ks := &snapshot.KlineSnapshot{Symbol: sym, Bars: make(map[int32]snapshot.BarSnap, len(st.Bars))}
+		for iv, b := range st.Bars {
+			ks.Bars[int32(iv)] = snapshot.BarSnap{
+				OpenTimeMs:  b.OpenTimeMs,
+				CloseTimeMs: b.CloseTimeMs,
+				Open:        b.Open,
+				High:        b.High,
+				Low:         b.Low,
+				Close:       b.Close,
+				Volume:      b.Volume,
+				QuoteVolume: b.QuoteVolume,
+				Count:       b.Count,
 			}
 		}
-		if agg, ok := e.klines[sym]; ok {
-			st := agg.Capture()
-			ks := &snapshot.KlineSnapshot{Symbol: sym, Bars: make(map[int32]snapshot.BarSnap, len(st.Bars))}
-			for iv, b := range st.Bars {
-				ks.Bars[int32(iv)] = snapshot.BarSnap{
-					OpenTimeMs:  b.OpenTimeMs,
-					CloseTimeMs: b.CloseTimeMs,
-					Open:        b.Open,
-					High:        b.High,
-					Low:         b.Low,
-					Close:       b.Close,
-					Volume:      b.Volume,
-					QuoteVolume: b.QuoteVolume,
-					Count:       b.Count,
-				}
-			}
-			ss.Kline = ks
-		}
-		snap.Symbols[sym] = ss
+		snap.Symbols[sym] = &snapshot.SymbolSnapshot{Kline: ks}
 	}
 	return snap
 }
@@ -200,54 +154,30 @@ func (e *Engine) Restore(snap *snapshot.Snapshot) error {
 	for p, off := range snap.Offsets {
 		e.offsets[p] = off
 	}
-	e.books = make(map[string]*depth.Book)
 	e.klines = make(map[string]*kline.Aggregator)
 	for sym, ss := range snap.Symbols {
-		if ss == nil {
+		if ss == nil || ss.Kline == nil {
 			continue
 		}
-		if ss.Depth != nil {
-			book := depth.New(sym)
-			orders := make([]depth.OrderRef, len(ss.Depth.Orders))
-			for i, o := range ss.Depth.Orders {
-				orders[i] = depth.OrderRef{
-					OrderID:   o.OrderID,
-					Side:      o.Side,
-					PriceKey:  o.PriceKey,
-					Remaining: o.Remaining,
-				}
+		agg := kline.New(sym, e.cfg.Intervals)
+		bars := make(map[eventpb.KlineInterval]kline.Bar, len(ss.Kline.Bars))
+		for iv, b := range ss.Kline.Bars {
+			bars[eventpb.KlineInterval(iv)] = kline.Bar{
+				OpenTimeMs:  b.OpenTimeMs,
+				CloseTimeMs: b.CloseTimeMs,
+				Open:        b.Open,
+				High:        b.High,
+				Low:         b.Low,
+				Close:       b.Close,
+				Volume:      b.Volume,
+				QuoteVolume: b.QuoteVolume,
+				Count:       b.Count,
 			}
-			if err := book.Restore(depth.State{
-				Bids:   ss.Depth.Bids,
-				Asks:   ss.Depth.Asks,
-				Prices: ss.Depth.Prices,
-				Orders: orders,
-			}); err != nil {
-				return fmt.Errorf("restore depth %s: %w", sym, err)
-			}
-			e.books[sym] = book
 		}
-		if ss.Kline != nil {
-			agg := kline.New(sym, e.cfg.Intervals)
-			bars := make(map[eventpb.KlineInterval]kline.Bar, len(ss.Kline.Bars))
-			for iv, b := range ss.Kline.Bars {
-				bars[eventpb.KlineInterval(iv)] = kline.Bar{
-					OpenTimeMs:  b.OpenTimeMs,
-					CloseTimeMs: b.CloseTimeMs,
-					Open:        b.Open,
-					High:        b.High,
-					Low:         b.Low,
-					Close:       b.Close,
-					Volume:      b.Volume,
-					QuoteVolume: b.QuoteVolume,
-					Count:       b.Count,
-				}
-			}
-			if err := agg.Restore(kline.State{Bars: bars}); err != nil {
-				return fmt.Errorf("restore kline %s: %w", sym, err)
-			}
-			e.klines[sym] = agg
+		if err := agg.Restore(kline.State{Bars: bars}); err != nil {
+			return fmt.Errorf("restore kline %s: %w", sym, err)
 		}
+		e.klines[sym] = agg
 	}
 	return nil
 }
@@ -260,26 +190,6 @@ func (e *Engine) Offsets() map[int32]int64 {
 	out := make(map[int32]int64, len(e.offsets))
 	for p, off := range e.offsets {
 		out[p] = off
-	}
-	return out
-}
-
-// SnapshotAll returns a DepthSnapshot for every symbol that has any book
-// state. Call on a periodic ticker.
-func (e *Engine) SnapshotAll() []*eventpb.MarketDataEvent {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if len(e.books) == 0 {
-		return nil
-	}
-	out := make([]*eventpb.MarketDataEvent, 0, len(e.books))
-	for _, b := range e.books {
-		snap := b.Snapshot()
-		if snap == nil {
-			continue
-		}
-		e.stamp(snap)
-		out = append(out, snap)
 	}
 	return out
 }
@@ -319,54 +229,10 @@ func (e *Engine) handleTrade(evt *eventpb.TradeEvent, trade *eventpb.Trade) []*e
 	}
 	out = append(out, kEvents...)
 
-	// 3. Depth: maker level shrinks.
-	dEvent, err := e.bookFor(symbol).OnTrade(trade.MakerOrderId, trade.Qty)
-	if err != nil {
-		e.logger.Error("depth update (trade)",
-			zap.String("symbol", symbol), zap.Uint64("maker_order_id", trade.MakerOrderId),
-			zap.Error(err))
-	}
-	if dEvent != nil {
-		out = append(out, dEvent)
-	}
-
 	for _, m := range out {
 		e.stamp(m)
 	}
 	return out
-}
-
-func (e *Engine) handleAccepted(acc *eventpb.OrderAccepted) []*eventpb.MarketDataEvent {
-	if acc == nil {
-		return nil
-	}
-	ev, err := e.bookFor(acc.Symbol).OnOrderAccepted(acc.OrderId, acc.Side, acc.Price, acc.RemainingQty)
-	if err != nil {
-		e.logger.Error("depth accepted",
-			zap.String("symbol", acc.Symbol), zap.Uint64("order_id", acc.OrderId),
-			zap.Error(err))
-		return nil
-	}
-	if ev == nil {
-		return nil
-	}
-	e.stamp(ev)
-	return []*eventpb.MarketDataEvent{ev}
-}
-
-func (e *Engine) handleClosed(symbol string, orderID uint64) []*eventpb.MarketDataEvent {
-	ev, err := e.bookFor(symbol).OnOrderClosed(orderID)
-	if err != nil {
-		e.logger.Error("depth closed",
-			zap.String("symbol", symbol), zap.Uint64("order_id", orderID),
-			zap.Error(err))
-		return nil
-	}
-	if ev == nil {
-		return nil
-	}
-	e.stamp(ev)
-	return []*eventpb.MarketDataEvent{ev}
 }
 
 func (e *Engine) klineFor(symbol string) *kline.Aggregator {
@@ -376,15 +242,6 @@ func (e *Engine) klineFor(symbol string) *kline.Aggregator {
 		e.klines[symbol] = a
 	}
 	return a
-}
-
-func (e *Engine) bookFor(symbol string) *depth.Book {
-	b, ok := e.books[symbol]
-	if !ok {
-		b = depth.New(symbol)
-		e.books[symbol] = b
-	}
-	return b
 }
 
 func (e *Engine) stamp(m *eventpb.MarketDataEvent) {

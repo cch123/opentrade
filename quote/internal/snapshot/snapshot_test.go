@@ -25,16 +25,6 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 		Offsets:   map[int32]int64{0: 100, 1: 205},
 		Symbols: map[string]*SymbolSnapshot{
 			"BTC-USDT": {
-				Depth: &DepthSnapshot{
-					Symbol: "BTC-USDT",
-					Bids:   map[string]string{"99": "3"},
-					Asks:   map[string]string{"101": "5"},
-					Prices: map[string]string{"99": "99", "101": "101"},
-					Orders: []OrderRefSnap{
-						{OrderID: 10, Side: 1, PriceKey: "99", Remaining: "3"},
-						{OrderID: 11, Side: 2, PriceKey: "101", Remaining: "5"},
-					},
-				},
 				Kline: &KlineSnapshot{
 					Symbol: "BTC-USDT",
 					Bars: map[int32]BarSnap{

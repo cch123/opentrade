@@ -95,3 +95,27 @@ type Output struct {
 	// originated (propagated from Event.Source).
 	SourceOffset SourceMeta
 }
+
+// MarketDataKind classifies a SymbolWorker market-data emission (ADR-0055).
+type MarketDataKind uint8
+
+const (
+	// MDKindDelta — the levels in Bids / Asks changed since the previous
+	// frame. Qty == dec.Zero means the level was removed.
+	MDKindDelta MarketDataKind = 1
+	// MDKindFull — Bids / Asks carry the top-N levels (descending by price
+	// for bids, ascending for asks) at the BookSeq snapshot. Acts as the
+	// cold-start seed for downstream consumers.
+	MDKindFull MarketDataKind = 2
+)
+
+// MarketDataOutput is the structured market-data emission. One per handle()
+// call for Delta (only when any level changed), and one per Full-ticker
+// tick for Full. See ADR-0055.
+type MarketDataOutput struct {
+	Kind    MarketDataKind
+	BookSeq uint64 // per-symbol monotonic orderbook seq (independent of trade-event MatchSeq)
+	Symbol  string
+	Bids    []orderbook.Level
+	Asks    []orderbook.Level
+}

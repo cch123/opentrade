@@ -43,10 +43,9 @@ func TestDepthSnapshot_404BeforeFirstWrite(t *testing.T) {
 
 func TestDepthSnapshot_ReturnsLatest(t *testing.T) {
 	cache := marketcache.New(marketcache.Config{})
-	cache.PutDepthSnapshot(&eventpb.DepthSnapshot{
-		Symbol: "BTC-USDT",
-		Bids:   []*eventpb.DepthLevel{{Price: "99", Qty: "1"}},
-		Asks:   []*eventpb.DepthLevel{{Price: "101", Qty: "2"}},
+	cache.PutOrderBookFull("BTC-USDT", 42, &eventpb.OrderBookFull{
+		Bids: []*eventpb.OrderBookLevel{{Price: "99", Qty: "1"}},
+		Asks: []*eventpb.OrderBookLevel{{Price: "101", Qty: "2"}},
 	})
 	srv := newServerWithMarket(cache)
 	req := httptest.NewRequest(http.MethodGet, "/v1/depth/BTC-USDT", nil)
