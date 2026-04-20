@@ -1,9 +1,10 @@
 # ADR-0055: 行情权威迁移 — Match 直接产出 OrderBook 全量 + 增量，Quote 降级为无状态转发（参考 Bybit）
 
-- 状态: Proposed
+- 状态: Accepted
 - 日期: 2026-04-20
 - 决策者: xargin, Claude
 - 相关 ADR: 0021（Quote 独立服务 fanout）、0024（trade-event.OrderAccepted 扩展）、0025（Quote 引擎状态与 offset 策略）、0036（Quote snapshot 热重启）、0048（snapshot offset 原子绑定）、0049（snapshot protobuf）、0050（match 输入 topic per-symbol）、0051（typed producer seq naming）
+- 实施提交: `35ba911`（feat: ADR-0055 Match 直出 OrderBook Full+Delta，Quote 降级无状态转发）
 
 ## 术语 (Glossary)
 
@@ -185,17 +186,17 @@ message OrderBook {
 - 冷启：`OffsetTail(N)` 回溯到最近 `Full` 帧 → 初始化本地 view → 应用后续 `Delta`
 - 断线重连：沿用 ADR-0038 的重连补齐快照流程，但"快照"来源从"Quote 缓存"改为"上游 Full 帧"
 
-### 5. 实施时序（**不在本 ADR 立即动工**）
+### 5. 实施时序
 
-本 ADR 只**锁定方向**。落地分以下阶段，留待后续优先级安排：
+本 ADR 在提交 `35ba911` 一次性落地（项目未上线，不需要灰度）：
 
-| 阶段 | 动作 | 前置 |
+| 阶段 | 动作 | 状态 |
 |---|---|---|
-| P0 | Match 内部 orderbook 能序列化出 Top N Full + Delta 的能力 | ADR-0048 / 0049 已完成 |
-| P1 | 新 proto + Match 生产端上线（灰度：同时发老的 trade-event 和新的 OrderBook 帧） | P0 |
-| P2 | 下游消费者（BFF marketcache / Push）切换到新 topic | P1 |
-| P3 | Quote depth 模块下线；ADR-0036 的 books 字段从 snapshot schema 移除 | P2 + 所有下游切完 |
-| P4 | 老 trade-event 里的 `OrderAccepted.*` 盘口重建字段（ADR-0024）视需要保留 / 删除 | P3 |
+| P0 | Match 内部 orderbook 新增 `TopN()` / 脏档位跟踪 (`markDirty` + `DrainDirty`) | ✅ |
+| P1 | 新 proto（`OrderBook{oneof Full|Delta}`, `match_seq_id`）+ Match `MarketDataProducer` 上线，写 market-data topic | ✅ |
+| P2 | 下游消费者切换：BFF marketcache 缓存 Full，Push 拆 Full→`depth.snapshot@{symbol}` / Delta→`depth@{symbol}` | ✅ |
+| P3 | Quote `depth/` 包整体下线；snapshot schema 移除 QuoteDepth（proto tag 1 reserved） | ✅ |
+| P4 | ADR-0024 的 `OrderAccepted.*` 字段暂保留（trade-dump / history 可能仍需） | 保留待后续评估 |
 
 ## 备选方案 (Alternatives Considered)
 
