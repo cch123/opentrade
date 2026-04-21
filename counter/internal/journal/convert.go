@@ -50,13 +50,14 @@ func BuildTransferEvent(in TransferEventInput) (*eventpb.CounterJournalEvent, er
 		CounterSeqId:   in.CounterSeqID,
 		Payload: &eventpb.CounterJournalEvent_Transfer{
 			Transfer: &eventpb.TransferEvent{
-				UserId:     in.Req.UserID,
-				TransferId: in.Req.TransferID,
-				Asset:      in.Req.Asset,
-				Amount:     in.Req.Amount.String(),
-				Type:       pbType,
-				BizRefId:   in.Req.BizRefID,
-				Memo:       in.Req.Memo,
+				UserId:         in.Req.UserID,
+				TransferId:     in.Req.TransferID,
+				Asset:          in.Req.Asset,
+				Amount:         in.Req.Amount.String(),
+				Type:           pbType,
+				BizRefId:       in.Req.BizRefID,
+				Memo:           in.Req.Memo,
+				SagaTransferId: in.Req.SagaTransferID,
 				BalanceAfter: &eventpb.BalanceSnapshot{
 					UserId:    in.Req.UserID,
 					Asset:     in.Req.Asset,

@@ -40,6 +40,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/engine"
@@ -330,6 +331,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 
 	grpcServer := grpc.NewServer()
 	counterrpc.RegisterCounterServiceServer(grpcServer, server.New(svc, logger))
+	// Counter also plays the biz_line=spot slot of the asset-service saga
+	// protocol (ADR-0057). The AssetHolder server shares the same Service
+	// so sequencer / state / dedup are consistent with the CounterService
+	// endpoint.
+	assetholderrpc.RegisterAssetHolderServer(grpcServer, server.NewAssetHolderServer(svc))
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
 		logger.Error("listen", zap.Error(err))

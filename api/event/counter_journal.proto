@@ -124,6 +124,14 @@ message TransferEvent {
   string biz_ref_id = 6;
   string memo = 7;
   BalanceSnapshot balance_after = 8;
+
+  // Populated when the transfer is a leg of an asset-service saga
+  // (ADR-0057). For legs driven by AssetHolder RPCs the saga's
+  // transfer_id is stamped here so downstream projections can correlate
+  // counter-journal entries with transfer_ledger rows in
+  // opentrade_asset. Empty for system-level / admin transfers that do
+  // not participate in a saga.
+  string saga_transfer_id = 9;
 }
 
 // Status transition of an order (purely informational for consumers that

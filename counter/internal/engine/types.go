@@ -69,6 +69,12 @@ type TransferRequest struct {
 	Type       TransferType
 	BizRefID   string
 	Memo       string
+	// SagaTransferID carries the asset-service saga id (ADR-0057) when
+	// this transfer is one leg of a cross-biz_line saga driven through
+	// the AssetHolder gRPC surface. Empty for system / admin transfers
+	// that do not participate in a saga. Written verbatim into
+	// counter-journal.TransferEvent.saga_transfer_id.
+	SagaTransferID string
 }
 
 // TransferStatus is the outcome of a Transfer.

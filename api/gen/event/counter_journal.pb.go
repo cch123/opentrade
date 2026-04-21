@@ -715,17 +715,24 @@ func (x *SettlementEvent) GetQuoteBalanceAfter() *BalanceSnapshot {
 
 // Non-order fund movement (deposit / withdraw / freeze / unfreeze).
 type TransferEvent struct {
-	state         protoimpl.MessageState     `protogen:"open.v1"`
-	UserId        string                     `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	TransferId    string                     `protobuf:"bytes,2,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"` // idempotency key
-	Asset         string                     `protobuf:"bytes,3,opt,name=asset,proto3" json:"asset,omitempty"`
-	Amount        string                     `protobuf:"bytes,4,opt,name=amount,proto3" json:"amount,omitempty"`
-	Type          TransferEvent_TransferType `protobuf:"varint,5,opt,name=type,proto3,enum=opentrade.event.TransferEvent_TransferType" json:"type,omitempty"`
-	BizRefId      string                     `protobuf:"bytes,6,opt,name=biz_ref_id,json=bizRefId,proto3" json:"biz_ref_id,omitempty"`
-	Memo          string                     `protobuf:"bytes,7,opt,name=memo,proto3" json:"memo,omitempty"`
-	BalanceAfter  *BalanceSnapshot           `protobuf:"bytes,8,opt,name=balance_after,json=balanceAfter,proto3" json:"balance_after,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState     `protogen:"open.v1"`
+	UserId       string                     `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	TransferId   string                     `protobuf:"bytes,2,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"` // idempotency key
+	Asset        string                     `protobuf:"bytes,3,opt,name=asset,proto3" json:"asset,omitempty"`
+	Amount       string                     `protobuf:"bytes,4,opt,name=amount,proto3" json:"amount,omitempty"`
+	Type         TransferEvent_TransferType `protobuf:"varint,5,opt,name=type,proto3,enum=opentrade.event.TransferEvent_TransferType" json:"type,omitempty"`
+	BizRefId     string                     `protobuf:"bytes,6,opt,name=biz_ref_id,json=bizRefId,proto3" json:"biz_ref_id,omitempty"`
+	Memo         string                     `protobuf:"bytes,7,opt,name=memo,proto3" json:"memo,omitempty"`
+	BalanceAfter *BalanceSnapshot           `protobuf:"bytes,8,opt,name=balance_after,json=balanceAfter,proto3" json:"balance_after,omitempty"`
+	// Populated when the transfer is a leg of an asset-service saga
+	// (ADR-0057). For legs driven by AssetHolder RPCs the saga's
+	// transfer_id is stamped here so downstream projections can correlate
+	// counter-journal entries with transfer_ledger rows in
+	// opentrade_asset. Empty for system-level / admin transfers that do
+	// not participate in a saga.
+	SagaTransferId string `protobuf:"bytes,9,opt,name=saga_transfer_id,json=sagaTransferId,proto3" json:"saga_transfer_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TransferEvent) Reset() {
@@ -812,6 +819,13 @@ func (x *TransferEvent) GetBalanceAfter() *BalanceSnapshot {
 		return x.BalanceAfter
 	}
 	return nil
+}
+
+func (x *TransferEvent) GetSagaTransferId() string {
+	if x != nil {
+		return x.SagaTransferId
+	}
+	return ""
 }
 
 // Status transition of an order (purely informational for consumers that
@@ -1027,7 +1041,7 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\n" +
 	"fee_amount\x18\x11 \x01(\tR\tfeeAmount\x12N\n" +
 	"\x12base_balance_after\x18\x14 \x01(\v2 .opentrade.event.BalanceSnapshotR\x10baseBalanceAfter\x12P\n" +
-	"\x13quote_balance_after\x18\x15 \x01(\v2 .opentrade.event.BalanceSnapshotR\x11quoteBalanceAfter\"\xce\x03\n" +
+	"\x13quote_balance_after\x18\x15 \x01(\v2 .opentrade.event.BalanceSnapshotR\x11quoteBalanceAfter\"\xf8\x03\n" +
 	"\rTransferEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1f\n" +
 	"\vtransfer_id\x18\x02 \x01(\tR\n" +
@@ -1038,7 +1052,8 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\n" +
 	"biz_ref_id\x18\x06 \x01(\tR\bbizRefId\x12\x12\n" +
 	"\x04memo\x18\a \x01(\tR\x04memo\x12E\n" +
-	"\rbalance_after\x18\b \x01(\v2 .opentrade.event.BalanceSnapshotR\fbalanceAfter\"\x9a\x01\n" +
+	"\rbalance_after\x18\b \x01(\v2 .opentrade.event.BalanceSnapshotR\fbalanceAfter\x12(\n" +
+	"\x10saga_transfer_id\x18\t \x01(\tR\x0esagaTransferId\"\x9a\x01\n" +
 	"\fTransferType\x12\x1d\n" +
 	"\x19TRANSFER_TYPE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15TRANSFER_TYPE_DEPOSIT\x10\x01\x12\x1a\n" +
