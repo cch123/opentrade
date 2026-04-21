@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,12 +18,11 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
-	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/admin-gateway/internal/counterclient"
 	"github.com/xargin/opentrade/admin-gateway/internal/rollout"
 	"github.com/xargin/opentrade/admin-gateway/internal/server"
+	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
@@ -215,9 +215,9 @@ func main() {
 	logger.Info("admin-gateway shutdown complete")
 }
 
-// dialAllShards opens one grpc.ClientConn per shard endpoint in order.
-func dialAllShards(ctx context.Context, endpoints []string) ([]*grpc.ClientConn, []counterclient.Counter, error) {
-	conns := make([]*grpc.ClientConn, 0, len(endpoints))
+// dialAllShards opens one RPC transport per shard endpoint in order.
+func dialAllShards(ctx context.Context, endpoints []string) ([]io.Closer, []counterclient.Counter, error) {
+	conns := make([]io.Closer, 0, len(endpoints))
 	clients := make([]counterclient.Counter, 0, len(endpoints))
 	for i, ep := range endpoints {
 		conn, c, err := counterclient.Dial(ctx, ep)

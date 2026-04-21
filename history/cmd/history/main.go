@@ -14,18 +14,17 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 	"github.com/xargin/opentrade/history/internal/mysqlstore"
 	"github.com/xargin/opentrade/history/internal/server"
 	"github.com/xargin/opentrade/pkg/logx"
+	"go.uber.org/zap"
 )
 
 type Config struct {
@@ -84,23 +83,24 @@ func main() {
 	if err != nil {
 		logger.Fatal("grpc listen", zap.Error(err))
 	}
-	grpcSrv := grpc.NewServer()
-	historypb.RegisterHistoryServiceServer(grpcSrv, server.New(store))
+	httpSrv := &http.Server{Handler: historypb.NewHistoryServiceHTTPHandler(server.New(store))}
 
 	serveErr := make(chan error, 1)
 	go func() {
-		logger.Info("grpc serving", zap.String("addr", cfg.GRPCAddr))
-		serveErr <- grpcSrv.Serve(lis)
+		logger.Info("rpc serving", zap.String("addr", cfg.GRPCAddr))
+		serveErr <- httpSrv.Serve(lis)
 	}()
 
 	select {
 	case err := <-serveErr:
-		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			logger.Error("grpc serve", zap.Error(err))
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("rpc serve", zap.Error(err))
 		}
 	case <-rootCtx.Done():
 		logger.Info("shutdown initiated")
-		grpcSrv.GracefulStop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = httpSrv.Shutdown(shutdownCtx)
+		cancel()
 	}
 	logger.Info("history shutdown complete")
 }

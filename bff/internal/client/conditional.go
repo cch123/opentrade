@@ -2,12 +2,12 @@ package client
 
 import (
 	"context"
-	"fmt"
+	"io"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
+	"github.com/xargin/opentrade/api/gen/rpc/connectutil"
 )
 
 // Conditional is the narrow surface BFF needs from the conditional service.
@@ -20,12 +20,9 @@ type Conditional interface {
 	PlaceOCO(ctx context.Context, in *condrpc.PlaceOCORequest, opts ...grpc.CallOption) (*condrpc.PlaceOCOResponse, error)
 }
 
-// DialConditional opens a plaintext gRPC connection to the conditional
+// DialConditional opens a plaintext RPC transport to the conditional
 // service. mTLS / auth land with the broader credentials work later.
-func DialConditional(_ context.Context, endpoint string) (*grpc.ClientConn, Conditional, error) {
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("grpc Dial %s: %w", endpoint, err)
-	}
-	return conn, condrpc.NewConditionalServiceClient(conn), nil
+func DialConditional(_ context.Context, endpoint string) (io.Closer, Conditional, error) {
+	httpClient, closer := connectutil.NewHTTPClient()
+	return closer, condrpc.NewConditionalServiceConnectClient(httpClient, endpoint), nil
 }

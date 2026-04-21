@@ -9,11 +9,12 @@ package counterclient
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/xargin/opentrade/api/gen/rpc/connectutil"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 )
 
@@ -24,14 +25,11 @@ type Counter interface {
 	AdminCancelOrders(ctx context.Context, in *counterrpc.AdminCancelOrdersRequest, opts ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error)
 }
 
-// Dial opens a plaintext gRPC connection to one Counter shard endpoint.
+// Dial opens a plaintext RPC transport to one Counter shard endpoint.
 // mTLS / auth credentials arrive in a later MVP.
-func Dial(ctx context.Context, endpoint string) (*grpc.ClientConn, Counter, error) {
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("grpc Dial %s: %w", endpoint, err)
-	}
-	return conn, counterrpc.NewCounterServiceClient(conn), nil
+func Dial(_ context.Context, endpoint string) (io.Closer, Counter, error) {
+	httpClient, closer := connectutil.NewHTTPClient()
+	return closer, counterrpc.NewCounterServiceConnectClient(httpClient, endpoint), nil
 }
 
 // Sharded is a lightweight admin-gateway ShardedCounter. Unlike

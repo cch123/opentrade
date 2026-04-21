@@ -27,6 +27,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -39,8 +40,6 @@ import (
 	_ "github.com/go-sql-driver/mysql" // MySQL driver for pkg/transferledger
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
@@ -136,7 +135,7 @@ func main() {
 	var orch *saga.Orchestrator
 	var registry *holder.Registry
 	var ledger *transferledger.Ledger
-	var peerConns []*grpc.ClientConn
+	var peerConns []io.Closer
 
 	if cfg.LedgerDSN != "" {
 		var err error
@@ -212,9 +211,18 @@ func main() {
 		}()
 	}
 
-	grpcServer := grpc.NewServer()
-	assetholderrpc.RegisterAssetHolderServer(grpcServer, server.NewAssetHolderServer(svc))
-	assetrpc.RegisterAssetServiceServer(grpcServer, server.NewAssetServer(svc, orch))
+	assetHolderHandler := assetholderrpc.NewAssetHolderHTTPHandler(server.NewAssetHolderServer(svc))
+	assetHandler := assetrpc.NewAssetServiceHTTPHandler(server.NewAssetServer(svc, orch))
+	rpcSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/opentrade.rpc.assetholder.AssetHolder/"):
+			assetHolderHandler.ServeHTTP(w, r)
+		case strings.HasPrefix(r.URL.Path, "/opentrade.rpc.asset.AssetService/"):
+			assetHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})}
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
@@ -225,15 +233,17 @@ func main() {
 	grpcWG.Add(1)
 	go func() {
 		defer grpcWG.Done()
-		logger.Info("gRPC listening", zap.String("addr", cfg.GRPCAddr))
-		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			logger.Error("grpc Serve", zap.Error(err))
+		logger.Info("RPC listening", zap.String("addr", cfg.GRPCAddr))
+		if err := rpcSrv.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("rpc Serve", zap.Error(err))
 		}
 	}()
 
 	<-rootCtx.Done()
 	logger.Info("asset shutting down")
-	grpcServer.GracefulStop()
+	shutdownCtx, cancelRPC := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = rpcSrv.Shutdown(shutdownCtx)
+	cancelRPC()
 	grpcWG.Wait()
 	reconcilerWG.Wait()
 	if cfg.MetricsAddr != "" {
@@ -245,27 +255,26 @@ func main() {
 	logger.Info("asset shutdown complete")
 }
 
-
 // registerPeerHolders dials each peer biz_line and registers the
 // resulting Client. Returns the list of opened conns so the caller can
 // Close() them on shutdown. "funding" is skipped because asset-service
 // is itself the funding holder — a misconfiguration that targets it is
 // a hard error.
-func registerPeerHolders(reg *holder.Registry, peers map[string]string) ([]*grpc.ClientConn, error) {
+func registerPeerHolders(reg *holder.Registry, peers map[string]string) ([]io.Closer, error) {
 	if len(peers) == 0 {
 		return nil, nil
 	}
-	var conns []*grpc.ClientConn
+	var conns []io.Closer
 	for biz, addr := range peers {
 		if biz == "funding" {
 			return conns, fmt.Errorf("holder: 'funding' cannot be a peer (this service IS the funding holder)")
 		}
-		c, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		c, err := holder.NewGRPCClient(addr)
 		if err != nil {
 			return conns, fmt.Errorf("dial peer %s (%s): %w", biz, addr, err)
 		}
 		conns = append(conns, c)
-		reg.Register(biz, holder.NewGRPCClientWithConn(c))
+		reg.Register(biz, c)
 	}
 	return conns, nil
 }

@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -34,7 +35,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
@@ -187,12 +187,21 @@ func main() {
 		}
 	}()
 
-	grpcServer := grpc.NewServer()
-	counterrpc.RegisterCounterServiceServer(grpcServer, server.New(mgr, logger))
+	counterHandler := counterrpc.NewCounterServiceHTTPHandler(server.New(mgr, logger))
 	// Counter's AssetHolder surface (ADR-0057) shares the same Router so
 	// each user's asset-service calls land on the same vshard as their
 	// order + balance traffic.
-	assetholderrpc.RegisterAssetHolderServer(grpcServer, server.NewAssetHolderServer(mgr))
+	assetHolderHandler := assetholderrpc.NewAssetHolderHTTPHandler(server.NewAssetHolderServer(mgr))
+	rpcSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/opentrade.rpc.counter.CounterService/"):
+			counterHandler.ServeHTTP(w, r)
+		case strings.HasPrefix(r.URL.Path, "/opentrade.rpc.assetholder.AssetHolder/"):
+			assetHolderHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})}
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
@@ -204,17 +213,19 @@ func main() {
 	go func() {
 		defer wg.Done()
 		defer close(grpcDone)
-		logger.Info("gRPC listening", zap.String("addr", cfg.GRPCAddr))
-		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			logger.Error("grpc Serve", zap.Error(err))
+		logger.Info("RPC listening", zap.String("addr", cfg.GRPCAddr))
+		if err := rpcSrv.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("rpc Serve", zap.Error(err))
 		}
 	}()
 
 	<-rootCtx.Done()
 	logger.Info("counter shutting down")
 
-	// Stop gRPC first so no new RPC arrives while workers are draining.
-	grpcServer.GracefulStop()
+	// Stop RPC first so no new requests arrive while workers are draining.
+	shutdownCtx, cancelRPC := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = rpcSrv.Shutdown(shutdownCtx)
+	cancelRPC()
 	<-grpcDone
 
 	// Manager → cluster: stopping the manager lets every VShardWorker

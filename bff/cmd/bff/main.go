@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,7 +25,6 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
 	"github.com/xargin/opentrade/bff/internal/client"
 	"github.com/xargin/opentrade/bff/internal/clusterview"
@@ -36,30 +36,30 @@ import (
 )
 
 type Config struct {
-	HTTPAddr          string
-	CounterShards     []string
-	PushWSURL         string // upstream push /ws endpoint; empty disables the WS proxy
+	HTTPAddr           string
+	CounterShards      []string
+	PushWSURL          string // upstream push /ws endpoint; empty disables the WS proxy
 	WSProxyDialTimeout time.Duration
-	UserRateLimit     int
-	UserRateWindow    time.Duration
-	IPRateLimit       int
-	IPRateWindow      time.Duration
-	ReadHeaderTimeout time.Duration
-	ShutdownGrace     time.Duration
+	UserRateLimit      int
+	UserRateWindow     time.Duration
+	IPRateLimit        int
+	IPRateWindow       time.Duration
+	ReadHeaderTimeout  time.Duration
+	ShutdownGrace      time.Duration
 
 	// Market-data cache for reconnect replay (ADR-0038). Empty brokers
 	// disables the cache and the /v1/depth + /v1/klines endpoints return
 	// 503.
-	MarketBrokers  []string
-	MarketTopic    string
-	MarketGroupID  string
-	KlineBuffer    int
+	MarketBrokers []string
+	MarketTopic   string
+	MarketGroupID string
+	KlineBuffer   int
 
 	// Auth (ADR-0039). AuthMode in {"header","jwt","api-key","mixed"}.
 	// Default "header" = legacy X-User-Id trust-the-header scheme.
-	AuthMode     string
-	JWTSecret    string
-	APIKeysFile  string
+	AuthMode    string
+	JWTSecret   string
+	APIKeysFile string
 
 	// Conditional service endpoint (ADR-0040). Empty disables the
 	// /v1/conditional endpoints with 503.
@@ -83,8 +83,8 @@ type Config struct {
 	VShardCount    int
 	ClusterRoot    string
 
-	Env               string
-	LogLevel          string
+	Env      string
+	LogLevel string
 }
 
 func main() {
@@ -223,7 +223,7 @@ func main() {
 // Returns (nil, nil, nil) when disabled so the REST layer falls back to
 // 503 on /v1/conditional endpoints. Errors are fatal so misconfigured
 // prod doesn't silently lose conditional-order traffic.
-func maybeDialConditional(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.Conditional, error) {
+func maybeDialConditional(ctx context.Context, addr string, logger *zap.Logger) (io.Closer, client.Conditional, error) {
 	if addr == "" {
 		logger.Info("conditional endpoint disabled (empty --conditional)")
 		return nil, nil, nil
@@ -239,7 +239,7 @@ func maybeDialConditional(ctx context.Context, addr string, logger *zap.Logger) 
 // maybeDialHistory dials the history service when addr is set. Returns
 // (nil, nil, nil) when disabled; the REST layer then 503s on
 // /v1/orders, /v1/trades, /v1/account-logs (ADR-0046).
-func maybeDialHistory(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.History, error) {
+func maybeDialHistory(ctx context.Context, addr string, logger *zap.Logger) (io.Closer, client.History, error) {
 	if addr == "" {
 		logger.Info("history endpoint disabled (empty --history)")
 		return nil, nil, nil
@@ -255,7 +255,7 @@ func maybeDialHistory(ctx context.Context, addr string, logger *zap.Logger) (*gr
 // maybeDialAsset dials the asset service when addr is set. Returns
 // (nil, nil, nil) when disabled; the REST layer then 503s on the
 // ADR-0057 endpoints (/v1/transfer, /v1/funding-balance, ...).
-func maybeDialAsset(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.Asset, error) {
+func maybeDialAsset(ctx context.Context, addr string, logger *zap.Logger) (io.Closer, client.Asset, error) {
 	if addr == "" {
 		logger.Info("asset endpoint disabled (empty --asset)")
 		return nil, nil, nil
@@ -407,8 +407,8 @@ func buildVShardCounter(ctx context.Context, cfg Config, logger *zap.Logger) (cl
 // dialAllShards walks endpoints left-to-right and dials each as a separate
 // grpc.ClientConn, returning them alongside a matching Counter slice. Caller
 // owns both slices' lifetime.
-func dialAllShards(ctx context.Context, endpoints []string) ([]*grpc.ClientConn, []client.Counter, error) {
-	conns := make([]*grpc.ClientConn, 0, len(endpoints))
+func dialAllShards(ctx context.Context, endpoints []string) ([]io.Closer, []client.Counter, error) {
+	conns := make([]io.Closer, 0, len(endpoints))
 	clients := make([]client.Counter, 0, len(endpoints))
 	for i, ep := range endpoints {
 		conn, c, err := client.Dial(ctx, ep)

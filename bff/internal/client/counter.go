@@ -5,11 +5,11 @@ package client
 
 import (
 	"context"
-	"fmt"
+	"io"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/xargin/opentrade/api/gen/rpc/connectutil"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 )
 
@@ -25,12 +25,9 @@ type Counter interface {
 	CancelMyOrders(ctx context.Context, in *counterrpc.CancelMyOrdersRequest, opts ...grpc.CallOption) (*counterrpc.CancelMyOrdersResponse, error)
 }
 
-// Dial opens a plaintext gRPC connection to a Counter shard endpoint.
+// Dial opens a plaintext RPC transport to a Counter shard endpoint.
 // mTLS / auth credentials arrive in a later MVP.
-func Dial(ctx context.Context, endpoint string) (*grpc.ClientConn, Counter, error) {
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("grpc Dial %s: %w", endpoint, err)
-	}
-	return conn, counterrpc.NewCounterServiceClient(conn), nil
+func Dial(_ context.Context, endpoint string) (io.Closer, Counter, error) {
+	httpClient, closer := connectutil.NewHTTPClient()
+	return closer, counterrpc.NewCounterServiceConnectClient(httpClient, endpoint), nil
 }

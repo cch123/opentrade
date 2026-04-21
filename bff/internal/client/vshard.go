@@ -3,14 +3,14 @@ package client
 import (
 	"context"
 	"errors"
-	"fmt"
+	"io"
 	"sync"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/xargin/opentrade/api/gen/rpc/connectutil"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/bff/internal/clusterview"
 )
@@ -31,7 +31,7 @@ type VShardCounter struct {
 	watcher *clusterview.Watcher
 
 	mu      sync.RWMutex
-	conns   map[string]*grpc.ClientConn
+	conns   map[string]io.Closer
 	clients map[string]counterrpc.CounterServiceClient
 }
 
@@ -43,7 +43,7 @@ func NewVShardCounter(watcher *clusterview.Watcher) (*VShardCounter, error) {
 	}
 	return &VShardCounter{
 		watcher: watcher,
-		conns:   make(map[string]*grpc.ClientConn),
+		conns:   make(map[string]io.Closer),
 		clients: make(map[string]counterrpc.CounterServiceClient),
 	}, nil
 }
@@ -78,12 +78,9 @@ func (v *VShardCounter) clientFor(endpoint string) (counterrpc.CounterServiceCli
 	if c, ok := v.clients[endpoint]; ok {
 		return c, nil
 	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", endpoint, err)
-	}
-	client := counterrpc.NewCounterServiceClient(conn)
-	v.conns[endpoint] = conn
+	httpClient, closer := connectutil.NewHTTPClient()
+	client := counterrpc.NewCounterServiceConnectClient(httpClient, endpoint)
+	v.conns[endpoint] = closer
 	v.clients[endpoint] = client
 	return client, nil
 }

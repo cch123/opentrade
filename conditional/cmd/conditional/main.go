@@ -18,7 +18,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,9 +28,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
@@ -42,6 +41,7 @@ import (
 	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
+	"go.uber.org/zap"
 )
 
 type Config struct {
@@ -288,8 +288,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}()
 
 	svc := service.New(eng)
-	grpcSrv := grpc.NewServer()
-	condrpc.RegisterConditionalServiceServer(grpcSrv, server.New(svc, nil))
+	httpSrv := &http.Server{Handler: condrpc.NewConditionalServiceHTTPHandler(server.New(svc, nil))}
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
@@ -299,15 +298,17 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		logger.Info("gRPC listening", zap.String("addr", cfg.GRPCAddr))
-		if err := grpcSrv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			logger.Error("grpc serve", zap.Error(err))
+		logger.Info("RPC listening", zap.String("addr", cfg.GRPCAddr))
+		if err := httpSrv.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("rpc serve", zap.Error(err))
 		}
 	}()
 
 	<-ctx.Done()
 	logger.Info("primary shutting down")
-	grpcSrv.GracefulStop()
+	shutdownCtx, cancelHTTP := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = httpSrv.Shutdown(shutdownCtx)
+	cancelHTTP()
 	mdCons.Close()
 	cancelSnap()
 	wg.Wait()
@@ -414,8 +415,8 @@ func runSnapshotTicker(ctx context.Context, cfg Config, eng *engine.Engine, logg
 // Counter dial
 // ---------------------------------------------------------------------------
 
-func dialCounterShards(ctx context.Context, endpoints []string) ([]*grpc.ClientConn, []counterrpc.CounterServiceClient, error) {
-	conns := make([]*grpc.ClientConn, 0, len(endpoints))
+func dialCounterShards(ctx context.Context, endpoints []string) ([]io.Closer, []counterrpc.CounterServiceClient, error) {
+	conns := make([]io.Closer, 0, len(endpoints))
 	clients := make([]counterrpc.CounterServiceClient, 0, len(endpoints))
 	for i, ep := range endpoints {
 		conn, c, err := counterclient.Dial(ctx, ep)
@@ -437,12 +438,12 @@ func dialCounterShards(ctx context.Context, endpoints []string) ([]*grpc.ClientC
 
 func parseFlags() Config {
 	cfg := Config{
-		InstanceID:           "conditional-0",
-		GRPCAddr:             ":8082",
-		MarketTopic:          "market-data",
-		SnapshotDir:          "./data/conditional",
-		SnapshotInterval:     30 * time.Second,
-		SnapshotFormat:       snapshot.FormatProto, // ADR-0049
+		InstanceID:                        "conditional-0",
+		GRPCAddr:                          ":8082",
+		MarketTopic:                       "market-data",
+		SnapshotDir:                       "./data/conditional",
+		SnapshotInterval:                  30 * time.Second,
+		SnapshotFormat:                    snapshot.FormatProto, // ADR-0049
 		TerminalHistoryLimit:              1000,
 		ExpirySweepInterval:               5 * time.Second,
 		IDGenShard:                        900, // deliberately out of counter's 0..99 range

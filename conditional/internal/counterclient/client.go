@@ -7,22 +7,18 @@ package counterclient
 import (
 	"context"
 	"fmt"
+	"io"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
+	"github.com/xargin/opentrade/api/gen/rpc/connectutil"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/pkg/shard"
 )
 
-// Dial opens one plaintext gRPC connection. mTLS / auth credentials arrive
+// Dial opens one plaintext RPC transport. mTLS / auth credentials arrive
 // with the broader auth work later.
-func Dial(_ context.Context, endpoint string) (*grpc.ClientConn, counterrpc.CounterServiceClient, error) {
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("dial %s: %w", endpoint, err)
-	}
-	return conn, counterrpc.NewCounterServiceClient(conn), nil
+func Dial(_ context.Context, endpoint string) (io.Closer, counterrpc.CounterServiceClient, error) {
+	httpClient, closer := connectutil.NewHTTPClient()
+	return closer, counterrpc.NewCounterServiceConnectClient(httpClient, endpoint), nil
 }
 
 // Sharded implements engine.OrderPlacer by routing each PlaceOrder to the

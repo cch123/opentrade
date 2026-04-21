@@ -2,12 +2,12 @@ package client
 
 import (
 	"context"
-	"fmt"
+	"io"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
+	"github.com/xargin/opentrade/api/gen/rpc/connectutil"
 )
 
 // Asset is the narrow surface BFF needs from asset-service (ADR-0057).
@@ -19,12 +19,9 @@ type Asset interface {
 	QueryTransfer(ctx context.Context, in *assetrpc.QueryTransferRequest, opts ...grpc.CallOption) (*assetrpc.QueryTransferResponse, error)
 }
 
-// DialAsset opens a plaintext gRPC connection to asset-service. mTLS /
+// DialAsset opens a plaintext RPC transport to asset-service. mTLS /
 // auth credentials come with the broader security work.
-func DialAsset(_ context.Context, endpoint string) (*grpc.ClientConn, Asset, error) {
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("grpc Dial %s: %w", endpoint, err)
-	}
-	return conn, assetrpc.NewAssetServiceClient(conn), nil
+func DialAsset(_ context.Context, endpoint string) (io.Closer, Asset, error) {
+	httpClient, closer := connectutil.NewHTTPClient()
+	return closer, assetrpc.NewAssetServiceConnectClient(httpClient, endpoint), nil
 }

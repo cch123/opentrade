@@ -2,11 +2,11 @@ package client
 
 import (
 	"context"
-	"fmt"
+	"io"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/xargin/opentrade/api/gen/rpc/connectutil"
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 )
 
@@ -25,12 +25,9 @@ type History interface {
 	ListTransfers(ctx context.Context, in *historypb.ListTransfersRequest, opts ...grpc.CallOption) (*historypb.ListTransfersResponse, error)
 }
 
-// DialHistory opens a plaintext gRPC connection to the history service.
+// DialHistory opens a plaintext RPC transport to the history service.
 // mTLS / auth land with the broader credentials work later.
-func DialHistory(_ context.Context, endpoint string) (*grpc.ClientConn, History, error) {
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("grpc Dial %s: %w", endpoint, err)
-	}
-	return conn, historypb.NewHistoryServiceClient(conn), nil
+func DialHistory(_ context.Context, endpoint string) (io.Closer, History, error) {
+	httpClient, closer := connectutil.NewHTTPClient()
+	return closer, historypb.NewHistoryServiceConnectClient(httpClient, endpoint), nil
 }
