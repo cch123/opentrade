@@ -1,9 +1,12 @@
 // Command trade-dump runs the OpenTrade persistence sidecar (ADR-0008),
-// consuming trade-event + counter-journal from Kafka and idempotently
-// projecting them onto MySQL (trades / orders / accounts / account_logs).
+// consuming trade-event + counter-journal + conditional-event +
+// asset-journal from Kafka and idempotently projecting them onto MySQL.
 //
-//   - trade-event     → trades                       (ADR-0023, MVP-5)
-//   - counter-journal → orders / accounts / account_logs (ADR-0028, MVP-9)
+//   - trade-event       → trades                                 (ADR-0023, MVP-5)
+//   - counter-journal   → orders / accounts / account_logs       (ADR-0028, MVP-9)
+//   - conditional-event → conditionals                           (ADR-0047)
+//   - asset-journal     → funding_accounts / funding_account_logs /
+//                         transfers                               (ADR-0057 M5)
 package main
 
 import (
@@ -35,6 +38,8 @@ type Config struct {
 	JournalGroup       string
 	ConditionalTopic   string
 	ConditionalGroup   string
+	AssetTopic         string
+	AssetGroup         string
 
 	MySQLDSN            string
 	MySQLMaxOpenConns   int
@@ -124,6 +129,25 @@ func main() {
 		logger.Info("conditional consumer disabled (empty --conditional-topic)")
 	}
 
+	var assetCons *consumer.AssetConsumer
+	if cfg.AssetTopic != "" {
+		assetCons, err = consumer.NewAsset(consumer.AssetConfig{
+			Brokers:  cfg.Brokers,
+			ClientID: cfg.InstanceID + "-asset",
+			GroupID:  cfg.AssetGroup,
+			Topic:    cfg.AssetTopic,
+		}, mysql, logger)
+		if err != nil {
+			logger.Fatal("asset consumer init", zap.Error(err))
+		}
+		defer assetCons.Close()
+		logger.Info("asset consumer enabled",
+			zap.String("topic", cfg.AssetTopic),
+			zap.String("group", cfg.AssetGroup))
+	} else {
+		logger.Info("asset consumer disabled (empty --asset-topic)")
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -150,6 +174,16 @@ func main() {
 			}
 		}()
 	}
+	if assetCons != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := assetCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("asset consumer exited", zap.Error(err))
+				stop()
+			}
+		}()
+	}
 
 	<-rootCtx.Done()
 	logger.Info("shutdown initiated")
@@ -157,6 +191,9 @@ func main() {
 	journalCons.Close()
 	if condCons != nil {
 		condCons.Close()
+	}
+	if assetCons != nil {
+		assetCons.Close()
 	}
 	wg.Wait()
 	logger.Info("trade-dump shutdown complete")
@@ -168,6 +205,7 @@ func parseFlags() Config {
 		TradeTopic:        "trade-event",
 		JournalTopic:      "counter-journal",
 		ConditionalTopic:  "conditional-event",
+		AssetTopic:        "asset-journal",
 		MySQLDSN:          "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
 		MySQLMaxOpenConns: 16,
 		MySQLMaxIdleConns: 4,
@@ -184,6 +222,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.JournalGroup, "journal-group", "", "counter-journal consumer group (default trade-dump-journal-{instance-id})")
 	flag.StringVar(&cfg.ConditionalTopic, "conditional-topic", cfg.ConditionalTopic, "conditional-event topic name (empty disables projection; ADR-0047)")
 	flag.StringVar(&cfg.ConditionalGroup, "conditional-group", "", "conditional-event consumer group (default trade-dump-cond-{instance-id})")
+	flag.StringVar(&cfg.AssetTopic, "asset-topic", cfg.AssetTopic, "asset-journal topic name (empty disables projection; ADR-0057)")
+	flag.StringVar(&cfg.AssetGroup, "asset-group", "", "asset-journal consumer group (default trade-dump-asset-{instance-id})")
 	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", cfg.MySQLDSN, "MySQL DSN")
 	flag.IntVar(&cfg.MySQLMaxOpenConns, "mysql-max-open", cfg.MySQLMaxOpenConns, "MySQL max open connections")
 	flag.IntVar(&cfg.MySQLMaxIdleConns, "mysql-max-idle", cfg.MySQLMaxIdleConns, "MySQL max idle connections")
@@ -202,6 +242,9 @@ func parseFlags() Config {
 	}
 	if cfg.ConditionalGroup == "" {
 		cfg.ConditionalGroup = "trade-dump-cond-" + cfg.InstanceID
+	}
+	if cfg.AssetGroup == "" {
+		cfg.AssetGroup = "trade-dump-asset-" + cfg.InstanceID
 	}
 	return cfg
 }

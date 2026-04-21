@@ -126,6 +126,63 @@ CREATE TABLE IF NOT EXISTS conditionals (
     KEY idx_oco_group (oco_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- funding_accounts — current funding-wallet balances projected from
+-- asset-journal FundingTransferOut / FundingTransferIn / FundingCompensate
+-- events (ADR-0057 M5). trade-dump upserts by (user_id, asset) with
+-- last-write-wins guarded by asset_seq_id so older events can't
+-- regress fresher balances during HA / replay. Structurally mirrors
+-- `accounts`, but scoped to biz_line=funding.
+--
+-- Authoritative live read: asset-service.QueryFundingBalance RPC. This
+-- projection is the historical / BFF-cache view and may lag by at most
+-- one trade-dump batch.
+CREATE TABLE IF NOT EXISTS funding_accounts (
+    user_id         VARCHAR(64)     NOT NULL,
+    asset           VARCHAR(16)     NOT NULL,
+    available       DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    frozen          DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    -- asset_seq_id is asset-service's typed monotonic sequence
+    -- (ADR-0051). Used as the out-of-order / duplicate guard during
+    -- upsert.
+    asset_seq_id    BIGINT UNSIGNED NOT NULL,
+    -- funding_version is the user-level monotonic bumper (mirrors
+    -- `accounts.account_version`; ADR-0057 §6).
+    funding_version BIGINT UNSIGNED NOT NULL,
+    -- balance_version is the per-(user, asset) monotonic bumper
+    -- (mirrors `accounts.balance_version`; ADR-0048).
+    balance_version BIGINT UNSIGNED NOT NULL,
+    updated_at      DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (user_id, asset)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- funding_account_logs — per-event journal of funding-wallet balance
+-- movements. One row per FundingTransferOut / FundingTransferIn /
+-- FundingCompensate event. Append-only (ON DUPLICATE KEY UPDATE no-op
+-- so replays are idempotent).
+--
+-- asset_seq_id alone is unique across funding events (asset-service is
+-- single-instance); the composite (asset_seq_id, asset) keeps room for
+-- future multi-asset-per-event payloads if needed.
+CREATE TABLE IF NOT EXISTS funding_account_logs (
+    asset_seq_id  BIGINT UNSIGNED NOT NULL,
+    asset         VARCHAR(16)     NOT NULL,
+    user_id       VARCHAR(64)     NOT NULL,
+    delta_avail   DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    delta_frozen  DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    avail_after   DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    frozen_after  DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    -- biz_type values: "transfer_out" / "transfer_in" / "compensate".
+    biz_type      VARCHAR(32)     NOT NULL,
+    -- biz_ref_id carries the saga transfer_id for cross-referencing
+    -- with the transfers projection.
+    biz_ref_id    VARCHAR(64)     NOT NULL DEFAULT '',
+    -- peer_biz is the counterparty biz_line ("spot" / "futures" / ...).
+    peer_biz      VARCHAR(32)     NOT NULL DEFAULT '',
+    ts            BIGINT          NOT NULL,
+    PRIMARY KEY (asset_seq_id, asset),
+    KEY idx_user_ts (user_id, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- transfers — last-state-wins projection of asset-journal's
 -- SagaStateChange events (ADR-0057 M5). trade-dump upserts by
 -- (transfer_id) with last-write-wins guarded by asset_seq_id so older
