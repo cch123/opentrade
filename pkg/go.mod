@@ -3,6 +3,7 @@ module github.com/xargin/opentrade/pkg
 go 1.26
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/shopspring/decimal v1.4.0

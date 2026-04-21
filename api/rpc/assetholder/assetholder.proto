@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package opentrade.rpc.assetholder;
+
+option go_package = "github.com/xargin/opentrade/api/gen/rpc/assetholder;assetholderrpc";
+
+// -----------------------------------------------------------------------------
+// AssetHolder — uniform contract implemented by every service that holds user
+// funds (funding / spot / futures / earn / margin / ...). See ADR-0057.
+//
+// The asset-service orchestrates cross-biz_line transfers as a saga; each leg
+// of the saga calls one of the three methods below on the matching holder.
+// A holder is identified by a string biz_line ("funding", "spot", ...); the
+// mapping from biz_line to concrete gRPC endpoint lives in asset-service
+// config (biz_line → grpc address).
+//
+// All three methods MUST be idempotent on transfer_id: repeated calls with
+// the same transfer_id return the original outcome (status = DUPLICATED,
+// fields mirror the first execution).
+// -----------------------------------------------------------------------------
+
+service AssetHolder {
+  // Debit `amount` from this holder's account for (user_id, asset).
+  // Called as the first leg of a saga (from side).
+  rpc TransferOut(TransferOutRequest) returns (TransferOutResponse);
+
+  // Credit `amount` into this holder's account for (user_id, asset).
+  // Called as the second leg of a saga (to side), only after the matching
+  // TransferOut on the from side has returned CONFIRMED.
+  rpc TransferIn(TransferInRequest) returns (TransferInResponse);
+
+  // Reverse a previously CONFIRMED TransferOut. Used when the second leg
+  // (to.TransferIn) fails and the saga must compensate. The compensator
+  // credits the same (user_id, asset, amount) back; it is semantically
+  // identical to a TransferIn but carries a distinct label in the journal
+  // so audit / reconciliation can distinguish a compensate from a normal
+  // credit.
+  //
+  // The transfer_id used here MUST equal the transfer_id of the original
+  // TransferOut — holders key their idempotency table on it and MUST
+  // tolerate multiple CompensateTransferOut calls for the same id (return
+  // DUPLICATED after the first success).
+  rpc CompensateTransferOut(CompensateTransferOutRequest) returns (CompensateTransferOutResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Common types
+// -----------------------------------------------------------------------------
+
+enum TransferStatus {
+  TRANSFER_STATUS_UNSPECIFIED = 0;
+  TRANSFER_STATUS_CONFIRMED = 1;   // applied; balance moved
+  TRANSFER_STATUS_REJECTED = 2;    // business reject (insufficient balance,
+                                    // risk block, asset frozen, ...).
+                                    // Terminal: caller must NOT retry.
+  TRANSFER_STATUS_DUPLICATED = 3;  // idempotency hit; fields reflect the
+                                    // first execution's outcome
+}
+
+enum RejectReason {
+  REJECT_REASON_UNSPECIFIED = 0;
+  REJECT_REASON_INSUFFICIENT_BALANCE = 1;
+  REJECT_REASON_UNKNOWN_USER = 2;
+  REJECT_REASON_UNKNOWN_ASSET = 3;
+  REJECT_REASON_ASSET_FROZEN = 4;       // per-asset admin freeze
+  REJECT_REASON_AMOUNT_INVALID = 5;     // precision / sign / zero
+  REJECT_REASON_INTERNAL = 99;
+}
+
+// -----------------------------------------------------------------------------
+// TransferOut
+// -----------------------------------------------------------------------------
+
+message TransferOutRequest {
+  string user_id = 1;
+  // Saga-scoped idempotency key. Also the key under which this holder's
+  // dedup table stores the outcome. Clients must generate a globally-
+  // unique value (UUID or client-monotonic string).
+  string transfer_id = 2;
+  string asset = 3;
+  // Decimal string. Must be > 0. Negative / zero amounts return REJECTED
+  // with REJECT_REASON_AMOUNT_INVALID.
+  string amount = 4;
+  // Counterparty biz_line ("funding" / "spot" / ...). Informational only;
+  // recorded in the holder's journal for audit and reconciliation. The
+  // holder does NOT validate it.
+  string peer_biz = 5;
+  // Free-form user memo. Length capped at 256 bytes by the server.
+  string memo = 6;
+}
+
+message TransferOutResponse {
+  TransferStatus status = 1;
+  RejectReason reject_reason = 2;
+  // Post-call balance snapshot for the affected (user, asset). Populated
+  // on CONFIRMED and DUPLICATED; zero-valued on REJECTED.
+  string available_after = 3;
+  string frozen_after = 4;
+}
+
+// -----------------------------------------------------------------------------
+// TransferIn
+// -----------------------------------------------------------------------------
+
+message TransferInRequest {
+  string user_id = 1;
+  string transfer_id = 2;
+  string asset = 3;
+  string amount = 4;
+  string peer_biz = 5;
+  string memo = 6;
+}
+
+message TransferInResponse {
+  TransferStatus status = 1;
+  RejectReason reject_reason = 2;
+  string available_after = 3;
+  string frozen_after = 4;
+}
+
+// -----------------------------------------------------------------------------
+// CompensateTransferOut
+// -----------------------------------------------------------------------------
+
+message CompensateTransferOutRequest {
+  string user_id = 1;
+  // MUST equal the transfer_id of the original TransferOut being
+  // compensated.
+  string transfer_id = 2;
+  string asset = 3;
+  string amount = 4;
+  // The biz_line whose TransferIn failed, triggering this compensate.
+  string peer_biz = 5;
+  // Short machine-readable cause (e.g. "peer_in_timeout",
+  // "peer_in_rejected"). Recorded in the journal.
+  string compensate_cause = 6;
+}
+
+message CompensateTransferOutResponse {
+  TransferStatus status = 1;
+  RejectReason reject_reason = 2;
+  string available_after = 3;
+  string frozen_after = 4;
+}

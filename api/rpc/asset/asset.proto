@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package opentrade.rpc.asset;
+
+option go_package = "github.com/xargin/opentrade/api/gen/rpc/asset;assetrpc";
+
+// -----------------------------------------------------------------------------
+// asset-service gRPC — the user-facing cross-biz_line transfer orchestrator
+// plus the funding-wallet read surface. See ADR-0057.
+//
+// asset-service itself ALSO implements AssetHolder (biz_line = "funding"),
+// but that contract lives in api/rpc/assetholder/assetholder.proto. The
+// methods here are the ones BFF talks to — the saga driver entrypoint and
+// balance / saga-state queries.
+// -----------------------------------------------------------------------------
+
+service AssetService {
+  // Transfer is the user-facing entrypoint for moving funds between
+  // biz_lines (e.g. funding ↔ spot). asset-service records a saga row in
+  // transfer_ledger and drives the two legs (from.TransferOut →
+  // to.TransferIn) plus compensation on failure.
+  //
+  // The call is synchronous: it returns only after the saga has reached a
+  // terminal state (COMPLETED / FAILED / COMPENSATED / COMPENSATE_STUCK)
+  // or after a configurable deadline (default 10s). If the deadline
+  // elapses, the response carries IN_PROGRESS and the client can poll
+  // QueryTransfer with the same transfer_id.
+  //
+  // Idempotency: transfer_id is the dedup key across the whole saga. A
+  // retry with the same transfer_id returns the current saga state; it
+  // never starts a second saga.
+  rpc Transfer(TransferRequest) returns (TransferResponse);
+
+  // Query funding-wallet balances for a user. This is the authoritative
+  // read path for biz_line=funding (no CQRS projection at this stage).
+  rpc QueryFundingBalance(QueryFundingBalanceRequest) returns (QueryFundingBalanceResponse);
+
+  // Query a saga by transfer_id. Used by BFF polling and by reconciliation
+  // jobs.
+  rpc QueryTransfer(QueryTransferRequest) returns (QueryTransferResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Transfer
+// -----------------------------------------------------------------------------
+
+message TransferRequest {
+  string user_id = 1;
+  // Client-generated idempotency key. Same ADR-0015 contract as
+  // client_order_id / Counter.TransferRequest.transfer_id: unique per
+  // saga, stable across retries.
+  string transfer_id = 2;
+  // biz_line identifiers. Current valid values: "funding", "spot".
+  // Future: "futures", "earn", "margin". Validated against asset-service
+  // config at call time.
+  string from_biz = 3;
+  string to_biz = 4;
+  string asset = 5;
+  // Decimal string. Must be > 0.
+  string amount = 6;
+  // Free-form user memo. Length capped at 256 bytes.
+  string memo = 7;
+}
+
+// SagaState mirrors the state machine defined in ADR-0057. Terminal states
+// are COMPLETED / FAILED / COMPENSATED / COMPENSATE_STUCK.
+enum SagaState {
+  SAGA_STATE_UNSPECIFIED = 0;
+  SAGA_STATE_INIT = 1;              // ledger row written, not yet debited
+  SAGA_STATE_DEBITED = 2;            // from.TransferOut CONFIRMED
+  SAGA_STATE_COMPLETED = 3;          // to.TransferIn CONFIRMED — terminal
+  SAGA_STATE_FAILED = 4;             // from.TransferOut REJECTED — terminal
+  SAGA_STATE_COMPENSATING = 5;       // to.TransferIn failed; compensating
+  SAGA_STATE_COMPENSATED = 6;        // compensation succeeded — terminal
+  SAGA_STATE_COMPENSATE_STUCK = 7;   // compensation retries exhausted —
+                                     // terminal, requires operator action
+}
+
+message TransferResponse {
+  string transfer_id = 1;
+  SagaState state = 2;
+  // When state ∈ {FAILED, COMPENSATED, COMPENSATE_STUCK} this carries the
+  // human / machine-readable reason the saga didn't complete normally
+  // (e.g. "insufficient_balance", "peer_in_timeout").
+  string reject_reason = 3;
+  // True if the saga reached a terminal state before the RPC deadline.
+  // When false, the caller should poll QueryTransfer.
+  bool terminal = 4;
+}
+
+// -----------------------------------------------------------------------------
+// Query funding balance
+// -----------------------------------------------------------------------------
+
+message QueryFundingBalanceRequest {
+  string user_id = 1;
+  string asset = 2; // empty = return all assets
+}
+
+message QueryFundingBalanceResponse {
+  repeated FundingBalance balances = 1;
+}
+
+message FundingBalance {
+  string asset = 1;
+  string available = 2;
+  string frozen = 3;
+  // Per-(user, asset) monotonic counter, same semantics as
+  // BalanceSnapshot.version in counter-journal (ADR-0048).
+  uint64 version = 4;
+}
+
+// -----------------------------------------------------------------------------
+// Query saga state
+// -----------------------------------------------------------------------------
+
+message QueryTransferRequest {
+  string transfer_id = 1;
+}
+
+message QueryTransferResponse {
+  string transfer_id = 1;
+  string user_id = 2;
+  string from_biz = 3;
+  string to_biz = 4;
+  string asset = 5;
+  string amount = 6;
+  SagaState state = 7;
+  string reject_reason = 8;
+  int64 created_at_unix_ms = 9;
+  int64 updated_at_unix_ms = 10;
+}
