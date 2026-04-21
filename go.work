@@ -11,6 +11,7 @@ use (
 	./trade-dump
 	./conditional
 	./history
+	./asset
 	./admin-gateway
 	./tools/tui
 	./tools/web
