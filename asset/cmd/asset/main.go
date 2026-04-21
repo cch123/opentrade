@@ -242,8 +242,8 @@ func main() {
 	<-rootCtx.Done()
 	logger.Info("asset shutting down")
 	shutdownCtx, cancelRPC := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRPC()
 	_ = rpcSrv.Shutdown(shutdownCtx)
-	cancelRPC()
 	grpcWG.Wait()
 	reconcilerWG.Wait()
 	if cfg.MetricsAddr != "" {

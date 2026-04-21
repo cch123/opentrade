@@ -224,8 +224,8 @@ func main() {
 
 	// Stop RPC first so no new requests arrive while workers are draining.
 	shutdownCtx, cancelRPC := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRPC()
 	_ = rpcSrv.Shutdown(shutdownCtx)
-	cancelRPC()
 	<-grpcDone
 
 	// Manager → cluster: stopping the manager lets every VShardWorker

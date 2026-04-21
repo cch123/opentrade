@@ -99,8 +99,8 @@ func main() {
 	case <-rootCtx.Done():
 		logger.Info("shutdown initiated")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
-		cancel()
 	}
 	logger.Info("history shutdown complete")
 }
