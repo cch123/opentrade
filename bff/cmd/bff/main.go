@@ -22,10 +22,12 @@ import (
 	"syscall"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
 	"github.com/xargin/opentrade/bff/internal/client"
+	"github.com/xargin/opentrade/bff/internal/clusterview"
 	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/bff/internal/rest"
 	bffws "github.com/xargin/opentrade/bff/internal/ws"
@@ -72,6 +74,15 @@ type Config struct {
 	// with 503.
 	AssetAddr string
 
+	// Counter routing mode (ADR-0058 phase 5). "disabled" keeps the
+	// legacy --counter-shards list; "enabled" ignores it and routes
+	// each request by hashing user_id into the 256-vshard table watched
+	// from etcd.
+	ClusteringMode string
+	EtcdEndpoints  []string
+	VShardCount    int
+	ClusterRoot    string
+
 	Env               string
 	LogLevel          string
 }
@@ -97,22 +108,11 @@ func main() {
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	conns, clients, err := dialAllShards(rootCtx, cfg.CounterShards)
+	counter, closeCounter, err := buildCounter(rootCtx, cfg, logger)
 	if err != nil {
-		logger.Fatal("dial counter shards", zap.Error(err))
+		logger.Fatal("build counter client", zap.Error(err))
 	}
-	defer func() {
-		for i, c := range conns {
-			if err := c.Close(); err != nil {
-				logger.Debug("close shard conn",
-					zap.Int("shard", i), zap.Error(err))
-			}
-		}
-	}()
-	counter, err := client.NewSharded(clients)
-	if err != nil {
-		logger.Fatal("build sharded counter", zap.Error(err))
-	}
+	defer closeCounter()
 
 	mdCache, mdConsumer, err := startMarketCache(rootCtx, cfg, logger)
 	if err != nil {
@@ -321,6 +321,89 @@ func startMarketCache(_ context.Context, cfg Config, logger *zap.Logger) (*marke
 	return cache, cons, nil
 }
 
+// buildCounter picks between the legacy static-shard routing and the
+// ADR-0058 vshard routing based on --clustering-mode. Returns the
+// Counter impl plus a close function the caller MUST defer — close
+// tears down every cached gRPC connection and, for the vshard path,
+// stops the etcd watcher goroutine.
+func buildCounter(ctx context.Context, cfg Config, logger *zap.Logger) (client.Counter, func(), error) {
+	if cfg.ClusteringMode == "enabled" {
+		return buildVShardCounter(ctx, cfg, logger)
+	}
+	conns, clients, err := dialAllShards(ctx, cfg.CounterShards)
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := client.NewSharded(clients)
+	if err != nil {
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		return nil, nil, err
+	}
+	closer := func() {
+		for i, conn := range conns {
+			if err := conn.Close(); err != nil {
+				logger.Debug("close shard conn",
+					zap.Int("shard", i), zap.Error(err))
+			}
+		}
+	}
+	return c, closer, nil
+}
+
+// buildVShardCounter wires etcd → clusterview.Watcher → VShardCounter
+// for ADR-0058 phase 5 routing. The watcher goroutine owns the etcd
+// client; shutdown closes the counter (drops cached gRPC conns), waits
+// for the watcher loop to exit, then closes etcd.
+func buildVShardCounter(ctx context.Context, cfg Config, logger *zap.Logger) (client.Counter, func(), error) {
+	etcdCli, err := clientv3.New(clientv3.Config{
+		Endpoints:   cfg.EtcdEndpoints,
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("etcd dial: %w", err)
+	}
+	watcher, err := clusterview.New(clusterview.Config{
+		Client:      etcdCli,
+		RootPrefix:  cfg.ClusterRoot,
+		VShardCount: cfg.VShardCount,
+		Logger:      logger,
+	})
+	if err != nil {
+		_ = etcdCli.Close()
+		return nil, nil, fmt.Errorf("watcher: %w", err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := watcher.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("cluster watcher exited", zap.Error(err))
+		}
+	}()
+	c, err := client.NewVShardCounter(watcher)
+	if err != nil {
+		cancel()
+		<-done
+		_ = etcdCli.Close()
+		return nil, nil, fmt.Errorf("vshard counter: %w", err)
+	}
+	closer := func() {
+		if err := c.Close(); err != nil {
+			logger.Warn("close vshard counter", zap.Error(err))
+		}
+		cancel()
+		<-done
+		_ = etcdCli.Close()
+	}
+	logger.Info("clustering-mode=enabled: routing counter via etcd vshard table",
+		zap.Strings("etcd", cfg.EtcdEndpoints),
+		zap.Int("vshard_count", cfg.VShardCount),
+		zap.String("cluster_root", cfg.ClusterRoot))
+	return c, closer, nil
+}
+
 // dialAllShards walks endpoints left-to-right and dials each as a separate
 // grpc.ClientConn, returning them alongside a matching Counter slice. Caller
 // owns both slices' lifetime.
@@ -358,12 +441,16 @@ func parseFlags() Config {
 		MarketTopic:        "market-data",
 		KlineBuffer:        500,
 		AuthMode:           "header",
+		ClusteringMode:     "disabled", // ADR-0058 phase 5; opt-in
+		VShardCount:        256,
+		ClusterRoot:        "/cex/counter",
 		Env:                "dev",
 		LogLevel:           "info",
 	}
 	var (
-		shardsCSV      string
-		marketBrokers  string
+		shardsCSV     string
+		marketBrokers string
+		etcdCSV       string
 		// legacy single-shard flag for dev one-liner convenience
 		legacyCounter string
 	)
@@ -389,6 +476,10 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ConditionalAddr, "conditional", "", "Conditional service gRPC endpoint (empty disables /v1/conditional; ADR-0040)")
 	flag.StringVar(&cfg.HistoryAddr, "history", "", "History service gRPC endpoint (empty disables /v1/orders,/v1/trades,/v1/account-logs; ADR-0046)")
 	flag.StringVar(&cfg.AssetAddr, "asset", "", "Asset service gRPC endpoint (empty disables /v1/transfer,/v1/funding-balance; ADR-0057)")
+	flag.StringVar(&cfg.ClusteringMode, "clustering-mode", cfg.ClusteringMode, "counter routing mode: disabled (use --counter-shards) | enabled (watch etcd for ADR-0058 vshard routing)")
+	flag.StringVar(&etcdCSV, "etcd", "", "comma-separated etcd endpoints (required when --clustering-mode=enabled)")
+	flag.IntVar(&cfg.VShardCount, "vshard-count", cfg.VShardCount, "ADR-0058 vshard count (must match counter --vshard-count)")
+	flag.StringVar(&cfg.ClusterRoot, "cluster-root", cfg.ClusterRoot, "etcd root prefix for counter cluster data (default /cex/counter)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()
@@ -398,6 +489,7 @@ func parseFlags() Config {
 	} else if legacyCounter != "" {
 		cfg.CounterShards = []string{legacyCounter}
 	}
+	cfg.EtcdEndpoints = splitCSV(etcdCSV)
 	cfg.MarketBrokers = splitCSV(marketBrokers)
 	if len(cfg.MarketBrokers) > 0 && cfg.MarketGroupID == "" {
 		host, _ := os.Hostname()
@@ -413,8 +505,20 @@ func (c *Config) validate() error {
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("http-addr required")
 	}
-	if len(c.CounterShards) == 0 {
-		return fmt.Errorf("at least one counter shard endpoint required")
+	switch c.ClusteringMode {
+	case "disabled":
+		if len(c.CounterShards) == 0 {
+			return fmt.Errorf("at least one counter shard endpoint required when --clustering-mode=disabled")
+		}
+	case "enabled":
+		if len(c.EtcdEndpoints) == 0 {
+			return fmt.Errorf("--etcd required when --clustering-mode=enabled")
+		}
+		if c.VShardCount <= 0 {
+			return fmt.Errorf("--vshard-count must be > 0 when --clustering-mode=enabled")
+		}
+	default:
+		return fmt.Errorf("--clustering-mode must be disabled or enabled, got %q", c.ClusteringMode)
 	}
 	return nil
 }
