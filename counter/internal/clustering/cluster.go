@@ -2,7 +2,9 @@ package clustering
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,6 +23,8 @@ import (
 // Both loops are restart-tolerant internally; Cluster.Run returns only
 // when its context is cancelled.
 type Cluster struct {
+	client      *clientv3.Client
+	nodeID      string
 	registry    *NodeRegistry
 	coordinator *Coordinator
 	keys        *Keys
@@ -100,12 +104,113 @@ func New(cfg Config) (*Cluster, error) {
 	}
 
 	return &Cluster{
+		client:          cfg.Client,
+		nodeID:          cfg.Node.ID,
 		registry:        reg,
 		coordinator:     coord,
 		keys:            keys,
 		logger:          cfg.Logger,
 		registryBackoff: cfg.RegistryBackoff,
 	}, nil
+}
+
+// WatchAssignedVShards emits the set of vshards this node currently owns
+// (Owner == self && State == StateActive). It publishes an initial
+// snapshot, then a fresh list every time the assignment table changes.
+// Consecutive identical lists are suppressed so consumers only react to
+// real ownership changes.
+//
+// The returned channel closes when ctx is cancelled or the watcher dies.
+// Callers (the phase-3b worker manager) should start/stop per-vshard
+// workers on every list they receive.
+func (c *Cluster) WatchAssignedVShards(ctx context.Context) (<-chan []VShardID, error) {
+	initial, err := c.listMyVShards(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan []VShardID, 1)
+	out <- initial
+
+	go func() {
+		defer close(out)
+		wc := c.client.Watch(ctx,
+			c.keys.AssignmentsPrefix(),
+			clientv3.WithPrefix())
+		last := sortedCopy(initial)
+		for wresp := range wc {
+			if err := wresp.Err(); err != nil {
+				c.logger.Warn("assignment watcher error", zap.Error(err))
+				return
+			}
+			current, err := c.listMyVShards(ctx)
+			if err != nil {
+				c.logger.Warn("re-list after assignment event", zap.Error(err))
+				continue
+			}
+			if sameSet(current, last) {
+				continue
+			}
+			last = sortedCopy(current)
+			select {
+			case out <- current:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return out, nil
+}
+
+// listMyVShards does one full read of the assignment table and returns
+// the vshards this node currently owns (active state only). Sorted
+// ascending so comparisons are deterministic.
+func (c *Cluster) listMyVShards(ctx context.Context) ([]VShardID, error) {
+	resp, err := c.client.Get(ctx,
+		c.keys.AssignmentsPrefix(), clientv3.WithPrefix())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]VShardID, 0)
+	for _, kv := range resp.Kvs {
+		var a Assignment
+		if err := json.Unmarshal(kv.Value, &a); err != nil {
+			c.logger.Warn("skip malformed assignment",
+				zap.String("key", string(kv.Key)), zap.Error(err))
+			continue
+		}
+		if a.Owner != c.nodeID || a.State != StateActive {
+			continue
+		}
+		out = append(out, a.VShardID)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
+// sortedCopy returns a shallow copy in ascending order. Used as the
+// watcher's "last emitted" snapshot for de-dup comparisons.
+func sortedCopy(in []VShardID) []VShardID {
+	out := make([]VShardID, len(in))
+	copy(out, in)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// sameSet returns true iff a and b contain the same vshards. Both are
+// expected to be sorted ascending (listMyVShards / sortedCopy enforce
+// this).
+func sameSet(a, b []VShardID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Keys exposes the etcd schema for readers that want to observe the
