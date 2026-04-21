@@ -217,7 +217,7 @@ trade-dump 已经投影 counter-journal → MySQL（ADR-0028）。新增：
 ```
 BFF 转发到 `asset-service.Transfer`。
 
-保留 `POST /v1/admin/transfer`（管理员/系统级，用 `Counter.Transfer` 或 `asset-service` 的系统接口；细节见 ADR-0052 admin console 扩展）。
+`POST /v1/admin/transfer`（管理员/系统级）和**链上充值 / 提现回调**的承接方本 ADR 不覆盖，见"开放问题"。
 
 查询侧：
 - `GET /v1/transfers` → History 服务（读 MySQL `transfers` 投影）
@@ -292,7 +292,8 @@ asset-service 作为协调者，第一阶段 prepare 两端都冻结，第二阶
 
 - **新服务运维面**：asset-service 自己的 HA、snapshot、监控、告警（虽然可复用 pkg/ 里 counter 的大部分基建）
 - **新 MySQL 库 / 表**：`opentrade_asset.transfer_ledger`，一份新备份策略 + DBA 工具链接入
-- **BFF 用户流程改变**：现在充值直进 spot，改后充值进 funding，用户要多一步"划到 spot 才能交易" —— 产品面需要引导（或 BFF 默认把老用户的 spot 余额当 funding 展示，切换期体验需设计）
+- **BFF 客户端调用点迁移**：用户发起的划转从打 `Counter.Transfer` 切到 `asset-service.Transfer`，request schema 也换（新增 `from_biz` / `to_biz`，语义不同）。项目未上线（参考 feedback_breaking_changes），直接改干净，不做兼容层
+- **充值 / 提现 / 管理员调账流程悬空**：本 ADR 落地后 `Counter.Transfer` 对外 RPC 消失，但链上充值回调还没有新家 —— 实施期间要么临时禁用链上回调入口，要么把这部分 admin / link-bridge ADR 和本 ADR 配套一起做
 - **Counter 需要实现 AssetHolder**：工作量约 200-400 LOC（三个新 RPC + 幂等层，逻辑可复用现有 Transfer）
 - **迁移工作**：把 BFF 的 `POST /v1/transfer` 从打 Counter 改打 asset-service；History 扩展 `GET /v1/transfers`；trade-dump 订阅 asset-journal
 - **端到端划转延迟**：用户看到的划转成功从"一次 Counter RPC（<10ms）"变成"asset → from → to → asset 四跳 + ledger 写（~50ms）"，对产品可接受但需 SLA 文档化
@@ -329,7 +330,8 @@ asset-service 作为协调者，第一阶段 prepare 两端都冻结，第二阶
 
 **M4（2 天）** — BFF + History 对接
 - BFF `POST /v1/transfer` 切到 asset-service
-- BFF 充值回调从打 Counter.Transfer(DEPOSIT) 改为打 asset-service 的 AdminDeposit（新接口）
+- `api/rpc/counter/counter.proto` 删除 `Transfer` RPC 及相关消息；BFF 原先打 `Counter.Transfer` 的调用点全部移除或改打 asset-service
+- 链上充值 / 提现回调 / 管理员调账入口**本阶段不动**，等后续 ADR 定承接方（见"开放问题"）
 - History 新增 `GET /v1/transfers`（读 MySQL `transfers` 投影）
 
 **M5（2 天）** — trade-dump 扩展
@@ -378,15 +380,26 @@ asset-service：
 
 ### 和 ADR-0011 的关系
 
-- ADR-0011 的 `Counter.Transfer` **不作废**，继续作为 Counter 内部 AssetHolder 三方法的共享实现基底
-- BFF 的用户划转端点**切到 asset-service**；`Counter.Transfer` 的外部调用收敛到"系统级/运维操作"
-- 未来如果把系统级充提也搬到 asset-service（由 asset-service 统一承接链上充值回调），可以起新 ADR 作废 `Counter.Transfer` 的对外 RPC
+- ADR-0011 的 `Counter.Transfer` **对外 gRPC 接口作废**（proto 中物理删除）；ADR-0011 状态本 ADR 落地时改为 `Superseded by 0057`
+- Counter 进程里的 `svc.Transfer(...)` 函数**保留**，作为 Counter AssetHolder 三方法（TransferOut / TransferIn / CompensateTransferOut）的共享实现基底 —— 余额加减 + counter-journal.TransferEvent + 幂等表这套已经稳定的逻辑不重写
+- 原本打 `Counter.Transfer` 的调用方（BFF 用户划转、BFF 链上充值回调、admin 调账）全部要迁移或暂挂：
+  - 用户划转：切到 asset-service.Transfer（本 ADR M4 做）
+  - 链上充值 / 提现 / admin 调账：本 ADR 不定，见"开放问题"
 
 ### 命名选择记录
 
 - `AssetHolder` vs `AccountService` vs `WalletProvider`：选了 AssetHolder 因为最直白——"持有资产的一方"，动词 TransferOut/In 明确方向。避免 Account / Wallet 因为在不同业务线里有歧义
 - `funding` 作为业务线关键词直接借用 Binance/OKX/Bybit 的用法（见术语表），用户学习成本为零
 - `transfer_id` 和现有 ADR-0011 的 `TransferRequest.transfer_id` 同名同义——saga 下沉时就是透传
+
+## 开放问题 (Open Questions)
+
+以下议题本 ADR 不覆盖，留待后续 ADR 讨论。列在这里是为了显式声明 scope 边界，避免实施时把它们悄悄塞进本 ADR：
+
+- **链上充值 / 提现回调承接方**：当前 BFF 在链上事件回调时直接打 `Counter.Transfer(DEPOSIT / WITHDRAW)`。本 ADR 作废该接口后，回调要打谁（asset-service 新增 `AdminDeposit` / `AdminWithdraw` 接口？独立的 "link-bridge" 服务？）由后续 ADR 定。过渡期建议：暂时关闭链上回调入口，或用 feature flag 挂起，直到新承接方就绪
+- **管理员 / 客服调账接口**：admin-gateway 给运维用的"手动加/减余额"也要一个新承接方。大概率和上一条同解
+- **asset-service 分片策略**：MVP 单实例。未来若 funding QPS 上去或需要故障隔离，分片策略（user_id hash 对齐 ADR-0010 的 10-shard？还是别的切法？）届时起新 ADR
+- **funding 对 spot 的默认向导**：用户充值进 funding 后，需不需要 BFF / 前端默认带一个"一键转到 spot"的向导 —— 纯产品决策，非架构 ADR 范围，列在这里只作提醒
 
 ## 参考 (References)
 
