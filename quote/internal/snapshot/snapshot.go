@@ -79,6 +79,12 @@ type Snapshot struct {
 // ADR-0055: Depth removed — Match now owns orderbook state.
 type SymbolSnapshot struct {
 	Kline *KlineSnapshot `json:"kline,omitempty"`
+	// LastTradeMatchSeq is Quote's per-symbol watermark used to ignore
+	// the second half of ADR-0058 §2 dual-emitted trade-event records
+	// (same Trade, once per maker/taker partition). Must be preserved
+	// across restart, otherwise a restart within one match_seq lifetime
+	// would double-count the kline + replay the PublicTrade.
+	LastTradeMatchSeq uint64 `json:"last_trade_match_seq,omitempty"`
 }
 
 // KlineSnapshot captures kline.Aggregator state.
@@ -226,7 +232,9 @@ func symbolToProto(s *SymbolSnapshot) *snapshotpb.QuoteSymbolState {
 	if s == nil {
 		return nil
 	}
-	out := &snapshotpb.QuoteSymbolState{}
+	out := &snapshotpb.QuoteSymbolState{
+		LastTradeMatchSeq: s.LastTradeMatchSeq,
+	}
 	if s.Kline != nil {
 		k := s.Kline
 		out.Kline = &snapshotpb.QuoteKline{Symbol: k.Symbol}
@@ -273,7 +281,9 @@ func symbolFromProto(pb *snapshotpb.QuoteSymbolState) *SymbolSnapshot {
 	if pb == nil {
 		return nil
 	}
-	out := &SymbolSnapshot{}
+	out := &SymbolSnapshot{
+		LastTradeMatchSeq: pb.LastTradeMatchSeq,
+	}
 	if pb.Kline != nil {
 		k := pb.Kline
 		out.Kline = &KlineSnapshot{Symbol: k.Symbol}

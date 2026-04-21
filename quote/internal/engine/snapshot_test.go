@@ -17,14 +17,16 @@ import (
 func TestHandleRecord_AdvancesOffsets(t *testing.T) {
 	e := newTestEngine(t)
 	e.HandleRecord(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{TsUnixMs: 120_000},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 120_000},
+		MatchSeqId: 1,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId: "t1", Symbol: "BTC-USDT", Price: "100", Qty: "1",
 			MakerOrderId: 1, TakerOrderId: 2, TakerSide: eventpb.Side_SIDE_BUY,
 		}},
 	}, 2, 41)
 	e.HandleRecord(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{TsUnixMs: 120_500},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 120_500},
+		MatchSeqId: 2,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId: "t2", Symbol: "BTC-USDT", Price: "101", Qty: "1",
 			MakerOrderId: 3, TakerOrderId: 4, TakerSide: eventpb.Side_SIDE_SELL,
@@ -44,14 +46,16 @@ func TestHandleRecord_AdvancesOffsets(t *testing.T) {
 func TestCaptureRestore_RoundTrip(t *testing.T) {
 	src := newTestEngine(t)
 	src.HandleRecord(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{TsUnixMs: 120_000},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 120_000},
+		MatchSeqId: 1,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId: "t1", Symbol: "BTC-USDT", Price: "100", Qty: "1",
 			MakerOrderId: 1, TakerOrderId: 2, TakerSide: eventpb.Side_SIDE_BUY,
 		}},
 	}, 0, 0)
 	src.HandleRecord(&eventpb.TradeEvent{
-		Meta: &eventpb.EventMeta{TsUnixMs: 121_000},
+		Meta:       &eventpb.EventMeta{TsUnixMs: 121_000},
+		MatchSeqId: 2,
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId: "t2", Symbol: "BTC-USDT", Price: "103", Qty: "2",
 			MakerOrderId: 3, TakerOrderId: 4, TakerSide: eventpb.Side_SIDE_SELL,

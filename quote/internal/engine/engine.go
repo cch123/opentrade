@@ -45,6 +45,12 @@ type Engine struct {
 	// Updated under mu alongside state mutation in HandleRecord so Capture
 	// sees state and offsets that are consistent with one another.
 	offsets map[int32]int64
+	// lastTradeMatchSeq is the per-symbol watermark Quote uses to dedup
+	// ADR-0058 §2 dual-emitted Trade records (same Trade arrives twice,
+	// once on each party's partition, with the same match_seq_id).
+	// Persisted in snapshots so restart doesn't cause a trade already
+	// folded into state to be re-applied when the consumer seeks.
+	lastTradeMatchSeq map[string]uint64
 
 	seq atomic.Uint64
 }
@@ -58,10 +64,11 @@ func New(cfg Config, logger *zap.Logger) *Engine {
 		cfg.Intervals = kline.DefaultIntervals()
 	}
 	return &Engine{
-		cfg:     cfg,
-		logger:  logger,
-		klines:  make(map[string]*kline.Aggregator),
-		offsets: make(map[int32]int64),
+		cfg:               cfg,
+		logger:            logger,
+		klines:            make(map[string]*kline.Aggregator),
+		offsets:           make(map[int32]int64),
+		lastTradeMatchSeq: make(map[string]uint64),
 	}
 }
 
@@ -133,7 +140,21 @@ func (e *Engine) Capture() *snapshot.Snapshot {
 				Count:       b.Count,
 			}
 		}
-		snap.Symbols[sym] = &snapshot.SymbolSnapshot{Kline: ks}
+		snap.Symbols[sym] = &snapshot.SymbolSnapshot{
+			Kline:             ks,
+			LastTradeMatchSeq: e.lastTradeMatchSeq[sym],
+		}
+	}
+	// Pick up any symbol that has a watermark but no kline state (a
+	// crash between dedup update and the first Aggregator OnTrade call
+	// is unlikely because both happen under the same mutex — but keep
+	// the path correct so the invariant holds regardless of future
+	// refactors).
+	for sym, seq := range e.lastTradeMatchSeq {
+		if _, ok := snap.Symbols[sym]; ok {
+			continue
+		}
+		snap.Symbols[sym] = &snapshot.SymbolSnapshot{LastTradeMatchSeq: seq}
 	}
 	return snap
 }
@@ -155,8 +176,15 @@ func (e *Engine) Restore(snap *snapshot.Snapshot) error {
 		e.offsets[p] = off
 	}
 	e.klines = make(map[string]*kline.Aggregator)
+	e.lastTradeMatchSeq = make(map[string]uint64, len(snap.Symbols))
 	for sym, ss := range snap.Symbols {
-		if ss == nil || ss.Kline == nil {
+		if ss == nil {
+			continue
+		}
+		if ss.LastTradeMatchSeq > 0 {
+			e.lastTradeMatchSeq[sym] = ss.LastTradeMatchSeq
+		}
+		if ss.Kline == nil {
 			continue
 		}
 		agg := kline.New(sym, e.cfg.Intervals)
@@ -203,6 +231,18 @@ func (e *Engine) handleTrade(evt *eventpb.TradeEvent, trade *eventpb.Trade) []*e
 		return nil
 	}
 	symbol := trade.Symbol
+	// ADR-0058 §2 dual-emit dedup: each Trade arrives twice (once per
+	// partition: maker side + taker side) carrying the same per-symbol
+	// match_seq_id. Use that as a monotonic watermark so we fold the
+	// trade into kline / PublicTrade exactly once. Tracking a "seen"
+	// flag lets us accept match_seq_id == 0 on the first observation
+	// (tests commonly leave the meta unset) while still blocking the
+	// duplicate that always carries the same id.
+	if prev, seen := e.lastTradeMatchSeq[symbol]; seen && evt.MatchSeqId <= prev {
+		return nil
+	}
+	e.lastTradeMatchSeq[symbol] = evt.MatchSeqId
+
 	var out []*eventpb.MarketDataEvent
 
 	// 1. PublicTrade forward.

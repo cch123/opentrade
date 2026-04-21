@@ -27,6 +27,15 @@ message QuoteSymbolState {
   reserved 1;
   reserved "depth";
   QuoteKline kline = 2;
+
+  // last_trade_match_seq is the highest match_seq_id Quote has already
+  // folded into its kline / PublicTrade stream for this symbol. Quote
+  // uses it to de-duplicate the dual-emit trade-event records
+  // introduced in ADR-0058 §2 (the same Trade arrives once on the
+  // maker's partition and once on the taker's). On a cold restart the
+  // engine needs this or it would re-fold trades that were already
+  // applied before the snapshot.
+  uint64 last_trade_match_seq = 3;
 }
 
 message QuoteKline {

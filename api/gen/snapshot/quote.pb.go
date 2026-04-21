@@ -98,10 +98,18 @@ func (x *QuoteSnapshot) GetSymbols() map[string]*QuoteSymbolState {
 }
 
 type QuoteSymbolState struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kline         *QuoteKline            `protobuf:"bytes,2,opt,name=kline,proto3" json:"kline,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Kline *QuoteKline            `protobuf:"bytes,2,opt,name=kline,proto3" json:"kline,omitempty"`
+	// last_trade_match_seq is the highest match_seq_id Quote has already
+	// folded into its kline / PublicTrade stream for this symbol. Quote
+	// uses it to de-duplicate the dual-emit trade-event records
+	// introduced in ADR-0058 §2 (the same Trade arrives once on the
+	// maker's partition and once on the taker's). On a cold restart the
+	// engine needs this or it would re-fold trades that were already
+	// applied before the snapshot.
+	LastTradeMatchSeq uint64 `protobuf:"varint,3,opt,name=last_trade_match_seq,json=lastTradeMatchSeq,proto3" json:"last_trade_match_seq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *QuoteSymbolState) Reset() {
@@ -139,6 +147,13 @@ func (x *QuoteSymbolState) GetKline() *QuoteKline {
 		return x.Kline
 	}
 	return nil
+}
+
+func (x *QuoteSymbolState) GetLastTradeMatchSeq() uint64 {
+	if x != nil {
+		return x.LastTradeMatchSeq
+	}
+	return 0
 }
 
 type QuoteKline struct {
@@ -317,9 +332,10 @@ const file_snapshot_quote_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a`\n" +
 	"\fSymbolsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12:\n" +
-	"\x05value\x18\x02 \x01(\v2$.opentrade.snapshot.QuoteSymbolStateR\x05value:\x028\x01\"U\n" +
+	"\x05value\x18\x02 \x01(\v2$.opentrade.snapshot.QuoteSymbolStateR\x05value:\x028\x01\"\x86\x01\n" +
 	"\x10QuoteSymbolState\x124\n" +
-	"\x05kline\x18\x02 \x01(\v2\x1e.opentrade.snapshot.QuoteKlineR\x05klineJ\x04\b\x01\x10\x02R\x05depth\"\xb9\x01\n" +
+	"\x05kline\x18\x02 \x01(\v2\x1e.opentrade.snapshot.QuoteKlineR\x05kline\x12/\n" +
+	"\x14last_trade_match_seq\x18\x03 \x01(\x04R\x11lastTradeMatchSeqJ\x04\b\x01\x10\x02R\x05depth\"\xb9\x01\n" +
 	"\n" +
 	"QuoteKline\x12\x16\n" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12<\n" +
