@@ -41,7 +41,7 @@ func TestApplyJournalBatch_FullFlowInSingleTx(t *testing.T) {
 			{UserID: "u1", Asset: "USDT", Available: "400", Frozen: "100", CounterSeqID: 5},
 		},
 		AccountLogs: []AccountLogRow{
-			{ShardID: 0, CounterSeqID: 5, Asset: "USDT", UserID: "u1",
+			{VShardID: 0, CounterSeqID: 5, Asset: "USDT", UserID: "u1",
 				DeltaAvail: "-100", DeltaFrozen: "100",
 				AvailAfter: "400", FrozenAfter: "100",
 				BizType: "freeze_place_order", BizRefID: "42", TsUnixMs: 1_700_000_000_000},

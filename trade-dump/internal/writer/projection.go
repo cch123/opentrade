@@ -70,10 +70,11 @@ type AccountRow struct {
 }
 
 // AccountLogRow mirrors the `account_logs` table — one row per
-// (shard, counter_seq_id, asset). Inserted with ON DUPLICATE KEY UPDATE
-// no-op so replays are idempotent.
+// (vshard, counter_seq_id, asset). Inserted with ON DUPLICATE KEY UPDATE
+// no-op so replays are idempotent. ADR-0058 renamed the shard column
+// to vshard_id.
 type AccountLogRow struct {
-	ShardID      int32
+	VShardID     int32
 	CounterSeqID uint64
 	Asset        string
 	UserID       string
@@ -160,20 +161,17 @@ func tsFromMeta(meta *eventpb.EventMeta) int64 {
 	return meta.TsUnixMs
 }
 
-// shardIDFromProducer extracts N from "counter-shard-N-<role>". Returns
-// (0, false) if the format does not match.
+// shardIDFromProducer extracts the shard / vshard id from
+// EventMeta.producer_id. Since ADR-0058 the producer_id is the
+// stable vshard name "counter-vshard-NNN" (zero-padded 3 digits).
+// Returns (0, false) if the format does not match.
 func shardIDFromProducer(producerID string) (int32, bool) {
-	const prefix = "counter-shard-"
+	const prefix = "counter-vshard-"
 	if !strings.HasPrefix(producerID, prefix) {
 		return 0, false
 	}
 	rest := producerID[len(prefix):]
-	// rest = "<N>-<role>"
-	dash := strings.IndexByte(rest, '-')
-	if dash < 0 {
-		return 0, false
-	}
-	n, err := strconv.Atoi(rest[:dash])
+	n, err := strconv.Atoi(rest)
 	if err != nil || n < 0 {
 		return 0, false
 	}
@@ -205,7 +203,7 @@ func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, counterSeq uint64
 		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-				ShardID:     shardID,
+				VShardID:    shardID,
 				CounterSeqID: counterSeq,
 				Asset:       snap.Asset,
 				UserID:      e.UserId,
@@ -229,7 +227,7 @@ func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, counterSeq ui
 		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-				ShardID:     shardID,
+				VShardID:    shardID,
 				CounterSeqID: counterSeq,
 				Asset:       snap.Asset,
 				UserID:      e.UserId,
@@ -254,7 +252,7 @@ func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, counterSe
 		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-				ShardID:     shardID,
+				VShardID:    shardID,
 				CounterSeqID: counterSeq,
 				Asset:       snap.Asset,
 				UserID:      e.UserId,
@@ -273,7 +271,7 @@ func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, counterSe
 		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-				ShardID:     shardID,
+				VShardID:    shardID,
 				CounterSeqID: counterSeq,
 				Asset:       snap.Asset,
 				UserID:      e.UserId,
@@ -303,7 +301,7 @@ func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, counterSeq ui
 	}
 	deltaAvail, deltaFrozen := transferDeltas(e.Type, e.Amount)
 	b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-		ShardID:      shardID,
+		VShardID:     shardID,
 		CounterSeqID: counterSeq,
 		Asset:        snap.Asset,
 		UserID:      e.UserId,

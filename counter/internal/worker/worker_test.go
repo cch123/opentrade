@@ -141,14 +141,21 @@ func TestReadyNotClosedBeforeRun(t *testing.T) {
 	}
 }
 
-// TestFormatConstants pins the exact strings that land in etcd (snapshot
+// TestFormatConstants pins the strings that land in etcd (snapshot
 // key) and Kafka (transactional id). Silent drift here would break
-// cross-process recovery, so keep the expected literals explicit.
+// cross-process recovery or snap fencing, so keep them explicit.
+//
+// Stability contract (ADR-0058 §4): TransactionalIDFormat is
+// vshard-only with no epoch. The Kafka Transaction Coordinator needs
+// the same transactional.id across owner changes so a new owner's
+// InitProducerID bumps producer_epoch on the same PID and fences the
+// previous owner (KIP-98). Epoch lives in etcd assignment + record
+// headers, not in this string.
 func TestFormatConstants(t *testing.T) {
 	if got := fmt.Sprintf(SnapshotKeyFormat, 42); got != "vshard-042" {
 		t.Errorf("snapshot key = %q, want vshard-042", got)
 	}
-	if got := fmt.Sprintf(TransactionalIDFormat, 42, 7); got != "counter-vshard-042-ep-7" {
-		t.Errorf("txn id = %q, want counter-vshard-042-ep-7", got)
+	if got := fmt.Sprintf(TransactionalIDFormat, 42); got != "counter-vshard-042" {
+		t.Errorf("txn id = %q, want counter-vshard-042", got)
 	}
 }

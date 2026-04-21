@@ -43,11 +43,15 @@ const (
 	// order.
 	SnapshotKeyFormat = "vshard-%03d"
 
-	// TransactionalIDFormat yields Kafka's per-vshard fencing identity
-	// (ADR-0058 §Fencing). Embedding the epoch means a new owner's
-	// InitProducerID automatically fences any in-flight transaction
-	// left by the previous epoch.
-	TransactionalIDFormat = "counter-vshard-%03d-ep-%d"
+	// TransactionalIDFormat is the Kafka transactional.id for a
+	// vshard's producer. Per Kafka semantics it MUST be stable across
+	// owner changes: the broker's TransactionCoordinator uses same-id
+	// re-init to auto-fence the previous owner via producer_epoch
+	// bump (KIP-98). The ADR-0058 epoch is NOT embedded here — it
+	// lives in etcd assignment for application-level decisions
+	// (Manager restart, CAS guard) and is re-surfaced into each
+	// Kafka record's headers for downstream audit.
+	TransactionalIDFormat = "counter-vshard-%03d"
 
 	defaultSnapshotFlushTimeout = 3 * time.Second
 	defaultShutdownFlushTimeout = 10 * time.Second
@@ -180,7 +184,7 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		return fmt.Errorf("snapshot load: %w", err)
 	}
 
-	txnID := fmt.Sprintf(TransactionalIDFormat, w.cfg.VShardID, w.cfg.Epoch)
+	txnID := fmt.Sprintf(TransactionalIDFormat, w.cfg.VShardID)
 	producer, err := journal.NewTxnProducer(ctx, journal.TxnProducerConfig{
 		Brokers:               w.cfg.Brokers,
 		ClientID:              fmt.Sprintf("%s-vshard-%03d-txn", w.cfg.NodeID, w.cfg.VShardID),
@@ -189,6 +193,8 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		OrderEventTopic:       w.cfg.OrderEventTopic,
 		OrderEventTopicPrefix: w.cfg.OrderEventTopicPrefix,
 		VShardCount:           w.cfg.VShardCount,
+		WriterNodeID:          w.cfg.NodeID,
+		WriterEpoch:           w.cfg.Epoch,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("txn producer: %w", err)
@@ -203,7 +209,7 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	svc := service.New(service.Config{
 		ShardID:                   int(w.cfg.VShardID),
 		TotalShards:               w.cfg.VShardCount,
-		ProducerID:                fmt.Sprintf("%s-vshard-%03d", w.cfg.NodeID, w.cfg.VShardID),
+		ProducerID:                fmt.Sprintf(TransactionalIDFormat, w.cfg.VShardID),
 		DefaultMaxOpenLimitOrders: w.cfg.DefaultMaxOpenLimitOrders,
 	}, state, seq, dt, producer, logger)
 	svc.SetOrderDeps(producer, idg)

@@ -98,12 +98,57 @@ etcd 数据模型：
 - 故障 failover（某 node lease 过期 → 重新分配它名下的 vshard）
 - 运维触发的主动迁移（API 调用）
 
-### 4. Fencing：epoch + transactional.id
+### 4. Fencing：Kafka 原生 + 应用层 + 事务超时
 
-- 每次 vshard 换 owner `epoch += 1`
-- Kafka 生产者 `transactional.id = "counter-vshard-{id}-ep-{epoch}"`
-  - 新 epoch 的 producer init 会 fence 掉旧 epoch 的未提交事务（ADR-0017 的机制延伸到 vshard 维度）
-- Counter node 在持有 vshard 期间持续 watch 其 assignment，如果发现 `owner != self || epoch > mine`，立即停止处理（自我 fence）
+Fencing 目的：老 owner 网络分区复活 / 假死恢复时，**不能**让它把脏数据写进 Kafka。ADR-0058 用**三层防御**实现：
+
+#### 4.1 Kafka 原生 fencing（主力）
+
+**Kafka transactional.id 在 vshard 生命周期内必须稳定**，这是 [KIP-98](https://cwiki.apache.org/confluence/display/KAFKA/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging) 给出的 fencing 前提：
+
+- `transactional.id = "counter-vshard-{id}"` —— 不嵌 epoch，owner 换人 id 也不变
+- broker 的 Transaction Coordinator 维护 `transactional.id → (PID, producer_epoch)` 映射
+- 新 owner 起 Kafka producer 时，InitProducerID 同一 id → broker 把 `producer_epoch` 自动 +1（Kafka 内部的 epoch，和我们 ADR-0058 的 epoch 不一样）
+- 老 owner 的 `ProduceRequest` header 还带着老 `producer_epoch` → partition leader 端查当前 epoch 更新了 → 返回 `InvalidProducerEpochException`
+- 老 owner 的 in-flight 事务被 coordinator 自动 `abort`；下游 `read_committed` consumer 看到 ABORT marker 会跳过这些 record
+
+**三个必要条件**（任一缺失 Kafka 原生 fencing 失效）：
+
+1. producer 配置 `kgo.TransactionalID("counter-vshard-{id}")` + `kgo.RequiredAcks(kgo.AllISRAcks())` —— franz-go 在 `TransactionalID` 非空时自动开启 idempotent writes，Kafka 会追踪 PID/epoch
+2. 所有下游 consumer 用 `kgo.FetchIsolationLevel(kgo.ReadCommitted())` —— 仓内 counter / quote / trade-dump / history / push / bff / match / conditional / asset 全部已经是 `read_committed`，ADR-0005 起固化
+3. transactional.id **不嵌** ADR-0058 的 epoch —— 嵌 epoch 会让每次 owner 换 id 就变，broker 把它们当两个独立 producer，fencing 失效
+
+#### 4.2 应用层自我 fence（协调收尾）
+
+- 每次 vshard 换 owner，**ADR-0058 的 epoch `+= 1`**（这是 etcd assignment 里的版本号，和 Kafka 的 producer_epoch 不是一回事）
+- Counter node 在持有 vshard 期间持续 watch 它的 assignment；一旦发现 `owner != self || epoch > mine`，立刻 `ctx.Done()`：停 gRPC 入口 → close producer → worker.Run 进 teardown
+- 这让老 owner **主动**退出，不用等到 Kafka 层的异常，比 Kafka 层快得多
+
+#### 4.3 Kafka 事务超时（兜底）
+
+- `kgo.TransactionTimeout(10 * time.Second)`：老 owner 的 in-flight 事务如果 10 秒内没 commit，coordinator 会主动 abort
+- 即使老 owner 完全失联（InitProducerID 的 bump 因为没起来也没发生），10 秒后 dangling 事务就消失
+
+#### 4.4 Epoch 和 producer_id 的命名规范（ADR-0017 延伸）
+
+| 值 | 格式 | 变不变 | 作用 |
+|---|---|---|---|
+| `kgo.TransactionalID` | `counter-vshard-042` | ❌ 永远不变 | Kafka broker 用于 fence |
+| `EventMeta.producer_id` | `counter-vshard-042` | ❌ 永远不变 | 下游 payload 解析 / 按 vshard 聚合 |
+| Kafka record headers `writer-node` / `writer-epoch` | `node-B` / `2` | ✓ 换 owner 就变 | 审计：谁、第几届写的 |
+| etcd `assignment.epoch`（本 ADR 的 epoch）| `uint64` 单调递增 | ✓ 换 owner 就变 | CAS 守护、worker 识别换代 |
+| Kafka 内部 `producer_epoch` | int16 | ✓ 每次 InitProducerID 自动 +1 | 由 broker 管，外部看不到 |
+
+**关键**：transactional.id / EventMeta.producer_id 是**稳定**的（per vshard），审计信息走 record header / etcd；ADR-0058 的 epoch 只在应用层 / CAS 用，**不进** Kafka 消息的 id 字段。
+
+#### 4.5 余留脏写窗口
+
+在 **"老 owner 假死 + 恰好事务已进 broker 但未 commit + 分区恢复"** 的极端组合下，老 owner 可能成功 commit 老事务（因为它用的还是自己内存里的老 `producer_epoch`，那次写入在 InitProducerID bump 之前就到达 broker 了）。这种情况靠：
+
+- Counter 的 `(user, symbol) match_seq` guard（ADR-0048）做 application-level idempotency 去重
+- counter-journal 的 `counter_seq_id` 单调 + dedup ring 做事件级去重
+
+窗口极短（< `TransactionTimeout = 10s`）且有应用层兜底，可接受。
 
 ### 5. 共享存储 Snapshot（S3 / S3 兼容）
 

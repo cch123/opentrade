@@ -6,7 +6,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	cases := []any{
 		OrdersCursor{CreatedAt: 1712345678901, OrderID: 42},
 		TradesCursor{Ts: 1712345678901, TradeID: "sym-0-17"},
-		AccountLogsCursor{Ts: 1712345678901, ShardID: 3, CounterSeqID: 99, Asset: "USDT"},
+		AccountLogsCursor{Ts: 1712345678901, VShardID: 3, CounterSeqID: 99, Asset: "USDT"},
 	}
 	for _, c := range cases {
 		s, err := Encode(c)

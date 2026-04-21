@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -247,8 +248,21 @@ func TestCluster_ReconcileIsIdempotent(t *testing.T) {
 
 	// Tear down, then start a second cluster using the same root but a
 	// different node id. Its reconcile should skip every vshard.
+	//
+	// Phase 7 added a failover sweep that reassigns any vshard whose
+	// owner isn't live. After tearing down node-A its /nodes/ key is
+	// gone, which would trigger the sweep and flip the whole table to
+	// node-B. To isolate this test to reconcile's create-only CAS path,
+	// re-seed node-A's /nodes/ record (no lease; phase 7 just checks
+	// key presence) so the sweep sees it as alive.
 	cancel1()
 	<-done1
+	if _, err := client.Put(context.Background(),
+		keys.Node("node-A"),
+		`{"id":"node-A","endpoint":"10.0.0.1:8081","capacity":`+strconv.Itoa(vshardCount)+`,"started_at_ms":0}`,
+	); err != nil {
+		t.Fatal(err)
+	}
 
 	cancel2, done2 := startCluster("node-B")
 	// Even if node-B becomes coordinator, it won't change anything,
@@ -537,17 +551,29 @@ func TestCluster_WatchAssignedAssignments_DropsOnStateTransition(t *testing.T) {
 }
 
 // TestCluster_PreexistingAssignmentNotClobbered: pre-write an Assignment
-// with custom Owner + Epoch, then run the cluster. Reconcile must leave
-// that vshard alone while filling in the rest.
+// with custom Owner + Epoch, then run the cluster. Reconcile (create-only
+// CAS) must leave that vshard alone while filling in the rest. The
+// pre-seeded owner is registered as a live node so phase 7's failover
+// sweep doesn't treat it as an orphan.
 func TestCluster_PreexistingAssignmentNotClobbered(t *testing.T) {
 	client, root := requireEtcd(t)
 	vshardCount := 8
 	keys := NewKeys(root)
 
+	// Register the pre-seed owner as a live node (no lease — just a
+	// JSON key), otherwise phase 7's sweepOrphans sees it as dead and
+	// force-reassigns vshard-0 to node-A with epoch+1.
+	if _, err := client.Put(context.Background(),
+		keys.Node("preexisting-owner"),
+		`{"id":"preexisting-owner","endpoint":"10.0.0.9:0","capacity":8,"started_at_ms":0}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
 	// Seed vshard-000 with an intentional off-design assignment.
 	seed := Assignment{
 		VShardID: 0,
-		Owner:    "someone-else",
+		Owner:    "preexisting-owner",
 		Epoch:    99,
 		State:    StateActive,
 	}
@@ -586,7 +612,7 @@ func TestCluster_PreexistingAssignmentNotClobbered(t *testing.T) {
 		return len(resp.Kvs) == vshardCount
 	})
 
-	// vshard-000 should still belong to someone-else at epoch 99.
+	// vshard-000 should still belong to preexisting-owner at epoch 99.
 	resp, err := client.Get(context.Background(), keys.Assignment(0))
 	if err != nil {
 		t.Fatal(err)
@@ -598,8 +624,8 @@ func TestCluster_PreexistingAssignmentNotClobbered(t *testing.T) {
 	if err := json.Unmarshal(resp.Kvs[0].Value, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Owner != "someone-else" || got.Epoch != 99 {
-		t.Errorf("vshard-000 overwritten: %+v (want someone-else @ 99)", got)
+	if got.Owner != "preexisting-owner" || got.Epoch != 99 {
+		t.Errorf("vshard-000 overwritten: %+v (want preexisting-owner @ 99)", got)
 	}
 
 	cancel()

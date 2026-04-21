@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -26,7 +27,7 @@ import (
 type TxnProducerConfig struct {
 	Brokers               []string
 	ClientID              string
-	TransactionalID       string // e.g. "counter-vshard-042-ep-7" (ADR-0017, ADR-0058)
+	TransactionalID       string // e.g. "counter-vshard-042" (ADR-0017, ADR-0058 — stable per vshard so Kafka's native fencing applies)
 	JournalTopic          string // default "counter-journal"
 	OrderEventTopic       string // legacy single topic; default "order-event"
 	OrderEventTopicPrefix string // ADR-0050; default "order-event" → `order-event-<symbol>`
@@ -36,6 +37,14 @@ type TxnProducerConfig struct {
 	// identical to what Match uses for trade-event (ADR-0058 §2a). Must
 	// be >0 and must match the rest of the cluster.
 	VShardCount int
+
+	// Writer metadata (ADR-0058 §4): stamped onto every record's
+	// Kafka headers so audit / reconciliation tools can tell which
+	// node (and which assignment epoch) wrote a given event without
+	// relying on the payload schema. Owner changes rotate these
+	// values; transactional.id and EventMeta.producer_id stay stable.
+	WriterNodeID string
+	WriterEpoch  uint64
 }
 
 // TxnProducer wraps franz-go's transactional producer. Each BeginCommit cycle
@@ -180,15 +189,34 @@ func (p *TxnProducer) runTxn(ctx context.Context, fn func() error) error {
 // JournalTopic get their Partition pinned via shard.Index so that 1 vshard
 // == 1 partition (ADR-0058 §2a). Other topics (per-symbol order-event)
 // pass through with Partition=0 and let StickyKeyPartitioner hash by key.
+// Writer metadata (ADR-0058 §4) is attached as Kafka record headers so
+// audit tooling can tell which node / assignment epoch produced each
+// event without coupling to the payload schema.
 func (p *TxnProducer) produce(ctx context.Context, topic, key string, pb proto.Message) error {
 	payload, err := proto.Marshal(pb)
 	if err != nil {
 		return err
 	}
-	rec := &kgo.Record{Topic: topic, Key: []byte(key), Value: payload}
+	rec := &kgo.Record{
+		Topic:   topic,
+		Key:     []byte(key),
+		Value:   payload,
+		Headers: p.writerHeaders(),
+	}
 	if topic == p.cfg.JournalTopic {
 		// key == user_id for every counter-journal event.
 		rec.Partition = int32(shard.Index(key, p.cfg.VShardCount))
 	}
 	return p.cli.ProduceSync(ctx, rec).FirstErr()
+}
+
+// writerHeaders returns the fixed audit headers for every record this
+// producer emits. Values only change on worker restart (new epoch or
+// new owner node); Kafka headers are the right place for them because
+// they're out-of-band from the proto payload consumers already parse.
+func (p *TxnProducer) writerHeaders() []kgo.RecordHeader {
+	return []kgo.RecordHeader{
+		{Key: "writer-node", Value: []byte(p.cfg.WriterNodeID)},
+		{Key: "writer-epoch", Value: []byte(strconv.FormatUint(p.cfg.WriterEpoch, 10))},
+	}
 }

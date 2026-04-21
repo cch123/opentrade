@@ -28,11 +28,13 @@ type TradesCursor struct {
 }
 
 // AccountLogsCursor paginates ListAccountLogs. `account_logs` orders by
-// (ts DESC, shard_id DESC, counter_seq_id DESC, asset DESC) — a unique key
-// to ensure strict monotonicity on the cursor boundary.
+// (ts DESC, vshard_id DESC, counter_seq_id DESC, asset DESC) — a unique key
+// to ensure strict monotonicity on the cursor boundary. ADR-0058 renamed
+// shard_id → vshard_id; JSON tag kept as "s" to avoid a cursor-format
+// break.
 type AccountLogsCursor struct {
 	Ts           int64  `json:"t"`
-	ShardID      int32  `json:"s"`
+	VShardID     int32  `json:"s"`
 	CounterSeqID uint64 `json:"q"`
 	Asset        string `json:"a"`
 }

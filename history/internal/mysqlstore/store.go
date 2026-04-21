@@ -386,19 +386,19 @@ func (s *Store) ListAccountLogs(ctx context.Context, f AccountLogsFilter, rawCur
 	}
 	if rawCursor != "" {
 		conds = append(conds,
-			"(ts < ? OR (ts = ? AND (shard_id < ? OR "+
-				"(shard_id = ? AND (counter_seq_id < ? OR (counter_seq_id = ? AND asset < ?))))))")
-		args = append(args, cur.Ts, cur.Ts, cur.ShardID, cur.ShardID, cur.CounterSeqID, cur.CounterSeqID, cur.Asset)
+			"(ts < ? OR (ts = ? AND (vshard_id < ? OR "+
+				"(vshard_id = ? AND (counter_seq_id < ? OR (counter_seq_id = ? AND asset < ?))))))")
+		args = append(args, cur.Ts, cur.Ts, cur.VShardID, cur.VShardID, cur.CounterSeqID, cur.CounterSeqID, cur.Asset)
 	}
 
 	q := `
-		SELECT shard_id, counter_seq_id, asset, user_id,
+		SELECT vshard_id, counter_seq_id, asset, user_id,
 		       CAST(delta_avail AS CHAR), CAST(delta_frozen AS CHAR),
 		       CAST(avail_after AS CHAR), CAST(frozen_after AS CHAR),
 		       biz_type, biz_ref_id, ts
 		FROM account_logs
 		WHERE ` + strings.Join(conds, " AND ") + `
-		ORDER BY ts DESC, shard_id DESC, counter_seq_id DESC, asset DESC
+		ORDER BY ts DESC, vshard_id DESC, counter_seq_id DESC, asset DESC
 		LIMIT ?`
 	args = append(args, limit+1)
 
@@ -426,7 +426,7 @@ func (s *Store) ListAccountLogs(ctx context.Context, f AccountLogsFilter, rawCur
 		out = out[:limit]
 		c, err := cursor.Encode(cursor.AccountLogsCursor{
 			Ts:           last.TsUnixMs,
-			ShardID:      last.ShardId,
+			VShardID:     last.ShardId,
 			CounterSeqID: last.CounterSeqId,
 			Asset:        last.Asset,
 		})

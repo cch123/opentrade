@@ -69,10 +69,14 @@ CREATE TABLE IF NOT EXISTS trades (
 
 -- account_logs — per-asset journal mirror. One CounterJournalEvent may
 -- generate multiple rows (SettlementEvent touches both base and quote), so
--- the PK includes `asset` to keep the (shard, counter_seq_id) → multi-row
+-- the PK includes `asset` to keep the (vshard, counter_seq_id) → multi-row
 -- expansion idempotent.
+--
+-- ADR-0058 renamed shard_id → vshard_id: Counter now routes by 256
+-- virtual shards instead of 10 physical ones. The column is parsed
+-- out of EventMeta.producer_id which is "counter-vshard-NNN".
 CREATE TABLE IF NOT EXISTS account_logs (
-    shard_id       INT             NOT NULL,
+    vshard_id      INT             NOT NULL,
     counter_seq_id BIGINT UNSIGNED NOT NULL,
     asset          VARCHAR(32)     NOT NULL,
     user_id        VARCHAR(64)     NOT NULL,
@@ -83,7 +87,7 @@ CREATE TABLE IF NOT EXISTS account_logs (
     biz_type       VARCHAR(32)     NOT NULL,
     biz_ref_id     VARCHAR(128)    NOT NULL DEFAULT '',
     ts             BIGINT          NOT NULL,
-    PRIMARY KEY (shard_id, counter_seq_id, asset),
+    PRIMARY KEY (vshard_id, counter_seq_id, asset),
     KEY idx_user_ts (user_id, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

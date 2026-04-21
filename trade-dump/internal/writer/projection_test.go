@@ -10,17 +10,25 @@ func newMeta(ts int64, producerID string) *eventpb.EventMeta {
 	return &eventpb.EventMeta{TsUnixMs: ts, ProducerId: producerID}
 }
 
+// TestShardIDFromProducer covers ADR-0058's stable producer_id format
+// "counter-vshard-NNN". The old shard-model format
+// "counter-shard-N-<role>" is no longer emitted by counter and must
+// not accidentally match (it would insert garbage shard_id into
+// account_logs).
 func TestShardIDFromProducer(t *testing.T) {
 	cases := []struct {
-		in      string
-		want    int32
-		wantOk  bool
+		in     string
+		want   int32
+		wantOk bool
 	}{
-		{"counter-shard-0-main", 0, true},
-		{"counter-shard-7-main", 7, true},
-		{"counter-shard-10-backup", 10, true},
-		{"counter-shard-notanumber-main", 0, false},
-		{"counter-shard-3", 0, false},
+		{"counter-vshard-000", 0, true},
+		{"counter-vshard-042", 42, true},
+		{"counter-vshard-255", 255, true},
+		{"counter-vshard-notanumber", 0, false},
+		{"counter-vshard-", 0, false},
+		// Pre-ADR-0058 legacy names must NOT parse — catches a
+		// regression where a deployment mixes old / new counters.
+		{"counter-shard-0-main", 0, false},
 		{"match-shard-0-main", 0, false},
 		{"", 0, false},
 	}
@@ -34,7 +42,7 @@ func TestShardIDFromProducer(t *testing.T) {
 
 func TestBuildJournalBatch_Freeze(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta:         newMeta(1_700_000_000_000, "counter-shard-0-main"),
+		Meta:         newMeta(1_700_000_000_000, "counter-vshard-000"),
 		CounterSeqId: 5,
 		Payload: &eventpb.CounterJournalEvent_Freeze{Freeze: &eventpb.FreezeEvent{
 			UserId:        "u1",
@@ -82,7 +90,7 @@ func TestBuildJournalBatch_Freeze(t *testing.T) {
 		t.Fatalf("logs: %+v", batch.AccountLogs)
 	}
 	log := batch.AccountLogs[0]
-	if log.ShardID != 0 || log.CounterSeqID != 5 || log.Asset != "USDT" {
+	if log.VShardID != 0 || log.CounterSeqID != 5 || log.Asset != "USDT" {
 		t.Errorf("log pk: %+v", log)
 	}
 	if log.DeltaAvail != "-100" || log.DeltaFrozen != "100" {
@@ -95,7 +103,7 @@ func TestBuildJournalBatch_Freeze(t *testing.T) {
 
 func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta:         newMeta(1_700_000_000_001, "counter-shard-3-main"),
+		Meta:         newMeta(1_700_000_000_001, "counter-vshard-003"),
 		CounterSeqId: 11,
 		Payload: &eventpb.CounterJournalEvent_Settlement{Settlement: &eventpb.SettlementEvent{
 			UserId:        "buyer",
@@ -132,7 +140,7 @@ func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 	// exactly why the PK expanded to include asset.
 	assets := map[string]bool{}
 	for _, l := range batch.AccountLogs {
-		if l.ShardID != 3 || l.CounterSeqID != 11 {
+		if l.VShardID != 3 || l.CounterSeqID != 11 {
 			t.Errorf("log pk: %+v", l)
 		}
 		assets[l.Asset] = true
@@ -144,7 +152,7 @@ func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 
 func TestBuildJournalBatch_OrderStatusUpdate(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta:         newMeta(1_700_000_000_050, "counter-shard-0-main"),
+		Meta:         newMeta(1_700_000_000_050, "counter-vshard-000"),
 		CounterSeqId: 7,
 		Payload: &eventpb.CounterJournalEvent_OrderStatus{OrderStatus: &eventpb.OrderStatusEvent{
 			UserId:    "u1",
@@ -176,7 +184,7 @@ func TestBuildJournalBatch_OrderStatusUpdate(t *testing.T) {
 
 func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 	deposit := &eventpb.CounterJournalEvent{
-		Meta:         newMeta(10, "counter-shard-0-main"),
+		Meta:         newMeta(10, "counter-vshard-000"),
 		CounterSeqId: 1,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
 			UserId: "u1", TransferId: "tx-1", Asset: "USDT",
@@ -187,7 +195,7 @@ func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 		}},
 	}
 	withdraw := &eventpb.CounterJournalEvent{
-		Meta:         newMeta(11, "counter-shard-0-main"),
+		Meta:         newMeta(11, "counter-vshard-000"),
 		CounterSeqId: 2,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
 			UserId: "u1", TransferId: "tx-2", Asset: "USDT",
@@ -212,7 +220,7 @@ func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 
 func TestBuildJournalBatch_CancelRequestedIsNoop(t *testing.T) {
 	evt := &eventpb.CounterJournalEvent{
-		Meta:         newMeta(1, "counter-shard-0-main"),
+		Meta:         newMeta(1, "counter-vshard-000"),
 		CounterSeqId: 9,
 		Payload: &eventpb.CounterJournalEvent_CancelReq{CancelReq: &eventpb.CancelRequested{
 			UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",

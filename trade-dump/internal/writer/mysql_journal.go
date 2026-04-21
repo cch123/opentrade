@@ -16,8 +16,8 @@ import (
 //                  UPDATE statements applied in event order)
 //   - accounts  : INSERT ... ON DUPLICATE KEY UPDATE ...
 //                 guarded by counter_seq_id (replays with a smaller seq are ignored)
-//   - account_logs : INSERT ... ON DUPLICATE KEY UPDATE shard_id=shard_id
-//                    (PK is (shard_id, counter_seq_id, asset))
+//   - account_logs : INSERT ... ON DUPLICATE KEY UPDATE vshard_id=vshard_id
+//                    (PK is (vshard_id, counter_seq_id, asset); ADR-0058 renamed the column)
 func (m *MySQL) ApplyJournalBatch(ctx context.Context, batch JournalBatch) error {
 	if batch.IsEmpty() {
 		return nil
@@ -199,7 +199,7 @@ func upsertAccountsChunk(ctx context.Context, tx *sql.Tx, rows []AccountRow) err
 // account_logs
 // -----------------------------------------------------------------------------
 
-const accountLogCols = "shard_id, counter_seq_id, asset, user_id, delta_avail, delta_frozen, avail_after, frozen_after, biz_type, biz_ref_id, ts"
+const accountLogCols = "vshard_id, counter_seq_id, asset, user_id, delta_avail, delta_frozen, avail_after, frozen_after, biz_type, biz_ref_id, ts"
 
 func (m *MySQL) applyAccountLogs(ctx context.Context, tx *sql.Tx, rows []AccountLogRow) error {
 	if len(rows) == 0 {
@@ -223,7 +223,7 @@ func insertAccountLogsChunk(ctx context.Context, tx *sql.Tx, rows []AccountLogRo
 	for i, r := range rows {
 		placeholders[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 		args = append(args,
-			r.ShardID,
+			r.VShardID,
 			r.CounterSeqID,
 			r.Asset,
 			r.UserID,
@@ -238,7 +238,7 @@ func insertAccountLogsChunk(ctx context.Context, tx *sql.Tx, rows []AccountLogRo
 	}
 	q := "INSERT INTO account_logs (" + accountLogCols + ") VALUES " +
 		strings.Join(placeholders, ", ") +
-		" ON DUPLICATE KEY UPDATE shard_id = shard_id"
+		" ON DUPLICATE KEY UPDATE vshard_id = vshard_id"
 	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 		return fmt.Errorf("account_logs insert: %w", err)
 	}
