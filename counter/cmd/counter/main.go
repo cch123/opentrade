@@ -30,18 +30,22 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/go-sql-driver/mysql"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/counter/internal/journal"
@@ -71,7 +75,17 @@ type Config struct {
 	SnapshotDir      string
 	SnapshotInterval time.Duration
 	SnapshotFormat   snapshot.Format // ADR-0049
-	DedupTTL         time.Duration
+
+	// Snapshot storage backend (ADR-0058 phase 1). fs = local directory
+	// under SnapshotDir; s3 = S3-compatible object store addressed by
+	// bucket + prefix.
+	SnapshotBackend    string
+	SnapshotS3Bucket   string
+	SnapshotS3Prefix   string
+	SnapshotS3Region   string
+	SnapshotS3Endpoint string // override for MinIO/localstack; empty = AWS default
+
+	DedupTTL time.Duration
 
 	// HA (MVP-12).
 	HAMode         string // "disabled" (default) | "auto"
@@ -79,6 +93,19 @@ type Config struct {
 	ElectionPath   string
 	LeaseTTL       int    // seconds; default 10
 	CampaignBackoff time.Duration // wait between failed Campaigns
+
+	// Clustering (ADR-0058 phase 3a). When enabled, this counter process
+	// registers itself under /cex/counter/nodes/{NodeID}, campaigns for
+	// the /coordinator/leader role, and (if elected) writes initial
+	// assignments into /cex/counter/assignment/vshard-NNN. The data
+	// plane still runs on the legacy shard model — the cluster runs
+	// as an observer while later phases migrate consumers / BFF routing
+	// onto the vshard view.
+	ClusteringMode string // "disabled" (default) | "enabled"
+	NodeID         string // node id; default = InstanceID
+	NodeEndpoint   string // advertised RPC address; default = GRPCAddr
+	VShardCount    int    // total virtual shards (256 per ADR-0058)
+	ClusterRoot    string // etcd prefix; default /cex/counter
 
 	// Reconciliation (ADR-0008 §对账). When MySQLDSN is empty the audit loop
 	// is disabled and Counter runs as before.
@@ -121,16 +148,122 @@ func main() {
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	store, err := newSnapshotStore(rootCtx, cfg, logger)
+	if err != nil {
+		logger.Fatal("snapshot store init", zap.Error(err))
+	}
+
+	// ADR-0058 phase 3a: when clustering is enabled, register this node
+	// + campaign for coordinator in parallel with the existing shard
+	// data plane. The cluster is observer-only here — no data-plane
+	// decisions are driven by the assignment table yet; later phases
+	// switch consumers / BFF routing onto the vshard view.
+	stopCluster, err := startCluster(rootCtx, cfg, logger)
+	if err != nil {
+		logger.Fatal("clustering init", zap.Error(err))
+	}
+	if stopCluster != nil {
+		defer stopCluster()
+	}
+
 	if cfg.HAMode == "disabled" {
-		runPrimary(rootCtx, cfg, logger)
+		runPrimary(rootCtx, cfg, store, logger)
 		return
 	}
-	runElectionLoop(rootCtx, cfg, logger)
+	runElectionLoop(rootCtx, cfg, store, logger)
+}
+
+// startCluster brings up the clustering subsystem when enabled and
+// returns a stop function that must be deferred to block until the
+// cluster goroutine has drained (so the node lease is revoked cleanly
+// instead of timing out on etcd). When clustering is disabled it
+// returns (nil, nil) so the caller's deferred stop is a no-op.
+func startCluster(ctx context.Context, cfg Config, logger *zap.Logger) (func(), error) {
+	if cfg.ClusteringMode != "enabled" {
+		return nil, nil
+	}
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   cfg.EtcdEndpoints,
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("clustering etcd dial: %w", err)
+	}
+	cluster, err := clustering.New(clustering.Config{
+		Client: client,
+		Node: clustering.Node{
+			ID:          cfg.NodeID,
+			Endpoint:    cfg.NodeEndpoint,
+			Capacity:    cfg.VShardCount,
+			StartedAtMS: time.Now().UnixMilli(),
+		},
+		VShardCount: cfg.VShardCount,
+		LeaseTTL:    cfg.LeaseTTL,
+		RootPrefix:  cfg.ClusterRoot,
+		Logger:      logger,
+	})
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("clustering new: %w", err)
+	}
+	logger.Info("clustering enabled",
+		zap.String("node_id", cfg.NodeID),
+		zap.String("endpoint", cfg.NodeEndpoint),
+		zap.Int("vshard_count", cfg.VShardCount),
+		zap.String("root", cfg.ClusterRoot))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := cluster.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("cluster run exited", zap.Error(err))
+		}
+	}()
+	return func() {
+		<-done
+		_ = client.Close()
+	}, nil
+}
+
+// newSnapshotStore picks the BlobStore implementation based on
+// --snapshot-backend. Credentials for the S3 backend come from the AWS SDK
+// default config chain (env vars, shared profile, IAM role), so this
+// function never sees them. The S3 endpoint override exists to point at
+// MinIO / localstack during dev and integration tests.
+func newSnapshotStore(ctx context.Context, cfg Config, logger *zap.Logger) (snapshot.BlobStore, error) {
+	switch cfg.SnapshotBackend {
+	case "fs":
+		logger.Info("snapshot backend: fs", zap.String("dir", cfg.SnapshotDir))
+		return snapshot.NewFSBlobStore(cfg.SnapshotDir), nil
+	case "s3":
+		var opts []func(*awsconfig.LoadOptions) error
+		if cfg.SnapshotS3Region != "" {
+			opts = append(opts, awsconfig.WithRegion(cfg.SnapshotS3Region))
+		}
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("aws config: %w", err)
+		}
+		client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+			if cfg.SnapshotS3Endpoint != "" {
+				o.BaseEndpoint = aws.String(cfg.SnapshotS3Endpoint)
+				o.UsePathStyle = true // MinIO / path-style buckets
+			}
+		})
+		logger.Info("snapshot backend: s3",
+			zap.String("bucket", cfg.SnapshotS3Bucket),
+			zap.String("prefix", cfg.SnapshotS3Prefix),
+			zap.String("region", cfg.SnapshotS3Region),
+			zap.String("endpoint", cfg.SnapshotS3Endpoint))
+		return snapshot.NewS3BlobStore(client, cfg.SnapshotS3Bucket, cfg.SnapshotS3Prefix), nil
+	default:
+		return nil, fmt.Errorf("unknown snapshot backend %q", cfg.SnapshotBackend)
+	}
 }
 
 // runElectionLoop campaigns for leadership, then runs the primary body for
 // the duration of each leadership cycle. It exits when rootCtx is cancelled.
-func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
+func runElectionLoop(rootCtx context.Context, cfg Config, store snapshot.BlobStore, logger *zap.Logger) {
 	elec, err := election.New(election.Config{
 		Endpoints: cfg.EtcdEndpoints,
 		Path:      cfg.ElectionPath,
@@ -174,7 +307,7 @@ func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
 			}
 		}()
 
-		runPrimary(primaryCtx, cfg, logger)
+		runPrimary(primaryCtx, cfg, store, logger)
 		cancelPrimary()
 		<-watchDone
 
@@ -197,14 +330,14 @@ func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
 // runPrimary brings up the full Counter stack and blocks until ctx is done.
 // Called directly in HA-disabled mode and once per leadership cycle in
 // auto mode.
-func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
+func runPrimary(ctx context.Context, cfg Config, store snapshot.BlobStore, logger *zap.Logger) {
 	state := engine.NewShardState(cfg.ShardID)
 	userSeq := sequencer.New()
 	dt := dedup.New(cfg.DedupTTL)
 
 	// Restore returns the per-partition consumer offsets persisted alongside
 	// the shard state; nil on cold start or v1 snapshot (ADR-0048).
-	restoredOffsets, err := tryRestoreSnapshot(cfg, state, userSeq, dt, logger)
+	restoredOffsets, err := tryRestoreSnapshot(ctx, cfg, store, state, userSeq, dt, logger)
 	if err != nil {
 		logger.Error("snapshot restore", zap.Error(err))
 		return
@@ -315,7 +448,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	snapWG.Add(1)
 	go func() {
 		defer snapWG.Done()
-		periodicSnapshot(snapCtx, cfg, state, userSeq, dt, svc, txnProducer, logger)
+		periodicSnapshot(snapCtx, cfg, store, state, userSeq, dt, svc, txnProducer, logger)
 	}()
 
 	// Hourly balance audit against MySQL projection (ADR-0008 §对账). Only
@@ -367,7 +500,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	time.Sleep(100 * time.Millisecond)
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownFlushTimeout)
-	if err := writeSnapshot(shutdownCtx, cfg, state, userSeq, dt, svc, txnProducer); err != nil {
+	if err := writeSnapshot(shutdownCtx, cfg, store, state, userSeq, dt, svc, txnProducer); err != nil {
 		logger.Error("final snapshot", zap.Error(err))
 	} else {
 		logger.Info("final snapshot written")
@@ -421,10 +554,10 @@ const (
 	shutdownFlushTimeout = 10 * time.Second
 )
 
-// periodicSnapshot writes a full shard snapshot to SnapshotDir on each tick.
-// SnapshotInterval <= 0 disables the loop (only the shutdown-time snapshot
-// runs, matching pre-MVP-12b behaviour).
-func periodicSnapshot(ctx context.Context, cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, svc *service.Service, txnProducer *journal.TxnProducer, logger *zap.Logger) {
+// periodicSnapshot writes a full shard snapshot through the BlobStore on
+// each tick. SnapshotInterval <= 0 disables the loop (only the
+// shutdown-time snapshot runs, matching pre-MVP-12b behaviour).
+func periodicSnapshot(ctx context.Context, cfg Config, store snapshot.BlobStore, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, svc *service.Service, txnProducer *journal.TxnProducer, logger *zap.Logger) {
 	if cfg.SnapshotInterval <= 0 {
 		return
 	}
@@ -436,7 +569,7 @@ func periodicSnapshot(ctx context.Context, cfg Config, state *engine.ShardState,
 			return
 		case <-ticker.C:
 			flushCtx, cancel := context.WithTimeout(ctx, snapshotFlushTimeout)
-			err := writeSnapshot(flushCtx, cfg, state, seq, dt, svc, txnProducer)
+			err := writeSnapshot(flushCtx, cfg, store, state, seq, dt, svc, txnProducer)
 			cancel()
 			if err != nil {
 				logger.Error("periodic snapshot", zap.Error(err))
@@ -459,10 +592,14 @@ func parseFlags() Config {
 		SnapshotDir:      "./data/counter",
 		SnapshotInterval: 60 * time.Second,
 		SnapshotFormat:   snapshot.FormatProto, // ADR-0049
+		SnapshotBackend:  "fs",                 // ADR-0058 phase 1
 		DedupTTL:         24 * time.Hour,
 		HAMode:           "disabled",
 		LeaseTTL:         10,
 		CampaignBackoff:  2 * time.Second,
+		ClusteringMode:   "disabled", // ADR-0058 phase 3a; opt-in per deployment
+		VShardCount:      256,        // ADR-0058 §2
+		ClusterRoot:      clustering.DefaultRoot,
 		ReconInterval:             time.Hour,
 		ReconBatchSize:            200,
 		DefaultMaxOpenLimitOrders: 100, // ADR-0054
@@ -480,15 +617,25 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.OrderEventTopicPrefix, "order-topic-prefix", cfg.OrderEventTopicPrefix, "per-symbol order-event topic prefix — emits to `<prefix>-<symbol>`. Empty falls back to --order-topic (ADR-0050)")
 	flag.StringVar(&cfg.TradeEventTopic, "trade-topic", cfg.TradeEventTopic, "trade-event topic name")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default counter-shard-<N>)")
-	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots")
+	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots (used when --snapshot-backend=fs)")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "periodic snapshot cadence while primary (0 disables; only final shutdown snapshot runs)")
 	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "snapshot on-disk encoding: proto (default) | json (debug). ADR-0049. Env OPENTRADE_SNAPSHOT_FORMAT overrides.")
+	flag.StringVar(&cfg.SnapshotBackend, "snapshot-backend", cfg.SnapshotBackend, "snapshot backend: fs (local dir) | s3 (S3-compatible object store). ADR-0058 phase 1.")
+	flag.StringVar(&cfg.SnapshotS3Bucket, "snapshot-s3-bucket", cfg.SnapshotS3Bucket, "S3 bucket (required when --snapshot-backend=s3)")
+	flag.StringVar(&cfg.SnapshotS3Prefix, "snapshot-s3-prefix", cfg.SnapshotS3Prefix, "S3 key prefix; trailing slash optional (empty = bucket root)")
+	flag.StringVar(&cfg.SnapshotS3Region, "snapshot-s3-region", cfg.SnapshotS3Region, "S3 region (empty = AWS SDK default config chain)")
+	flag.StringVar(&cfg.SnapshotS3Endpoint, "snapshot-s3-endpoint", cfg.SnapshotS3Endpoint, "S3 endpoint override for MinIO/localstack (empty = AWS default)")
 	flag.DurationVar(&cfg.DedupTTL, "dedup-ttl", cfg.DedupTTL, "transfer_id dedup TTL")
 	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0031)")
-	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto)")
+	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto or --clustering-mode=enabled)")
 	flag.StringVar(&cfg.ElectionPath, "election-path", "", "etcd election key (default /cex/counter/shard-<N>/leader)")
 	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "etcd session TTL seconds")
 	flag.DurationVar(&cfg.CampaignBackoff, "campaign-backoff", cfg.CampaignBackoff, "wait between failed Campaigns")
+	flag.StringVar(&cfg.ClusteringMode, "clustering-mode", cfg.ClusteringMode, "clustering mode: disabled | enabled (ADR-0058 phase 3a; observer-only for now)")
+	flag.StringVar(&cfg.NodeID, "node-id", "", "cluster node id; required when --clustering-mode=enabled (default = --instance-id)")
+	flag.StringVar(&cfg.NodeEndpoint, "node-endpoint", "", "advertised RPC endpoint for this node in /cex/counter/nodes (default = --grpc-addr)")
+	flag.IntVar(&cfg.VShardCount, "vshard-count", cfg.VShardCount, "total virtual shards (ADR-0058 §2; 256 in production)")
+	flag.StringVar(&cfg.ClusterRoot, "cluster-root", cfg.ClusterRoot, "etcd root prefix for clustering data (default /cex/counter)")
 	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", "", "MySQL DSN for hourly balance reconcile (empty disables; ADR-0008)")
 	flag.DurationVar(&cfg.ReconInterval, "recon-interval", cfg.ReconInterval, "balance audit cadence (primary only; 0 disables even when DSN set)")
 	flag.IntVar(&cfg.ReconBatchSize, "recon-batch", cfg.ReconBatchSize, "user ids per reconcile SELECT batch")
@@ -522,6 +669,16 @@ func parseFlags() Config {
 	if cfg.ElectionPath == "" {
 		cfg.ElectionPath = fmt.Sprintf("/cex/counter/shard-%d/leader", cfg.ShardID)
 	}
+	// Clustering defaults: if the operator enables clustering but
+	// doesn't set node-id / node-endpoint explicitly, fall back to the
+	// instance id / gRPC address. These are the right identifiers for
+	// the typical single-binary deployment.
+	if cfg.NodeID == "" {
+		cfg.NodeID = cfg.InstanceID
+	}
+	if cfg.NodeEndpoint == "" {
+		cfg.NodeEndpoint = cfg.GRPCAddr
+	}
 	return cfg
 }
 
@@ -549,6 +706,30 @@ func (c *Config) validate() error {
 	if c.HAMode == "auto" && len(c.EtcdEndpoints) == 0 {
 		return fmt.Errorf("--etcd required when --ha-mode=auto")
 	}
+	switch c.SnapshotBackend {
+	case "fs":
+		if c.SnapshotDir == "" {
+			return fmt.Errorf("--snapshot-dir required when --snapshot-backend=fs")
+		}
+	case "s3":
+		if c.SnapshotS3Bucket == "" {
+			return fmt.Errorf("--snapshot-s3-bucket required when --snapshot-backend=s3")
+		}
+	default:
+		return fmt.Errorf("--snapshot-backend must be fs or s3, got %q", c.SnapshotBackend)
+	}
+	switch c.ClusteringMode {
+	case "disabled":
+	case "enabled":
+		if len(c.EtcdEndpoints) == 0 {
+			return fmt.Errorf("--etcd required when --clustering-mode=enabled")
+		}
+		if c.VShardCount <= 0 {
+			return fmt.Errorf("--vshard-count must be > 0 when --clustering-mode=enabled")
+		}
+	default:
+		return fmt.Errorf("--clustering-mode must be disabled or enabled, got %q", c.ClusteringMode)
+	}
 	return nil
 }
 
@@ -568,26 +749,27 @@ func splitCSV(s string) []string {
 // Snapshot helpers
 // ---------------------------------------------------------------------------
 
-// snapshotPath returns the base path for this shard's snapshot WITHOUT the
-// format extension. snapshot.Save appends the extension from
-// cfg.SnapshotFormat; snapshot.Load probes both .pb and .json (ADR-0049).
-func snapshotPath(cfg Config) string {
-	return filepath.Join(cfg.SnapshotDir, fmt.Sprintf("shard-%d", cfg.ShardID))
+// snapshotKey returns the BlobStore key (stem, no extension) for this
+// shard's snapshot. The store adds its own directory / prefix; the format
+// extension is appended by snapshot.Save based on cfg.SnapshotFormat.
+func snapshotKey(cfg Config) string {
+	return fmt.Sprintf("shard-%d", cfg.ShardID)
 }
 
-// tryRestoreSnapshot loads state + per-partition offsets from disk. Returns
-// the offsets map so main can seed both the Service and the Kafka consumer.
-// A v1 snapshot restores state but returns nil offsets — the consumer falls
-// back to AtStart for one rescan, covered by idempotency guards.
-func tryRestoreSnapshot(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, logger *zap.Logger) (map[int32]int64, error) {
-	path := snapshotPath(cfg)
-	snap, err := snapshot.Load(path)
+// tryRestoreSnapshot loads state + per-partition offsets from the store.
+// Returns the offsets map so main can seed both the Service and the Kafka
+// consumer. A v1 snapshot restores state but returns nil offsets — the
+// consumer falls back to AtStart for one rescan, covered by idempotency
+// guards.
+func tryRestoreSnapshot(ctx context.Context, cfg Config, store snapshot.BlobStore, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, logger *zap.Logger) (map[int32]int64, error) {
+	key := snapshotKey(cfg)
+	snap, err := snapshot.Load(ctx, store, key)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			logger.Info("no snapshot found, starting fresh", zap.Int("shard_id", cfg.ShardID))
 			return nil, nil
 		}
-		return nil, fmt.Errorf("load %s: %w", path, err)
+		return nil, fmt.Errorf("load %s: %w", key, err)
 	}
 	if err := snapshot.Restore(cfg.ShardID, state, seq, dt, snap); err != nil {
 		return nil, fmt.Errorf("restore: %w", err)
@@ -606,10 +788,10 @@ func tryRestoreSnapshot(cfg Config, state *engine.ShardState, seq *sequencer.Use
 // writeSnapshot captures state + offsets after flushing the Kafka producer
 // so persisted offsets are guaranteed ≤ committed output position
 // (ADR-0048 output flush barrier).
-func writeSnapshot(ctx context.Context, cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, svc *service.Service, txnProducer *journal.TxnProducer) error {
+func writeSnapshot(ctx context.Context, cfg Config, store snapshot.BlobStore, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, svc *service.Service, txnProducer *journal.TxnProducer) error {
 	if err := txnProducer.Flush(ctx); err != nil {
 		return fmt.Errorf("flush before snapshot: %w", err)
 	}
 	snap := snapshot.Capture(cfg.ShardID, state, seq, dt, svc.Offsets(), time.Now().UnixMilli())
-	return snapshot.Save(snapshotPath(cfg), snap, cfg.SnapshotFormat)
+	return snapshot.Save(ctx, store, snapshotKey(cfg), snap, cfg.SnapshotFormat)
 }

@@ -27,10 +27,11 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/xargin/opentrade/counter/internal/snapshot"
@@ -92,7 +93,9 @@ func main() {
 		die(err)
 	}
 
-	inputs, err := loadInputs(cfg.inDir, cfg.fromN)
+	ctx := context.Background()
+	inStore := snapshot.NewFSBlobStore(cfg.inDir)
+	inputs, err := loadInputs(ctx, inStore, cfg.fromN)
 	if err != nil {
 		die(fmt.Errorf("load inputs: %w", err))
 	}
@@ -112,13 +115,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "dry-run: no files written")
 		return
 	}
-	if err := os.MkdirAll(cfg.outDir, 0o755); err != nil {
-		die(err)
-	}
+	outStore := snapshot.NewFSBlobStore(cfg.outDir)
 	for _, o := range outputs {
-		basePath := filepath.Join(cfg.outDir, fmt.Sprintf("shard-%d", o.ShardID))
-		if err := snapshot.Save(basePath, o, cfg.outputFormat); err != nil {
-			die(fmt.Errorf("save %s: %w", basePath, err))
+		key := fmt.Sprintf("shard-%d", o.ShardID)
+		if err := snapshot.Save(ctx, outStore, key, o, cfg.outputFormat); err != nil {
+			die(fmt.Errorf("save %s: %w", key, err))
 		}
 	}
 }
@@ -176,24 +177,24 @@ func reshard(inputs []*snapshot.ShardSnapshot, toM int, nowMs int64) ([]*snapsho
 // I/O
 // -----------------------------------------------------------------------------
 
-// loadInputs reads every `shard-<i>` snapshot under dir for i in [0, n).
+// loadInputs reads every `shard-<i>` snapshot under store for i in [0, n).
 // Probes the .pb form first, then .json (ADR-0049 migration window).
 // Missing files are treated as empty shards — we still produce outputs,
 // just without contributions from the missing input.
-func loadInputs(dir string, n int) ([]*snapshot.ShardSnapshot, error) {
+func loadInputs(ctx context.Context, store snapshot.BlobStore, n int) ([]*snapshot.ShardSnapshot, error) {
 	out := make([]*snapshot.ShardSnapshot, n)
 	for i := 0; i < n; i++ {
-		basePath := filepath.Join(dir, fmt.Sprintf("shard-%d", i))
-		snap, err := snapshot.Load(basePath)
+		key := fmt.Sprintf("shard-%d", i)
+		snap, err := snapshot.Load(ctx, store, key)
 		if err != nil {
-			if os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "warning: %s(.pb|.json) missing, treating as empty\n", basePath)
+			if errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintf(os.Stderr, "warning: %s(.pb|.json) missing, treating as empty\n", key)
 				continue
 			}
-			return nil, fmt.Errorf("load %s: %w", basePath, err)
+			return nil, fmt.Errorf("load %s: %w", key, err)
 		}
 		if snap.ShardID != i {
-			return nil, fmt.Errorf("%s: shard_id=%d but file name expects %d", basePath, snap.ShardID, i)
+			return nil, fmt.Errorf("%s: shard_id=%d but file name expects %d", key, snap.ShardID, i)
 		}
 		out[i] = snap
 	}

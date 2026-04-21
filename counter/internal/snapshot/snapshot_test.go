@@ -1,7 +1,9 @@
 package snapshot
 
 import (
-	"path/filepath"
+	"context"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -10,6 +12,13 @@ import (
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )
+
+// newFSStore returns a throwaway FSBlobStore for a test. Callers pick a
+// key stem (e.g. "shard-0"); the store prefixes the tempdir.
+func newFSStore(t *testing.T) BlobStore {
+	t.Helper()
+	return NewFSBlobStore(t.TempDir())
+}
 
 func TestSaveLoadRoundTrip_Proto(t *testing.T) {
 	testSaveLoadRoundTrip(t, FormatProto)
@@ -20,7 +29,8 @@ func TestSaveLoadRoundTrip_JSON(t *testing.T) {
 }
 
 func testSaveLoadRoundTrip(t *testing.T, format Format) {
-	base := filepath.Join(t.TempDir(), "counter-shard-0")
+	ctx := context.Background()
+	store := newFSStore(t)
 	snap := &ShardSnapshot{
 		Version:     Version,
 		ShardID:     0,
@@ -33,10 +43,10 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 			},
 		}},
 	}
-	if err := Save(base, snap, format); err != nil {
+	if err := Save(ctx, store, "counter-shard-0", snap, format); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(base)
+	got, err := Load(ctx, store, "counter-shard-0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,18 +56,20 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 }
 
 // TestSaveLoadRoundTrip_ProtoPreferredOverJSON verifies that when both
-// formats live on disk, Load prefers the proto file (ADR-0049 probe order).
+// formats live on the store, Load prefers the proto variant (ADR-0049
+// probe order).
 func TestSaveLoadRoundTrip_ProtoPreferredOverJSON(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "counter-shard-0")
+	ctx := context.Background()
+	store := newFSStore(t)
 	protoSnap := &ShardSnapshot{Version: Version, ShardID: 0, CounterSeq: 7}
 	jsonSnap := &ShardSnapshot{Version: Version, ShardID: 0, CounterSeq: 42}
-	if err := Save(base, protoSnap, FormatProto); err != nil {
+	if err := Save(ctx, store, "counter-shard-0", protoSnap, FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	if err := Save(base, jsonSnap, FormatJSON); err != nil {
+	if err := Save(ctx, store, "counter-shard-0", jsonSnap, FormatJSON); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(base)
+	got, err := Load(ctx, store, "counter-shard-0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,15 +78,16 @@ func TestSaveLoadRoundTrip_ProtoPreferredOverJSON(t *testing.T) {
 	}
 }
 
-// TestLoad_JSONOnlyMigration covers the upgrade path: only .json on disk,
-// Load still returns it so the first-start-after-upgrade works.
+// TestLoad_JSONOnlyMigration covers the upgrade path: only .json on the
+// store, Load still returns it so the first-start-after-upgrade works.
 func TestLoad_JSONOnlyMigration(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "counter-shard-0")
+	ctx := context.Background()
+	store := newFSStore(t)
 	snap := &ShardSnapshot{Version: Version, ShardID: 0, CounterSeq: 42}
-	if err := Save(base, snap, FormatJSON); err != nil {
+	if err := Save(ctx, store, "counter-shard-0", snap, FormatJSON); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(base)
+	got, err := Load(ctx, store, "counter-shard-0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,11 +122,12 @@ func TestCaptureRestore(t *testing.T) {
 	snap := Capture(3, state, seq, dt, offsets, 0)
 
 	// Persist and reload (default proto format, ADR-0049).
-	base := filepath.Join(t.TempDir(), "shard-3")
-	if err := Save(base, snap, FormatProto); err != nil {
+	ctx := context.Background()
+	store := newFSStore(t)
+	if err := Save(ctx, store, "shard-3", snap, FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(base)
+	loaded, err := Load(ctx, store, "shard-3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +178,7 @@ func TestCaptureRestore(t *testing.T) {
 		t.Errorf("u1 USDT version after restore = %d, want 2", got)
 	}
 	if got := state2.Account("u2").Version(); got != 1 {
-		t.Errorf("u2 account version after restore = %d, want 1", got)
+		t.Errorf("u2 account version after restore = %d, want 2", got)
 	}
 	if got := state2.Account("u2").Balance("BTC").Version; got != 1 {
 		t.Errorf("u2 BTC version after restore = %d, want 1", got)
@@ -188,11 +202,12 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base := filepath.Join(t.TempDir(), "shard-0")
-	if err := Save(base, Capture(0, state, seq, dt, nil, 0), FormatProto); err != nil {
+	ctx := context.Background()
+	store := newFSStore(t)
+	if err := Save(ctx, store, "shard-0", Capture(0, state, seq, dt, nil, 0), FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(base)
+	loaded, err := Load(ctx, store, "shard-0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,5 +244,21 @@ func TestRestoreRejectsShardMismatch(t *testing.T) {
 	snap := &ShardSnapshot{Version: Version, ShardID: 2}
 	if err := Restore(1, state, seq, dt, snap); err == nil {
 		t.Fatal("expected shard mismatch error")
+	}
+}
+
+// TestFSBlobStore_GetMissingReturnsErrNotExist is the cold-start contract:
+// a fresh store must surface absence as os.ErrNotExist so callers can
+// branch on errors.Is.
+func TestFSBlobStore_GetMissingReturnsErrNotExist(t *testing.T) {
+	ctx := context.Background()
+	store := newFSStore(t)
+	_, err := Load(ctx, store, "never-written")
+	if err == nil {
+		t.Fatal("want error on missing key")
+	}
+	// Load's contract is to return os.ErrNotExist on cold start.
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("want os.ErrNotExist, got %v", err)
 	}
 }

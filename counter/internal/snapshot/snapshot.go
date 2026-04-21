@@ -1,12 +1,18 @@
 // Package snapshot serializes Counter's ShardState + Dedup + UserSequencer
-// counter-shard-scoped seq to local disk and restores it on startup.
+// counter-shard-scoped seq to a BlobStore (local filesystem or shared
+// object storage) and restores it on startup.
 //
 // ADR-0049: default on-disk format is protobuf (.pb); JSON (.json) stays
 // available as a debug fallback selected by --snapshot-format=json. Load
 // probes .pb first, then .json, so in-place upgrades just work.
+//
+// ADR-0058 phase 1: I/O is abstracted behind BlobStore so snapshots can
+// live on shared object storage and be read by a different node after
+// vshard migration.
 package snapshot
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -443,75 +449,45 @@ func OffsetsSliceToMap(s []KafkaOffset) map[int32]int64 {
 }
 
 // -----------------------------------------------------------------------------
-// Disk I/O
+// BlobStore I/O (ADR-0058)
 // -----------------------------------------------------------------------------
 
-// Save writes snap to disk atomically. basePath is the filename without
-// extension; the target path becomes basePath + format.ext(). ADR-0049.
-func Save(basePath string, snap *ShardSnapshot, format Format) error {
-	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
-		return fmt.Errorf("mkdir: %w", err)
-	}
+// Save encodes snap and hands the blob to store under `baseKey + format.ext()`.
+// baseKey is the filename stem without extension (e.g. "shard-0"); the
+// format's extension is appended here so the store layer stays unaware of
+// encoding.
+func Save(ctx context.Context, store BlobStore, baseKey string, snap *ShardSnapshot, format Format) error {
 	data, err := encode(snap, format)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", format, err)
 	}
-	path := basePath + format.ext()
-	tmp := path + ".tmp"
-	if err := writeAtomic(tmp, path, data); err != nil {
-		return err
+	if err := store.Put(ctx, baseKey+format.ext(), data); err != nil {
+		return fmt.Errorf("put %s: %w", baseKey+format.ext(), err)
 	}
 	return nil
 }
 
-// Load reads a snapshot from disk. basePath is the filename without
-// extension; Load probes .pb first, then .json, returning os.ErrNotExist
-// only when neither exists (callers treat that as cold start).
-func Load(basePath string) (*ShardSnapshot, error) {
+// Load fetches a snapshot by probing proto then json under baseKey.
+// Returns os.ErrNotExist only when neither variant exists (callers treat
+// that as cold start).
+func Load(ctx context.Context, store BlobStore, baseKey string) (*ShardSnapshot, error) {
 	// Probe in fallback order (ADR-0049): proto → json.
 	for _, format := range []Format{FormatProto, FormatJSON} {
-		path := basePath + format.ext()
-		data, err := os.ReadFile(path)
+		key := baseKey + format.ext()
+		data, err := store.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return nil, fmt.Errorf("read %s: %w", path, err)
+			return nil, err
 		}
 		snap, err := decode(data, format)
 		if err != nil {
-			return nil, fmt.Errorf("decode %s: %w", path, err)
+			return nil, fmt.Errorf("decode %s: %w", key, err)
 		}
 		return snap, nil
 	}
 	return nil, os.ErrNotExist
-}
-
-// writeAtomic stages data into tmp, fsyncs + renames onto path.
-func writeAtomic(tmp, path string, data []byte) error {
-	f, err := os.Create(tmp)
-	if err != nil {
-		return fmt.Errorf("create tmp: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("write: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("sync: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("close: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
 }
 
 // encode dispatches to the format-specific encoder.
@@ -742,25 +718,25 @@ func orderFromProto(o *snapshotpb.CounterOrder) OrderSnapshot {
 	}
 }
 
-// LoadPath preserves the original single-path semantics for tools that
-// already pass an explicit path with extension (counter-reshard etc.).
-// If path ends in .pb or .json, only that format is attempted; otherwise
-// fall through to Load(basePath) which probes both.
-func LoadPath(path string) (*ShardSnapshot, error) {
-	switch filepath.Ext(path) {
+// LoadPath preserves the original single-key semantics for tools that
+// already pass an explicit key with extension. If key ends in .pb or
+// .json, only that format is attempted; otherwise fall through to Load
+// which probes both.
+func LoadPath(ctx context.Context, store BlobStore, key string) (*ShardSnapshot, error) {
+	switch filepath.Ext(key) {
 	case ".pb":
-		data, err := os.ReadFile(path)
+		data, err := store.Get(ctx, key)
 		if err != nil {
 			return nil, err
 		}
 		return decode(data, FormatProto)
 	case ".json":
-		data, err := os.ReadFile(path)
+		data, err := store.Get(ctx, key)
 		if err != nil {
 			return nil, err
 		}
 		return decode(data, FormatJSON)
 	default:
-		return Load(path)
+		return Load(ctx, store, key)
 	}
 }
