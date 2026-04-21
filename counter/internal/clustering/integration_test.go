@@ -699,6 +699,175 @@ func TestCluster_MigrationRoundTrip(t *testing.T) {
 	<-done
 }
 
+// TestCluster_FailoverReassignsOrphans covers the ADR-0058 phase 7
+// automatic failover. We pre-seed an assignment whose owner is a
+// fictitious dead node, then start a 1-node Cluster. On lead() entry
+// the Coordinator's failover loop runs sweepOrphans and reassigns
+// every assignment whose owner isn't in /nodes/ to a live candidate
+// (here: node-A, the only live node) with epoch bumped by 1.
+func TestCluster_FailoverReassignsOrphans(t *testing.T) {
+	client, root := requireEtcd(t)
+	vshardCount := 4
+	keys := NewKeys(root)
+
+	// Pre-seed one assignment whose owner is dead before any Cluster
+	// starts. The rest will be filled in by the initial reconcile.
+	writeAssignment(t, client, keys, Assignment{
+		VShardID: 0, Owner: "dead-node", Epoch: 7, State: StateActive,
+	})
+
+	cl, err := New(Config{
+		Client:      client,
+		Node:        Node{ID: "node-A", StartedAtMS: time.Now().UnixMilli()},
+		VShardCount: vshardCount,
+		LeaseTTL:    5,
+		RootPrefix:  root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- cl.Run(ctx) }()
+
+	// Wait for full fill.
+	deadline, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dcancel()
+	waitFor(deadline, func() bool {
+		resp, _ := client.Get(context.Background(), keys.AssignmentsPrefix(), clientv3.WithPrefix())
+		return len(resp.Kvs) == vshardCount
+	})
+
+	// Sweep runs once on lead() entry; vshard-0 should be reassigned
+	// from "dead-node" to node-A, epoch bumped from 7 to 8.
+	failoverCtx, failoverCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer failoverCancel()
+	if !waitFor(failoverCtx, func() bool {
+		a, err := ReadAssignment(context.Background(), client, keys, VShardID(0))
+		if err != nil {
+			return false
+		}
+		return a.Owner == "node-A" && a.State == StateActive && a.Epoch == 8
+	}) {
+		a, _ := ReadAssignment(context.Background(), client, keys, VShardID(0))
+		t.Fatalf("failover did not reassign vshard-0: %+v", a)
+	}
+
+	cancel()
+	<-done
+}
+
+// TestCluster_FailoverOnNodeKeyDelete covers the steady-state path: a
+// node's lease expires mid-run (we simulate by deleting its /nodes/
+// key). The Coordinator's nodes watcher fires, sweepOrphans picks up
+// the orphan, and every assignment that used to point at the dead
+// node is reassigned to the surviving one.
+func TestCluster_FailoverOnNodeKeyDelete(t *testing.T) {
+	client, root := requireEtcd(t)
+	vshardCount := 4
+	keys := NewKeys(root)
+
+	// Pre-register a dead-but-live-looking node alongside node-A. Both
+	// show up in /nodes/ so initial HRW can spread assignments across
+	// them. We then delete the dead one to simulate the lease expiring.
+	if _, err := client.Put(context.Background(),
+		keys.Node("node-dead"),
+		`{"id":"node-dead","endpoint":"10.0.0.99:0","capacity":4,"started_at_ms":0}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	cl, err := New(Config{
+		Client:      client,
+		Node:        Node{ID: "node-A", StartedAtMS: time.Now().UnixMilli()},
+		VShardCount: vshardCount,
+		LeaseTTL:    5,
+		RootPrefix:  root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- cl.Run(ctx) }()
+
+	// Wait for initial fill across {node-A, node-dead}.
+	deadline, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dcancel()
+	waitFor(deadline, func() bool {
+		resp, _ := client.Get(context.Background(), keys.AssignmentsPrefix(), clientv3.WithPrefix())
+		return len(resp.Kvs) == vshardCount
+	})
+
+	// Snapshot which vshards are held by node-dead right now.
+	resp, err := client.Get(context.Background(),
+		keys.AssignmentsPrefix(), clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadOwned := 0
+	for _, kv := range resp.Kvs {
+		var a Assignment
+		if err := json.Unmarshal(kv.Value, &a); err != nil {
+			t.Fatal(err)
+		}
+		if a.Owner == "node-dead" {
+			deadOwned++
+		}
+	}
+	if deadOwned == 0 {
+		t.Skip("HRW placed nothing on node-dead in this run; skipping (rare with small vshard count)")
+	}
+
+	// Simulate lease expiry.
+	if _, err := client.Delete(context.Background(), keys.Node("node-dead")); err != nil {
+		t.Fatal(err)
+	}
+
+	// All node-dead assignments should get reassigned to node-A.
+	failoverCtx, failoverCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer failoverCancel()
+	if !waitFor(failoverCtx, func() bool {
+		resp, err := client.Get(context.Background(),
+			keys.AssignmentsPrefix(), clientv3.WithPrefix())
+		if err != nil {
+			return false
+		}
+		for _, kv := range resp.Kvs {
+			var a Assignment
+			if err := json.Unmarshal(kv.Value, &a); err != nil {
+				return false
+			}
+			if a.Owner == "node-dead" {
+				return false
+			}
+		}
+		return true
+	}) {
+		t.Fatalf("failover did not evacuate node-dead within 5s")
+	}
+
+	cancel()
+	<-done
+}
+
+// TestForceReassign_PreconditionErrors guards the one sanity check:
+// moving a vshard "from A to A" is a no-op and should fail up-front.
+func TestForceReassign_PreconditionErrors(t *testing.T) {
+	client, root := requireEtcd(t)
+	keys := NewKeys(root)
+
+	writeAssignment(t, client, keys, Assignment{
+		VShardID: 0, Owner: "node-A", Epoch: 1, State: StateActive,
+	})
+	err := ForceReassign(context.Background(), client, keys, VShardID(0), "node-A")
+	if !errors.Is(err, ErrPreconditionMismatch) {
+		t.Errorf("ForceReassign to same owner: got %v, want ErrPreconditionMismatch", err)
+	}
+}
+
 // TestMigrationHelpers_PreconditionErrors asserts each CAS helper
 // rejects wrong-state inputs with ErrPreconditionMismatch, so the CLI
 // / Manager can branch on that without retrying into the wrong state.

@@ -167,6 +167,35 @@ func casUpdateAssignment(
 	return fmt.Errorf("clustering: CAS for %s failed after %d attempts", key, maxAttempts)
 }
 
+// ForceReassign moves a vshard to newOwner unconditionally — used by
+// the coordinator's failover loop (ADR-0058 phase 7) when the current
+// owner's etcd lease has expired. Unlike the ACTIVE → MIGRATING →
+// HANDOFF_READY path, there is no flush / snapshot handoff here: the
+// old owner is presumed dead, so newOwner must rely on the most
+// recent snapshot in S3 plus Kafka replay to rebuild state (ADR-0001
+// Kafka-as-SoT + ADR-0048 offset-in-snapshot cover the gap).
+//
+// Bumps Epoch so any zombie producer from the dead owner that comes
+// back online gets fenced on its next InitProducerID (ADR-0058 §4).
+func ForceReassign(ctx context.Context, client *clientv3.Client, keys *Keys, vshardID VShardID, newOwner string) error {
+	if newOwner == "" {
+		return errors.New("clustering: ForceReassign newOwner required")
+	}
+	return casUpdateAssignment(ctx, client, keys, vshardID,
+		func(a Assignment) (Assignment, error) {
+			if a.Owner == newOwner {
+				return Assignment{}, fmt.Errorf(
+					"%w: vshard %d already owned by %s",
+					ErrPreconditionMismatch, vshardID, newOwner)
+			}
+			a.Owner = newOwner
+			a.Epoch = a.Epoch + 1
+			a.State = StateActive
+			a.Target = ""
+			return a, nil
+		})
+}
+
 // ReadAssignment is a small helper for callers (CLI, tests, Manager
 // handoff check) that just want to see the current assignment.
 func ReadAssignment(ctx context.Context, client *clientv3.Client, keys *Keys, vshardID VShardID) (Assignment, error) {

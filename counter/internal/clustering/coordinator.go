@@ -162,6 +162,9 @@ func (c *Coordinator) lead(ctx context.Context, lost <-chan struct{}) error {
 	// Migration completion loop runs until we lose leadership or the
 	// outer context is cancelled.
 	go c.runMigrationLoop(leadCtx)
+	// Failover loop reassigns orphaned vshards whose owner's lease
+	// has expired (ADR-0058 phase 7).
+	go c.runFailoverLoop(leadCtx)
 
 	<-leadCtx.Done()
 	return leadCtx.Err()
@@ -189,6 +192,103 @@ func (c *Coordinator) runMigrationLoop(ctx context.Context) {
 			}
 			c.sweepHandoffReady(ctx)
 		}
+	}
+}
+
+// runFailoverLoop watches the nodes prefix. Any change (a node's
+// lease expired, a new node came up) triggers sweepOrphans which
+// reassigns every vshard whose owner is no longer in the live set.
+// Runs an initial sweep on entry so assignments orphaned before the
+// current leader took over are picked up immediately.
+func (c *Coordinator) runFailoverLoop(ctx context.Context) {
+	c.sweepOrphans(ctx)
+	wc := c.client.Watch(ctx, c.keys.NodesPrefix(), clientv3.WithPrefix())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case wresp, ok := <-wc:
+			if !ok {
+				c.logger.Warn("coordinator failover watch closed")
+				return
+			}
+			if err := wresp.Err(); err != nil {
+				c.logger.Warn("coordinator failover watch error", zap.Error(err))
+				return
+			}
+			c.sweepOrphans(ctx)
+		}
+	}
+}
+
+// sweepOrphans compares the assignment table against the live /nodes/
+// set and reassigns any vshard whose owner has disappeared. HRW picks
+// the new owner deterministically from the surviving nodes; CAS
+// guards guarantee a racing coordinator cannot double-write the same
+// vshard.
+func (c *Coordinator) sweepOrphans(ctx context.Context) {
+	nodes, err := c.listNodes(ctx)
+	if err != nil {
+		c.logger.Warn("sweep: list nodes", zap.Error(err))
+		return
+	}
+	if len(nodes) == 0 {
+		c.logger.Warn("sweep: no live nodes; skipping failover until one registers")
+		return
+	}
+	liveIDs := make(map[string]struct{}, len(nodes))
+	sortedLive := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		liveIDs[n.ID] = struct{}{}
+		sortedLive = append(sortedLive, n.ID)
+	}
+
+	assignments, err := c.listAssignments(ctx)
+	if err != nil {
+		c.logger.Warn("sweep: list assignments", zap.Error(err))
+		return
+	}
+	orphans := make([]Assignment, 0)
+	for _, a := range assignments {
+		if _, alive := liveIDs[a.Owner]; alive {
+			continue
+		}
+		orphans = append(orphans, a)
+	}
+	if len(orphans) == 0 {
+		return
+	}
+
+	orphanIDs := make([]VShardID, 0, len(orphans))
+	for _, a := range orphans {
+		orphanIDs = append(orphanIDs, a.VShardID)
+	}
+	newOwners := AssignVShards(orphanIDs, sortedLive)
+
+	for _, a := range orphans {
+		newOwner := newOwners[a.VShardID]
+		if newOwner == "" {
+			continue
+		}
+		if err := ForceReassign(ctx, c.client, c.keys, a.VShardID, newOwner); err != nil {
+			if errors.Is(err, ErrPreconditionMismatch) {
+				// Already moved by a racing coordinator or the
+				// live-set changed mid-sweep; next event will redo it.
+				continue
+			}
+			c.logger.Warn("failover reassign failed",
+				zap.Int("vshard", int(a.VShardID)),
+				zap.String("dead_owner", a.Owner),
+				zap.String("new_owner", newOwner),
+				zap.Error(err))
+			continue
+		}
+		c.logger.Info("failover: reassigned vshard",
+			zap.Int("vshard", int(a.VShardID)),
+			zap.String("dead_owner", a.Owner),
+			zap.String("new_owner", newOwner),
+			zap.Uint64("new_epoch", a.Epoch+1),
+			zap.String("old_state", string(a.State)))
 	}
 }
 
