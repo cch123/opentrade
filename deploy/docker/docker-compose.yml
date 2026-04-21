@@ -50,6 +50,25 @@ services:
       timeout: 5s
       retries: 10
 
+  # ADR-0058 phase 4c: create / expand trade-event + counter-journal to
+  # 256 partitions before any producer / consumer comes up. Idempotent:
+  # re-running `docker compose up -d` does the right thing whether the
+  # topics are missing, undersized, or already at 256.
+  kafka-init:
+    image: bitnamilegacy/kafka:3.8
+    container_name: opentrade-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP: "kafka:9092"
+      TARGET_PARTITIONS: "256"
+      REPLICATION: "1"
+    volumes:
+      - ./scripts/init-kafka-topics.sh:/opt/init-kafka-topics.sh:ro
+    entrypoint: ["/bin/bash", "/opt/init-kafka-topics.sh"]
+    restart: "no"
+
   etcd:
     image: bitnamilegacy/etcd:3.5
     container_name: opentrade-etcd
