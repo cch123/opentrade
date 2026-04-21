@@ -17,7 +17,7 @@ func newServerWithMarket(cache *marketcache.Cache) *Server {
 	return NewServer(Config{
 		UserRateLimit: 1000, UserRateWindow: time.Second,
 		IPRateLimit: 1000, IPRateWindow: time.Second,
-	}, &fakeCounter{}, cache, nil, nil, zap.NewNop())
+	}, &fakeCounter{}, nil, cache, nil, nil, zap.NewNop())
 }
 
 func TestDepthSnapshot_503WhenNoCache(t *testing.T) {

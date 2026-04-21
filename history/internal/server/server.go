@@ -135,6 +135,50 @@ func (s *Server) ListConditionals(ctx context.Context, req *historypb.ListCondit
 	return &historypb.ListConditionalsResponse{Conditionals: rows, NextCursor: next}, nil
 }
 
+// GetTransfer fetches one saga row by transfer_id scoped to user_id.
+func (s *Server) GetTransfer(ctx context.Context, req *historypb.GetTransferRequest) (*historypb.GetTransferResponse, error) {
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	if req.GetTransferId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "transfer_id required")
+	}
+	t, err := s.store.GetTransfer(ctx, req.UserId, req.TransferId)
+	if err != nil {
+		if errors.Is(err, mysqlstore.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "transfer not found")
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &historypb.GetTransferResponse{Transfer: t}, nil
+}
+
+// ListTransfers folds scope → states, then delegates to the store.
+func (s *Server) ListTransfers(ctx context.Context, req *historypb.ListTransfersRequest) (*historypb.ListTransfersResponse, error) {
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	states := req.GetStates()
+	if len(states) == 0 {
+		states = mysqlstore.StatesForTransferScope(req.GetScope())
+	}
+	rows, next, err := s.store.ListTransfers(ctx,
+		mysqlstore.TransfersFilter{
+			UserID:  req.UserId,
+			FromBiz: req.FromBiz,
+			ToBiz:   req.ToBiz,
+			Asset:   req.Asset,
+			States:  states,
+			SinceMs: req.SinceMs,
+			UntilMs: req.UntilMs,
+		},
+		req.Cursor, int(req.Limit))
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return &historypb.ListTransfersResponse{Transfers: rows, NextCursor: next}, nil
+}
+
 // ListAccountLogs pages the user's funds-flow journal.
 func (s *Server) ListAccountLogs(ctx context.Context, req *historypb.ListAccountLogsRequest) (*historypb.ListAccountLogsResponse, error) {
 	if req.GetUserId() == "" {

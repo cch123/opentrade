@@ -125,3 +125,38 @@ CREATE TABLE IF NOT EXISTS conditionals (
     KEY idx_user_symbol_ctime (user_id, symbol, created_at_unix_ms),
     KEY idx_oco_group (oco_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- transfers — last-state-wins projection of asset-journal's
+-- SagaStateChange events (ADR-0057 M5). trade-dump upserts by
+-- (transfer_id) with last-write-wins guarded by asset_seq_id so older
+-- events can't overwrite newer state during HA handover.
+--
+-- Live / authoritative read path for in-flight sagas: asset-service
+-- QueryTransfer RPC (→ opentrade_asset.transfer_ledger, managed by
+-- pkg/transferledger/schema.sql). This table is the historical browsing
+-- view behind `GET /v1/transfers`.
+CREATE TABLE IF NOT EXISTS transfers (
+    transfer_id     VARCHAR(64)     NOT NULL,
+    user_id         VARCHAR(64)     NOT NULL,
+    from_biz        VARCHAR(32)     NOT NULL,
+    to_biz          VARCHAR(32)     NOT NULL,
+    asset           VARCHAR(16)     NOT NULL,
+    amount          DECIMAL(36, 18) NOT NULL,
+    -- state is the raw transferledger.State string ("INIT" / "DEBITED" /
+    -- "COMPLETED" / "FAILED" / "COMPENSATING" / "COMPENSATED" /
+    -- "COMPENSATE_STUCK"). See pkg/transferledger/ledger.go for the
+    -- authoritative values.
+    state           VARCHAR(32)     NOT NULL,
+    reject_reason   VARCHAR(256)    NOT NULL DEFAULT '',
+    -- asset_seq_id is the asset-service's typed monotonic sequence
+    -- (ADR-0051) carried on every asset-journal envelope. trade-dump
+    -- uses it as the out-of-order / HA-duplicate guard during upsert.
+    asset_seq_id    BIGINT UNSIGNED NOT NULL,
+    created_at_ms   BIGINT          NOT NULL,
+    updated_at_ms   BIGINT          NOT NULL,
+    updated_at      DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (transfer_id),
+    KEY idx_user_ctime (user_id, created_at_ms),
+    KEY idx_user_state_ctime (user_id, state, created_at_ms),
+    KEY idx_user_asset_ctime (user_id, asset, created_at_ms)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

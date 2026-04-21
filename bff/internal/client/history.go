@@ -11,8 +11,9 @@ import (
 )
 
 // History is the narrow surface BFF needs from the history service (MVP-15,
-// ADR-0046). Mirrors the HistoryService gRPC interface one-to-one so tests
-// can substitute a fake without pulling the grpc package.
+// ADR-0046 / ADR-0057 M4). Mirrors the HistoryService gRPC interface
+// one-to-one so tests can substitute a fake without pulling the grpc
+// package.
 type History interface {
 	GetOrder(ctx context.Context, in *historypb.GetOrderRequest, opts ...grpc.CallOption) (*historypb.GetOrderResponse, error)
 	ListOrders(ctx context.Context, in *historypb.ListOrdersRequest, opts ...grpc.CallOption) (*historypb.ListOrdersResponse, error)
@@ -20,6 +21,8 @@ type History interface {
 	ListAccountLogs(ctx context.Context, in *historypb.ListAccountLogsRequest, opts ...grpc.CallOption) (*historypb.ListAccountLogsResponse, error)
 	GetConditional(ctx context.Context, in *historypb.GetConditionalRequest, opts ...grpc.CallOption) (*historypb.GetConditionalResponse, error)
 	ListConditionals(ctx context.Context, in *historypb.ListConditionalsRequest, opts ...grpc.CallOption) (*historypb.ListConditionalsResponse, error)
+	GetTransfer(ctx context.Context, in *historypb.GetTransferRequest, opts ...grpc.CallOption) (*historypb.GetTransferResponse, error)
+	ListTransfers(ctx context.Context, in *historypb.ListTransfersRequest, opts ...grpc.CallOption) (*historypb.ListTransfersResponse, error)
 }
 
 // DialHistory opens a plaintext gRPC connection to the history service.

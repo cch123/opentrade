@@ -186,6 +186,114 @@ func TestInternalStatusesForFilters(t *testing.T) {
 // ListAccountLogs — user-scoped query runs and decodes
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// GetTransfer
+// ---------------------------------------------------------------------------
+
+func TestGetTransfer_FoundAndNotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	store := NewStoreWithDB(db, time.Second)
+
+	cols := []string{
+		"transfer_id", "user_id", "from_biz", "to_biz", "asset",
+		"amount", "state", "reject_reason",
+		"created_at_ms", "updated_at_ms",
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("FROM transfers WHERE transfer_id = ? AND user_id = ?")).
+		WithArgs("tx-1", "u1").
+		WillReturnRows(sqlmock.NewRows(cols).AddRow(
+			"tx-1", "u1", "funding", "spot", "USDT",
+			"100", "COMPLETED", "",
+			int64(1_700_000_000_000), int64(1_700_000_000_500),
+		))
+
+	got, err := store.GetTransfer(context.Background(), "u1", "tx-1")
+	if err != nil {
+		t.Fatalf("GetTransfer: %v", err)
+	}
+	if got.State != "COMPLETED" || got.FromBiz != "funding" || got.ToBiz != "spot" {
+		t.Errorf("row = %+v", got)
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM transfers WHERE transfer_id = ? AND user_id = ?")).
+		WithArgs("missing", "u1").
+		WillReturnRows(sqlmock.NewRows(cols))
+	if _, err := store.GetTransfer(context.Background(), "u1", "missing"); err != ErrNotFound {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListTransfers
+// ---------------------------------------------------------------------------
+
+func TestListTransfers_FiltersAndCursor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	store := NewStoreWithDB(db, time.Second)
+
+	cols := []string{
+		"transfer_id", "user_id", "from_biz", "to_biz", "asset",
+		"amount", "state", "reject_reason",
+		"created_at_ms", "updated_at_ms",
+	}
+	// Return 3 rows for limit=2 so the cursor is populated.
+	rows := sqlmock.NewRows(cols).
+		AddRow("tx-a", "u1", "funding", "spot", "USDT", "100",
+			"COMPLETED", "", int64(1_700_000_003_000), int64(1_700_000_003_500)).
+		AddRow("tx-b", "u1", "funding", "spot", "USDT", "50",
+			"FAILED", "insufficient_balance", int64(1_700_000_002_000), int64(1_700_000_002_100)).
+		AddRow("tx-c", "u1", "funding", "spot", "USDT", "25",
+			"COMPLETED", "", int64(1_700_000_001_000), int64(1_700_000_001_500))
+
+	mock.ExpectQuery("FROM transfers").WillReturnRows(rows)
+
+	out, next, err := store.ListTransfers(context.Background(),
+		TransfersFilter{UserID: "u1", FromBiz: "funding", Asset: "USDT"},
+		"", 2)
+	if err != nil {
+		t.Fatalf("ListTransfers: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2 (limit honored)", len(out))
+	}
+	if out[0].TransferId != "tx-a" || out[1].TransferId != "tx-b" {
+		t.Errorf("rows = %+v", out)
+	}
+	if next == "" {
+		t.Error("next cursor should be populated (over-fetch)")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestStatesForTransferScope(t *testing.T) {
+	inFlight := StatesForTransferScope(historypb.TransferScope_TRANSFER_SCOPE_IN_FLIGHT)
+	if len(inFlight) != 3 {
+		t.Errorf("in-flight = %+v", inFlight)
+	}
+	terminal := StatesForTransferScope(historypb.TransferScope_TRANSFER_SCOPE_TERMINAL)
+	if len(terminal) != 4 {
+		t.Errorf("terminal = %+v", terminal)
+	}
+	if got := StatesForTransferScope(historypb.TransferScope_TRANSFER_SCOPE_ALL); got != nil {
+		t.Errorf("ALL should be nil (no filter), got %+v", got)
+	}
+}
+
 func TestListAccountLogs_Basic(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

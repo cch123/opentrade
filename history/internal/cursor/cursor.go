@@ -45,6 +45,14 @@ type ConditionalsCursor struct {
 	ID        uint64 `json:"i"`
 }
 
+// TransfersCursor paginates ListTransfers. `transfers` orders by
+// (created_at_ms DESC, transfer_id DESC). transfer_id is a client-
+// generated unique string so the pair is strictly monotone in practice.
+type TransfersCursor struct {
+	CreatedAt  int64  `json:"c"`
+	TransferID string `json:"t"`
+}
+
 var enc = base64.RawURLEncoding
 
 // ErrInvalid is returned when a cursor string fails to decode. Callers

@@ -13,11 +13,10 @@ import (
 
 // fakeCounter records which shard was invoked.
 type fakeCounter struct {
-	id         int
-	placeHits  int
-	cancelHits int
-	queryHits  int
-	xferHits   int
+	id          int
+	placeHits   int
+	cancelHits  int
+	queryHits   int
 	balanceHits int
 	// adminCancelResult is returned from AdminCancelOrders. Tests set it
 	// per-shard to exercise fan-out aggregation.
@@ -41,11 +40,6 @@ func (f *fakeCounter) CancelOrder(ctx context.Context, in *counterrpc.CancelOrde
 func (f *fakeCounter) QueryOrder(ctx context.Context, in *counterrpc.QueryOrderRequest, opts ...grpc.CallOption) (*counterrpc.QueryOrderResponse, error) {
 	f.queryHits++
 	return &counterrpc.QueryOrderResponse{OrderId: in.OrderId}, nil
-}
-
-func (f *fakeCounter) Transfer(ctx context.Context, in *counterrpc.TransferRequest, opts ...grpc.CallOption) (*counterrpc.TransferResponse, error) {
-	f.xferHits++
-	return &counterrpc.TransferResponse{}, nil
 }
 
 func (f *fakeCounter) QueryBalance(ctx context.Context, in *counterrpc.QueryBalanceRequest, opts ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error) {
@@ -121,11 +115,10 @@ func TestShardedCounter_AllMethodsDispatch(t *testing.T) {
 	_, _ = sc.PlaceOrder(ctx, &counterrpc.PlaceOrderRequest{UserId: userID})
 	_, _ = sc.CancelOrder(ctx, &counterrpc.CancelOrderRequest{UserId: userID})
 	_, _ = sc.QueryOrder(ctx, &counterrpc.QueryOrderRequest{UserId: userID})
-	_, _ = sc.Transfer(ctx, &counterrpc.TransferRequest{UserId: userID})
 	_, _ = sc.QueryBalance(ctx, &counterrpc.QueryBalanceRequest{UserId: userID})
 
 	if owner.placeHits != 1 || owner.cancelHits != 1 || owner.queryHits != 1 ||
-		owner.xferHits != 1 || owner.balanceHits != 1 {
+		owner.balanceHits != 1 {
 		t.Errorf("not every method routed to owner: %+v", owner)
 	}
 }

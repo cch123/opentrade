@@ -15,7 +15,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
+	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	"github.com/xargin/opentrade/bff/internal/client"
 	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/pkg/auth"
 )
@@ -28,7 +30,6 @@ type fakeCounter struct {
 	placeFn       func(*counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error)
 	cancelFn      func(*counterrpc.CancelOrderRequest) (*counterrpc.CancelOrderResponse, error)
 	queryFn       func(*counterrpc.QueryOrderRequest) (*counterrpc.QueryOrderResponse, error)
-	transferFn    func(*counterrpc.TransferRequest) (*counterrpc.TransferResponse, error)
 	balanceFn     func(*counterrpc.QueryBalanceRequest) (*counterrpc.QueryBalanceResponse, error)
 	adminCancelFn func(*counterrpc.AdminCancelOrdersRequest) (*counterrpc.AdminCancelOrdersResponse, error)
 	myCancelFn    func(*counterrpc.CancelMyOrdersRequest) (*counterrpc.CancelMyOrdersResponse, error)
@@ -42,9 +43,6 @@ func (f *fakeCounter) CancelOrder(_ context.Context, req *counterrpc.CancelOrder
 }
 func (f *fakeCounter) QueryOrder(_ context.Context, req *counterrpc.QueryOrderRequest, _ ...grpc.CallOption) (*counterrpc.QueryOrderResponse, error) {
 	return f.queryFn(req)
-}
-func (f *fakeCounter) Transfer(_ context.Context, req *counterrpc.TransferRequest, _ ...grpc.CallOption) (*counterrpc.TransferResponse, error) {
-	return f.transferFn(req)
 }
 func (f *fakeCounter) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceRequest, _ ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error) {
 	return f.balanceFn(req)
@@ -62,12 +60,52 @@ func (f *fakeCounter) CancelMyOrders(_ context.Context, req *counterrpc.CancelMy
 	return f.myCancelFn(req)
 }
 
+// fakeAsset is the test double for client.Asset (ADR-0057 M4). Only the
+// methods exercised by the REST layer are populated; unwired methods
+// return an empty response with no error so tests that don't care about
+// them stay terse.
+type fakeAsset struct {
+	transferFn      func(*assetrpc.TransferRequest) (*assetrpc.TransferResponse, error)
+	queryTransferFn func(*assetrpc.QueryTransferRequest) (*assetrpc.QueryTransferResponse, error)
+	fundingBalFn    func(*assetrpc.QueryFundingBalanceRequest) (*assetrpc.QueryFundingBalanceResponse, error)
+}
+
+func (f *fakeAsset) Transfer(_ context.Context, req *assetrpc.TransferRequest, _ ...grpc.CallOption) (*assetrpc.TransferResponse, error) {
+	if f.transferFn == nil {
+		return &assetrpc.TransferResponse{TransferId: req.TransferId}, nil
+	}
+	return f.transferFn(req)
+}
+func (f *fakeAsset) QueryTransfer(_ context.Context, req *assetrpc.QueryTransferRequest, _ ...grpc.CallOption) (*assetrpc.QueryTransferResponse, error) {
+	if f.queryTransferFn == nil {
+		return &assetrpc.QueryTransferResponse{TransferId: req.TransferId}, nil
+	}
+	return f.queryTransferFn(req)
+}
+func (f *fakeAsset) QueryFundingBalance(_ context.Context, req *assetrpc.QueryFundingBalanceRequest, _ ...grpc.CallOption) (*assetrpc.QueryFundingBalanceResponse, error) {
+	if f.fundingBalFn == nil {
+		return &assetrpc.QueryFundingBalanceResponse{}, nil
+	}
+	return f.fundingBalFn(req)
+}
+
 func newServer(fc *fakeCounter) *Server {
+	return newServerWithAsset(fc, nil)
+}
+
+func newServerWithAsset(fc *fakeCounter, fa *fakeAsset) *Server {
+	// Pass an interface-typed nil when the caller wants asset disabled;
+	// a typed *fakeAsset nil would land as a non-nil interface value
+	// and defeat the `s.asset == nil` 503 check.
+	var asset client.Asset
+	if fa != nil {
+		asset = fa
+	}
 	return NewServer(Config{
 		UserRateLimit:  100, UserRateWindow: time.Second,
 		IPRateLimit:    100, IPRateWindow:   time.Second,
 		RequestTimeout: time.Second,
-	}, fc, nil, nil, nil, zap.NewNop())
+	}, fc, asset, nil, nil, nil, zap.NewNop())
 }
 
 // -----------------------------------------------------------------------------
@@ -225,7 +263,7 @@ func TestPlaceOrder_ReferencePriceFilledFromDepthCache(t *testing.T) {
 		UserRateLimit:  100, UserRateWindow: time.Second,
 		IPRateLimit:    100, IPRateWindow:   time.Second,
 		RequestTimeout: time.Second,
-	}, fc, cache, nil, nil, zap.NewNop())
+	}, fc, nil, cache, nil, nil, zap.NewNop())
 
 	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
@@ -281,7 +319,7 @@ func TestPlaceOrder_ReferencePriceEmptyWhenSnapshotMissing(t *testing.T) {
 		UserRateLimit:  100, UserRateWindow: time.Second,
 		IPRateLimit:    100, IPRateWindow:   time.Second,
 		RequestTimeout: time.Second,
-	}, fc, cache, nil, nil, zap.NewNop())
+	}, fc, nil, cache, nil, nil, zap.NewNop())
 
 	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
@@ -409,7 +447,7 @@ func TestRateLimitPerUser(t *testing.T) {
 	srv := NewServer(Config{
 		UserRateLimit: 2, UserRateWindow: time.Second,
 		IPRateLimit: 100, IPRateWindow: time.Second,
-	}, fc, nil, nil, nil, zap.NewNop())
+	}, fc, nil, nil, nil, nil, zap.NewNop())
 	h := srv.Handler()
 
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"limit","tif":"gtc","price":"100","qty":"1"}`
@@ -434,26 +472,29 @@ func TestRateLimitPerUser(t *testing.T) {
 
 func TestTransferAndBalance(t *testing.T) {
 	fc := &fakeCounter{
-		transferFn: func(req *counterrpc.TransferRequest) (*counterrpc.TransferResponse, error) {
-			return &counterrpc.TransferResponse{
-				TransferId: req.TransferId,
-				Status:     counterrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED,
-				AvailableAfter: "100",
-				FrozenAfter:    "0",
-			}, nil
-		},
 		balanceFn: func(req *counterrpc.QueryBalanceRequest) (*counterrpc.QueryBalanceResponse, error) {
 			return &counterrpc.QueryBalanceResponse{
 				Balances: []*counterrpc.Balance{{Asset: "USDT", Available: "100", Frozen: "0"}},
 			}, nil
 		},
 	}
-	srv := newServer(fc)
+	var seen *assetrpc.TransferRequest
+	fa := &fakeAsset{
+		transferFn: func(req *assetrpc.TransferRequest) (*assetrpc.TransferResponse, error) {
+			seen = req
+			return &assetrpc.TransferResponse{
+				TransferId: req.TransferId,
+				State:      assetrpc.SagaState_SAGA_STATE_COMPLETED,
+				Terminal:   true,
+			}, nil
+		},
+	}
+	srv := newServerWithAsset(fc, fa)
 	h := srv.Handler()
 
-	// Transfer
+	// Transfer — new ADR-0057 body: from_biz / to_biz instead of type.
 	req := httptest.NewRequest(http.MethodPost, "/v1/transfer",
-		bytes.NewBufferString(`{"transfer_id":"tx1","asset":"USDT","amount":"100","type":"deposit"}`))
+		bytes.NewBufferString(`{"transfer_id":"tx1","from_biz":"funding","to_biz":"spot","asset":"USDT","amount":"100"}`))
 	req.Header.Set(auth.HeaderUserID, "u1")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -462,17 +503,99 @@ func TestTransferAndBalance(t *testing.T) {
 	}
 	var tresp map[string]any
 	_ = json.Unmarshal(rr.Body.Bytes(), &tresp)
-	if tresp["status"] != "confirmed" {
-		t.Fatalf("transfer status = %v", tresp["status"])
+	if tresp["state"] != "COMPLETED" {
+		t.Fatalf("transfer state = %v", tresp["state"])
+	}
+	if tresp["terminal"] != true {
+		t.Fatalf("transfer terminal = %v", tresp["terminal"])
+	}
+	if seen == nil || seen.UserId != "u1" || seen.FromBiz != "funding" || seen.ToBiz != "spot" {
+		t.Fatalf("asset transfer request = %+v", seen)
 	}
 
-	// Balance
+	// Balance (spot)
 	req = httptest.NewRequest(http.MethodGet, "/v1/account?asset=USDT", nil)
 	req.Header.Set(auth.HeaderUserID, "u1")
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("balance code = %d", rr.Code)
+	}
+}
+
+func TestTransfer_AssetServiceNotConfigured(t *testing.T) {
+	srv := newServer(&fakeCounter{})
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/transfer",
+		bytes.NewBufferString(`{"transfer_id":"tx1","from_biz":"funding","to_biz":"spot","asset":"USDT","amount":"100"}`))
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", rr.Code)
+	}
+}
+
+func TestQueryTransfer_ProxiesToAsset(t *testing.T) {
+	fa := &fakeAsset{
+		queryTransferFn: func(req *assetrpc.QueryTransferRequest) (*assetrpc.QueryTransferResponse, error) {
+			if req.TransferId != "tx1" {
+				t.Errorf("transfer_id = %q", req.TransferId)
+			}
+			return &assetrpc.QueryTransferResponse{
+				TransferId: "tx1", UserId: "u1",
+				FromBiz: "funding", ToBiz: "spot",
+				Asset: "USDT", Amount: "100",
+				State: assetrpc.SagaState_SAGA_STATE_DEBITED,
+			}, nil
+		},
+	}
+	srv := newServerWithAsset(&fakeCounter{}, fa)
+	req := httptest.NewRequest(http.MethodGet, "/v1/transfer/tx1", nil)
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp["state"] != "DEBITED" {
+		t.Errorf("state = %v", resp["state"])
+	}
+	if resp["from_biz"] != "funding" || resp["to_biz"] != "spot" {
+		t.Errorf("routing = %v / %v", resp["from_biz"], resp["to_biz"])
+	}
+}
+
+func TestQueryFundingBalance_ProxiesToAsset(t *testing.T) {
+	fa := &fakeAsset{
+		fundingBalFn: func(req *assetrpc.QueryFundingBalanceRequest) (*assetrpc.QueryFundingBalanceResponse, error) {
+			return &assetrpc.QueryFundingBalanceResponse{
+				Balances: []*assetrpc.FundingBalance{
+					{Asset: "USDT", Available: "500", Frozen: "0", Version: 3},
+				},
+			}, nil
+		},
+	}
+	srv := newServerWithAsset(&fakeCounter{}, fa)
+	req := httptest.NewRequest(http.MethodGet, "/v1/funding-balance?asset=USDT", nil)
+	req.Header.Set(auth.HeaderUserID, "u1")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	bals, _ := resp["balances"].([]any)
+	if len(bals) != 1 {
+		t.Fatalf("balances = %+v", bals)
+	}
+	first, _ := bals[0].(map[string]any)
+	if first["asset"] != "USDT" || first["available"] != "500" {
+		t.Errorf("entry = %+v", first)
 	}
 }
 

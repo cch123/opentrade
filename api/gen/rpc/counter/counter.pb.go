@@ -22,113 +22,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type TransferType int32
-
-const (
-	TransferType_TRANSFER_TYPE_UNSPECIFIED TransferType = 0
-	TransferType_TRANSFER_TYPE_DEPOSIT     TransferType = 1
-	TransferType_TRANSFER_TYPE_WITHDRAW    TransferType = 2
-	TransferType_TRANSFER_TYPE_FREEZE      TransferType = 3
-	TransferType_TRANSFER_TYPE_UNFREEZE    TransferType = 4
-)
-
-// Enum value maps for TransferType.
-var (
-	TransferType_name = map[int32]string{
-		0: "TRANSFER_TYPE_UNSPECIFIED",
-		1: "TRANSFER_TYPE_DEPOSIT",
-		2: "TRANSFER_TYPE_WITHDRAW",
-		3: "TRANSFER_TYPE_FREEZE",
-		4: "TRANSFER_TYPE_UNFREEZE",
-	}
-	TransferType_value = map[string]int32{
-		"TRANSFER_TYPE_UNSPECIFIED": 0,
-		"TRANSFER_TYPE_DEPOSIT":     1,
-		"TRANSFER_TYPE_WITHDRAW":    2,
-		"TRANSFER_TYPE_FREEZE":      3,
-		"TRANSFER_TYPE_UNFREEZE":    4,
-	}
-)
-
-func (x TransferType) Enum() *TransferType {
-	p := new(TransferType)
-	*p = x
-	return p
-}
-
-func (x TransferType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (TransferType) Descriptor() protoreflect.EnumDescriptor {
-	return file_rpc_counter_counter_proto_enumTypes[0].Descriptor()
-}
-
-func (TransferType) Type() protoreflect.EnumType {
-	return &file_rpc_counter_counter_proto_enumTypes[0]
-}
-
-func (x TransferType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use TransferType.Descriptor instead.
-func (TransferType) EnumDescriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{0}
-}
-
-type TransferStatus int32
-
-const (
-	TransferStatus_TRANSFER_STATUS_UNSPECIFIED TransferStatus = 0
-	TransferStatus_TRANSFER_STATUS_CONFIRMED   TransferStatus = 1
-	TransferStatus_TRANSFER_STATUS_REJECTED    TransferStatus = 2
-	TransferStatus_TRANSFER_STATUS_DUPLICATED  TransferStatus = 3 // dedup hit; result cached
-)
-
-// Enum value maps for TransferStatus.
-var (
-	TransferStatus_name = map[int32]string{
-		0: "TRANSFER_STATUS_UNSPECIFIED",
-		1: "TRANSFER_STATUS_CONFIRMED",
-		2: "TRANSFER_STATUS_REJECTED",
-		3: "TRANSFER_STATUS_DUPLICATED",
-	}
-	TransferStatus_value = map[string]int32{
-		"TRANSFER_STATUS_UNSPECIFIED": 0,
-		"TRANSFER_STATUS_CONFIRMED":   1,
-		"TRANSFER_STATUS_REJECTED":    2,
-		"TRANSFER_STATUS_DUPLICATED":  3,
-	}
-)
-
-func (x TransferStatus) Enum() *TransferStatus {
-	p := new(TransferStatus)
-	*p = x
-	return p
-}
-
-func (x TransferStatus) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (TransferStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_rpc_counter_counter_proto_enumTypes[1].Descriptor()
-}
-
-func (TransferStatus) Type() protoreflect.EnumType {
-	return &file_rpc_counter_counter_proto_enumTypes[1]
-}
-
-func (x TransferStatus) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use TransferStatus.Descriptor instead.
-func (TransferStatus) EnumDescriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{1}
-}
-
 type PlaceOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -443,174 +336,6 @@ func (x *CancelOrderResponse) GetAccepted() bool {
 	return false
 }
 
-type TransferRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	TransferId    string                 `protobuf:"bytes,2,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"` // idempotency key
-	Asset         string                 `protobuf:"bytes,3,opt,name=asset,proto3" json:"asset,omitempty"`
-	Amount        string                 `protobuf:"bytes,4,opt,name=amount,proto3" json:"amount,omitempty"`
-	Type          TransferType           `protobuf:"varint,5,opt,name=type,proto3,enum=opentrade.rpc.counter.TransferType" json:"type,omitempty"`
-	BizRefId      string                 `protobuf:"bytes,6,opt,name=biz_ref_id,json=bizRefId,proto3" json:"biz_ref_id,omitempty"`
-	Memo          string                 `protobuf:"bytes,7,opt,name=memo,proto3" json:"memo,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TransferRequest) Reset() {
-	*x = TransferRequest{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TransferRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TransferRequest) ProtoMessage() {}
-
-func (x *TransferRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TransferRequest.ProtoReflect.Descriptor instead.
-func (*TransferRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *TransferRequest) GetUserId() string {
-	if x != nil {
-		return x.UserId
-	}
-	return ""
-}
-
-func (x *TransferRequest) GetTransferId() string {
-	if x != nil {
-		return x.TransferId
-	}
-	return ""
-}
-
-func (x *TransferRequest) GetAsset() string {
-	if x != nil {
-		return x.Asset
-	}
-	return ""
-}
-
-func (x *TransferRequest) GetAmount() string {
-	if x != nil {
-		return x.Amount
-	}
-	return ""
-}
-
-func (x *TransferRequest) GetType() TransferType {
-	if x != nil {
-		return x.Type
-	}
-	return TransferType_TRANSFER_TYPE_UNSPECIFIED
-}
-
-func (x *TransferRequest) GetBizRefId() string {
-	if x != nil {
-		return x.BizRefId
-	}
-	return ""
-}
-
-func (x *TransferRequest) GetMemo() string {
-	if x != nil {
-		return x.Memo
-	}
-	return ""
-}
-
-type TransferResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	TransferId     string                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
-	Status         TransferStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=opentrade.rpc.counter.TransferStatus" json:"status,omitempty"`
-	RejectReason   string                 `protobuf:"bytes,3,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
-	AvailableAfter string                 `protobuf:"bytes,4,opt,name=available_after,json=availableAfter,proto3" json:"available_after,omitempty"`
-	FrozenAfter    string                 `protobuf:"bytes,5,opt,name=frozen_after,json=frozenAfter,proto3" json:"frozen_after,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *TransferResponse) Reset() {
-	*x = TransferResponse{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TransferResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TransferResponse) ProtoMessage() {}
-
-func (x *TransferResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TransferResponse.ProtoReflect.Descriptor instead.
-func (*TransferResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *TransferResponse) GetTransferId() string {
-	if x != nil {
-		return x.TransferId
-	}
-	return ""
-}
-
-func (x *TransferResponse) GetStatus() TransferStatus {
-	if x != nil {
-		return x.Status
-	}
-	return TransferStatus_TRANSFER_STATUS_UNSPECIFIED
-}
-
-func (x *TransferResponse) GetRejectReason() string {
-	if x != nil {
-		return x.RejectReason
-	}
-	return ""
-}
-
-func (x *TransferResponse) GetAvailableAfter() string {
-	if x != nil {
-		return x.AvailableAfter
-	}
-	return ""
-}
-
-func (x *TransferResponse) GetFrozenAfter() string {
-	if x != nil {
-		return x.FrozenAfter
-	}
-	return ""
-}
-
 type QueryOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -621,7 +346,7 @@ type QueryOrderRequest struct {
 
 func (x *QueryOrderRequest) Reset() {
 	*x = QueryOrderRequest{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[6]
+	mi := &file_rpc_counter_counter_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -633,7 +358,7 @@ func (x *QueryOrderRequest) String() string {
 func (*QueryOrderRequest) ProtoMessage() {}
 
 func (x *QueryOrderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[6]
+	mi := &file_rpc_counter_counter_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -646,7 +371,7 @@ func (x *QueryOrderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryOrderRequest.ProtoReflect.Descriptor instead.
 func (*QueryOrderRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{6}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *QueryOrderRequest) GetUserId() string {
@@ -684,7 +409,7 @@ type QueryOrderResponse struct {
 
 func (x *QueryOrderResponse) Reset() {
 	*x = QueryOrderResponse{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[7]
+	mi := &file_rpc_counter_counter_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -696,7 +421,7 @@ func (x *QueryOrderResponse) String() string {
 func (*QueryOrderResponse) ProtoMessage() {}
 
 func (x *QueryOrderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[7]
+	mi := &file_rpc_counter_counter_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -709,7 +434,7 @@ func (x *QueryOrderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryOrderResponse.ProtoReflect.Descriptor instead.
 func (*QueryOrderResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{7}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *QueryOrderResponse) GetOrderId() uint64 {
@@ -813,7 +538,7 @@ type QueryBalanceRequest struct {
 
 func (x *QueryBalanceRequest) Reset() {
 	*x = QueryBalanceRequest{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[8]
+	mi := &file_rpc_counter_counter_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -825,7 +550,7 @@ func (x *QueryBalanceRequest) String() string {
 func (*QueryBalanceRequest) ProtoMessage() {}
 
 func (x *QueryBalanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[8]
+	mi := &file_rpc_counter_counter_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -838,7 +563,7 @@ func (x *QueryBalanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryBalanceRequest.ProtoReflect.Descriptor instead.
 func (*QueryBalanceRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{8}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *QueryBalanceRequest) GetUserId() string {
@@ -864,7 +589,7 @@ type QueryBalanceResponse struct {
 
 func (x *QueryBalanceResponse) Reset() {
 	*x = QueryBalanceResponse{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[9]
+	mi := &file_rpc_counter_counter_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -876,7 +601,7 @@ func (x *QueryBalanceResponse) String() string {
 func (*QueryBalanceResponse) ProtoMessage() {}
 
 func (x *QueryBalanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[9]
+	mi := &file_rpc_counter_counter_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -889,7 +614,7 @@ func (x *QueryBalanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryBalanceResponse.ProtoReflect.Descriptor instead.
 func (*QueryBalanceResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{9}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *QueryBalanceResponse) GetBalances() []*Balance {
@@ -910,7 +635,7 @@ type Balance struct {
 
 func (x *Balance) Reset() {
 	*x = Balance{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[10]
+	mi := &file_rpc_counter_counter_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -922,7 +647,7 @@ func (x *Balance) String() string {
 func (*Balance) ProtoMessage() {}
 
 func (x *Balance) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[10]
+	mi := &file_rpc_counter_counter_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -935,7 +660,7 @@ func (x *Balance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Balance.ProtoReflect.Descriptor instead.
 func (*Balance) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{10}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Balance) GetAsset() string {
@@ -978,7 +703,7 @@ type ReserveRequest struct {
 
 func (x *ReserveRequest) Reset() {
 	*x = ReserveRequest{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[11]
+	mi := &file_rpc_counter_counter_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -990,7 +715,7 @@ func (x *ReserveRequest) String() string {
 func (*ReserveRequest) ProtoMessage() {}
 
 func (x *ReserveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[11]
+	mi := &file_rpc_counter_counter_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1003,7 +728,7 @@ func (x *ReserveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReserveRequest.ProtoReflect.Descriptor instead.
 func (*ReserveRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{11}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ReserveRequest) GetUserId() string {
@@ -1077,7 +802,7 @@ type ReserveResponse struct {
 
 func (x *ReserveResponse) Reset() {
 	*x = ReserveResponse{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[12]
+	mi := &file_rpc_counter_counter_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1089,7 +814,7 @@ func (x *ReserveResponse) String() string {
 func (*ReserveResponse) ProtoMessage() {}
 
 func (x *ReserveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[12]
+	mi := &file_rpc_counter_counter_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1102,7 +827,7 @@ func (x *ReserveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReserveResponse.ProtoReflect.Descriptor instead.
 func (*ReserveResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{12}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ReserveResponse) GetReservationId() string {
@@ -1143,7 +868,7 @@ type ReleaseReservationRequest struct {
 
 func (x *ReleaseReservationRequest) Reset() {
 	*x = ReleaseReservationRequest{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[13]
+	mi := &file_rpc_counter_counter_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1155,7 +880,7 @@ func (x *ReleaseReservationRequest) String() string {
 func (*ReleaseReservationRequest) ProtoMessage() {}
 
 func (x *ReleaseReservationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[13]
+	mi := &file_rpc_counter_counter_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1168,7 +893,7 @@ func (x *ReleaseReservationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseReservationRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseReservationRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{13}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ReleaseReservationRequest) GetUserId() string {
@@ -1200,7 +925,7 @@ type ReleaseReservationResponse struct {
 
 func (x *ReleaseReservationResponse) Reset() {
 	*x = ReleaseReservationResponse{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[14]
+	mi := &file_rpc_counter_counter_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1212,7 +937,7 @@ func (x *ReleaseReservationResponse) String() string {
 func (*ReleaseReservationResponse) ProtoMessage() {}
 
 func (x *ReleaseReservationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[14]
+	mi := &file_rpc_counter_counter_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1225,7 +950,7 @@ func (x *ReleaseReservationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseReservationResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseReservationResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{14}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ReleaseReservationResponse) GetReservationId() string {
@@ -1271,7 +996,7 @@ type AdminCancelOrdersRequest struct {
 
 func (x *AdminCancelOrdersRequest) Reset() {
 	*x = AdminCancelOrdersRequest{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[15]
+	mi := &file_rpc_counter_counter_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1283,7 +1008,7 @@ func (x *AdminCancelOrdersRequest) String() string {
 func (*AdminCancelOrdersRequest) ProtoMessage() {}
 
 func (x *AdminCancelOrdersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[15]
+	mi := &file_rpc_counter_counter_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1296,7 +1021,7 @@ func (x *AdminCancelOrdersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdminCancelOrdersRequest.ProtoReflect.Descriptor instead.
 func (*AdminCancelOrdersRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{15}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *AdminCancelOrdersRequest) GetUserId() string {
@@ -1334,7 +1059,7 @@ type AdminCancelOrdersResponse struct {
 
 func (x *AdminCancelOrdersResponse) Reset() {
 	*x = AdminCancelOrdersResponse{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[16]
+	mi := &file_rpc_counter_counter_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1346,7 +1071,7 @@ func (x *AdminCancelOrdersResponse) String() string {
 func (*AdminCancelOrdersResponse) ProtoMessage() {}
 
 func (x *AdminCancelOrdersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[16]
+	mi := &file_rpc_counter_counter_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1359,7 +1084,7 @@ func (x *AdminCancelOrdersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdminCancelOrdersResponse.ProtoReflect.Descriptor instead.
 func (*AdminCancelOrdersResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{16}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AdminCancelOrdersResponse) GetCancelled() uint32 {
@@ -1395,7 +1120,7 @@ type CancelMyOrdersRequest struct {
 
 func (x *CancelMyOrdersRequest) Reset() {
 	*x = CancelMyOrdersRequest{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[17]
+	mi := &file_rpc_counter_counter_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1407,7 +1132,7 @@ func (x *CancelMyOrdersRequest) String() string {
 func (*CancelMyOrdersRequest) ProtoMessage() {}
 
 func (x *CancelMyOrdersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[17]
+	mi := &file_rpc_counter_counter_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1420,7 +1145,7 @@ func (x *CancelMyOrdersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelMyOrdersRequest.ProtoReflect.Descriptor instead.
 func (*CancelMyOrdersRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{17}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CancelMyOrdersRequest) GetUserId() string {
@@ -1449,7 +1174,7 @@ type CancelMyOrdersResponse struct {
 
 func (x *CancelMyOrdersResponse) Reset() {
 	*x = CancelMyOrdersResponse{}
-	mi := &file_rpc_counter_counter_proto_msgTypes[18]
+	mi := &file_rpc_counter_counter_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1461,7 +1186,7 @@ func (x *CancelMyOrdersResponse) String() string {
 func (*CancelMyOrdersResponse) ProtoMessage() {}
 
 func (x *CancelMyOrdersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_counter_counter_proto_msgTypes[18]
+	mi := &file_rpc_counter_counter_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1474,7 +1199,7 @@ func (x *CancelMyOrdersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelMyOrdersResponse.ProtoReflect.Descriptor instead.
 func (*CancelMyOrdersResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{18}
+	return file_rpc_counter_counter_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CancelMyOrdersResponse) GetCancelled() uint32 {
@@ -1520,24 +1245,7 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\"L\n" +
 	"\x13CancelOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12\x1a\n" +
-	"\baccepted\x18\x02 \x01(\bR\baccepted\"\xe4\x01\n" +
-	"\x0fTransferRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1f\n" +
-	"\vtransfer_id\x18\x02 \x01(\tR\n" +
-	"transferId\x12\x14\n" +
-	"\x05asset\x18\x03 \x01(\tR\x05asset\x12\x16\n" +
-	"\x06amount\x18\x04 \x01(\tR\x06amount\x127\n" +
-	"\x04type\x18\x05 \x01(\x0e2#.opentrade.rpc.counter.TransferTypeR\x04type\x12\x1c\n" +
-	"\n" +
-	"biz_ref_id\x18\x06 \x01(\tR\bbizRefId\x12\x12\n" +
-	"\x04memo\x18\a \x01(\tR\x04memo\"\xe3\x01\n" +
-	"\x10TransferResponse\x12\x1f\n" +
-	"\vtransfer_id\x18\x01 \x01(\tR\n" +
-	"transferId\x12=\n" +
-	"\x06status\x18\x02 \x01(\x0e2%.opentrade.rpc.counter.TransferStatusR\x06status\x12#\n" +
-	"\rreject_reason\x18\x03 \x01(\tR\frejectReason\x12'\n" +
-	"\x0favailable_after\x18\x04 \x01(\tR\x0eavailableAfter\x12!\n" +
-	"\ffrozen_after\x18\x05 \x01(\tR\vfrozenAfter\"G\n" +
+	"\baccepted\x18\x02 \x01(\bR\baccepted\"G\n" +
 	"\x11QueryOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\"\x83\x04\n" +
@@ -1604,23 +1312,11 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"P\n" +
 	"\x16CancelMyOrdersResponse\x12\x1c\n" +
 	"\tcancelled\x18\x01 \x01(\rR\tcancelled\x12\x18\n" +
-	"\askipped\x18\x02 \x01(\rR\askipped*\x9a\x01\n" +
-	"\fTransferType\x12\x1d\n" +
-	"\x19TRANSFER_TYPE_UNSPECIFIED\x10\x00\x12\x19\n" +
-	"\x15TRANSFER_TYPE_DEPOSIT\x10\x01\x12\x1a\n" +
-	"\x16TRANSFER_TYPE_WITHDRAW\x10\x02\x12\x18\n" +
-	"\x14TRANSFER_TYPE_FREEZE\x10\x03\x12\x1a\n" +
-	"\x16TRANSFER_TYPE_UNFREEZE\x10\x04*\x8e\x01\n" +
-	"\x0eTransferStatus\x12\x1f\n" +
-	"\x1bTRANSFER_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
-	"\x19TRANSFER_STATUS_CONFIRMED\x10\x01\x12\x1c\n" +
-	"\x18TRANSFER_STATUS_REJECTED\x10\x02\x12\x1e\n" +
-	"\x1aTRANSFER_STATUS_DUPLICATED\x10\x032\xbe\a\n" +
+	"\askipped\x18\x02 \x01(\rR\askipped2\xe1\x06\n" +
 	"\x0eCounterService\x12a\n" +
 	"\n" +
 	"PlaceOrder\x12(.opentrade.rpc.counter.PlaceOrderRequest\x1a).opentrade.rpc.counter.PlaceOrderResponse\x12d\n" +
-	"\vCancelOrder\x12).opentrade.rpc.counter.CancelOrderRequest\x1a*.opentrade.rpc.counter.CancelOrderResponse\x12[\n" +
-	"\bTransfer\x12&.opentrade.rpc.counter.TransferRequest\x1a'.opentrade.rpc.counter.TransferResponse\x12a\n" +
+	"\vCancelOrder\x12).opentrade.rpc.counter.CancelOrderRequest\x1a*.opentrade.rpc.counter.CancelOrderResponse\x12a\n" +
 	"\n" +
 	"QueryOrder\x12(.opentrade.rpc.counter.QueryOrderRequest\x1a).opentrade.rpc.counter.QueryOrderResponse\x12g\n" +
 	"\fQueryBalance\x12*.opentrade.rpc.counter.QueryBalanceRequest\x1a+.opentrade.rpc.counter.QueryBalanceResponse\x12X\n" +
@@ -1641,71 +1337,62 @@ func file_rpc_counter_counter_proto_rawDescGZIP() []byte {
 	return file_rpc_counter_counter_proto_rawDescData
 }
 
-var file_rpc_counter_counter_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_rpc_counter_counter_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_rpc_counter_counter_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_rpc_counter_counter_proto_goTypes = []any{
-	(TransferType)(0),                  // 0: opentrade.rpc.counter.TransferType
-	(TransferStatus)(0),                // 1: opentrade.rpc.counter.TransferStatus
-	(*PlaceOrderRequest)(nil),          // 2: opentrade.rpc.counter.PlaceOrderRequest
-	(*PlaceOrderResponse)(nil),         // 3: opentrade.rpc.counter.PlaceOrderResponse
-	(*CancelOrderRequest)(nil),         // 4: opentrade.rpc.counter.CancelOrderRequest
-	(*CancelOrderResponse)(nil),        // 5: opentrade.rpc.counter.CancelOrderResponse
-	(*TransferRequest)(nil),            // 6: opentrade.rpc.counter.TransferRequest
-	(*TransferResponse)(nil),           // 7: opentrade.rpc.counter.TransferResponse
-	(*QueryOrderRequest)(nil),          // 8: opentrade.rpc.counter.QueryOrderRequest
-	(*QueryOrderResponse)(nil),         // 9: opentrade.rpc.counter.QueryOrderResponse
-	(*QueryBalanceRequest)(nil),        // 10: opentrade.rpc.counter.QueryBalanceRequest
-	(*QueryBalanceResponse)(nil),       // 11: opentrade.rpc.counter.QueryBalanceResponse
-	(*Balance)(nil),                    // 12: opentrade.rpc.counter.Balance
-	(*ReserveRequest)(nil),             // 13: opentrade.rpc.counter.ReserveRequest
-	(*ReserveResponse)(nil),            // 14: opentrade.rpc.counter.ReserveResponse
-	(*ReleaseReservationRequest)(nil),  // 15: opentrade.rpc.counter.ReleaseReservationRequest
-	(*ReleaseReservationResponse)(nil), // 16: opentrade.rpc.counter.ReleaseReservationResponse
-	(*AdminCancelOrdersRequest)(nil),   // 17: opentrade.rpc.counter.AdminCancelOrdersRequest
-	(*AdminCancelOrdersResponse)(nil),  // 18: opentrade.rpc.counter.AdminCancelOrdersResponse
-	(*CancelMyOrdersRequest)(nil),      // 19: opentrade.rpc.counter.CancelMyOrdersRequest
-	(*CancelMyOrdersResponse)(nil),     // 20: opentrade.rpc.counter.CancelMyOrdersResponse
-	(event.Side)(0),                    // 21: opentrade.event.Side
-	(event.OrderType)(0),               // 22: opentrade.event.OrderType
-	(event.TimeInForce)(0),             // 23: opentrade.event.TimeInForce
-	(event.InternalOrderStatus)(0),     // 24: opentrade.event.InternalOrderStatus
+	(*PlaceOrderRequest)(nil),          // 0: opentrade.rpc.counter.PlaceOrderRequest
+	(*PlaceOrderResponse)(nil),         // 1: opentrade.rpc.counter.PlaceOrderResponse
+	(*CancelOrderRequest)(nil),         // 2: opentrade.rpc.counter.CancelOrderRequest
+	(*CancelOrderResponse)(nil),        // 3: opentrade.rpc.counter.CancelOrderResponse
+	(*QueryOrderRequest)(nil),          // 4: opentrade.rpc.counter.QueryOrderRequest
+	(*QueryOrderResponse)(nil),         // 5: opentrade.rpc.counter.QueryOrderResponse
+	(*QueryBalanceRequest)(nil),        // 6: opentrade.rpc.counter.QueryBalanceRequest
+	(*QueryBalanceResponse)(nil),       // 7: opentrade.rpc.counter.QueryBalanceResponse
+	(*Balance)(nil),                    // 8: opentrade.rpc.counter.Balance
+	(*ReserveRequest)(nil),             // 9: opentrade.rpc.counter.ReserveRequest
+	(*ReserveResponse)(nil),            // 10: opentrade.rpc.counter.ReserveResponse
+	(*ReleaseReservationRequest)(nil),  // 11: opentrade.rpc.counter.ReleaseReservationRequest
+	(*ReleaseReservationResponse)(nil), // 12: opentrade.rpc.counter.ReleaseReservationResponse
+	(*AdminCancelOrdersRequest)(nil),   // 13: opentrade.rpc.counter.AdminCancelOrdersRequest
+	(*AdminCancelOrdersResponse)(nil),  // 14: opentrade.rpc.counter.AdminCancelOrdersResponse
+	(*CancelMyOrdersRequest)(nil),      // 15: opentrade.rpc.counter.CancelMyOrdersRequest
+	(*CancelMyOrdersResponse)(nil),     // 16: opentrade.rpc.counter.CancelMyOrdersResponse
+	(event.Side)(0),                    // 17: opentrade.event.Side
+	(event.OrderType)(0),               // 18: opentrade.event.OrderType
+	(event.TimeInForce)(0),             // 19: opentrade.event.TimeInForce
+	(event.InternalOrderStatus)(0),     // 20: opentrade.event.InternalOrderStatus
 }
 var file_rpc_counter_counter_proto_depIdxs = []int32{
-	21, // 0: opentrade.rpc.counter.PlaceOrderRequest.side:type_name -> opentrade.event.Side
-	22, // 1: opentrade.rpc.counter.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
-	23, // 2: opentrade.rpc.counter.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
-	0,  // 3: opentrade.rpc.counter.TransferRequest.type:type_name -> opentrade.rpc.counter.TransferType
-	1,  // 4: opentrade.rpc.counter.TransferResponse.status:type_name -> opentrade.rpc.counter.TransferStatus
-	21, // 5: opentrade.rpc.counter.QueryOrderResponse.side:type_name -> opentrade.event.Side
-	22, // 6: opentrade.rpc.counter.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
-	23, // 7: opentrade.rpc.counter.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
-	24, // 8: opentrade.rpc.counter.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
-	12, // 9: opentrade.rpc.counter.QueryBalanceResponse.balances:type_name -> opentrade.rpc.counter.Balance
-	21, // 10: opentrade.rpc.counter.ReserveRequest.side:type_name -> opentrade.event.Side
-	22, // 11: opentrade.rpc.counter.ReserveRequest.order_type:type_name -> opentrade.event.OrderType
-	2,  // 12: opentrade.rpc.counter.CounterService.PlaceOrder:input_type -> opentrade.rpc.counter.PlaceOrderRequest
-	4,  // 13: opentrade.rpc.counter.CounterService.CancelOrder:input_type -> opentrade.rpc.counter.CancelOrderRequest
-	6,  // 14: opentrade.rpc.counter.CounterService.Transfer:input_type -> opentrade.rpc.counter.TransferRequest
-	8,  // 15: opentrade.rpc.counter.CounterService.QueryOrder:input_type -> opentrade.rpc.counter.QueryOrderRequest
-	10, // 16: opentrade.rpc.counter.CounterService.QueryBalance:input_type -> opentrade.rpc.counter.QueryBalanceRequest
-	13, // 17: opentrade.rpc.counter.CounterService.Reserve:input_type -> opentrade.rpc.counter.ReserveRequest
-	15, // 18: opentrade.rpc.counter.CounterService.ReleaseReservation:input_type -> opentrade.rpc.counter.ReleaseReservationRequest
-	17, // 19: opentrade.rpc.counter.CounterService.AdminCancelOrders:input_type -> opentrade.rpc.counter.AdminCancelOrdersRequest
-	19, // 20: opentrade.rpc.counter.CounterService.CancelMyOrders:input_type -> opentrade.rpc.counter.CancelMyOrdersRequest
-	3,  // 21: opentrade.rpc.counter.CounterService.PlaceOrder:output_type -> opentrade.rpc.counter.PlaceOrderResponse
-	5,  // 22: opentrade.rpc.counter.CounterService.CancelOrder:output_type -> opentrade.rpc.counter.CancelOrderResponse
-	7,  // 23: opentrade.rpc.counter.CounterService.Transfer:output_type -> opentrade.rpc.counter.TransferResponse
-	9,  // 24: opentrade.rpc.counter.CounterService.QueryOrder:output_type -> opentrade.rpc.counter.QueryOrderResponse
-	11, // 25: opentrade.rpc.counter.CounterService.QueryBalance:output_type -> opentrade.rpc.counter.QueryBalanceResponse
-	14, // 26: opentrade.rpc.counter.CounterService.Reserve:output_type -> opentrade.rpc.counter.ReserveResponse
-	16, // 27: opentrade.rpc.counter.CounterService.ReleaseReservation:output_type -> opentrade.rpc.counter.ReleaseReservationResponse
-	18, // 28: opentrade.rpc.counter.CounterService.AdminCancelOrders:output_type -> opentrade.rpc.counter.AdminCancelOrdersResponse
-	20, // 29: opentrade.rpc.counter.CounterService.CancelMyOrders:output_type -> opentrade.rpc.counter.CancelMyOrdersResponse
-	21, // [21:30] is the sub-list for method output_type
-	12, // [12:21] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	17, // 0: opentrade.rpc.counter.PlaceOrderRequest.side:type_name -> opentrade.event.Side
+	18, // 1: opentrade.rpc.counter.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
+	19, // 2: opentrade.rpc.counter.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
+	17, // 3: opentrade.rpc.counter.QueryOrderResponse.side:type_name -> opentrade.event.Side
+	18, // 4: opentrade.rpc.counter.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
+	19, // 5: opentrade.rpc.counter.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
+	20, // 6: opentrade.rpc.counter.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
+	8,  // 7: opentrade.rpc.counter.QueryBalanceResponse.balances:type_name -> opentrade.rpc.counter.Balance
+	17, // 8: opentrade.rpc.counter.ReserveRequest.side:type_name -> opentrade.event.Side
+	18, // 9: opentrade.rpc.counter.ReserveRequest.order_type:type_name -> opentrade.event.OrderType
+	0,  // 10: opentrade.rpc.counter.CounterService.PlaceOrder:input_type -> opentrade.rpc.counter.PlaceOrderRequest
+	2,  // 11: opentrade.rpc.counter.CounterService.CancelOrder:input_type -> opentrade.rpc.counter.CancelOrderRequest
+	4,  // 12: opentrade.rpc.counter.CounterService.QueryOrder:input_type -> opentrade.rpc.counter.QueryOrderRequest
+	6,  // 13: opentrade.rpc.counter.CounterService.QueryBalance:input_type -> opentrade.rpc.counter.QueryBalanceRequest
+	9,  // 14: opentrade.rpc.counter.CounterService.Reserve:input_type -> opentrade.rpc.counter.ReserveRequest
+	11, // 15: opentrade.rpc.counter.CounterService.ReleaseReservation:input_type -> opentrade.rpc.counter.ReleaseReservationRequest
+	13, // 16: opentrade.rpc.counter.CounterService.AdminCancelOrders:input_type -> opentrade.rpc.counter.AdminCancelOrdersRequest
+	15, // 17: opentrade.rpc.counter.CounterService.CancelMyOrders:input_type -> opentrade.rpc.counter.CancelMyOrdersRequest
+	1,  // 18: opentrade.rpc.counter.CounterService.PlaceOrder:output_type -> opentrade.rpc.counter.PlaceOrderResponse
+	3,  // 19: opentrade.rpc.counter.CounterService.CancelOrder:output_type -> opentrade.rpc.counter.CancelOrderResponse
+	5,  // 20: opentrade.rpc.counter.CounterService.QueryOrder:output_type -> opentrade.rpc.counter.QueryOrderResponse
+	7,  // 21: opentrade.rpc.counter.CounterService.QueryBalance:output_type -> opentrade.rpc.counter.QueryBalanceResponse
+	10, // 22: opentrade.rpc.counter.CounterService.Reserve:output_type -> opentrade.rpc.counter.ReserveResponse
+	12, // 23: opentrade.rpc.counter.CounterService.ReleaseReservation:output_type -> opentrade.rpc.counter.ReleaseReservationResponse
+	14, // 24: opentrade.rpc.counter.CounterService.AdminCancelOrders:output_type -> opentrade.rpc.counter.AdminCancelOrdersResponse
+	16, // 25: opentrade.rpc.counter.CounterService.CancelMyOrders:output_type -> opentrade.rpc.counter.CancelMyOrdersResponse
+	18, // [18:26] is the sub-list for method output_type
+	10, // [10:18] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_rpc_counter_counter_proto_init() }
@@ -1718,14 +1405,13 @@ func file_rpc_counter_counter_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_counter_counter_proto_rawDesc), len(file_rpc_counter_counter_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   19,
+			NumEnums:      0,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_rpc_counter_counter_proto_goTypes,
 		DependencyIndexes: file_rpc_counter_counter_proto_depIdxs,
-		EnumInfos:         file_rpc_counter_counter_proto_enumTypes,
 		MessageInfos:      file_rpc_counter_counter_proto_msgTypes,
 	}.Build()
 	File_rpc_counter_counter_proto = out.File

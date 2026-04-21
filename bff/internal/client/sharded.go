@@ -63,11 +63,6 @@ func (s *ShardedCounter) QueryOrder(ctx context.Context, in *counterrpc.QueryOrd
 	return s.pick(in.UserId).QueryOrder(ctx, in, opts...)
 }
 
-// Transfer dispatches to the user's shard.
-func (s *ShardedCounter) Transfer(ctx context.Context, in *counterrpc.TransferRequest, opts ...grpc.CallOption) (*counterrpc.TransferResponse, error) {
-	return s.pick(in.UserId).Transfer(ctx, in, opts...)
-}
-
 // QueryBalance dispatches to the user's shard.
 func (s *ShardedCounter) QueryBalance(ctx context.Context, in *counterrpc.QueryBalanceRequest, opts ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error) {
 	return s.pick(in.UserId).QueryBalance(ctx, in, opts...)

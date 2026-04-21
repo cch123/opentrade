@@ -67,6 +67,11 @@ type Config struct {
 	// /v1/orders, /v1/trades, /v1/account-logs endpoints with 503.
 	HistoryAddr string
 
+	// Asset service endpoint (ADR-0057). Empty disables the
+	// /v1/transfer, /v1/transfer/{id}, /v1/funding-balance endpoints
+	// with 503.
+	AssetAddr string
+
 	Env               string
 	LogLevel          string
 }
@@ -144,6 +149,16 @@ func main() {
 		}
 	}()
 
+	assetConn, assetClient, err := maybeDialAsset(rootCtx, cfg.AssetAddr, logger)
+	if err != nil {
+		logger.Fatal("dial asset", zap.Error(err))
+	}
+	defer func() {
+		if assetConn != nil {
+			_ = assetConn.Close()
+		}
+	}()
+
 	srv := rest.NewServer(rest.Config{
 		Addr:           cfg.HTTPAddr,
 		UserRateLimit:  cfg.UserRateLimit,
@@ -151,7 +166,7 @@ func main() {
 		IPRateLimit:    cfg.IPRateLimit,
 		IPRateWindow:   cfg.IPRateWindow,
 		AuthMiddleware: authMW,
-	}, counter, mdCache, condClient, histClient, logger)
+	}, counter, assetClient, mdCache, condClient, histClient, logger)
 
 	outer := http.NewServeMux()
 	if cfg.PushWSURL != "" {
@@ -234,6 +249,22 @@ func maybeDialHistory(ctx context.Context, addr string, logger *zap.Logger) (*gr
 		return nil, nil, fmt.Errorf("history dial %s: %w", addr, err)
 	}
 	logger.Info("history endpoint configured", zap.String("addr", addr))
+	return conn, c, nil
+}
+
+// maybeDialAsset dials the asset service when addr is set. Returns
+// (nil, nil, nil) when disabled; the REST layer then 503s on the
+// ADR-0057 endpoints (/v1/transfer, /v1/funding-balance, ...).
+func maybeDialAsset(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.Asset, error) {
+	if addr == "" {
+		logger.Info("asset endpoint disabled (empty --asset)")
+		return nil, nil, nil
+	}
+	conn, c, err := client.DialAsset(ctx, addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("asset dial %s: %w", addr, err)
+	}
+	logger.Info("asset endpoint configured", zap.String("addr", addr))
 	return conn, c, nil
 }
 
@@ -357,6 +388,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.APIKeysFile, "api-keys-file", "", "JSON file listing {key,secret,user_id} entries for --auth-mode=api-key|mixed")
 	flag.StringVar(&cfg.ConditionalAddr, "conditional", "", "Conditional service gRPC endpoint (empty disables /v1/conditional; ADR-0040)")
 	flag.StringVar(&cfg.HistoryAddr, "history", "", "History service gRPC endpoint (empty disables /v1/orders,/v1/trades,/v1/account-logs; ADR-0046)")
+	flag.StringVar(&cfg.AssetAddr, "asset", "", "Asset service gRPC endpoint (empty disables /v1/transfer,/v1/funding-balance; ADR-0057)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	flag.Parse()

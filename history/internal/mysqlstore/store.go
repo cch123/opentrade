@@ -576,6 +576,146 @@ func (s *Store) ListConditionals(ctx context.Context, f ConditionalsFilter, rawC
 }
 
 // ---------------------------------------------------------------------------
+// GetTransfer
+// ---------------------------------------------------------------------------
+
+// GetTransfer returns one transfer row by transfer_id, scoped to
+// userID. Returns ErrNotFound when the row does not exist or belongs to
+// another user — same policy as GetOrder.
+func (s *Store) GetTransfer(ctx context.Context, userID string, transferID string) (*historypb.Transfer, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+
+	const q = `
+		SELECT transfer_id, user_id, from_biz, to_biz, asset,
+		       CAST(amount AS CHAR),
+		       state, reject_reason,
+		       created_at_ms, updated_at_ms
+		FROM transfers WHERE transfer_id = ? AND user_id = ? LIMIT 1`
+	row := s.db.QueryRowContext(ctx, q, transferID, userID)
+	t, err := scanTransfer(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return t, nil
+}
+
+// ---------------------------------------------------------------------------
+// ListTransfers
+// ---------------------------------------------------------------------------
+
+// TransfersFilter is the decoded ListTransfersRequest for the store.
+// States carries raw transferledger.State strings; empty = no state
+// filter applied.
+type TransfersFilter struct {
+	UserID   string
+	FromBiz  string
+	ToBiz    string
+	Asset    string
+	States   []string
+	SinceMs  int64
+	UntilMs  int64
+}
+
+// ListTransfers pages a user's saga rows newest-first by created_at_ms.
+// Follows the same over-fetch-by-one-to-detect-next convention as
+// ListOrders / ListConditionals.
+func (s *Store) ListTransfers(ctx context.Context, f TransfersFilter, rawCursor string, limit int) ([]*historypb.Transfer, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+
+	limit = clampLimit(limit)
+
+	var cur cursor.TransfersCursor
+	if err := cursor.Decode(rawCursor, &cur); err != nil {
+		return nil, "", err
+	}
+
+	conds := []string{"user_id = ?"}
+	args := []any{f.UserID}
+	if f.FromBiz != "" {
+		conds = append(conds, "from_biz = ?")
+		args = append(args, f.FromBiz)
+	}
+	if f.ToBiz != "" {
+		conds = append(conds, "to_biz = ?")
+		args = append(args, f.ToBiz)
+	}
+	if f.Asset != "" {
+		conds = append(conds, "asset = ?")
+		args = append(args, f.Asset)
+	}
+	if len(f.States) > 0 {
+		placeholders := make([]string, len(f.States))
+		for i, st := range f.States {
+			placeholders[i] = "?"
+			args = append(args, st)
+		}
+		conds = append(conds, "state IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if f.SinceMs > 0 {
+		conds = append(conds, "created_at_ms >= ?")
+		args = append(args, f.SinceMs)
+	}
+	if f.UntilMs > 0 {
+		conds = append(conds, "created_at_ms < ?")
+		args = append(args, f.UntilMs)
+	}
+	if rawCursor != "" {
+		conds = append(conds,
+			"(created_at_ms < ? OR (created_at_ms = ? AND transfer_id < ?))")
+		args = append(args, cur.CreatedAt, cur.CreatedAt, cur.TransferID)
+	}
+
+	q := `
+		SELECT transfer_id, user_id, from_biz, to_biz, asset,
+		       CAST(amount AS CHAR),
+		       state, reject_reason,
+		       created_at_ms, updated_at_ms
+		FROM transfers
+		WHERE ` + strings.Join(conds, " AND ") + `
+		ORDER BY created_at_ms DESC, transfer_id DESC
+		LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	var out []*historypb.Transfer
+	for rows.Next() {
+		t, err := scanTransfer(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		out = out[:limit]
+		c, err := cursor.Encode(cursor.TransfersCursor{
+			CreatedAt:  last.CreatedAtUnixMs,
+			TransferID: last.TransferId,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		next = c
+	}
+	return out, next, nil
+}
+
+// ---------------------------------------------------------------------------
 // scan helpers — tolerant of both *sql.Row and *sql.Rows via the Scanner
 // ---------------------------------------------------------------------------
 
@@ -665,6 +805,19 @@ func scanAccountLog(r rowScanner) (*historypb.AccountLog, error) {
 		return nil, err
 	}
 	return &l, nil
+}
+
+func scanTransfer(r rowScanner) (*historypb.Transfer, error) {
+	var t historypb.Transfer
+	if err := r.Scan(
+		&t.TransferId, &t.UserId, &t.FromBiz, &t.ToBiz, &t.Asset,
+		&t.Amount,
+		&t.State, &t.RejectReason,
+		&t.CreatedAtUnixMs, &t.UpdatedAtUnixMs,
+	); err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 func clampLimit(n int) int {

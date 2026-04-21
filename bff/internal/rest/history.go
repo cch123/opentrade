@@ -307,3 +307,125 @@ func accountLogToJSON(l *historypb.AccountLog) map[string]any {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GET /v1/transfers  (history / projection)
+// GET /v1/transfers/{transfer_id}  (single row)
+//
+// These are historical views. For in-flight saga polling use GET
+// /v1/transfer/{transfer_id} which reads asset-service.transfer_ledger
+// directly (ADR-0057 M4).
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleListTransfers(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeError(w, http.StatusServiceUnavailable, "history service not configured")
+		return
+	}
+	userID, err := auth.UserID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	scope, err := parseTransferScope(q.Get("scope"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	states := splitCSVParam(q.Get("state"))
+	req := &historypb.ListTransfersRequest{
+		UserId:  userID,
+		FromBiz: q.Get("from_biz"),
+		ToBiz:   q.Get("to_biz"),
+		Asset:   q.Get("asset"),
+		Scope:   scope,
+		States:  states,
+		SinceMs: parseInt64Query(q.Get("since_ms")),
+		UntilMs: parseInt64Query(q.Get("until_ms")),
+		Cursor:  q.Get("cursor"),
+		Limit:   parseInt32Query(q.Get("limit")),
+	}
+	resp, err := s.history.ListTransfers(r.Context(), req)
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(resp.Transfers))
+	for _, t := range resp.Transfers {
+		out = append(out, historyTransferToJSON(t))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"transfers":   out,
+		"next_cursor": resp.NextCursor,
+	})
+}
+
+func (s *Server) handleGetHistoryTransfer(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeError(w, http.StatusServiceUnavailable, "history service not configured")
+		return
+	}
+	userID, err := auth.UserID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	id := r.PathValue("transfer_id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "transfer_id required")
+		return
+	}
+	resp, err := s.history.GetTransfer(r.Context(), &historypb.GetTransferRequest{
+		UserId:     userID,
+		TransferId: id,
+	})
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, historyTransferToJSON(resp.Transfer))
+}
+
+func parseTransferScope(s string) (historypb.TransferScope, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "all":
+		return historypb.TransferScope_TRANSFER_SCOPE_ALL, nil
+	case "in_flight", "in-flight", "inflight", "pending":
+		return historypb.TransferScope_TRANSFER_SCOPE_IN_FLIGHT, nil
+	case "terminal", "done", "final":
+		return historypb.TransferScope_TRANSFER_SCOPE_TERMINAL, nil
+	}
+	return historypb.TransferScope_TRANSFER_SCOPE_UNSPECIFIED, badRequest("scope", s)
+}
+
+func splitCSVParam(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func historyTransferToJSON(t *historypb.Transfer) map[string]any {
+	return map[string]any{
+		"transfer_id":        t.TransferId,
+		"user_id":            t.UserId,
+		"from_biz":           t.FromBiz,
+		"to_biz":             t.ToBiz,
+		"asset":              t.Asset,
+		"amount":             t.Amount,
+		"state":              t.State,
+		"reject_reason":      t.RejectReason,
+		"created_at_unix_ms": t.CreatedAtUnixMs,
+		"updated_at_unix_ms": t.UpdatedAtUnixMs,
+	}
+}
+

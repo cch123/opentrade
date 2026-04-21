@@ -41,60 +41,22 @@ func newServer(t *testing.T) *Server {
 	return New(svc, zap.NewNop())
 }
 
-func TestTransferRoundTrip(t *testing.T) {
+// Counter's round-trip transfer handler was removed in ADR-0057 M4; its
+// coverage lives in asset/internal/server/server_test.go (end-to-end via
+// AssetHolder) and counter/internal/server/assetholder_test.go (holder
+// surface — idempotency, reject mapping, wrong shard). Only QueryBalance
+// round-trips through the Counter gRPC server directly now:
+
+func TestQueryBalanceReturnsZeroForUnknownAsset(t *testing.T) {
 	s := newServer(t)
-
-	resp, err := s.Transfer(context.Background(), &counterrpc.TransferRequest{
-		UserId: "u1", TransferId: "tx-1", Asset: "USDT",
-		Amount: "100", Type: counterrpc.TransferType_TRANSFER_TYPE_DEPOSIT,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Status != counterrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
-		t.Fatalf("status = %v", resp.Status)
-	}
-	if resp.AvailableAfter != "100" {
-		t.Fatalf("available_after = %q", resp.AvailableAfter)
-	}
-
-	// Query the balance via the server.
-	q, err := s.QueryBalance(context.Background(), &counterrpc.QueryBalanceRequest{
+	resp, err := s.QueryBalance(context.Background(), &counterrpc.QueryBalanceRequest{
 		UserId: "u1", Asset: "USDT",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(q.Balances) != 1 || q.Balances[0].Available != "100" {
-		t.Fatalf("query = %+v", q.Balances)
-	}
-}
-
-func TestTransferInvalidAmount(t *testing.T) {
-	s := newServer(t)
-	_, err := s.Transfer(context.Background(), &counterrpc.TransferRequest{
-		UserId: "u1", TransferId: "tx-1", Asset: "USDT",
-		Amount: "not-a-number", Type: counterrpc.TransferType_TRANSFER_TYPE_DEPOSIT,
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %s, want InvalidArgument", status.Code(err))
-	}
-}
-
-func TestTransferInvalidType(t *testing.T) {
-	s := newServer(t)
-	_, err := s.Transfer(context.Background(), &counterrpc.TransferRequest{
-		UserId: "u1", TransferId: "tx-1", Asset: "USDT",
-		Amount: "1", Type: counterrpc.TransferType_TRANSFER_TYPE_UNSPECIFIED,
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %s", status.Code(err))
+	if len(resp.Balances) != 1 || resp.Balances[0].Available != "0" {
+		t.Fatalf("balance = %+v", resp.Balances)
 	}
 }
 

@@ -90,22 +90,6 @@ func (s *Server) QueryOrder(_ context.Context, req *counterrpc.QueryOrderRequest
 	return orderToProto(o), nil
 }
 
-// Transfer implements CounterService.Transfer.
-func (s *Server) Transfer(ctx context.Context, req *counterrpc.TransferRequest) (*counterrpc.TransferResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
-	}
-	internalReq, err := transferRequestFromProto(req)
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	res, err := s.svc.Transfer(ctx, internalReq)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-	return transferResponseToProto(res), nil
-}
-
 // QueryBalance implements CounterService.QueryBalance. If Asset is empty,
 // returns all assets for the user.
 func (s *Server) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceRequest) (*counterrpc.QueryBalanceResponse, error) {
@@ -142,64 +126,6 @@ func (s *Server) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceReq
 // ---------------------------------------------------------------------------
 // proto <-> internal helpers
 // ---------------------------------------------------------------------------
-
-func transferRequestFromProto(req *counterrpc.TransferRequest) (engine.TransferRequest, error) {
-	amount, err := dec.Parse(req.Amount)
-	if err != nil {
-		return engine.TransferRequest{}, fmt.Errorf("invalid amount %q: %w", req.Amount, err)
-	}
-	t, err := transferTypeFromProto(req.Type)
-	if err != nil {
-		return engine.TransferRequest{}, err
-	}
-	return engine.TransferRequest{
-		TransferID: req.TransferId,
-		UserID:     req.UserId,
-		Asset:      req.Asset,
-		Amount:     amount,
-		Type:       t,
-		BizRefID:   req.BizRefId,
-		Memo:       req.Memo,
-	}, nil
-}
-
-func transferTypeFromProto(t counterrpc.TransferType) (engine.TransferType, error) {
-	switch t {
-	case counterrpc.TransferType_TRANSFER_TYPE_DEPOSIT:
-		return engine.TransferDeposit, nil
-	case counterrpc.TransferType_TRANSFER_TYPE_WITHDRAW:
-		return engine.TransferWithdraw, nil
-	case counterrpc.TransferType_TRANSFER_TYPE_FREEZE:
-		return engine.TransferFreeze, nil
-	case counterrpc.TransferType_TRANSFER_TYPE_UNFREEZE:
-		return engine.TransferUnfreeze, nil
-	default:
-		return 0, fmt.Errorf("invalid transfer type: %v", t)
-	}
-}
-
-func transferResponseToProto(res *engine.TransferResult) *counterrpc.TransferResponse {
-	return &counterrpc.TransferResponse{
-		TransferId:     res.TransferID,
-		Status:         transferStatusToProto(res.Status),
-		RejectReason:   res.RejectReason,
-		AvailableAfter: res.BalanceAfter.Available.String(),
-		FrozenAfter:    res.BalanceAfter.Frozen.String(),
-	}
-}
-
-func transferStatusToProto(s engine.TransferStatus) counterrpc.TransferStatus {
-	switch s {
-	case engine.TransferStatusConfirmed:
-		return counterrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED
-	case engine.TransferStatusRejected:
-		return counterrpc.TransferStatus_TRANSFER_STATUS_REJECTED
-	case engine.TransferStatusDuplicated:
-		return counterrpc.TransferStatus_TRANSFER_STATUS_DUPLICATED
-	default:
-		return counterrpc.TransferStatus_TRANSFER_STATUS_UNSPECIFIED
-	}
-}
 
 // mapServiceError converts service-layer errors to gRPC status codes.
 func mapServiceError(err error) error {

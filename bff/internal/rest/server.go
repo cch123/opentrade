@@ -35,6 +35,7 @@ type Config struct {
 type Server struct {
 	cfg         Config
 	counter     client.Counter
+	asset       client.Asset
 	conditional client.Conditional
 	history     client.History
 	market      *marketcache.Cache
@@ -45,13 +46,14 @@ type Server struct {
 }
 
 // NewServer wires handlers. counter may be nil during tests that substitute
-// a fake via a dedicated helper. market, conditional and history are
-// optional: nil disables their endpoints with 503 (ADR-0038 / ADR-0040 /
-// ADR-0046).
-func NewServer(cfg Config, counter client.Counter, market *marketcache.Cache, conditional client.Conditional, history client.History, logger *zap.Logger) *Server {
+// a fake via a dedicated helper. market, conditional, history and asset
+// are optional: nil disables their endpoints with 503 (ADR-0038 /
+// ADR-0040 / ADR-0046 / ADR-0057).
+func NewServer(cfg Config, counter client.Counter, asset client.Asset, market *marketcache.Cache, conditional client.Conditional, history client.History, logger *zap.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		counter:     counter,
+		asset:       asset,
 		conditional: conditional,
 		history:     history,
 		market:      market,
@@ -69,6 +71,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/orders", s.handleCancelMyOrders)
 	mux.HandleFunc("GET /v1/order/{order_id}", s.handleQueryOrder)
 	mux.HandleFunc("POST /v1/transfer", s.handleTransfer)
+	mux.HandleFunc("GET /v1/transfer/{transfer_id}", s.handleQueryTransfer)
+	mux.HandleFunc("GET /v1/funding-balance", s.handleQueryFundingBalance)
 	mux.HandleFunc("GET /v1/account", s.handleQueryBalance)
 	mux.HandleFunc("GET /v1/depth/{symbol}", s.handleDepthSnapshot)
 	mux.HandleFunc("GET /v1/klines/{symbol}", s.handleKlinesRecent)
@@ -80,6 +84,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/orders", s.handleListOrders)
 	mux.HandleFunc("GET /v1/trades", s.handleListTrades)
 	mux.HandleFunc("GET /v1/account-logs", s.handleListAccountLogs)
+	mux.HandleFunc("GET /v1/transfers", s.handleListTransfers)
+	mux.HandleFunc("GET /v1/transfers/{transfer_id}", s.handleGetHistoryTransfer)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

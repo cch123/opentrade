@@ -8,7 +8,13 @@ option go_package = "github.com/xargin/opentrade/api/gen/rpc/counter;counterrpc"
 
 // -----------------------------------------------------------------------------
 // Counter gRPC service. Called by BFF (PlaceOrder / Cancel / Query) and by
-// privileged internal services (Transfer).
+// the asset-service saga orchestrator (AssetHolder contract defined in
+// api/rpc/assetholder/assetholder.proto — ADR-0057 §3).
+//
+// Historical note: ADR-0011's `Transfer` RPC was removed as part of ADR-0057
+// M4. All user-facing fund movement now flows through asset-service; system-
+// level deposit / withdraw / admin top-up is covered by ADR-0057 "Open
+// Questions" and has no rpc surface here yet.
 // -----------------------------------------------------------------------------
 
 service CounterService {
@@ -21,10 +27,6 @@ service CounterService {
   // returns once the cancel has been forwarded to Match; the final cancel
   // confirmation is asynchronous.
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
-
-  // Transfer is the unified entrypoint for non-trading asset movements
-  // (deposit / withdraw / freeze / unfreeze). See ADR-0011.
-  rpc Transfer(TransferRequest) returns (TransferResponse);
 
   // Query an order by id (returns internal status; callers may project to
   // external status). Returns NOT_FOUND if the order does not exist on this
@@ -121,43 +123,6 @@ message CancelOrderResponse {
   // True if the cancel was forwarded to Match. The final CANCELED/FILLED
   // result arrives asynchronously.
   bool accepted = 2;
-}
-
-// -----------------------------------------------------------------------------
-// Transfer
-// -----------------------------------------------------------------------------
-
-enum TransferType {
-  TRANSFER_TYPE_UNSPECIFIED = 0;
-  TRANSFER_TYPE_DEPOSIT = 1;
-  TRANSFER_TYPE_WITHDRAW = 2;
-  TRANSFER_TYPE_FREEZE = 3;
-  TRANSFER_TYPE_UNFREEZE = 4;
-}
-
-enum TransferStatus {
-  TRANSFER_STATUS_UNSPECIFIED = 0;
-  TRANSFER_STATUS_CONFIRMED = 1;
-  TRANSFER_STATUS_REJECTED = 2;
-  TRANSFER_STATUS_DUPLICATED = 3; // dedup hit; result cached
-}
-
-message TransferRequest {
-  string user_id = 1;
-  string transfer_id = 2;  // idempotency key
-  string asset = 3;
-  string amount = 4;
-  TransferType type = 5;
-  string biz_ref_id = 6;
-  string memo = 7;
-}
-
-message TransferResponse {
-  string transfer_id = 1;
-  TransferStatus status = 2;
-  string reject_reason = 3;
-  string available_after = 4;
-  string frozen_after = 5;
 }
 
 // -----------------------------------------------------------------------------

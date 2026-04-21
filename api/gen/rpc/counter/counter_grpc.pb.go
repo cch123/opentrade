@@ -21,7 +21,6 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	CounterService_PlaceOrder_FullMethodName         = "/opentrade.rpc.counter.CounterService/PlaceOrder"
 	CounterService_CancelOrder_FullMethodName        = "/opentrade.rpc.counter.CounterService/CancelOrder"
-	CounterService_Transfer_FullMethodName           = "/opentrade.rpc.counter.CounterService/Transfer"
 	CounterService_QueryOrder_FullMethodName         = "/opentrade.rpc.counter.CounterService/QueryOrder"
 	CounterService_QueryBalance_FullMethodName       = "/opentrade.rpc.counter.CounterService/QueryBalance"
 	CounterService_Reserve_FullMethodName            = "/opentrade.rpc.counter.CounterService/Reserve"
@@ -42,9 +41,6 @@ type CounterServiceClient interface {
 	// returns once the cancel has been forwarded to Match; the final cancel
 	// confirmation is asynchronous.
 	CancelOrder(ctx context.Context, in *CancelOrderRequest, opts ...grpc.CallOption) (*CancelOrderResponse, error)
-	// Transfer is the unified entrypoint for non-trading asset movements
-	// (deposit / withdraw / freeze / unfreeze). See ADR-0011.
-	Transfer(ctx context.Context, in *TransferRequest, opts ...grpc.CallOption) (*TransferResponse, error)
 	// Query an order by id (returns internal status; callers may project to
 	// external status). Returns NOT_FOUND if the order does not exist on this
 	// shard.
@@ -106,16 +102,6 @@ func (c *counterServiceClient) CancelOrder(ctx context.Context, in *CancelOrderR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CancelOrderResponse)
 	err := c.cc.Invoke(ctx, CounterService_CancelOrder_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *counterServiceClient) Transfer(ctx context.Context, in *TransferRequest, opts ...grpc.CallOption) (*TransferResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TransferResponse)
-	err := c.cc.Invoke(ctx, CounterService_Transfer_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -194,9 +180,6 @@ type CounterServiceServer interface {
 	// returns once the cancel has been forwarded to Match; the final cancel
 	// confirmation is asynchronous.
 	CancelOrder(context.Context, *CancelOrderRequest) (*CancelOrderResponse, error)
-	// Transfer is the unified entrypoint for non-trading asset movements
-	// (deposit / withdraw / freeze / unfreeze). See ADR-0011.
-	Transfer(context.Context, *TransferRequest) (*TransferResponse, error)
 	// Query an order by id (returns internal status; callers may project to
 	// external status). Returns NOT_FOUND if the order does not exist on this
 	// shard.
@@ -249,9 +232,6 @@ func (UnimplementedCounterServiceServer) PlaceOrder(context.Context, *PlaceOrder
 }
 func (UnimplementedCounterServiceServer) CancelOrder(context.Context, *CancelOrderRequest) (*CancelOrderResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelOrder not implemented")
-}
-func (UnimplementedCounterServiceServer) Transfer(context.Context, *TransferRequest) (*TransferResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Transfer not implemented")
 }
 func (UnimplementedCounterServiceServer) QueryOrder(context.Context, *QueryOrderRequest) (*QueryOrderResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryOrder not implemented")
@@ -324,24 +304,6 @@ func _CounterService_CancelOrder_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CounterServiceServer).CancelOrder(ctx, req.(*CancelOrderRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CounterService_Transfer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(TransferRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CounterServiceServer).Transfer(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CounterService_Transfer_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CounterServiceServer).Transfer(ctx, req.(*TransferRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -468,10 +430,6 @@ var CounterService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CancelOrder",
 			Handler:    _CounterService_CancelOrder_Handler,
-		},
-		{
-			MethodName: "Transfer",
-			Handler:    _CounterService_Transfer_Handler,
 		},
 		{
 			MethodName: "QueryOrder",

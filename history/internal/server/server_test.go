@@ -46,6 +46,60 @@ func TestGetOrder_NotFoundMapsToCode(t *testing.T) {
 	}
 }
 
+func TestGetTransfer_NotFoundAndInvalidArgs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	s := New(mysqlstore.NewStoreWithDB(db, time.Second))
+
+	if _, err := s.GetTransfer(context.Background(), &historypb.GetTransferRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("empty user_id: got %v", err)
+	}
+	if _, err := s.GetTransfer(context.Background(), &historypb.GetTransferRequest{UserId: "u1"}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("empty transfer_id: got %v", err)
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM transfers WHERE transfer_id = ? AND user_id = ?")).
+		WithArgs("missing", "u1").
+		WillReturnRows(sqlmock.NewRows(nil))
+	_, err = s.GetTransfer(context.Background(), &historypb.GetTransferRequest{UserId: "u1", TransferId: "missing"})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("code = %v want NotFound", status.Code(err))
+	}
+}
+
+func TestListTransfers_ScopeFoldsToStates(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	s := New(mysqlstore.NewStoreWithDB(db, time.Second))
+
+	// IN_FLIGHT scope expands to 3 states — expect 3 placeholders in the
+	// IN clause.
+	cols := []string{
+		"transfer_id", "user_id", "from_biz", "to_biz", "asset",
+		"amount", "state", "reject_reason",
+		"created_at_ms", "updated_at_ms",
+	}
+	mock.ExpectQuery(`state IN \(\?,\?,\?\)`).
+		WillReturnRows(sqlmock.NewRows(cols))
+
+	_, err = s.ListTransfers(context.Background(), &historypb.ListTransfersRequest{
+		UserId: "u1",
+		Scope:  historypb.TransferScope_TRANSFER_SCOPE_IN_FLIGHT,
+	})
+	if err != nil {
+		t.Fatalf("ListTransfers: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
 func TestListOrders_ScopeTranslatesToStatuses(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
