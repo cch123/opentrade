@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/xargin/opentrade/match/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/shard"
 )
 
 // ProducerConfig configures the trade-event Kafka producer.
@@ -33,6 +34,13 @@ type ProducerConfig struct {
 	TransactionalID string        // empty = idempotent mode
 	BatchSize       int           // flush after this many outputs; default 32
 	FlushInterval   time.Duration // flush if idle longer than this; default 10ms
+
+	// VShardCount is the Counter-side vshard count (ADR-0058 §2). Match
+	// uses it to compute `partition = shard.Index(user_id, VShardCount)`
+	// for every trade-event record so the mapping exactly matches what
+	// Counter workers consume. Required (>0) — mismatch with Counter
+	// equals routing breakage.
+	VShardCount int
 }
 
 // flushReq asks the Pump to drain outbox and flush the current batch. The
@@ -67,6 +75,9 @@ func NewTradeProducer(cfg ProducerConfig, logger *zap.Logger) (*TradeProducer, e
 	if cfg.ProducerID == "" {
 		return nil, errors.New("journal: ProducerID required")
 	}
+	if cfg.VShardCount <= 0 {
+		return nil, errors.New("journal: VShardCount required (ADR-0058)")
+	}
 	if cfg.Topic == "" {
 		cfg.Topic = "trade-event"
 	}
@@ -82,6 +93,10 @@ func NewTradeProducer(cfg ProducerConfig, logger *zap.Logger) (*TradeProducer, e
 		kgo.ClientID(cfg.ClientID),
 		kgo.ProducerLinger(0),
 		kgo.RequiredAcks(kgo.AllISRAcks()),
+		// ADR-0058 §2a: every record carries an explicit Partition
+		// computed from user_id. ManualPartitioner honours that field
+		// instead of hashing the key itself.
+		kgo.RecordPartitioner(kgo.ManualPartitioner()),
 	}
 	transactional := cfg.TransactionalID != ""
 	if transactional {
@@ -159,13 +174,37 @@ func (p *TradeProducer) encodeBatch(batch []*sequencer.Output) ([]*kgo.Record, e
 		if err != nil {
 			return nil, fmt.Errorf("marshal TradeEvent: %w", err)
 		}
-		recs = append(recs, &kgo.Record{
-			Topic: p.cfg.Topic,
-			Key:   []byte(out.Symbol),
-			Value: payload,
-		})
+		for _, target := range outputTargets(out, p.cfg.VShardCount) {
+			recs = append(recs, &kgo.Record{
+				Topic:     p.cfg.Topic,
+				Key:       []byte(target.userID),
+				Value:     payload,
+				Partition: int32(target.partition),
+			})
+		}
 	}
 	return recs, nil
+}
+
+// routeTarget is one (user_id → vshard partition) tuple. Trade
+// Outputs expand to two when maker != taker; everything else is one.
+type routeTarget struct {
+	userID    string
+	partition int
+}
+
+// outputTargets enumerates the vshards a single Output must land on
+// under the ADR-0058 §2 dual-emit rule. Trade carries two users so it
+// emits one record per side (collapsing to a single record on
+// self-trade). Every other OutputKind is tied to one user (out.UserID).
+func outputTargets(out *sequencer.Output, vshardCount int) []routeTarget {
+	if out.Kind == sequencer.OutputTrade && out.MakerUserID != "" && out.MakerUserID != out.UserID {
+		return []routeTarget{
+			{out.MakerUserID, shard.Index(out.MakerUserID, vshardCount)},
+			{out.UserID, shard.Index(out.UserID, vshardCount)}, // taker side (out.UserID == taker)
+		}
+	}
+	return []routeTarget{{out.UserID, shard.Index(out.UserID, vshardCount)}}
 }
 
 // Pump drains outbox and publishes Outputs in batches until ctx is cancelled

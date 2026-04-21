@@ -52,10 +52,29 @@
 
 ### 2. Kafka topic 对齐到 vshard 粒度
 
-- `trade-event`（Match → Counter）：**256 partition**，`partition = farmhash(user_id) % 256`（Match 侧和 Counter 用**同一个 hash 函数 + 同一个 mod 数**）
+- `trade-event`（Match → Counter）：**256 partition**，`partition = xxhash64(user_id) % 256`（Match 侧和 Counter 都调 `pkg/shard.Index`，保证两边一致）
   - 结果：1 vshard ↔ 1 partition，恢复时只需 seek 一个 partition
-- `counter-journal`（Counter 自产）：**256 partition**，同样 key
+  - Producer 用 `kgo.ManualPartitioner`，`Record.Partition` 由生产者显式指定；不依赖 broker 端的 key hash
+- `counter-journal`（Counter 自产）：**256 partition**，同样 key、同样 ManualPartitioner
 - `order-event`（Counter → Match）：**不动**，仍按 symbol 分区（ADR-0050）。这条路不需要按 vshard 对齐，因为 Match 按 symbol 分 shard
+
+**Trade 双发（phase 4）**：Match 产一笔 Trade 时，maker 和 taker 的 user 分别落在各自的 vshard。consumer-group 广播模式在 vshard 架构下不存在（每个 worker 只订阅自己的 partition），所以 Match 必须为 **maker 和 taker 分别 emit 一条 TradeEvent** —— 同一个 Trade payload、不同的 `Partition`（一条 keyed 到 maker 的 vshard，一条到 taker 的 vshard）。
+
+- self-trade（maker_user_id == taker_user_id）只发 1 条
+- 两条 event 在 match 的 transactional producer 里同一事务内原子 publish
+- 下游消费者的 dedup 责任：
+  - Counter：每 vshard 只收自己 user 的那份，`(user, symbol) match_seq` guard 继续生效
+  - Push / trade-dump：按 user_id / trade_id 去重（现有机制已覆盖）
+  - Quote：需要新增"只处理 taker 侧"过滤或按 trade_id 去重（ADR-0058 phase 4b 跟进）
+
+这个决策避免了 vshard 间的 cross-RPC 结算通道，保持 vshard 隔离。代价是 trade-event 事件量 2x（自交易除外）。
+
+### 2a. Partition 路由实现约束（phase 4）
+
+- Match 和 Counter 的生产者都用 `kgo.ManualPartitioner()`
+- 所有 trade-event / counter-journal record 必须显式填 `Record.Partition = shard.Index(user_id, vshard_count)`
+- `shard.Index` 是 `pkg/shard` 已提供的 xxhash64 实现（ADR-0010 起服役，ADR-0058 延用）
+- 生产者侧的 `vshard_count` 通过 flag 传入（典型 256），和 counter 的 `--vshard-count` 保持一致；不一致等同于路由错乱，必须启动期校验
 
 ### 3. 实例锁 + 内建 Coordinator + assignment 表
 

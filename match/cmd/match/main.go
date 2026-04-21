@@ -63,6 +63,12 @@ type Config struct {
 	OrderTopicPrefix string // ADR-0050; used to map symbol → topic in snapshot offset hydration
 	TradeTopic       string
 	MarketDataTopic  string        // ADR-0055
+
+	// VShardCount is Counter's vshard count (ADR-0058 §2). Match uses
+	// it to compute trade-event partitions via shard.Index(user_id,
+	// VShardCount) and MUST match counter --vshard-count; production
+	// value is 256.
+	VShardCount int
 	ConsumerGroup    string
 	SnapshotDir      string
 	SnapshotInterval time.Duration
@@ -217,6 +223,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		ProducerID:      cfg.InstanceID,
 		Topic:           cfg.TradeTopic,
 		TransactionalID: txnID,
+		VShardCount:     cfg.VShardCount,
 	}, logger)
 	if err != nil {
 		logger.Error("trade producer", zap.Error(err))
@@ -477,6 +484,7 @@ func parseFlags() Config {
 		OrderTopicPrefix: "order-event",
 		TradeTopic:       "trade-event",
 		MarketDataTopic:  "market-data",
+		VShardCount:      256, // ADR-0058 §2; must match counter --vshard-count
 		SnapshotDir:      "./data/match",
 		SnapshotInterval: 60 * time.Second,
 		SnapshotFormat:   snapshot.FormatProto, // ADR-0049
@@ -507,6 +515,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.OrderTopicRegex, "order-topic-regex", cfg.OrderTopicRegex, "regex matching per-symbol order-event topics (ADR-0050; default ^order-event-.+$)")
 	flag.StringVar(&cfg.OrderTopicPrefix, "order-topic-prefix", cfg.OrderTopicPrefix, "per-symbol order-event topic prefix (ADR-0050). Used to map snapshot offsets: worker's symbol → `<prefix>-<symbol>`")
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
+	flag.IntVar(&cfg.VShardCount, "vshard-count", cfg.VShardCount, "Counter vshard count for trade-event partition routing (ADR-0058 §2; must match counter --vshard-count)")
 	flag.StringVar(&cfg.MarketDataTopic, "market-data-topic", cfg.MarketDataTopic, "market-data topic name (ADR-0055: Match publishes OrderBook Full / Delta here)")
 	flag.DurationVar(&cfg.OrderBookFullInterval, "orderbook-full-interval", cfg.OrderBookFullInterval, "how often to emit OrderBook Full frames per symbol (ADR-0055)")
 	flag.IntVar(&cfg.OrderBookFullTopN, "orderbook-full-top-n", cfg.OrderBookFullTopN, "OrderBook Full frame depth cap per side (ADR-0055; must be in [1, 500])")
@@ -574,6 +583,9 @@ func (c *Config) validate() error {
 	// market-data retention. Clamp to [1, orderBookFullTopNMax].
 	if c.OrderBookFullTopN <= 0 || c.OrderBookFullTopN > orderBookFullTopNMax {
 		return fmt.Errorf("orderbook-full-top-n must be in [1, %d], got %d", orderBookFullTopNMax, c.OrderBookFullTopN)
+	}
+	if c.VShardCount <= 0 {
+		return fmt.Errorf("--vshard-count must be > 0 (ADR-0058 §2 — must match counter)")
 	}
 	return nil
 }

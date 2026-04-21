@@ -188,6 +188,7 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		JournalTopic:          w.cfg.JournalTopic,
 		OrderEventTopic:       w.cfg.OrderEventTopic,
 		OrderEventTopicPrefix: w.cfg.OrderEventTopicPrefix,
+		VShardCount:           w.cfg.VShardCount,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("txn producer: %w", err)

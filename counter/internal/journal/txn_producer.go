@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
+	"github.com/xargin/opentrade/pkg/shard"
 )
 
 // TxnProducerConfig configures Counter's transactional Kafka producer used by
@@ -25,10 +26,16 @@ import (
 type TxnProducerConfig struct {
 	Brokers               []string
 	ClientID              string
-	TransactionalID       string // e.g. "counter-shard-0-main" (ADR-0017)
+	TransactionalID       string // e.g. "counter-vshard-042-ep-7" (ADR-0017, ADR-0058)
 	JournalTopic          string // default "counter-journal"
 	OrderEventTopic       string // legacy single topic; default "order-event"
 	OrderEventTopicPrefix string // ADR-0050; default "order-event" → `order-event-<symbol>`
+
+	// VShardCount drives counter-journal partitioning: every journal
+	// record's Partition is set to shard.Index(user_id, VShardCount),
+	// identical to what Match uses for trade-event (ADR-0058 §2a). Must
+	// be >0 and must match the rest of the cluster.
+	VShardCount int
 }
 
 // TxnProducer wraps franz-go's transactional producer. Each BeginCommit cycle
@@ -58,6 +65,9 @@ func NewTxnProducer(ctx context.Context, cfg TxnProducerConfig, logger *zap.Logg
 	if cfg.OrderEventTopic == "" {
 		cfg.OrderEventTopic = "order-event"
 	}
+	if cfg.VShardCount <= 0 {
+		return nil, errors.New("journal: VShardCount required (ADR-0058)")
+	}
 	cli, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ClientID(cfg.ClientID),
@@ -65,6 +75,10 @@ func NewTxnProducer(ctx context.Context, cfg TxnProducerConfig, logger *zap.Logg
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.ProducerLinger(0),
 		kgo.TransactionTimeout(10e9), // 10s, ns
+		// ADR-0058 §2a: counter-journal records carry an explicit
+		// Partition; order-event records (per-symbol topics, ADR-0050)
+		// fall back to StickyKeyPartitioner by symbol.
+		kgo.RecordPartitioner(newJournalAwarePartitioner(cfg.JournalTopic)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kgo.NewClient: %w", err)
@@ -162,12 +176,19 @@ func (p *TxnProducer) runTxn(ctx context.Context, fn func() error) error {
 }
 
 // produce sends one record synchronously (via ProduceSync for simplicity in
-// MVP-3 — franz-go handles the in-txn accounting).
+// MVP-3 — franz-go handles the in-txn accounting). Records destined for
+// JournalTopic get their Partition pinned via shard.Index so that 1 vshard
+// == 1 partition (ADR-0058 §2a). Other topics (per-symbol order-event)
+// pass through with Partition=0 and let StickyKeyPartitioner hash by key.
 func (p *TxnProducer) produce(ctx context.Context, topic, key string, pb proto.Message) error {
 	payload, err := proto.Marshal(pb)
 	if err != nil {
 		return err
 	}
 	rec := &kgo.Record{Topic: topic, Key: []byte(key), Value: payload}
+	if topic == p.cfg.JournalTopic {
+		// key == user_id for every counter-journal event.
+		rec.Partition = int32(shard.Index(key, p.cfg.VShardCount))
+	}
 	return p.cli.ProduceSync(ctx, rec).FirstErr()
 }
