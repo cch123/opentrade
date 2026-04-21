@@ -38,7 +38,7 @@ func newServer(t *testing.T) *Server {
 	pub := &fakePub{}
 	svc := service.New(service.Config{ShardID: 0, ProducerID: "counter-shard-0-main"},
 		state, seq, dt, pub, zap.NewNop())
-	return New(svc, zap.NewNop())
+	return New(NewSingleServiceRouter(svc), zap.NewNop())
 }
 
 // Counter's round-trip transfer handler was removed in ADR-0057 M4; its

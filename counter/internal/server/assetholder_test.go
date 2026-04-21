@@ -25,7 +25,7 @@ func newHolderPair(t *testing.T) (*AssetHolderServer, *fakePub) {
 	pub := &fakePub{}
 	svc := service.New(service.Config{ShardID: 0, ProducerID: "counter-shard-0-main"},
 		state, seq, dt, pub, zap.NewNop())
-	return NewAssetHolderServer(svc), pub
+	return NewAssetHolderServer(NewSingleServiceRouter(svc)), pub
 }
 
 // seedDeposit pre-funds a user so subsequent TransferOut has balance.
@@ -291,7 +291,7 @@ func TestHolder_WrongShard(t *testing.T) {
 	pub := &fakePub{}
 	svc := service.New(service.Config{ShardID: 0, TotalShards: 2, ProducerID: "counter-shard-0-main"},
 		state, seq, dt, pub, zap.NewNop())
-	h := NewAssetHolderServer(svc)
+	h := NewAssetHolderServer(NewSingleServiceRouter(svc))
 
 	// Find a user_id that does NOT belong to shard 0. Trial a short list;
 	// 2 shards means hash parity, so at least one of these will be owned

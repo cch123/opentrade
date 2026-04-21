@@ -345,8 +345,8 @@ func TestCluster_TwoCandidatesOneLeader(t *testing.T) {
 }
 
 // expectNext reads the next list from ch or fails the test on timeout /
-// closed channel. Helper for the WatchAssignedVShards tests.
-func expectNext(t *testing.T, ch <-chan []VShardID, timeout time.Duration) []VShardID {
+// closed channel. Helper for the WatchAssignedAssignments tests.
+func expectNext(t *testing.T, ch <-chan []Assignment, timeout time.Duration) []Assignment {
 	t.Helper()
 	select {
 	case v, ok := <-ch:
@@ -373,11 +373,11 @@ func writeAssignment(t *testing.T, client *clientv3.Client, keys *Keys, a Assign
 	}
 }
 
-// TestCluster_WatchAssignedVShards_InitialAndOnChange covers the phase
-// 3b-1 contract: WatchAssignedVShards emits a snapshot on subscribe,
-// then a fresh list on every assignment change that affects what this
-// node owns. Consecutive identical emissions are suppressed.
-func TestCluster_WatchAssignedVShards_InitialAndOnChange(t *testing.T) {
+// TestCluster_WatchAssignedAssignments_InitialAndOnChange covers the
+// phase 3b-2B contract: WatchAssignedAssignments emits a snapshot on
+// subscribe, then a fresh list on every (vshard, epoch) change that
+// affects what this node owns.
+func TestCluster_WatchAssignedAssignments_InitialAndOnChange(t *testing.T) {
 	client, root := requireEtcd(t)
 	vshardCount := 8
 	keys := NewKeys(root)
@@ -402,7 +402,7 @@ func TestCluster_WatchAssignedVShards_InitialAndOnChange(t *testing.T) {
 	go func() { done <- cl.Run(ctx) }()
 
 	// Wait until the coordinator has filled the table — otherwise
-	// listMyVShards may see a partial view.
+	// listMyAssignments may see a partial view.
 	deadline, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer dcancel()
 	waitFor(deadline, func() bool {
@@ -412,9 +412,9 @@ func TestCluster_WatchAssignedVShards_InitialAndOnChange(t *testing.T) {
 
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	defer watchCancel()
-	ch, err := cl.WatchAssignedVShards(watchCtx)
+	ch, err := cl.WatchAssignedAssignments(watchCtx)
 	if err != nil {
-		t.Fatalf("WatchAssignedVShards: %v", err)
+		t.Fatalf("WatchAssignedAssignments: %v", err)
 	}
 
 	// Initial emit: all 8 owned by node-A.
@@ -434,13 +434,14 @@ func TestCluster_WatchAssignedVShards_InitialAndOnChange(t *testing.T) {
 	if len(second) != vshardCount-1 {
 		t.Fatalf("after takeover = %d, want %d: %v", len(second), vshardCount-1, second)
 	}
-	for _, v := range second {
-		if v == 3 {
+	for _, a := range second {
+		if a.VShardID == 3 {
 			t.Errorf("vshard-003 should have dropped out, still in %v", second)
 		}
 	}
 
-	// Restore ownership.
+	// Restore ownership with a higher epoch — Manager uses this to
+	// decide whether to restart the worker.
 	writeAssignment(t, client, keys, Assignment{
 		VShardID: 3,
 		Owner:    "node-A",
@@ -451,17 +452,26 @@ func TestCluster_WatchAssignedVShards_InitialAndOnChange(t *testing.T) {
 	if len(third) != vshardCount {
 		t.Fatalf("after restore = %d, want %d: %v", len(third), vshardCount, third)
 	}
+	foundEpoch := uint64(0)
+	for _, a := range third {
+		if a.VShardID == 3 {
+			foundEpoch = a.Epoch
+		}
+	}
+	if foundEpoch != 3 {
+		t.Errorf("vshard-003 epoch = %d, want 3", foundEpoch)
+	}
 
 	watchCancel()
 	cancel()
 	<-done
 }
 
-// TestCluster_WatchAssignedVShards_DropsOnStateTransition: a vshard
-// whose owner stays self but whose state moves to MIGRATING must drop
-// off the assigned set — the worker should step down during the
-// handoff window (ADR-0058 §Cold Handoff).
-func TestCluster_WatchAssignedVShards_DropsOnStateTransition(t *testing.T) {
+// TestCluster_WatchAssignedAssignments_DropsOnStateTransition: a
+// vshard whose owner stays self but whose state moves to MIGRATING
+// must drop off the assigned set — the worker should step down during
+// the handoff window (ADR-0058 §Cold Handoff).
+func TestCluster_WatchAssignedAssignments_DropsOnStateTransition(t *testing.T) {
 	client, root := requireEtcd(t)
 	vshardCount := 4
 	keys := NewKeys(root)
@@ -490,7 +500,7 @@ func TestCluster_WatchAssignedVShards_DropsOnStateTransition(t *testing.T) {
 
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	defer watchCancel()
-	ch, err := cl.WatchAssignedVShards(watchCtx)
+	ch, err := cl.WatchAssignedAssignments(watchCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,8 +524,8 @@ func TestCluster_WatchAssignedVShards_DropsOnStateTransition(t *testing.T) {
 	if len(second) != vshardCount-1 {
 		t.Fatalf("after state flip = %d, want %d: %v", len(second), vshardCount-1, second)
 	}
-	for _, v := range second {
-		if v == 1 {
+	for _, a := range second {
+		if a.VShardID == 1 {
 			t.Errorf("migrating vshard-001 should have dropped, set %v", second)
 		}
 	}

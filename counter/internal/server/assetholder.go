@@ -28,16 +28,30 @@ import (
 type AssetHolderServer struct {
 	assetholderrpc.UnimplementedAssetHolderServer
 
-	svc *service.Service
+	router Router
 }
 
-// NewAssetHolderServer constructs an AssetHolderServer sharing the same
-// Service instance that backs the primary CounterService endpoint. Both
-// gRPC surfaces MUST target the same Service so they share sequencer,
-// state, and dedup — registering two AssetHolder servers against
-// different services would be a routing bug.
-func NewAssetHolderServer(svc *service.Service) *AssetHolderServer {
-	return &AssetHolderServer{svc: svc}
+// NewAssetHolderServer constructs an AssetHolderServer backed by the
+// same Router as the primary CounterService endpoint, so each user's
+// AssetHolder traffic lands on the same vshard that owns their
+// sequencer + state + dedup.
+func NewAssetHolderServer(router Router) *AssetHolderServer {
+	return &AssetHolderServer{router: router}
+}
+
+// routeOrFail is the AssetHolder counterpart of Server.routeOrFail:
+// resolves user_id → Service or replies FailedPrecondition when this
+// node doesn't (yet) own the user's vshard.
+func (s *AssetHolderServer) routeOrFail(userID string) (*service.Service, error) {
+	if userID == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	svc, ok := s.router.Lookup(userID)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition,
+			"service: user does not belong to this node")
+	}
+	return svc, nil
 }
 
 // TransferOut debits (user_id, asset) by amount. It is the "from" leg of
@@ -61,7 +75,11 @@ func (s *AssetHolderServer) TransferOut(ctx context.Context, req *assetholderrpc
 	if err != nil {
 		return nil, holderArgumentError(err)
 	}
-	res, err := s.svc.Transfer(ctx, internalReq)
+	svc, err := s.routeOrFail(internalReq.UserID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := svc.Transfer(ctx, internalReq)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -92,7 +110,11 @@ func (s *AssetHolderServer) TransferIn(ctx context.Context, req *assetholderrpc.
 	if err != nil {
 		return nil, holderArgumentError(err)
 	}
-	res, err := s.svc.Transfer(ctx, internalReq)
+	svc, err := s.routeOrFail(internalReq.UserID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := svc.Transfer(ctx, internalReq)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -135,7 +157,11 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *asse
 	if err != nil {
 		return nil, holderArgumentError(err)
 	}
-	res, err := s.svc.Transfer(ctx, internalReq)
+	svc, err := s.routeOrFail(internalReq.UserID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := svc.Transfer(ctx, internalReq)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

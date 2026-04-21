@@ -18,19 +18,60 @@ import (
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-// Server implements counterrpc.CounterServiceServer. PlaceOrder / CancelOrder /
-// QueryOrder land in MVP-3; they currently return Unimplemented via the
-// embedded UnimplementedCounterServiceServer.
+// Router is the dispatcher contract every gRPC handler depends on.
+// Implementations resolve a user_id to the per-vshard Service owned by
+// this node. Returning (nil, false) means "not my vshard" or "not yet
+// ready" — the handler replies FailedPrecondition so the BFF refreshes
+// its routing view and retries (ADR-0058 §BFF 客户端路由).
+type Router interface {
+	Lookup(userID string) (*service.Service, bool)
+}
+
+// Server implements counterrpc.CounterServiceServer.
 type Server struct {
 	counterrpc.UnimplementedCounterServiceServer
 
-	svc    *service.Service
+	router Router
 	logger *zap.Logger
 }
 
-// New creates a Server.
-func New(svc *service.Service, logger *zap.Logger) *Server {
-	return &Server{svc: svc, logger: logger}
+// New creates a Server backed by a Router. In single-vshard tests pass
+// NewSingleServiceRouter(svc); production wiring passes
+// *worker.Manager.
+func New(router Router, logger *zap.Logger) *Server {
+	return &Server{router: router, logger: logger}
+}
+
+// routeOrFail resolves userID → Service, returning a FailedPrecondition
+// status when this node does not currently serve the vshard. Every RPC
+// handler in this file calls it as its first step.
+func (s *Server) routeOrFail(userID string) (*service.Service, error) {
+	if userID == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	svc, ok := s.router.Lookup(userID)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition,
+			"service: user does not belong to this node")
+	}
+	return svc, nil
+}
+
+// SingleServiceRouter is a fixed Router that always returns the same
+// Service. Used by in-process tests (and by legacy paths during
+// migration). Not suitable for production where different users land on
+// different vshards.
+type SingleServiceRouter struct{ svc *service.Service }
+
+// NewSingleServiceRouter wraps svc into a Router that answers Lookup
+// with (svc, true) for every user.
+func NewSingleServiceRouter(svc *service.Service) *SingleServiceRouter {
+	return &SingleServiceRouter{svc: svc}
+}
+
+// Lookup implements Router.
+func (r *SingleServiceRouter) Lookup(_ string) (*service.Service, bool) {
+	return r.svc, r.svc != nil
 }
 
 // PlaceOrder implements CounterService.PlaceOrder (MVP-3).
@@ -38,11 +79,15 @@ func (s *Server) PlaceOrder(ctx context.Context, req *counterrpc.PlaceOrderReque
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
 	}
+	svc, err := s.routeOrFail(req.UserId)
+	if err != nil {
+		return nil, err
+	}
 	internalReq, err := placeOrderFromProto(req)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	res, err := s.svc.PlaceOrder(ctx, internalReq)
+	res, err := svc.PlaceOrder(ctx, internalReq)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -62,7 +107,11 @@ func (s *Server) CancelOrder(ctx context.Context, req *counterrpc.CancelOrderReq
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
 	}
-	res, err := s.svc.CancelOrder(ctx, service.CancelOrderRequest{
+	svc, err := s.routeOrFail(req.UserId)
+	if err != nil {
+		return nil, err
+	}
+	res, err := svc.CancelOrder(ctx, service.CancelOrderRequest{
 		UserID:  req.UserId,
 		OrderID: req.OrderId,
 	})
@@ -83,7 +132,11 @@ func (s *Server) QueryOrder(_ context.Context, req *counterrpc.QueryOrderRequest
 	if req == nil || req.UserId == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id required")
 	}
-	o, err := s.svc.QueryOrder(req.UserId, req.OrderId)
+	svc, err := s.routeOrFail(req.UserId)
+	if err != nil {
+		return nil, err
+	}
+	o, err := svc.QueryOrder(req.UserId, req.OrderId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
@@ -96,9 +149,13 @@ func (s *Server) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceReq
 	if req == nil || req.UserId == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
+	svc, err := s.routeOrFail(req.UserId)
+	if err != nil {
+		return nil, err
+	}
 	resp := &counterrpc.QueryBalanceResponse{}
 	if req.Asset != "" {
-		bal, err := s.svc.QueryBalance(req.UserId, req.Asset)
+		bal, err := svc.QueryBalance(req.UserId, req.Asset)
 		if err != nil {
 			return nil, mapServiceError(err)
 		}
@@ -109,7 +166,7 @@ func (s *Server) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceReq
 		}}
 		return resp, nil
 	}
-	account, err := s.svc.QueryAccount(req.UserId)
+	account, err := svc.QueryAccount(req.UserId)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -191,7 +248,11 @@ func (s *Server) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (*
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid quote_qty %q: %v", req.QuoteQty, err))
 	}
-	res, err := s.svc.Reserve(ctx, service.ReserveRequest{
+	svc, err := s.routeOrFail(req.UserId)
+	if err != nil {
+		return nil, err
+	}
+	res, err := svc.Reserve(ctx, service.ReserveRequest{
 		UserID:        req.UserId,
 		ReservationID: req.ReservationId,
 		Symbol:        req.Symbol,
@@ -213,11 +274,18 @@ func (s *Server) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (*
 }
 
 // AdminCancelOrders implements CounterService.AdminCancelOrders (ADR-0052).
+// ADR-0058: under vshard routing we require UserID so dispatch is
+// deterministic; symbol-only fan-out moves to an operator tool that
+// targets specific nodes directly.
 func (s *Server) AdminCancelOrders(ctx context.Context, req *counterrpc.AdminCancelOrdersRequest) (*counterrpc.AdminCancelOrdersResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
 	}
-	res, err := s.svc.AdminCancelOrders(ctx, service.AdminCancelFilter{
+	svc, err := s.routeOrFail(req.UserId)
+	if err != nil {
+		return nil, err
+	}
+	res, err := svc.AdminCancelOrders(ctx, service.AdminCancelFilter{
 		UserID: req.UserId,
 		Symbol: req.Symbol,
 	})
@@ -230,7 +298,7 @@ func (s *Server) AdminCancelOrders(ctx context.Context, req *counterrpc.AdminCan
 	return &counterrpc.AdminCancelOrdersResponse{
 		Cancelled: res.Cancelled,
 		Skipped:   res.Skipped,
-		ShardId:   int32(s.svc.ShardID()),
+		ShardId:   int32(svc.ShardID()),
 	}, nil
 }
 
@@ -241,7 +309,11 @@ func (s *Server) CancelMyOrders(ctx context.Context, req *counterrpc.CancelMyOrd
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
 	}
-	res, err := s.svc.CancelMyOrders(ctx, req.UserId, req.Symbol)
+	svc, err := s.routeOrFail(req.UserId)
+	if err != nil {
+		return nil, err
+	}
+	res, err := svc.CancelMyOrders(ctx, req.UserId, req.Symbol)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -256,7 +328,11 @@ func (s *Server) ReleaseReservation(ctx context.Context, req *counterrpc.Release
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
 	}
-	res, err := s.svc.ReleaseReservation(ctx, service.ReleaseReservationRequest{
+	svc, err := s.routeOrFail(req.UserId)
+	if err != nil {
+		return nil, err
+	}
+	res, err := svc.ReleaseReservation(ctx, service.ReleaseReservationRequest{
 		UserID:        req.UserId,
 		ReservationID: req.ReservationId,
 	})

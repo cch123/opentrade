@@ -114,22 +114,25 @@ func New(cfg Config) (*Cluster, error) {
 	}, nil
 }
 
-// WatchAssignedVShards emits the set of vshards this node currently owns
-// (Owner == self && State == StateActive). It publishes an initial
-// snapshot, then a fresh list every time the assignment table changes.
-// Consecutive identical lists are suppressed so consumers only react to
-// real ownership changes.
+// WatchAssignedAssignments emits the list of assignments this node
+// currently owns (Owner == self && State == StateActive). It publishes
+// an initial snapshot, then a fresh list every time the assignment
+// table changes *in a way that affects this node* — dedup is done on
+// (VShardID, Epoch) so both ownership changes and epoch bumps (a new
+// owner taking over then the node reclaiming it) are observable.
 //
-// The returned channel closes when ctx is cancelled or the watcher dies.
-// Callers (the phase-3b worker manager) should start/stop per-vshard
-// workers on every list they receive.
-func (c *Cluster) WatchAssignedVShards(ctx context.Context) (<-chan []VShardID, error) {
-	initial, err := c.listMyVShards(ctx)
+// The Manager (phase 3b-2B) listens on this channel to start new
+// workers, stop workers whose vshard dropped off, and restart workers
+// whose epoch changed (fencing the old producer's transactional id).
+//
+// Channel closes when ctx is cancelled or the watcher dies.
+func (c *Cluster) WatchAssignedAssignments(ctx context.Context) (<-chan []Assignment, error) {
+	initial, err := c.listMyAssignments(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make(chan []VShardID, 1)
+	out := make(chan []Assignment, 1)
 	out <- initial
 
 	go func() {
@@ -137,21 +140,21 @@ func (c *Cluster) WatchAssignedVShards(ctx context.Context) (<-chan []VShardID, 
 		wc := c.client.Watch(ctx,
 			c.keys.AssignmentsPrefix(),
 			clientv3.WithPrefix())
-		last := sortedCopy(initial)
+		last := cloneAssignments(initial)
 		for wresp := range wc {
 			if err := wresp.Err(); err != nil {
 				c.logger.Warn("assignment watcher error", zap.Error(err))
 				return
 			}
-			current, err := c.listMyVShards(ctx)
+			current, err := c.listMyAssignments(ctx)
 			if err != nil {
 				c.logger.Warn("re-list after assignment event", zap.Error(err))
 				continue
 			}
-			if sameSet(current, last) {
+			if sameAssignments(current, last) {
 				continue
 			}
-			last = sortedCopy(current)
+			last = cloneAssignments(current)
 			select {
 			case out <- current:
 			case <-ctx.Done():
@@ -163,16 +166,16 @@ func (c *Cluster) WatchAssignedVShards(ctx context.Context) (<-chan []VShardID, 
 	return out, nil
 }
 
-// listMyVShards does one full read of the assignment table and returns
-// the vshards this node currently owns (active state only). Sorted
-// ascending so comparisons are deterministic.
-func (c *Cluster) listMyVShards(ctx context.Context) ([]VShardID, error) {
+// listMyAssignments does one full read of the assignment table and
+// returns the entries this node currently owns (ACTIVE only). Sorted
+// by VShardID ascending so callers can compare slices directly.
+func (c *Cluster) listMyAssignments(ctx context.Context) ([]Assignment, error) {
 	resp, err := c.client.Get(ctx,
 		c.keys.AssignmentsPrefix(), clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
-	out := make([]VShardID, 0)
+	out := make([]Assignment, 0)
 	for _, kv := range resp.Kvs {
 		var a Assignment
 		if err := json.Unmarshal(kv.Value, &a); err != nil {
@@ -183,30 +186,29 @@ func (c *Cluster) listMyVShards(ctx context.Context) ([]VShardID, error) {
 		if a.Owner != c.nodeID || a.State != StateActive {
 			continue
 		}
-		out = append(out, a.VShardID)
+		out = append(out, a)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	sort.Slice(out, func(i, j int) bool { return out[i].VShardID < out[j].VShardID })
 	return out, nil
 }
 
-// sortedCopy returns a shallow copy in ascending order. Used as the
-// watcher's "last emitted" snapshot for de-dup comparisons.
-func sortedCopy(in []VShardID) []VShardID {
-	out := make([]VShardID, len(in))
+// cloneAssignments is the dedup snapshot helper.
+func cloneAssignments(in []Assignment) []Assignment {
+	out := make([]Assignment, len(in))
 	copy(out, in)
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 
-// sameSet returns true iff a and b contain the same vshards. Both are
-// expected to be sorted ascending (listMyVShards / sortedCopy enforce
-// this).
-func sameSet(a, b []VShardID) bool {
+// sameAssignments returns true iff a and b describe the same (vshard,
+// epoch) tuples — owner / state are redundant here because the caller
+// already filtered to owner==self, state==ACTIVE. Both slices must be
+// sorted by VShardID ascending (listMyAssignments enforces this).
+func sameAssignments(a, b []Assignment) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if a[i].VShardID != b[i].VShardID || a[i].Epoch != b[i].Epoch {
 			return false
 		}
 	}
