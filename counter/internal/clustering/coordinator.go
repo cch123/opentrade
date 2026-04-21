@@ -140,8 +140,9 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	}
 }
 
-// lead runs the leader-only control loop. Phase 2 does one reconcile
-// pass then idles until ctx / lost fires.
+// lead runs the leader-only control loop: initial assignment plus the
+// migration completion loop (ADR-0058 phase 6 — watch for
+// HANDOFF_READY assignments and flip them to ACTIVE@target,epoch+1).
 func (c *Coordinator) lead(ctx context.Context, lost <-chan struct{}) error {
 	leadCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -158,8 +159,71 @@ func (c *Coordinator) lead(ctx context.Context, lost <-chan struct{}) error {
 		return fmt.Errorf("reconcile: %w", err)
 	}
 
+	// Migration completion loop runs until we lose leadership or the
+	// outer context is cancelled.
+	go c.runMigrationLoop(leadCtx)
+
 	<-leadCtx.Done()
 	return leadCtx.Err()
+}
+
+// runMigrationLoop watches the assignment table and completes every
+// vshard it finds in HANDOFF_READY state. Does one sweep on entry (to
+// pick up assignments that became HANDOFF_READY during a previous
+// leader's window) plus one sweep per watch event.
+func (c *Coordinator) runMigrationLoop(ctx context.Context) {
+	c.sweepHandoffReady(ctx)
+	wc := c.client.Watch(ctx, c.keys.AssignmentsPrefix(), clientv3.WithPrefix())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case wresp, ok := <-wc:
+			if !ok {
+				c.logger.Warn("coordinator migration watch closed")
+				return
+			}
+			if err := wresp.Err(); err != nil {
+				c.logger.Warn("coordinator migration watch error", zap.Error(err))
+				return
+			}
+			c.sweepHandoffReady(ctx)
+		}
+	}
+}
+
+// sweepHandoffReady lists the assignment table and promotes every
+// HANDOFF_READY entry to ACTIVE@target,epoch+1. Idempotent: a benign
+// ErrPreconditionMismatch (someone else already moved it, or state
+// drifted) is swallowed. Other errors are logged and the sweep moves
+// on to the next vshard so one poison key doesn't stall the loop.
+func (c *Coordinator) sweepHandoffReady(ctx context.Context) {
+	assignments, err := c.listAssignments(ctx)
+	if err != nil {
+		c.logger.Warn("sweep: list assignments", zap.Error(err))
+		return
+	}
+	for _, a := range assignments {
+		if a.State != StateHandoffReady {
+			continue
+		}
+		if err := CompleteMigration(ctx, c.client, c.keys, a.VShardID); err != nil {
+			if errors.Is(err, ErrPreconditionMismatch) {
+				continue
+			}
+			c.logger.Warn("complete migration failed",
+				zap.Int("vshard", int(a.VShardID)),
+				zap.Uint64("epoch", a.Epoch),
+				zap.String("target", a.Target),
+				zap.Error(err))
+			continue
+		}
+		c.logger.Info("migration complete",
+			zap.Int("vshard", int(a.VShardID)),
+			zap.String("from_owner", a.Owner),
+			zap.String("to_owner", a.Target),
+			zap.Uint64("new_epoch", a.Epoch+1))
+	}
 }
 
 // reconcile reads the current nodes + assignments from etcd and writes

@@ -219,6 +219,16 @@ func sameAssignments(a, b []Assignment) bool {
 // cluster (BFF, operator tools) without re-deriving prefixes.
 func (c *Cluster) Keys() *Keys { return c.keys }
 
+// Client returns the etcd client backing this Cluster so callers
+// (Manager writing HANDOFF_READY, operator CLI) can issue direct
+// reads / CAS writes against the shared schema without the Cluster
+// having to export every wrapper individually.
+func (c *Cluster) Client() *clientv3.Client { return c.client }
+
+// NodeID returns the id this Cluster was constructed with. Convenience
+// for callers that don't want to thread Config.Node.ID separately.
+func (c *Cluster) NodeID() string { return c.nodeID }
+
 // Run blocks until ctx is cancelled. It starts the registry + coordinator
 // goroutines concurrently; when ctx fires (or one of them returns a
 // non-restart error), the other is cancelled and drained before Run

@@ -16,6 +16,7 @@ package clustering
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -603,4 +604,146 @@ func TestCluster_PreexistingAssignmentNotClobbered(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// TestCluster_MigrationRoundTrip drives the ADR-0058 §7 state machine
+// end-to-end at the etcd layer:
+//
+//   ACTIVE(node-A, ep=1)
+//       ↓ StartMigration(node-B)
+//   MIGRATING(node-A, ep=1, target=node-B)
+//       ↓ MarkHandoffReady(node-A, ep=1)   (normally driven by Manager on worker drain)
+//   HANDOFF_READY(node-A, ep=1, target=node-B)
+//       ↓ Coordinator sweep
+//   ACTIVE(node-B, ep=2)
+//
+// node-A is the only cluster member here, so it doubles as the
+// elected coordinator. The real Manager handoff writeback is covered
+// separately; this test asserts the three CAS helpers compose
+// correctly and that the coordinator's migration loop is wired into
+// lead().
+func TestCluster_MigrationRoundTrip(t *testing.T) {
+	client, root := requireEtcd(t)
+	vshardCount := 4
+	keys := NewKeys(root)
+
+	cl, err := New(Config{
+		Client:      client,
+		Node:        Node{ID: "node-A", StartedAtMS: time.Now().UnixMilli()},
+		VShardCount: vshardCount,
+		LeaseTTL:    5,
+		RootPrefix:  root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- cl.Run(ctx) }()
+
+	// Wait for initial assignment fill.
+	deadline, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dcancel()
+	waitFor(deadline, func() bool {
+		resp, _ := client.Get(context.Background(), keys.AssignmentsPrefix(), clientv3.WithPrefix())
+		return len(resp.Kvs) == vshardCount
+	})
+
+	const vid = VShardID(0)
+	initial, err := ReadAssignment(context.Background(), client, keys, vid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Owner != "node-A" || initial.Epoch != 1 || initial.State != StateActive {
+		t.Fatalf("initial assignment unexpected: %+v", initial)
+	}
+
+	// Kick off migration to node-B (target doesn't need to exist in
+	// /nodes/ — the state machine is just a ledger here; worker
+	// eligibility is Manager's concern).
+	if err := StartMigration(context.Background(), client, keys, vid, "node-B"); err != nil {
+		t.Fatalf("StartMigration: %v", err)
+	}
+	mid, err := ReadAssignment(context.Background(), client, keys, vid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid.State != StateMigrating || mid.Owner != "node-A" || mid.Target != "node-B" || mid.Epoch != 1 {
+		t.Fatalf("after StartMigration: %+v", mid)
+	}
+
+	// Simulate the old owner's Manager finishing its drain.
+	if err := MarkHandoffReady(context.Background(), client, keys, vid,
+		"node-A", 1); err != nil {
+		t.Fatalf("MarkHandoffReady: %v", err)
+	}
+
+	// Coordinator's migration loop should sweep HANDOFF_READY and
+	// finish the swap shortly.
+	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer completeCancel()
+	if !waitFor(completeCtx, func() bool {
+		a, err := ReadAssignment(context.Background(), client, keys, vid)
+		if err != nil {
+			return false
+		}
+		return a.State == StateActive &&
+			a.Owner == "node-B" && a.Epoch == 2 && a.Target == ""
+	}) {
+		final, _ := ReadAssignment(context.Background(), client, keys, vid)
+		t.Fatalf("coordinator did not complete migration: %+v", final)
+	}
+
+	cancel()
+	<-done
+}
+
+// TestMigrationHelpers_PreconditionErrors asserts each CAS helper
+// rejects wrong-state inputs with ErrPreconditionMismatch, so the CLI
+// / Manager can branch on that without retrying into the wrong state.
+func TestMigrationHelpers_PreconditionErrors(t *testing.T) {
+	client, root := requireEtcd(t)
+	keys := NewKeys(root)
+	const vid = VShardID(0)
+
+	// Seed an ACTIVE assignment.
+	writeAssignment(t, client, keys, Assignment{
+		VShardID: vid, Owner: "node-A", Epoch: 1, State: StateActive,
+	})
+
+	// CompleteMigration on an ACTIVE row must refuse.
+	err := CompleteMigration(context.Background(), client, keys, vid)
+	if !errors.Is(err, ErrPreconditionMismatch) {
+		t.Errorf("CompleteMigration on ACTIVE: got %v, want ErrPreconditionMismatch", err)
+	}
+
+	// MarkHandoffReady on an ACTIVE row must refuse.
+	err = MarkHandoffReady(context.Background(), client, keys, vid, "node-A", 1)
+	if !errors.Is(err, ErrPreconditionMismatch) {
+		t.Errorf("MarkHandoffReady on ACTIVE: got %v, want ErrPreconditionMismatch", err)
+	}
+
+	// StartMigration: target == current owner should refuse.
+	err = StartMigration(context.Background(), client, keys, vid, "node-A")
+	if !errors.Is(err, ErrPreconditionMismatch) {
+		t.Errorf("StartMigration onto same owner: got %v, want ErrPreconditionMismatch", err)
+	}
+
+	// Valid StartMigration: ACTIVE → MIGRATING.
+	if err := StartMigration(context.Background(), client, keys, vid, "node-B"); err != nil {
+		t.Fatalf("StartMigration: %v", err)
+	}
+
+	// StartMigration on MIGRATING must refuse.
+	err = StartMigration(context.Background(), client, keys, vid, "node-C")
+	if !errors.Is(err, ErrPreconditionMismatch) {
+		t.Errorf("StartMigration on MIGRATING: got %v, want ErrPreconditionMismatch", err)
+	}
+
+	// MarkHandoffReady with wrong epoch must refuse.
+	err = MarkHandoffReady(context.Background(), client, keys, vid, "node-A", 99)
+	if !errors.Is(err, ErrPreconditionMismatch) {
+		t.Errorf("MarkHandoffReady wrong epoch: got %v, want ErrPreconditionMismatch", err)
+	}
 }

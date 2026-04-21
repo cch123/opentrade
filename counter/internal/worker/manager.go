@@ -248,13 +248,52 @@ func (m *Manager) startUnlocked(ctx context.Context, a clustering.Assignment) er
 
 // stopUnlocked cancels one worker and waits for Run to return. Caller
 // must hold m.mu. Releases the lock while waiting for Run so Lookup
-// callers aren't blocked on a shutdown snapshot.
+// callers aren't blocked on a shutdown snapshot. After the worker has
+// drained (flushed its transactional producer + final snapshot), this
+// method also checks whether the stop was the old-owner leg of a cold
+// handoff (ADR-0058 §7) and, if so, promotes the assignment from
+// MIGRATING to HANDOFF_READY so the coordinator can complete the swap.
 func (m *Manager) stopUnlocked(vid clustering.VShardID, run *workerRun) {
 	delete(m.running, vid)
 	m.mu.Unlock()
 	run.cancel()
 	<-run.done
+	m.promoteHandoffReadyIfMigrating(vid, run.epoch)
 	m.mu.Lock()
+}
+
+// promoteHandoffReadyIfMigrating is best-effort: we run it after every
+// worker stop because the stop itself doesn't carry a reason. On a
+// normal node shutdown / epoch bump the assignment state won't be
+// MIGRATING and we skip; only the migration path hits the CAS write.
+func (m *Manager) promoteHandoffReadyIfMigrating(vid clustering.VShardID, epoch uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	a, err := clustering.ReadAssignment(ctx, m.cluster.Client(), m.cluster.Keys(), vid)
+	if err != nil {
+		if !errors.Is(err, clustering.ErrAssignmentMissing) {
+			m.logger.Debug("handoff check: read assignment",
+				zap.Int("vshard", int(vid)), zap.Error(err))
+		}
+		return
+	}
+	if a.Owner != m.template.NodeID || a.State != clustering.StateMigrating || a.Epoch != epoch {
+		return
+	}
+	if err := clustering.MarkHandoffReady(ctx,
+		m.cluster.Client(), m.cluster.Keys(),
+		vid, m.template.NodeID, epoch,
+	); err != nil {
+		m.logger.Warn("mark HANDOFF_READY failed",
+			zap.Int("vshard", int(vid)),
+			zap.Uint64("epoch", epoch),
+			zap.Error(err))
+		return
+	}
+	m.logger.Info("migration handoff ready",
+		zap.Int("vshard", int(vid)),
+		zap.Uint64("epoch", epoch),
+		zap.String("target", a.Target))
 }
 
 // stopAll cancels every running worker and waits for them to drain.
