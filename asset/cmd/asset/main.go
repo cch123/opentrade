@@ -28,6 +28,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -46,20 +47,26 @@ import (
 	"github.com/xargin/opentrade/asset/internal/engine"
 	"github.com/xargin/opentrade/asset/internal/holder"
 	"github.com/xargin/opentrade/asset/internal/journal"
+	assetmetrics "github.com/xargin/opentrade/asset/internal/metrics"
 	"github.com/xargin/opentrade/asset/internal/saga"
 	"github.com/xargin/opentrade/asset/internal/server"
 	"github.com/xargin/opentrade/asset/internal/service"
 	"github.com/xargin/opentrade/pkg/logx"
+	"github.com/xargin/opentrade/pkg/metrics"
 	"github.com/xargin/opentrade/pkg/transferledger"
 )
 
 type Config struct {
 	InstanceID   string
 	GRPCAddr     string
+	MetricsAddr  string
 	Brokers      []string
 	JournalTopic string
 	Env          string
 	LogLevel     string
+
+	// Reconciler tick interval (ADR-0057 M6). 0 = default (30s).
+	ReconcileInterval time.Duration
 
 	// MySQL for transfer_ledger.
 	LedgerDSN string
@@ -93,6 +100,13 @@ func main() {
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Prometheus registry — one shared across framework + saga metrics.
+	// framework metrics cover RPC / Kafka shapes; sagaMetrics covers
+	// ADR-0057 M6 telemetry.
+	promReg := metrics.NewRegistry()
+	_ = metrics.NewFramework("asset", promReg)
+	sagaMetrics := assetmetrics.NewSaga(promReg)
 
 	state := engine.NewState()
 
@@ -144,8 +158,8 @@ func main() {
 			}
 		}()
 
-		driver := saga.New(saga.Config{ProducerID: cfg.InstanceID}, ledger, registry, pub, logger)
-		orch = saga.NewOrchestrator(saga.OrchestratorConfig{}, ledger, driver, logger)
+		driver := saga.New(saga.Config{ProducerID: cfg.InstanceID}, ledger, registry, pub, logger, sagaMetrics)
+		orch = saga.NewOrchestrator(saga.OrchestratorConfig{}, ledger, driver, logger, sagaMetrics)
 
 		// Recover pending sagas BEFORE opening the gRPC listener so
 		// no fresh Transfer can race a resumed driver on the same id.
@@ -156,6 +170,46 @@ func main() {
 		cancel()
 	} else {
 		logger.Warn("ledger DSN empty — running in funding-holder-only mode (no saga orchestrator)")
+	}
+
+	// Reconciler runs only when we have a ledger (no ledger = no state
+	// to aggregate). Prometheus scrapes will still see transitions
+	// counters from Driver without a reconciler running.
+	var reconciler *saga.Reconciler
+	var reconcilerWG sync.WaitGroup
+	if ledger != nil {
+		reconciler = saga.NewReconciler(saga.ReconcilerConfig{Interval: cfg.ReconcileInterval},
+			ledger, sagaMetrics, logger)
+		reconcilerWG.Add(1)
+		go func() {
+			defer reconcilerWG.Done()
+			if err := reconciler.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("reconciler exited", zap.Error(err))
+			}
+		}()
+	}
+
+	// Metrics HTTP endpoint. Separate listener from gRPC so Prometheus
+	// can scrape even when the gRPC side is saturated / blocked.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", metrics.Handler(promReg))
+	metricsMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	metricsSrv := &http.Server{
+		Addr:    cfg.MetricsAddr,
+		Handler: metricsMux,
+	}
+	var metricsWG sync.WaitGroup
+	if cfg.MetricsAddr != "" {
+		metricsWG.Add(1)
+		go func() {
+			defer metricsWG.Done()
+			logger.Info("metrics HTTP listening", zap.String("addr", cfg.MetricsAddr))
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("metrics server exited", zap.Error(err))
+			}
+		}()
 	}
 
 	grpcServer := grpc.NewServer()
@@ -181,8 +235,16 @@ func main() {
 	logger.Info("asset shutting down")
 	grpcServer.GracefulStop()
 	grpcWG.Wait()
+	reconcilerWG.Wait()
+	if cfg.MetricsAddr != "" {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = metricsSrv.Shutdown(shutdownCtx)
+		cancel()
+		metricsWG.Wait()
+	}
 	logger.Info("asset shutdown complete")
 }
+
 
 // registerPeerHolders dials each peer biz_line and registers the
 // resulting Client. Returns the list of opened conns so the caller can
@@ -210,26 +272,30 @@ func registerPeerHolders(reg *holder.Registry, peers map[string]string) ([]*grpc
 
 func parseFlags() Config {
 	var (
-		instance   = flag.String("instance", "asset-main", "instance id; shows up in logs + journal ProducerID")
-		grpcAddr   = flag.String("grpc", ":19000", "gRPC listen address")
-		brokers    = flag.String("brokers", "localhost:9092", "comma-separated Kafka bootstrap brokers")
-		topic      = flag.String("journal-topic", journal.DefaultTopic, "asset-journal Kafka topic")
-		env        = flag.String("env", "dev", "environment tag (dev/staging/prod)")
-		level      = flag.String("log-level", "info", "log level: debug | info | warn | error")
-		ledgerDSN  = flag.String("ledger-dsn", "", "MySQL DSN for opentrade_asset.transfer_ledger; empty = funding-holder-only mode")
-		peerFlag   = flag.String("peer-holders", "", "biz_line peer list, e.g. 'spot=counter-0:18000,spot=counter-1:18000,futures=futures:19500'. Keys may repeat; last one wins.")
+		instance       = flag.String("instance", "asset-main", "instance id; shows up in logs + journal ProducerID")
+		grpcAddr       = flag.String("grpc", ":19000", "gRPC listen address")
+		metricsAddr    = flag.String("metrics-addr", ":19090", "Prometheus scrape endpoint (empty disables /metrics HTTP)")
+		brokers        = flag.String("brokers", "localhost:9092", "comma-separated Kafka bootstrap brokers")
+		topic          = flag.String("journal-topic", journal.DefaultTopic, "asset-journal Kafka topic")
+		env            = flag.String("env", "dev", "environment tag (dev/staging/prod)")
+		level          = flag.String("log-level", "info", "log level: debug | info | warn | error")
+		ledgerDSN      = flag.String("ledger-dsn", "", "MySQL DSN for opentrade_asset.transfer_ledger; empty = funding-holder-only mode")
+		peerFlag       = flag.String("peer-holders", "", "biz_line peer list, e.g. 'spot=counter-0:18000,spot=counter-1:18000,futures=futures:19500'. Keys may repeat; last one wins.")
+		reconcileEvery = flag.Duration("reconcile-interval", saga.DefaultReconcileInterval, "saga reconciler tick interval (refreshes saga_state_count gauge)")
 	)
 	flag.Parse()
 
 	return Config{
-		InstanceID:   *instance,
-		GRPCAddr:     *grpcAddr,
-		Brokers:      splitCSV(*brokers),
-		JournalTopic: *topic,
-		Env:          *env,
-		LogLevel:     *level,
-		LedgerDSN:    *ledgerDSN,
-		PeerHolders:  parsePeerList(*peerFlag),
+		InstanceID:        *instance,
+		GRPCAddr:          *grpcAddr,
+		MetricsAddr:       *metricsAddr,
+		Brokers:           splitCSV(*brokers),
+		JournalTopic:      *topic,
+		Env:               *env,
+		LogLevel:          *level,
+		LedgerDSN:         *ledgerDSN,
+		PeerHolders:       parsePeerList(*peerFlag),
+		ReconcileInterval: *reconcileEvery,
 	}
 }
 

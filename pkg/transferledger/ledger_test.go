@@ -336,6 +336,37 @@ func TestListPending_DefaultLimit(t *testing.T) {
 // State helpers
 // ---------------------------------------------------------------------------
 
+func TestCountByState(t *testing.T) {
+	l, mock := newMock(t)
+
+	mock.ExpectQuery(`SELECT state, COUNT(*) FROM transfer_ledger GROUP BY state`).
+		WillReturnRows(sqlmock.NewRows([]string{"state", "count"}).
+			AddRow(string(StateCompleted), 42).
+			AddRow(string(StateCompensateStuck), 1))
+
+	got, err := l.CountByState(context.Background())
+	if err != nil {
+		t.Fatalf("CountByState: %v", err)
+	}
+	if got[StateCompleted] != 42 {
+		t.Errorf("COMPLETED = %d, want 42", got[StateCompleted])
+	}
+	if got[StateCompensateStuck] != 1 {
+		t.Errorf("COMPENSATE_STUCK = %d, want 1", got[StateCompensateStuck])
+	}
+	// Unseen states are present with 0 so gauges can reset labels
+	// rather than leave stale values.
+	if got[StateInit] != 0 {
+		t.Errorf("INIT = %d, want 0", got[StateInit])
+	}
+	if len(got) != len(AllStates) {
+		t.Errorf("map size = %d, want %d", len(got), len(AllStates))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
 func TestState_IsTerminal(t *testing.T) {
 	cases := map[State]bool{
 		StateInit:            false,

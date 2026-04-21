@@ -37,6 +37,7 @@ import (
 
 	"github.com/xargin/opentrade/asset/internal/holder"
 	"github.com/xargin/opentrade/asset/internal/journal"
+	"github.com/xargin/opentrade/asset/internal/metrics"
 	"github.com/xargin/opentrade/pkg/transferledger"
 )
 
@@ -90,12 +91,14 @@ type Driver struct {
 	registry  *holder.Registry
 	publisher journal.Publisher
 	logger    *zap.Logger
+	metrics   *metrics.Saga
 	clock     func() time.Time
 	sleep     func(context.Context, time.Duration)
 }
 
-// New wires a Driver.
-func New(cfg Config, ledger *transferledger.Ledger, registry *holder.Registry, publisher journal.Publisher, logger *zap.Logger) *Driver {
+// New wires a Driver. metrics may be nil — in that case the driver
+// operates with no-op telemetry (useful for tests that don't care).
+func New(cfg Config, ledger *transferledger.Ledger, registry *holder.Registry, publisher journal.Publisher, logger *zap.Logger, m *metrics.Saga) *Driver {
 	applyDefaults(&cfg)
 	if logger == nil {
 		logger = zap.NewNop()
@@ -106,6 +109,7 @@ func New(cfg Config, ledger *transferledger.Ledger, registry *holder.Registry, p
 		registry:  registry,
 		publisher: publisher,
 		logger:    logger,
+		metrics:   m,
 		clock:     time.Now,
 		sleep:     sleepWithCtx,
 	}
@@ -292,6 +296,9 @@ func (d *Driver) doCompensate(ctx context.Context, entry transferledger.Entry) (
 	backoff := d.cfg.CompensateBackoff
 	var lastErr error
 	for attempt := 1; attempt <= d.cfg.CompensateRetries; attempt++ {
+		if d.metrics != nil {
+			d.metrics.CompensateAttempts.Inc()
+		}
 		res, callErr := d.callWithRetry(ctx, 1, 0, "CompensateTransferOut", func(cctx context.Context) (holder.Result, error) {
 			return fromHolder.CompensateTransferOut(cctx, req)
 		})
@@ -365,6 +372,14 @@ func (d *Driver) transition(ctx context.Context, entry transferledger.Entry, to 
 			return current, nil
 		}
 		return entry, fmt.Errorf("saga: update ledger: %w", err)
+	}
+	// Ledger committed — bump telemetry before emitting the journal
+	// event so a publisher hiccup doesn't lose the transition count.
+	if d.metrics != nil {
+		d.metrics.TransitionsTotal.WithLabelValues(string(entry.State), string(to)).Inc()
+		if to == transferledger.StateCompensateStuck {
+			d.metrics.StuckTotal.Inc()
+		}
 	}
 	evt := journal.BuildSagaStateChange(journal.SagaStateChangeInput{
 		AssetSeqID:   d.publisher.NextSeq(),

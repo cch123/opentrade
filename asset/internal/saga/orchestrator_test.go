@@ -52,11 +52,11 @@ func newOrchFixture(t *testing.T) *orchFixture {
 		ForwardBackoff:    1 * time.Millisecond,
 		CompensateRetries: 2,
 		CompensateBackoff: 1 * time.Millisecond,
-	}, ledger, reg, pub, zap.NewNop())
+	}, ledger, reg, pub, zap.NewNop(), nil)
 	driver.SetSleep(func(context.Context, time.Duration) {})
 	driver.SetClock(func() time.Time { return time.UnixMilli(1_700_000_000_000) })
 
-	orch := NewOrchestrator(OrchestratorConfig{}, ledger, driver, zap.NewNop())
+	orch := NewOrchestrator(OrchestratorConfig{}, ledger, driver, zap.NewNop(), nil)
 
 	return &orchFixture{
 		orch: orch, ledger: ledger, mock: mock,

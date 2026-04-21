@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/xargin/opentrade/asset/internal/metrics"
 	"github.com/xargin/opentrade/pkg/transferledger"
 )
 
@@ -24,9 +26,10 @@ import (
 // outcome on the same request. Recover runs asynchronously in its own
 // goroutine pool.
 type Orchestrator struct {
-	ledger *transferledger.Ledger
-	driver *Driver
-	logger *zap.Logger
+	ledger  *transferledger.Ledger
+	driver  *Driver
+	logger  *zap.Logger
+	metrics *metrics.Saga
 
 	// inflight tracks transfer_ids currently being driven so Recover
 	// doesn't race the primary Transfer path on the same row.
@@ -40,8 +43,10 @@ type OrchestratorConfig struct {
 	RecoverParallelism int
 }
 
-// NewOrchestrator wires an Orchestrator.
-func NewOrchestrator(cfg OrchestratorConfig, ledger *transferledger.Ledger, driver *Driver, logger *zap.Logger) *Orchestrator {
+// NewOrchestrator wires an Orchestrator. m may be nil — tests or
+// deployments without a metrics endpoint pass nil and the orchestrator
+// silently skips observations.
+func NewOrchestrator(cfg OrchestratorConfig, ledger *transferledger.Ledger, driver *Driver, logger *zap.Logger, m *metrics.Saga) *Orchestrator {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -53,6 +58,7 @@ func NewOrchestrator(cfg OrchestratorConfig, ledger *transferledger.Ledger, driv
 		ledger:     ledger,
 		driver:     driver,
 		logger:     logger,
+		metrics:    m,
 		recoverSem: make(chan struct{}, par),
 	}
 }
@@ -207,7 +213,30 @@ func (o *Orchestrator) driveOwned(ctx context.Context, entry transferledger.Entr
 	if err != nil {
 		return TransferOutput{}, err
 	}
+	o.observeTerminalDuration(entry, final)
 	return toOutput(final), nil
+}
+
+// observeTerminalDuration records how long the saga took from creation
+// to terminal, labelled by final state. Non-terminal runs and missing
+// metrics handle are skipped. CreatedAtMs is 0 for ledger rows we never
+// re-read after transition() bumped them, but the Run contract
+// guarantees `final` came through the ledger so the timestamp is set.
+func (o *Orchestrator) observeTerminalDuration(initial, final transferledger.Entry) {
+	if o.metrics == nil {
+		return
+	}
+	if !final.State.IsTerminal() {
+		return
+	}
+	if initial.CreatedAtMs <= 0 || final.UpdatedAtMs <= 0 {
+		return
+	}
+	elapsed := time.Duration(final.UpdatedAtMs-initial.CreatedAtMs) * time.Millisecond
+	if elapsed < 0 {
+		return
+	}
+	o.metrics.TerminalDurationSec.WithLabelValues(string(final.State)).Observe(elapsed.Seconds())
 }
 
 func validateTransfer(in TransferInput) error {

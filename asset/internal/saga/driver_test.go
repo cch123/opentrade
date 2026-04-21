@@ -128,7 +128,7 @@ func newFixture(t *testing.T) *fixture {
 		ForwardBackoff:    1 * time.Millisecond,
 		CompensateRetries: 3,
 		CompensateBackoff: 1 * time.Millisecond,
-	}, ledger, reg, pub, zap.NewNop())
+	}, ledger, reg, pub, zap.NewNop(), nil)
 	d.SetSleep(func(context.Context, time.Duration) {}) // skip backoff waits
 	d.SetClock(func() time.Time { return time.UnixMilli(1_700_000_000_000) })
 
@@ -420,7 +420,7 @@ func TestRun_ToBizUnknown_StartsCompensate(t *testing.T) {
 		ProducerID: "asset-test", RPCTimeout: 100 * time.Millisecond,
 		ForwardRetries: 1, ForwardBackoff: 1 * time.Millisecond,
 		CompensateRetries: 2, CompensateBackoff: 1 * time.Millisecond,
-	}, f.ledger, f.registry, f.pub, zap.NewNop())
+	}, f.ledger, f.registry, f.pub, zap.NewNop(), nil)
 	f.driver.SetSleep(func(context.Context, time.Duration) {})
 	f.driver.SetClock(func() time.Time { return time.UnixMilli(1_700_000_000_000) })
 

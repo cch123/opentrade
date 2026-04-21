@@ -327,6 +327,51 @@ func (l *Ledger) ListPending(ctx context.Context, limit int) ([]Entry, error) {
 }
 
 // ---------------------------------------------------------------------------
+// CountByState
+// ---------------------------------------------------------------------------
+
+// CountByState returns how many ledger rows exist in each State. States
+// never observed get a zero entry so callers can reset a Prometheus
+// gauge without leaving stale labels. The returned map is always sized
+// to len(AllStates) — missing rows in the DB become 0s in the map.
+func (l *Ledger) CountByState(ctx context.Context) (map[State]int64, error) {
+	const q = `SELECT state, COUNT(*) FROM transfer_ledger GROUP BY state`
+	rows, err := l.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[State]int64, len(AllStates))
+	for _, s := range AllStates {
+		out[s] = 0
+	}
+	for rows.Next() {
+		var (
+			st    string
+			count int64
+		)
+		if err := rows.Scan(&st, &count); err != nil {
+			return nil, err
+		}
+		out[State(st)] = count
+	}
+	return out, rows.Err()
+}
+
+// AllStates lists every State value in canonical order. Exported so
+// callers (e.g. metrics) can iterate without duplicating the list.
+var AllStates = []State{
+	StateInit,
+	StateDebited,
+	StateCompleted,
+	StateFailed,
+	StateCompensating,
+	StateCompensated,
+	StateCompensateStuck,
+}
+
+// ---------------------------------------------------------------------------
 // scan helper
 // ---------------------------------------------------------------------------
 
