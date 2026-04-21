@@ -3,6 +3,7 @@ module github.com/xargin/opentrade/asset
 go 1.26
 
 require (
+	github.com/go-sql-driver/mysql v1.9.3
 	github.com/twmb/franz-go v1.18.0
 	github.com/xargin/opentrade/api v0.0.0-00010101000000-000000000000
 	github.com/xargin/opentrade/pkg v0.0.0-00010101000000-000000000000
@@ -12,6 +13,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect

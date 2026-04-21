@@ -243,10 +243,11 @@ func (l *Ledger) Get(ctx context.Context, transferID string) (Entry, error) {
 // ---------------------------------------------------------------------------
 
 // UpdateState advances transfer_id from `from` to `to` atomically using
-// `WHERE state = from` as the optimistic lock. rejectReason is only
-// persisted when `to` ∈ {FAILED, COMPENSATE_STUCK}; any other transition
-// clears reject_reason to empty so stale reasons don't leak into
-// intermediate states.
+// `WHERE state = from` as the optimistic lock. rejectReason is persisted
+// for states that carry a failure or in-flight-failure-cause signal
+// (FAILED / COMPENSATE_STUCK / COMPENSATING) and cleared for the
+// "happy" states (DEBITED / COMPLETED / COMPENSATED) so stale reasons
+// don't leak into forward progress.
 //
 // Returns:
 //   - nil                on success (exactly 1 row updated)
@@ -279,9 +280,14 @@ func (l *Ledger) UpdateState(ctx context.Context, transferID string, from, to St
 	return ErrStateMismatch
 }
 
+// stateCarriesReason returns true for states where a reject_reason
+// value is semantically meaningful and should be persisted. FAILED and
+// COMPENSATE_STUCK are terminal failures; COMPENSATING is in-flight but
+// MUST carry "why we're compensating" for debugging — otherwise the
+// trigger cause is lost by the time it terminates as COMPENSATED.
 func stateCarriesReason(s State) bool {
 	switch s {
-	case StateFailed, StateCompensateStuck:
+	case StateFailed, StateCompensateStuck, StateCompensating:
 		return true
 	}
 	return false

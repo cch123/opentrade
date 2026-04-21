@@ -21,8 +21,10 @@ import (
 	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
 	"github.com/xargin/opentrade/asset/internal/engine"
+	"github.com/xargin/opentrade/asset/internal/saga"
 	"github.com/xargin/opentrade/asset/internal/service"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/transferledger"
 )
 
 // AssetHolderServer implements assetholderrpc.AssetHolderServer.
@@ -104,16 +106,85 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *asse
 // ---------------------------------------------------------------------------
 
 // AssetServer implements assetrpc.AssetServiceServer. Transfer +
-// QueryTransfer return Unimplemented until M3b wires the saga
-// orchestrator.
+// QueryTransfer are wired in M3b via the saga orchestrator;
+// QueryFundingBalance uses the funding service directly.
 type AssetServer struct {
 	assetrpc.UnimplementedAssetServiceServer
-	svc *service.Service
+	svc    *service.Service
+	orch   *saga.Orchestrator
 }
 
-// NewAssetServer wires an AssetServer.
-func NewAssetServer(svc *service.Service) *AssetServer {
-	return &AssetServer{svc: svc}
+// NewAssetServer wires an AssetServer. orch may be nil for test setups
+// that only exercise QueryFundingBalance; Transfer / QueryTransfer
+// return FailedPrecondition in that case.
+func NewAssetServer(svc *service.Service, orch *saga.Orchestrator) *AssetServer {
+	return &AssetServer{svc: svc, orch: orch}
+}
+
+// Transfer implements the cross-biz_line saga orchestrator entrypoint.
+// The call blocks until the saga reaches a terminal state (COMPLETED /
+// FAILED / COMPENSATED / COMPENSATE_STUCK) or the RPC context is
+// cancelled — the caller observes the outcome in TransferResponse.state
+// on the same request. Non-terminal outcomes still return successfully
+// with terminal=false so the client can follow up via QueryTransfer.
+func (s *AssetServer) Transfer(ctx context.Context, req *assetrpc.TransferRequest) (*assetrpc.TransferResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+	if s.orch == nil {
+		return nil, status.Error(codes.FailedPrecondition, "saga orchestrator not configured")
+	}
+	if err := validateTransferAmount(req.Amount); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	out, err := s.orch.Transfer(ctx, saga.TransferInput{
+		UserID:     req.UserId,
+		TransferID: req.TransferId,
+		FromBiz:    req.FromBiz,
+		ToBiz:      req.ToBiz,
+		Asset:      req.Asset,
+		Amount:     req.Amount,
+		Memo:       req.Memo,
+	})
+	if err != nil {
+		return nil, sagaErrToStatus(err)
+	}
+	return &assetrpc.TransferResponse{
+		TransferId:   out.TransferID,
+		State:        sagaStateToProto(out.State),
+		RejectReason: out.Reason,
+		Terminal:     out.Terminal,
+	}, nil
+}
+
+// QueryTransfer returns the current state of a saga. Used by BFF
+// polling after a Transfer RPC returned terminal=false.
+func (s *AssetServer) QueryTransfer(ctx context.Context, req *assetrpc.QueryTransferRequest) (*assetrpc.QueryTransferResponse, error) {
+	if req == nil || req.TransferId == "" {
+		return nil, status.Error(codes.InvalidArgument, "transfer_id required")
+	}
+	if s.orch == nil {
+		return nil, status.Error(codes.FailedPrecondition, "saga orchestrator not configured")
+	}
+	e, err := s.orch.QueryEntry(ctx, req.TransferId)
+	if err != nil {
+		if errors.Is(err, transferledger.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "unknown transfer_id")
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &assetrpc.QueryTransferResponse{
+		TransferId:      e.TransferID,
+		UserId:          e.UserID,
+		FromBiz:         e.FromBiz,
+		ToBiz:           e.ToBiz,
+		Asset:           e.Asset,
+		Amount:          e.Amount,
+		State:           ledgerStateToProto(e.State),
+		RejectReason:    e.RejectReason,
+		CreatedAtUnixMs: e.CreatedAtMs,
+		UpdatedAtUnixMs: e.UpdatedAtMs,
+	}, nil
 }
 
 // QueryFundingBalance returns funding balances for the user. asset ==
@@ -208,4 +279,65 @@ func rejectReasonToProto(err error) assetholderrpc.RejectReason {
 		return assetholderrpc.RejectReason_REJECT_REASON_AMOUNT_INVALID
 	}
 	return assetholderrpc.RejectReason_REJECT_REASON_INTERNAL
+}
+
+// ---------------------------------------------------------------------------
+// Saga helpers
+// ---------------------------------------------------------------------------
+
+// validateTransferAmount is a light pre-flight check so obviously bad
+// amounts fail fast at the RPC boundary. The saga driver also relies
+// on the holder's own validation; we duplicate it here for clearer
+// error codes (InvalidArgument vs Internal).
+func validateTransferAmount(amount string) error {
+	if amount == "" {
+		return fmt.Errorf("amount required")
+	}
+	amt, err := dec.Parse(amount)
+	if err != nil {
+		return fmt.Errorf("invalid amount %q: %w", amount, err)
+	}
+	if amt.Sign() <= 0 {
+		return fmt.Errorf("amount must be positive")
+	}
+	return nil
+}
+
+// sagaStateToProto / ledgerStateToProto map the internal State enum
+// (string-valued in transferledger) to the proto SagaState enum. Kept
+// as two functions so each call site is explicit about whether it is
+// projecting a TransferOutput or a raw ledger Entry.
+func sagaStateToProto(s transferledger.State) assetrpc.SagaState {
+	return ledgerStateToProto(s)
+}
+
+func ledgerStateToProto(s transferledger.State) assetrpc.SagaState {
+	switch s {
+	case transferledger.StateInit:
+		return assetrpc.SagaState_SAGA_STATE_INIT
+	case transferledger.StateDebited:
+		return assetrpc.SagaState_SAGA_STATE_DEBITED
+	case transferledger.StateCompleted:
+		return assetrpc.SagaState_SAGA_STATE_COMPLETED
+	case transferledger.StateFailed:
+		return assetrpc.SagaState_SAGA_STATE_FAILED
+	case transferledger.StateCompensating:
+		return assetrpc.SagaState_SAGA_STATE_COMPENSATING
+	case transferledger.StateCompensated:
+		return assetrpc.SagaState_SAGA_STATE_COMPENSATED
+	case transferledger.StateCompensateStuck:
+		return assetrpc.SagaState_SAGA_STATE_COMPENSATE_STUCK
+	}
+	return assetrpc.SagaState_SAGA_STATE_UNSPECIFIED
+}
+
+// sagaErrToStatus maps orchestrator errors to gRPC status codes.
+// Business errors (invalid shape) are InvalidArgument; unknown
+// biz_line surfaces as FailedPrecondition; anything else is Internal.
+func sagaErrToStatus(err error) error {
+	switch {
+	case errors.Is(err, saga.ErrInvalidRequest), errors.Is(err, saga.ErrSameBiz):
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return status.Error(codes.Internal, err.Error())
 }

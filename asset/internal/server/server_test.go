@@ -43,7 +43,7 @@ func newServers(t *testing.T) (*AssetHolderServer, *AssetServer) {
 	state := engine.NewState()
 	pub := &fakePub{}
 	svc := service.New(service.Config{ProducerID: "asset-main"}, state, pub, zap.NewNop())
-	return NewAssetHolderServer(svc), NewAssetServer(svc)
+	return NewAssetHolderServer(svc), NewAssetServer(svc, nil)
 }
 
 func TestHolder_TransferIn_Confirmed(t *testing.T) {
