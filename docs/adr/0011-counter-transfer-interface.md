@@ -1,6 +1,6 @@
 # ADR-0011: Counter 提供统一的 Transfer 接口
 
-- 状态: Accepted
+- 状态: Superseded by [ADR-0057](./0057-asset-service-and-transfer-saga.md)（M4 落地于 commit ab343ef — `Counter.Transfer` 对外 gRPC 物理删除；Counter 进程内 `svc.Transfer` 函数作为 AssetHolder 三方法的共享实现基底保留）
 - 日期: 2026-04-18
 - 决策者: xargin, Claude
 - 相关 ADR: 0004, 0015, 0018

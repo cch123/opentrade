@@ -1,6 +1,6 @@
 # ADR-0057: 资产服务（funding wallet）+ 跨子系统划转 Saga 协议
 
-- 状态: Proposed
+- 状态: Accepted（M1-M4 落地于 commits 20fd0c3 / c19af21 / faaab7a / b30f7d3 / ab343ef；M5 trade-dump 投影 + M6 对账/监控未完成）
 - 日期: 2026-04-20
 - 决策者: xargin, Claude
 - 相关 ADR: 0001（Kafka 作为事件权威源）、0004（counter-journal）、0005（Kafka 事务双写）、0011（Counter 统一 Transfer 接口）、0015（客户端幂等）、0018（Counter UserSequencer）、0028（trade-dump 投影）、0046（History 只读网关）、0048（双层 version）、0049（snapshot protobuf）

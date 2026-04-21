@@ -81,9 +81,9 @@
 
 | 编号 | 标题 | 状态 |
 |---|---|---|
-| [0011](0011-counter-transfer-interface.md) | Counter 提供统一的 Transfer 接口（deposit/withdraw/freeze/unfreeze） | Accepted |
+| [0011](0011-counter-transfer-interface.md) | Counter 提供统一的 Transfer 接口（deposit/withdraw/freeze/unfreeze） | Superseded by 0057 |
 | [0041](0041-counter-reservations.md) | Counter 资金预留（Reservations）— 区别于 Transfer.FREEZE | Accepted |
-| [0057](0057-asset-service-and-transfer-saga.md) | 资产服务（funding wallet）+ 跨子系统划转 Saga（统一 AssetHolder 接口，不引入 Seata） | Proposed |
+| [0057](0057-asset-service-and-transfer-saga.md) | 资产服务（funding wallet）+ 跨子系统划转 Saga（统一 AssetHolder 接口，不引入 Seata） | Accepted |
 
 ### 撮合与订单语义
 
