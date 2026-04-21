@@ -12,6 +12,7 @@ require (
 )
 
 require (
+	connectrpc.com/connect v1.19.2 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/net v0.51.0 // indirect
