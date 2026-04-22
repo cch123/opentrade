@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -65,6 +66,12 @@ const (
 	defaultOrderEvictInterval  = 30 * time.Second
 	defaultOrderEvictRetention = 1 * time.Hour
 	defaultOrderEvictMaxBatch  = 500
+
+	// ADR-0062 §5 circuit-breaker defaults. Snapshot staleness is
+	// the longer bound (trade-dump pipeline downtime tolerance);
+	// checkpoint staleness is the shorter bound (advancer liveness).
+	defaultEvictSnapshotStaleAfter   = 2 * time.Hour
+	defaultEvictCheckpointStaleAfter = 5 * time.Minute
 )
 
 // Config wires all per-vshard dependencies. Brokers / topics / store
@@ -109,6 +116,20 @@ type Config struct {
 	OrderEvictRetention time.Duration
 	OrderEvictMaxBatch  int
 
+	// EvictSnapshotStaleAfter is the age at which a missing snapshot
+	// round trips this vshard's evictor into the circuit-breaker halt
+	// state (ADR-0062 §5). Measured against VShardWorker's own last
+	// writeSnapshot success — in the post-ADR-0061 world this will
+	// be read from the authoritative snapshot store's metadata. 0
+	// falls back to the default (2h).
+	EvictSnapshotStaleAfter time.Duration
+
+	// EvictCheckpointStaleAfter is the age at which a missing
+	// TECheckpoint publish halts eviction — downstream (trade-dump)
+	// stops advancing its te_watermark so newly evicted orders would
+	// miss the snapshot pipeline. 0 falls back to the default (5m).
+	EvictCheckpointStaleAfter time.Duration
+
 	// Metrics is the optional ADR-0060 M8 + ADR-0062 M8 observability
 	// hook. Nil disables emission (tests / legacy paths). Production
 	// main.go constructs a single *metrics.Counter and shares it
@@ -133,6 +154,13 @@ type VShardWorker struct {
 	// goroutines (ADR-0060 §1.3). Populated before the first consumer
 	// record is dispatched; reads are safe once Ready() closes.
 	pending *pendingList
+
+	// lastCheckpointAtMs / lastSnapshotAtMs are liveness timestamps
+	// sampled by the ADR-0062 §5 evict circuit breaker. Updated by
+	// emitCheckpoint + writeSnapshot on success; read by
+	// evictHealthCheck before each round.
+	lastCheckpointAtMs atomic.Int64
+	lastSnapshotAtMs   atomic.Int64
 
 	ready chan struct{}
 }
@@ -182,6 +210,12 @@ func New(cfg Config) (*VShardWorker, error) {
 	}
 	if cfg.OrderEvictMaxBatch <= 0 {
 		cfg.OrderEvictMaxBatch = defaultOrderEvictMaxBatch
+	}
+	if cfg.EvictSnapshotStaleAfter <= 0 {
+		cfg.EvictSnapshotStaleAfter = defaultEvictSnapshotStaleAfter
+	}
+	if cfg.EvictCheckpointStaleAfter <= 0 {
+		cfg.EvictCheckpointStaleAfter = defaultEvictCheckpointStaleAfter
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
@@ -507,6 +541,11 @@ func (w *VShardWorker) emitCheckpoint(
 	}
 	w.cfg.Metrics.RecordCheckpointPublish(int32(w.cfg.VShardID), true)
 	w.svc.AdvanceOffset(partition, maxOffset+1)
+	// Stamp advancer liveness for the ADR-0062 §5 evict circuit
+	// breaker. "Last publish" means a checkpoint actually landed on
+	// Kafka — publish failures above do NOT touch this so the
+	// breaker sees the real outage.
+	w.lastCheckpointAtMs.Store(time.Now().UnixMilli())
 	// Refresh pendingList gauge on each successful advance — the
 	// gauge's denominator is the same list this advancer just
 	// shortened, so post-pop is the natural sampling point. Using
@@ -548,9 +587,65 @@ func (w *VShardWorker) runOrderEvictor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !w.evictHealthCheck(logger) {
+				// Circuit breaker tripped — skip this round. The
+				// health-check itself emits the metric + log so
+				// operators have a trail. Orders stay in byID
+				// until either health recovers or Counter
+				// restarts.
+				continue
+			}
 			w.evictOneRound(ctx, logger, w.producer)
 		}
 	}
+}
+
+// evictHealthCheck implements ADR-0062 §5: before each round, verify
+// that downstream (trade-dump) is keeping up by checking two
+// liveness signals:
+//
+//  1. lastSnapshotAtMs: the most recent successful writeSnapshot.
+//     In the Counter-writes-own-snapshot world this is our own
+//     snapshot; post-ADR-0061 it'll be trade-dump's snapshot read
+//     from blob-store metadata. Either way, stale snapshot means
+//     orders evicted now would not land in the authoritative
+//     snapshot within the retention window.
+//  2. lastCheckpointAtMs: the most recent successful
+//     TECheckpointEvent publish. Stale checkpoint means the
+//     advancer is stuck — no new watermark reaches trade-dump and
+//     evict pre-emptively halts to avoid a loss window.
+//
+// Returns true to proceed, false to skip the round. A false return
+// always logs + increments counter_evict_halted_total so it shows
+// up in dashboards.
+//
+// Zero timestamps (never set — cold start before first success)
+// are treated as "healthy" so the evictor can warm up on fresh
+// pods; the retention window (1h default) is longer than any
+// reasonable startup so nothing gets evicted in this window anyway.
+func (w *VShardWorker) evictHealthCheck(logger *zap.Logger) bool {
+	now := time.Now().UnixMilli()
+	if ts := w.lastSnapshotAtMs.Load(); ts > 0 {
+		age := time.Duration(now-ts) * time.Millisecond
+		if age > w.cfg.EvictSnapshotStaleAfter {
+			logger.Warn("evict halted: snapshot stale",
+				zap.Duration("age", age),
+				zap.Duration("threshold", w.cfg.EvictSnapshotStaleAfter))
+			w.cfg.Metrics.RecordEvictHalted(int32(w.cfg.VShardID), "snapshot_stale")
+			return false
+		}
+	}
+	if ts := w.lastCheckpointAtMs.Load(); ts > 0 {
+		age := time.Duration(now-ts) * time.Millisecond
+		if age > w.cfg.EvictCheckpointStaleAfter {
+			logger.Warn("evict halted: checkpoint stale",
+				zap.Duration("age", age),
+				zap.Duration("threshold", w.cfg.EvictCheckpointStaleAfter))
+			w.cfg.Metrics.RecordEvictHalted(int32(w.cfg.VShardID), "checkpoint_stale")
+			return false
+		}
+	}
+	return true
 }
 
 // evictOneRound is one tick of the evictor loop. pub is injected so
@@ -674,5 +769,12 @@ func (w *VShardWorker) writeSnapshot(ctx context.Context) error {
 	// section). ADR-0060 M8.
 	w.cfg.Metrics.RecordSnapshotDuration(int32(w.cfg.VShardID), time.Since(start).Seconds())
 	w.cfg.Metrics.RecordCounterSeq(int32(w.cfg.VShardID), w.seq.CounterSeq())
+	// Stamp snapshot liveness ONLY on Save success. The evict
+	// circuit breaker reads this to decide if trade-dump /
+	// downstream pipeline is healthy enough to accept evict
+	// deletes (ADR-0062 §5).
+	if err == nil {
+		w.lastSnapshotAtMs.Store(time.Now().UnixMilli())
+	}
 	return err
 }
