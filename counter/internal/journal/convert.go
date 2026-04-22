@@ -489,3 +489,30 @@ func orderStatusToProto(s engine.OrderStatus) eventpb.InternalOrderStatus {
 	}
 	return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_UNSPECIFIED
 }
+
+// OrderStatusFromProto is the inverse of orderStatusToProto, used by
+// ADR-0060 catch-up replay to recover engine.OrderStatus from a journal
+// event's InternalOrderStatus field. Unknown / UNSPECIFIED values map
+// to OrderStatusUnspecified; callers decide whether to skip or error
+// on that (catch-up skips).
+func OrderStatusFromProto(s eventpb.InternalOrderStatus) engine.OrderStatus {
+	switch s {
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW:
+		return engine.OrderStatusPendingNew
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW:
+		return engine.OrderStatusNew
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED:
+		return engine.OrderStatusPartiallyFilled
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED:
+		return engine.OrderStatusFilled
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL:
+		return engine.OrderStatusPendingCancel
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED:
+		return engine.OrderStatusCanceled
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_REJECTED:
+		return engine.OrderStatusRejected
+	case eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_EXPIRED:
+		return engine.OrderStatusExpired
+	}
+	return engine.OrderStatusUnspecified
+}

@@ -204,6 +204,15 @@ type ShardSnapshot struct {
 	// trade-event topic (ADR-0048). Written at v2+; v1 files leave this nil
 	// and Restore tolerates that.
 	Offsets []KafkaOffset `json:"offsets,omitempty"`
+	// JournalOffset records the next-to-consume position on this vshard's
+	// counter-journal partition at snapshot moment (ADR-0060 §4.1).
+	// Recovery uses it to drive a catch-up journal consumer that
+	// re-applies events published after the state in this snapshot was
+	// last synced — covers the crash window between "state mutated +
+	// journal published" and "snapshot captured". Zero means either
+	// pre-0060 snapshot (no catch-up) or steady-state cold start (no
+	// prior publishes).
+	JournalOffset int64 `json:"journal_offset,omitempty"`
 }
 
 // -----------------------------------------------------------------------------
@@ -219,13 +228,20 @@ type ShardSnapshot struct {
 // partition (ADR-0048). Pass nil (or empty) on cold paths; the callers in
 // MVP code read it from service.Service.Offsets() after having flushed the
 // Kafka transactional producer (output flush barrier).
-func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, offsets map[int32]int64, tsMS int64) *ShardSnapshot {
+//
+// journalOffset is the next-to-consume position on this vshard's
+// counter-journal partition at the moment Capture runs (ADR-0060 §4.1).
+// Callers MUST Flush the TxnProducer before reading it and pass the
+// result here; zero is acceptable for pre-0060 callers / cold start
+// paths — catch-up on Restore becomes a no-op.
+func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, offsets map[int32]int64, journalOffset int64, tsMS int64) *ShardSnapshot {
 	snap := &ShardSnapshot{
-		Version:     Version,
-		ShardID:     shardID,
-		CounterSeq:  seq.CounterSeq(),
-		TimestampMS: tsMS,
-		Offsets:     OffsetsMapToSlice(offsets),
+		Version:       Version,
+		ShardID:       shardID,
+		CounterSeq:    seq.CounterSeq(),
+		TimestampMS:   tsMS,
+		Offsets:       OffsetsMapToSlice(offsets),
+		JournalOffset: journalOffset,
 	}
 	for _, userID := range state.Users() {
 		acc := state.Account(userID)
@@ -581,10 +597,11 @@ func toProto(s *ShardSnapshot) *snapshotpb.CounterShardSnapshot {
 		return nil
 	}
 	pb := &snapshotpb.CounterShardSnapshot{
-		Version:     uint32(s.Version),
-		ShardId:     int32(s.ShardID),
-		CounterSeq:  s.CounterSeq,
-		TimestampMs: s.TimestampMS,
+		Version:       uint32(s.Version),
+		ShardId:       int32(s.ShardID),
+		CounterSeq:    s.CounterSeq,
+		TimestampMs:   s.TimestampMS,
+		JournalOffset: s.JournalOffset,
 	}
 	if len(s.Accounts) > 0 {
 		pb.Accounts = make([]*snapshotpb.CounterAccount, 0, len(s.Accounts))
@@ -688,10 +705,11 @@ func fromProto(pb *snapshotpb.CounterShardSnapshot) *ShardSnapshot {
 		return nil
 	}
 	s := &ShardSnapshot{
-		Version:     int(pb.Version),
-		ShardID:     int(pb.ShardId),
-		CounterSeq:  pb.CounterSeq,
-		TimestampMS: pb.TimestampMs,
+		Version:       int(pb.Version),
+		ShardID:       int(pb.ShardId),
+		CounterSeq:    pb.CounterSeq,
+		TimestampMS:   pb.TimestampMs,
+		JournalOffset: pb.JournalOffset,
 	}
 	if n := len(pb.Accounts); n > 0 {
 		s.Accounts = make([]AccountSnapshot, 0, n)

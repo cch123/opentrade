@@ -88,6 +88,27 @@ func (s *UserSequencer) CounterSeq() uint64 { return s.counterSeq.Load() }
 // tasks (typically used to restore from a snapshot).
 func (s *UserSequencer) SetCounterSeq(seq uint64) { s.counterSeq.Store(seq) }
 
+// AdvanceCounterSeqTo bumps the counter seq to max(current, seq). Used
+// by ADR-0060 catch-up journal replay: each replayed event carries a
+// counter_seq_id set by the original producer, and the sequencer must
+// not hand out a new seq <= any seen value or downstream idempotency
+// (counter_seq_id as dedup key in trade-dump / accounts_log) breaks.
+//
+// Call only during recovery / before any SubmitAsync. Under concurrent
+// writers the CAS loop would starve; in recovery there is no concurrent
+// allocator because Service is not yet serving.
+func (s *UserSequencer) AdvanceCounterSeqTo(seq uint64) {
+	for {
+		cur := s.counterSeq.Load()
+		if seq <= cur {
+			return
+		}
+		if s.counterSeq.CompareAndSwap(cur, seq) {
+			return
+		}
+	}
+}
+
 // Execute enqueues fn on userID's FIFO queue and BLOCKS until it runs.
 // The callback receives a freshly allocated counter-shard-scoped
 // monotonic seq. Used by RPC paths (PlaceOrder / Transfer /

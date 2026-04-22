@@ -29,7 +29,17 @@ message CounterShardSnapshot {
   repeated CounterOrder orders = 6;
   repeated CounterDedupEntry dedup = 7;          // legacy pre-ring, ADR-0048 #4
   repeated CounterReservation reservations = 8;
-  repeated CounterKafkaOffset offsets = 9;
+  repeated CounterKafkaOffset offsets = 9;        // trade-event te_watermark per partition (ADR-0048 / ADR-0060)
+
+  // journal_offset is the next-to-consume position on this vshard's
+  // counter-journal partition at snapshot moment (ADR-0060 §4.1).
+  // Recovery seeks a catch-up consumer to this offset and replays
+  // events idempotently before opening the trade-event consumer at
+  // `offsets` — covers the window where a journal record was
+  // committed but the state mutation it describes did not make it
+  // into the snapshot (or vice versa). Zero means "no journal events
+  // ever published" — catch-up becomes a no-op.
+  int64 journal_offset = 10;
 }
 
 message CounterAccount {

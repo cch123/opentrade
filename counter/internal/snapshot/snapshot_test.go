@@ -119,7 +119,7 @@ func TestCaptureRestore(t *testing.T) {
 	state.Account("u1").AdvanceMatchSeq("ETH-USDT", 7)
 
 	offsets := map[int32]int64{0: 100, 2: 55}
-	snap := Capture(3, state, seq, dt, offsets, 0)
+	snap := Capture(3, state, seq, dt, offsets, 1234, 0)
 
 	// Persist and reload (default proto format, ADR-0049).
 	ctx := context.Background()
@@ -156,6 +156,10 @@ func TestCaptureRestore(t *testing.T) {
 	got := OffsetsSliceToMap(loaded.Offsets)
 	if len(got) != 2 || got[0] != 100 || got[2] != 55 {
 		t.Fatalf("offsets round-trip: %v", got)
+	}
+	// JournalOffset round-trip (ADR-0060 §4.1).
+	if loaded.JournalOffset != 1234 {
+		t.Fatalf("journal_offset round-trip = %d, want 1234", loaded.JournalOffset)
 	}
 	// LastMatchSeq round-trip (ADR-0048 backlog item 2).
 	if got := state2.Account("u1").LastMatchSeq("BTC-USDT"); got != 101 {
@@ -204,7 +208,7 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 
 	ctx := context.Background()
 	store := newFSStore(t)
-	if err := Save(ctx, store, "shard-0", Capture(0, state, seq, dt, nil, 0), FormatProto); err != nil {
+	if err := Save(ctx, store, "shard-0", Capture(0, state, seq, dt, nil, 0, 0), FormatProto); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := Load(ctx, store, "shard-0")
@@ -262,7 +266,7 @@ func testCaptureRestoreTerminatedRing(t *testing.T, format Format) {
 	// u2 stays empty — verifies absent field restores clean.
 	_ = state.Account("u2")
 
-	snap := Capture(0, state, seq, dt, nil, 0)
+	snap := Capture(0, state, seq, dt, nil, 0, 0)
 
 	// Sanity: captured snapshot carries the ring oldest → newest.
 	var u1 *AccountSnapshot
@@ -380,7 +384,7 @@ func testCaptureRestoreOrderTerminatedAt(t *testing.T, format Format) {
 		t.Fatalf("seed terminal: %v", err)
 	}
 
-	snap := Capture(0, state, seq, dt, nil, 0)
+	snap := Capture(0, state, seq, dt, nil, 0, 0)
 
 	ctx := context.Background()
 	store := newFSStore(t)

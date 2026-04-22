@@ -201,18 +201,21 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
 	snap, err := snapshot.Load(ctx, w.cfg.Store, key)
 	var offsets map[int32]int64
+	var journalOffset int64
 	switch {
 	case err == nil:
 		if err := snapshot.Restore(int(w.cfg.VShardID), state, seq, dt, snap); err != nil {
 			return fmt.Errorf("snapshot restore: %w", err)
 		}
 		offsets = snapshot.OffsetsSliceToMap(snap.Offsets)
+		journalOffset = snap.JournalOffset
 		logger.Info("restored from snapshot",
 			zap.Int("version", snap.Version),
 			zap.Uint64("counter_seq", snap.CounterSeq),
 			zap.Int("accounts", len(snap.Accounts)),
 			zap.Int("orders", len(snap.Orders)),
-			zap.Int("partitions", len(offsets)))
+			zap.Int("partitions", len(offsets)),
+			zap.Int64("journal_offset", journalOffset))
 	case errors.Is(err, os.ErrNotExist):
 		logger.Info("no snapshot found, starting fresh")
 	default:
@@ -262,6 +265,19 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	w.dedupTable = dt
 	w.svc = svc
 	w.producer = producer
+
+	// ADR-0060 §4.2: catch-up journal replay happens BEFORE Ready
+	// closes so that any RPC or trade-event dispatched to this
+	// worker observes state that reflects every journal event
+	// committed by the previous owner (including publishes that
+	// raced the last snapshot). Skipped when the loaded snapshot
+	// has journal_offset == 0 (cold start / pre-0060 snapshot).
+	if journalOffset > 0 {
+		if err := w.catchUpJournal(ctx, journalOffset); err != nil {
+			return fmt.Errorf("catchup journal: %w", err)
+		}
+	}
+
 	close(w.ready)
 
 	// ADR-0060: consumer loop is fire-and-forget. Each trade-event
@@ -581,6 +597,14 @@ func (w *VShardWorker) evictOne(ctx context.Context, o *engine.Order, pub journa
 // producer (ADR-0048 output flush barrier). All reads happen via the
 // Service / engine APIs that are concurrency-safe, so it runs alongside
 // the consumer without extra locking.
+//
+// journal_offset is sampled AFTER Flush: Flush drains every in-flight
+// produce, so every publish whose state-mutation is visible to Capture
+// has its offset reflected in journalHighOffset. Any publishes that
+// happen between Flush return and Capture read race with state mutation
+// too, but both race targets move forward together — catch-up on
+// restore observes them as "events after the recorded offset" and
+// applies them idempotently.
 func (w *VShardWorker) writeSnapshot(ctx context.Context) error {
 	if err := w.producer.Flush(ctx); err != nil {
 		return fmt.Errorf("flush before snapshot: %w", err)
@@ -589,6 +613,7 @@ func (w *VShardWorker) writeSnapshot(ctx context.Context) error {
 		int(w.cfg.VShardID),
 		w.state, w.seq, w.dedupTable,
 		w.svc.Offsets(),
+		w.producer.JournalOffsetNext(),
 		time.Now().UnixMilli(),
 	)
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)

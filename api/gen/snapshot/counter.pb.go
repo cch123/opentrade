@@ -22,16 +22,25 @@ const (
 )
 
 type CounterShardSnapshot struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Version       uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
-	ShardId       int32                  `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	CounterSeq    uint64                 `protobuf:"varint,3,opt,name=counter_seq,json=counterSeq,proto3" json:"counter_seq,omitempty"`
-	TimestampMs   int64                  `protobuf:"varint,4,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"`
-	Accounts      []*CounterAccount      `protobuf:"bytes,5,rep,name=accounts,proto3" json:"accounts,omitempty"`
-	Orders        []*CounterOrder        `protobuf:"bytes,6,rep,name=orders,proto3" json:"orders,omitempty"`
-	Dedup         []*CounterDedupEntry   `protobuf:"bytes,7,rep,name=dedup,proto3" json:"dedup,omitempty"` // legacy pre-ring, ADR-0048 #4
-	Reservations  []*CounterReservation  `protobuf:"bytes,8,rep,name=reservations,proto3" json:"reservations,omitempty"`
-	Offsets       []*CounterKafkaOffset  `protobuf:"bytes,9,rep,name=offsets,proto3" json:"offsets,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Version      uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	ShardId      int32                  `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	CounterSeq   uint64                 `protobuf:"varint,3,opt,name=counter_seq,json=counterSeq,proto3" json:"counter_seq,omitempty"`
+	TimestampMs  int64                  `protobuf:"varint,4,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"`
+	Accounts     []*CounterAccount      `protobuf:"bytes,5,rep,name=accounts,proto3" json:"accounts,omitempty"`
+	Orders       []*CounterOrder        `protobuf:"bytes,6,rep,name=orders,proto3" json:"orders,omitempty"`
+	Dedup        []*CounterDedupEntry   `protobuf:"bytes,7,rep,name=dedup,proto3" json:"dedup,omitempty"` // legacy pre-ring, ADR-0048 #4
+	Reservations []*CounterReservation  `protobuf:"bytes,8,rep,name=reservations,proto3" json:"reservations,omitempty"`
+	Offsets      []*CounterKafkaOffset  `protobuf:"bytes,9,rep,name=offsets,proto3" json:"offsets,omitempty"` // trade-event te_watermark per partition (ADR-0048 / ADR-0060)
+	// journal_offset is the next-to-consume position on this vshard's
+	// counter-journal partition at snapshot moment (ADR-0060 §4.1).
+	// Recovery seeks a catch-up consumer to this offset and replays
+	// events idempotently before opening the trade-event consumer at
+	// `offsets` — covers the window where a journal record was
+	// committed but the state mutation it describes did not make it
+	// into the snapshot (or vice versa). Zero means "no journal events
+	// ever published" — catch-up becomes a no-op.
+	JournalOffset int64 `protobuf:"varint,10,opt,name=journal_offset,json=journalOffset,proto3" json:"journal_offset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -127,6 +136,13 @@ func (x *CounterShardSnapshot) GetOffsets() []*CounterKafkaOffset {
 		return x.Offsets
 	}
 	return nil
+}
+
+func (x *CounterShardSnapshot) GetJournalOffset() int64 {
+	if x != nil {
+		return x.JournalOffset
+	}
+	return 0
 }
 
 type CounterAccount struct {
@@ -742,7 +758,7 @@ var File_snapshot_counter_proto protoreflect.FileDescriptor
 
 const file_snapshot_counter_proto_rawDesc = "" +
 	"\n" +
-	"\x16snapshot/counter.proto\x12\x12opentrade.snapshot\"\xd4\x03\n" +
+	"\x16snapshot/counter.proto\x12\x12opentrade.snapshot\"\xfb\x03\n" +
 	"\x14CounterShardSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x19\n" +
 	"\bshard_id\x18\x02 \x01(\x05R\ashardId\x12\x1f\n" +
@@ -753,7 +769,9 @@ const file_snapshot_counter_proto_rawDesc = "" +
 	"\x06orders\x18\x06 \x03(\v2 .opentrade.snapshot.CounterOrderR\x06orders\x12;\n" +
 	"\x05dedup\x18\a \x03(\v2%.opentrade.snapshot.CounterDedupEntryR\x05dedup\x12J\n" +
 	"\freservations\x18\b \x03(\v2&.opentrade.snapshot.CounterReservationR\freservations\x12@\n" +
-	"\aoffsets\x18\t \x03(\v2&.opentrade.snapshot.CounterKafkaOffsetR\aoffsets\"\xb6\x03\n" +
+	"\aoffsets\x18\t \x03(\v2&.opentrade.snapshot.CounterKafkaOffsetR\aoffsets\x12%\n" +
+	"\x0ejournal_offset\x18\n" +
+	" \x01(\x03R\rjournalOffset\"\xb6\x03\n" +
 	"\x0eCounterAccount\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x04R\aversion\x12>\n" +
