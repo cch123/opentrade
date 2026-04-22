@@ -50,6 +50,13 @@ type PartySettlement struct {
 // For MVP-3 fees are zero. Price improvement refund is applied to the taker:
 // when the taker is a limit buyer whose price Pt > match price Pm, the portion
 // (Pt - Pm) * X is refunded to available_quote (the unused reservation).
+// ComputeSettlement computes both party deltas. ADR-0063: a missing
+// party (one side already settled and deleted from byID in a prior
+// per-user sequencer pass — common when maker and taker share a vshard
+// and the maker leg ran first) yields a zero PartySettlement for that
+// side; callers select their own side and discard the zero. Both sides
+// being absent is still an error (the trade event references a fully
+// foreign order pair).
 func ComputeSettlement(state *ShardState, ti TradeInput) (maker, taker PartySettlement, err error) {
 	base, quote, err := SymbolAssets(ti.Symbol)
 	if err != nil {
@@ -57,15 +64,15 @@ func ComputeSettlement(state *ShardState, ti TradeInput) (maker, taker PartySett
 	}
 	makerOrder := state.Orders().Get(ti.MakerOrderID)
 	takerOrder := state.Orders().Get(ti.TakerOrderID)
-	if makerOrder == nil {
-		return PartySettlement{}, PartySettlement{}, fmt.Errorf("%w: maker %d", ErrOrderNotFound, ti.MakerOrderID)
+	if makerOrder == nil && takerOrder == nil {
+		return PartySettlement{}, PartySettlement{}, fmt.Errorf("%w: maker %d / taker %d", ErrOrderNotFound, ti.MakerOrderID, ti.TakerOrderID)
 	}
-	if takerOrder == nil {
-		return PartySettlement{}, PartySettlement{}, fmt.Errorf("%w: taker %d", ErrOrderNotFound, ti.TakerOrderID)
+	if makerOrder != nil {
+		maker = settleMaker(makerOrder, ti, base, quote)
 	}
-
-	maker = settleMaker(makerOrder, ti, base, quote)
-	taker = settleTaker(takerOrder, ti, base, quote)
+	if takerOrder != nil {
+		taker = settleTaker(takerOrder, ti, base, quote)
+	}
 	return maker, taker, nil
 }
 

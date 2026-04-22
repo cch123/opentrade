@@ -361,6 +361,7 @@ func (s *Service) buildSelfTradeFn(ctx context.Context, ti engine.TradeInput, ma
 			if o.FilledQty.Cmp(party.FilledQtyAfter) >= 0 {
 				continue
 			}
+			oldStatus := o.Status
 			if err := s.state.ApplyPartySettlement(ti.Symbol, party); err != nil {
 				return err
 			}
@@ -384,6 +385,16 @@ func (s *Service) buildSelfTradeFn(ctx context.Context, ti engine.TradeInput, ma
 					zap.String("user", userID),
 					zap.Uint64("order_id", party.OrderID),
 					zap.Error(err))
+			}
+			// ADR-0063: settle that finalises an order (Filled) must
+			// emit an OrderStatusEvent so trade-dump's shadow engine
+			// reaches the same terminal state and triggers byID Delete.
+			// PartiallyFilled stays implicit (downstream tracks
+			// FilledQty via SettlementEvent).
+			if party.StatusAfter.IsTerminal() {
+				if err := s.emitStatus(ctx, counterSeq, o, oldStatus, party.StatusAfter, 0); err != nil {
+					return err
+				}
 			}
 		}
 		acc.AdvanceMatchSeq(ti.Symbol, matchSeq)
@@ -550,6 +561,7 @@ func (s *Service) buildPartyFn(ctx context.Context, ti engine.TradeInput, maker 
 		if maker {
 			party = mSet
 		}
+		oldStatus := o.Status
 		if err := s.state.ApplyPartySettlement(ti.Symbol, party); err != nil {
 			return err
 		}
@@ -579,6 +591,15 @@ func (s *Service) buildPartyFn(ctx context.Context, ti engine.TradeInput, maker 
 				zap.Error(err))
 			// For MVP-3 we don't roll back state on publish failure; the
 			// event will be re-sent on consumer restart via idempotency.
+		}
+		// ADR-0063: settle that finalises an order (Filled) must emit
+		// an OrderStatusEvent so trade-dump's shadow engine reaches the
+		// same terminal state and triggers byID Delete. PartiallyFilled
+		// stays implicit (downstream tracks FilledQty via SettlementEvent).
+		if party.StatusAfter.IsTerminal() {
+			if err := s.emitStatus(ctx, counterSeq, o, oldStatus, party.StatusAfter, 0); err != nil {
+				return err
+			}
 		}
 		acc.AdvanceMatchSeq(ti.Symbol, matchSeq)
 		return nil
@@ -654,7 +675,13 @@ func (s *Service) logForeignSkip(kind, userID string, orderID uint64) {
 		zap.Int("total_shards", s.cfg.TotalShards))
 }
 
-// emitStatus publishes an OrderStatusEvent for downstream observers.
+// emitStatus publishes an OrderStatusEvent for downstream observers,
+// and — when newStatus is terminal — deletes the order from byID
+// (ADR-0063 "terminal is evict"). The Delete runs after the Publish
+// returns, so a Publish failure leaves the order in byID for the next
+// sequencer pass to retry; a successful Publish guarantees the journal
+// has the terminal event, and shadow consumers reach the same Delete
+// via applyOrderStatusEvent's terminal branch.
 //
 // AccountVersion is read AT emit time. Callers that just called
 // unfreezeResidual will see the bumped value; pure-status transitions
@@ -671,7 +698,15 @@ func (s *Service) emitStatus(ctx context.Context, counterSeq uint64, o *engine.O
 		FilledQty:      o.FilledQty.String(),
 		Reject:         reason,
 	})
-	return s.publisher.Publish(ctx, o.UserID, evt)
+	if err := s.publisher.Publish(ctx, o.UserID, evt); err != nil {
+		return err
+	}
+	if newStatus.IsTerminal() {
+		if err := s.state.Orders().Delete(o.ID); err != nil && !errors.Is(err, engine.ErrOrderNotFound) {
+			return fmt.Errorf("terminal delete: %w", err)
+		}
+	}
+	return nil
 }
 
 // sideFromProto converts the wire Side enum to the internal one. Returns

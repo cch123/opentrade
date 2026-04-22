@@ -137,14 +137,6 @@ type Order struct {
 
 	CreatedAt int64
 	UpdatedAt int64
-
-	// TerminatedAt is the ms timestamp when Status first transitioned to
-	// a terminal state (Filled / Canceled / Rejected / Expired). Zero
-	// means non-terminal. Written once by OrderStore.UpdateStatus on
-	// the terminal transition and never updated afterwards. Used by the
-	// ADR-0062 evictor to decide when an order has aged out of the
-	// retention window and can be removed from byID.
-	TerminatedAt int64
 }
 
 // IsMarketBuyByQuote reports whether this is a BN-style quote-budget market

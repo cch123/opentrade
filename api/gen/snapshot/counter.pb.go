@@ -309,7 +309,6 @@ type CounterOrder struct {
 	PreCancelStatus uint32                 `protobuf:"varint,16,opt,name=pre_cancel_status,json=preCancelStatus,proto3" json:"pre_cancel_status,omitempty"`
 	CreatedAt       int64                  `protobuf:"varint,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt       int64                  `protobuf:"varint,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	TerminatedAt    int64                  `protobuf:"varint,19,opt,name=terminated_at,json=terminatedAt,proto3" json:"terminated_at,omitempty"` // ADR-0062, 0 when non-terminal
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -466,13 +465,6 @@ func (x *CounterOrder) GetCreatedAt() int64 {
 func (x *CounterOrder) GetUpdatedAt() int64 {
 	if x != nil {
 		return x.UpdatedAt
-	}
-	return 0
-}
-
-func (x *CounterOrder) GetTerminatedAt() int64 {
-	if x != nil {
-		return x.TerminatedAt
 	}
 	return 0
 }
@@ -696,7 +688,7 @@ const file_snapshot_counter_proto_rawDesc = "" +
 	"\x05asset\x18\x01 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x02 \x01(\tR\tavailable\x12\x16\n" +
 	"\x06frozen\x18\x03 \x01(\tR\x06frozen\x12\x18\n" +
-	"\aversion\x18\x04 \x01(\x04R\aversion\"\xa7\x04\n" +
+	"\aversion\x18\x04 \x01(\x04R\aversion\"\x97\x04\n" +
 	"\fCounterOrder\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x17\n" +
@@ -719,8 +711,7 @@ const file_snapshot_counter_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x11 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x12 \x01(\x03R\tupdatedAt\x12#\n" +
-	"\rterminated_at\x18\x13 \x01(\x03R\fterminatedAt\"M\n" +
+	"updated_at\x18\x12 \x01(\x03R\tupdatedAtJ\x04\b\x13\x10\x14R\rterminated_at\"M\n" +
 	"\x11CounterDedupEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12&\n" +
 	"\x0fexpires_unix_ms\x18\x02 \x01(\x03R\rexpiresUnixMs\"\x96\x01\n" +

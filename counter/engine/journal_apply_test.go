@@ -234,10 +234,10 @@ func TestApplyTransferEvent_RememberInRing(t *testing.T) {
 	}
 }
 
-// TestApplyOrderStatusEvent_TransitionsToTerminal covers the primary
-// use: an OrderStatusEvent for a known order drives Status forward
-// and stamps TerminatedAt.
-func TestApplyOrderStatusEvent_TransitionsToTerminal(t *testing.T) {
+// TestApplyOrderStatusEvent_TransitionsToTerminalDeletes (ADR-0063):
+// an OrderStatusEvent moving to a terminal state drives Status forward
+// and removes the order from byID.
+func TestApplyOrderStatusEvent_TransitionsToTerminalDeletes(t *testing.T) {
 	state := NewShardState(0)
 	state.Orders().RestoreInsert(&Order{
 		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
@@ -252,38 +252,55 @@ func TestApplyOrderStatusEvent_TransitionsToTerminal(t *testing.T) {
 	if err := applyOrderStatusEvent(state, evt); err != nil {
 		t.Fatalf("applyOrderStatusEvent: %v", err)
 	}
-	o := state.Orders().Get(100)
-	if o.Status != OrderStatusCanceled {
-		t.Fatalf("status = %v, want Canceled", o.Status)
-	}
-	if o.TerminatedAt == 0 {
-		t.Fatal("TerminatedAt not stamped on terminal transition")
-	}
-	if o.FilledQty.String() != "0.5" {
-		t.Fatalf("filled_qty = %s, want 0.5", o.FilledQty)
+	if state.Orders().Get(100) != nil {
+		t.Fatal("terminal transition must delete the order from byID")
 	}
 }
 
-// TestApplyOrderStatusEvent_NoBackwardsFromTerminal: replay of a
-// non-terminal status after the order is already terminal must
-// NOT revert.
-func TestApplyOrderStatusEvent_NoBackwardsFromTerminal(t *testing.T) {
+// TestApplyOrderStatusEvent_NonTerminalKeepsByID: a non-terminal
+// transition (e.g. PendingNew → New) advances Status but keeps the
+// order in byID.
+func TestApplyOrderStatusEvent_NonTerminalKeepsByID(t *testing.T) {
 	state := NewShardState(0)
 	state.Orders().RestoreInsert(&Order{
 		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
-		Type: OrderTypeLimit, Status: OrderStatusCanceled,
-		TerminatedAt: 1000,
+		Type: OrderTypeLimit, Status: OrderStatusPendingNew,
 	})
 	evt := &eventpb.OrderStatusEvent{
 		UserId: "u1", OrderId: 100,
+		OldStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 		NewStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW,
 	}
 	if err := applyOrderStatusEvent(state, evt); err != nil {
 		t.Fatalf("applyOrderStatusEvent: %v", err)
 	}
 	o := state.Orders().Get(100)
-	if o.Status != OrderStatusCanceled {
-		t.Fatalf("status = %v, want Canceled (no revert)", o.Status)
+	if o == nil {
+		t.Fatal("non-terminal transition must keep the order in byID")
+	}
+	if o.Status != OrderStatusNew {
+		t.Fatalf("status = %v, want New", o.Status)
+	}
+}
+
+// TestApplyOrderStatusEvent_TerminalReplayIsIdempotent: replaying a
+// terminal status event after the order is already evicted must not
+// error (Delete is ErrOrderNotFound-safe).
+func TestApplyOrderStatusEvent_TerminalReplayIsIdempotent(t *testing.T) {
+	state := NewShardState(0)
+	evt := &eventpb.OrderStatusEvent{
+		UserId: "u1", OrderId: 999,
+		NewStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED,
+	}
+	// Order never existed (or already evicted) — apply is a no-op.
+	if err := applyOrderStatusEvent(state, evt); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if err := applyOrderStatusEvent(state, evt); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	if state.Orders().Get(999) != nil {
+		t.Fatal("order 999 should still be absent")
 	}
 }
 
@@ -301,44 +318,6 @@ func TestApplyOrderStatusEvent_MissingOrderIsNoOp(t *testing.T) {
 	}
 	if state.Orders().Get(999) != nil {
 		t.Fatal("order 999 should still be absent")
-	}
-}
-
-// TestApplyOrderEvictedEvent_Deletes: byID loses the order after apply.
-func TestApplyOrderEvictedEvent_Deletes(t *testing.T) {
-	state := NewShardState(0)
-	state.Orders().RestoreInsert(&Order{
-		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
-		Type: OrderTypeLimit, Status: OrderStatusCanceled,
-		TerminatedAt: 1000,
-	})
-	evt := &eventpb.OrderEvictedEvent{
-		UserId: "u1", OrderId: 100, Symbol: "BTC-USDT",
-		FinalStatus:  eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED,
-		TerminatedAt: 1000,
-	}
-	if err := applyOrderEvictedEvent(state, evt); err != nil {
-		t.Fatalf("applyOrderEvictedEvent: %v", err)
-	}
-	if state.Orders().Get(100) != nil {
-		t.Fatal("order 100 should have been deleted")
-	}
-}
-
-// TestApplyOrderEvictedEvent_Idempotent: replaying the same evict
-// event over already-evicted state is a no-op (no error).
-func TestApplyOrderEvictedEvent_Idempotent(t *testing.T) {
-	state := NewShardState(0)
-	evt := &eventpb.OrderEvictedEvent{
-		UserId: "u1", OrderId: 100, Symbol: "BTC-USDT",
-		FinalStatus:  eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED,
-		TerminatedAt: 1000,
-	}
-	if err := applyOrderEvictedEvent(state, evt); err != nil {
-		t.Fatalf("first apply: %v", err)
-	}
-	if err := applyOrderEvictedEvent(state, evt); err != nil {
-		t.Fatalf("second apply: %v", err)
 	}
 }
 

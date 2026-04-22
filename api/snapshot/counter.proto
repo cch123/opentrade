@@ -76,7 +76,11 @@ message CounterOrder {
   uint32 pre_cancel_status = 16;
   int64  created_at = 17;
   int64  updated_at = 18;
-  int64  terminated_at = 19;                     // ADR-0062, 0 when non-terminal
+  // Field tag 19 (terminated_at, ADR-0062) permanently retired by
+  // ADR-0063 — terminal orders are deleted from byID at the moment of
+  // transition, so the timestamp has no live consumer.
+  reserved 19;
+  reserved "terminated_at";
 }
 
 message CounterDedupEntry {

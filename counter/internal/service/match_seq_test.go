@@ -65,14 +65,10 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 	}
 
 	// Replay same trade event — match_seq guard must skip both parties.
-	// To simulate a post-restore replay we also reset the stored order's
-	// FilledQty so the fill-qty fallback idempotency does NOT trigger;
-	// this proves the match_seq guard alone blocks the replay.
-	order := state.Orders().Get(buy.OrderID)
-	order.FilledQty = dec.Zero
-	order = state.Orders().Get(sell.OrderID)
-	order.FilledQty = dec.Zero
-
+	// (ADR-0063: Filled orders are deleted from byID at the terminal
+	// transition, so the fill-qty fallback path is moot on replay; this
+	// asserts the match_seq guard alone is sufficient to block the
+	// duplicate.)
 	if err := svc.HandleTradeEvent(ctx, tradeEvt); err != nil {
 		t.Fatal(err)
 	}

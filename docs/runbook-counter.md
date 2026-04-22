@@ -1,6 +1,6 @@
 # Counter 运维手册 (Runbook)
 
-> 对应 ADR-0060 M8 / ADR-0062 M8。覆盖异步消费 + TECheckpoint + 订单 evict + 恢复流程相关的告警、诊断与恢复动作。
+> 对应 ADR-0060 M8 / ADR-0063。覆盖异步消费 + TECheckpoint + 订单终态删除（含 ADR-0063 inline delete）+ 恢复流程相关的告警、诊断与恢复动作。
 
 ## 1. 观测端点
 
@@ -28,12 +28,9 @@
 > `trade_dump_snapshot_age_seconds{vshard}` 与 `trade_dump_snapshot_capture_duration_ms{vshard}`。
 > 对应告警见 `docs/runbook-trade-dump.md`（后续）。
 
-### 2.2 订单 evict (ADR-0062)
+### 2.2 订单 evict (ADR-0063)
 
-| Metric | 类型 | 标签 | 解读 |
-|---|---|---|---|
-| `counter_evict_processed_total{result=ok\|err}` | Counter | `vshard, result` | Evictor 处理订单数 |
-| `counter_evict_halted_total{reason}` | Counter | `vshard, reason` | 熔断跳过的 evict 轮次。Counter 侧 `reason` 只会是 `checkpoint_stale`（snapshot-stale 判定已下放到 trade-dump） |
+ADR-0063 之后不再有 evictor goroutine / retention 窗口 / `OrderEvictedEvent` / 健康熔断 —— 订单进入终态时由发送方（`emitStatus`）和 apply 侧（`applyOrderStatusEvent`）在同一步内直接 `Orders().Delete(id)`。对应的 `counter_evict_processed_total` / `counter_evict_halted_total` 指标已删除；byID 稳态就只含活跃订单，不需要单独的 evict 进度观测。
 
 ### 2.3 通用框架 (pkg/metrics)
 
@@ -66,27 +63,15 @@
   annotations:
     runbook: "docs/runbook-counter.md#5-publish-重试持续-5s-即-panic"
 
-- alert: CounterEvictHaltedCheckpointStale
-  expr: rate(counter_evict_halted_total{reason="checkpoint_stale"}[10m]) > 0
-  for: 5m
-  labels: {severity: warning}
-  annotations:
-    summary: "vshard {{ $labels.vshard }} evict halted by checkpoint staleness"
-    runbook: "docs/runbook-counter.md#7-evict-持续失败"
-
-# Snapshot freshness is now owned by trade-dump's snap pipeline
-# (ADR-0061). See docs/runbook-trade-dump.md for
-# trade_dump_snapshot_age_seconds / trade_dump_snapshot_*
-# alerting. Counter只保留 checkpoint-staleness 熔断。
-
-- alert: CounterEvictErrorRate
-  expr: |
-    rate(counter_evict_processed_total{result="err"}[10m])
-    / rate(counter_evict_processed_total[10m]) > 0.1
-  for: 10m
-  labels: {severity: warning}
-  annotations:
-    runbook: "docs/runbook-counter.md#7-evict-持续失败"
+# Snapshot freshness is owned by trade-dump's snap pipeline (ADR-0061).
+# See docs/runbook-trade-dump.md for trade_dump_snapshot_age_seconds /
+# trade_dump_snapshot_* alerting.
+#
+# ADR-0063 removed the evictor goroutine + OrderEvictedEvent + retention
+# window + health-circuit-breaker. Terminal orders are deleted from byID
+# inline with the OrderStatusEvent publish, so evict-specific alerts no
+# longer exist — monitor byID footprint via the Counter memory / heap
+# metrics instead.
 ```
 
 ## 4. pendingList 失控
@@ -155,47 +140,28 @@ ADR-0061 Phase B 后 Counter 不再自产 snapshot，对应的
   `trade_dump_snapshot_apply_error_total{vshard}`
 - 告警 + 排障流程：`docs/runbook-trade-dump.md`（后续）
 
-Counter 侧仍保留 `checkpoint_stale` 熔断来阻止 evict 在
-advancer 自己卡住时工作（见 §7）；snapshot-stale 熔断已不在
-Counter 内 — 真的 snapshot pipeline 挂了，只会让
-`trade_dump_snapshot_age_seconds` 增长，由 trade-dump 的告警
-驱动响应。
+ADR-0063 之后 Counter 侧不再有任何 evict 健康熔断；snapshot-stale
+告警在 trade-dump 一侧，真的 snapshot pipeline 挂了，
+`trade_dump_snapshot_age_seconds` 增长会驱动响应。
 
-## 7. Evict 持续失败
+## 7. Recovery (catch-up journal replay)
 
 ### 7.1 症状
 
-`counter_evict_processed_total{result="err"}` 增长速率 > `{result="ok"}`。
-
-### 7.2 原因
-
-- **Publish OrderEvictedEvent 失败**：Kafka 问题（同 §5）。
-- **下游订单状态异常**（concurrent state 被破坏）：极少见。
-
-### 7.3 动作
-
-- 同步 Kafka 健康。
-- 查单条失败 log：`kubectl logs ... | grep 'evict order'`，定位 error 类型。
-- Evict 失败是软故障（订单仍在 byID，下次 tick 重试），**不紧急**；除非 byID 增长率异常（监控 `counter_byid_size` — 本 ADR 暂无，后续补）。
-
-## 8. Recovery (catch-up journal replay)
-
-### 8.1 症状
-
 正常启动：日志 `catchup complete applied=N last_offset=M`，`counter_catchup_events_applied_total` 一次性增长。
 
-### 8.2 异常情况
+### 7.2 异常情况
 
 - `catchup: budget exhausted after N events` → 预算 2min 耗尽。通常是 counter-journal 历史堆积过长 + replay apply 慢。重试一次；重复失败则需 hand-roll 更大的 `defaultCatchUpMaxDuration`。
 - `catchup: client closed unexpectedly` → Kafka 连接异常 / auth。排查 broker。
 - **snap.journal_offset > counter-journal earliest offset** (ADR-0060 Known Gap G4)：对应 panic，应该在启动时出现明显 assertion 日志。修正 Kafka retention 配置后重启。
 
-## 9. 常用排障一行
+## 8. 常用排障一行
 
 ```bash
 # 总体状态
 curl -s http://<pod>:9101/metrics | \
-    grep -E '^counter_(pendinglist|checkpoint|publish_retry|snapshot|evict|catchup|seq)'
+    grep -E '^counter_(pendinglist|checkpoint|publish_retry|catchup)'
 
 # 特定 vshard
 curl -s http://<pod>:9101/metrics | \
@@ -209,14 +175,16 @@ curl -s http://<pod>:9101/metrics | \
 etcdctl --endpoints=$ETCD get --prefix /cex/counter/assignments/
 ```
 
-## 10. 相关 ADR
+## 9. 相关 ADR
 
 - [ADR-0048](adr/0048-snapshot-offset-atomicity.md) — snapshot + offset 原子
 - [ADR-0058](adr/0058-counter-vshard-and-instance-lock.md) — Counter 虚拟分片 + 冷切
 - [ADR-0060](adr/0060-counter-async-consumption-and-te-checkpoint.md) — 本 runbook 主要依据
-- [ADR-0062](adr/0062-order-terminal-eviction-and-idempotency-ring.md) — 订单 evict 流程
-- [ADR-0061](adr/0061-trade-dump-snapshot-pipeline.md) — (未来) trade-dump 接管 snapshot 生产
+- [ADR-0061](adr/0061-trade-dump-snapshot-pipeline.md) — trade-dump 接管 snapshot 生产
+- [ADR-0062](adr/0062-order-terminal-eviction-and-idempotency-ring.md) — 订单 evict 旧框架（已 Superseded by ADR-0063）
+- [ADR-0063](adr/0063-terminal-is-evict.md) — 终态即 evict（当前模型）
 
-## 11. 变更日志
+## 10. 变更日志
 
 - 2026-04-22 初稿（ADR-0060 M8 / ADR-0062 M8 落地）
+- 2026-04-22 ADR-0063 落地：删 evictor goroutine / OrderEvictedEvent / 健康熔断；终态由 OrderStatusEvent inline delete 承担；§2.2 / §3 / §6 内容收敛

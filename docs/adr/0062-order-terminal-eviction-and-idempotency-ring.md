@@ -1,6 +1,6 @@
 # ADR-0062: 订单终态 Evict + 幂等兜底 Ring Buffer
 
-- 状态: Superseded-in-part（2026-04-22 回退 Ring Buffer 部分；Evict 主体仍 Accepted）
+- 状态: Superseded（by ADR-0063, 2026-04-22）—— Ring 部分先于本次回退，剩余 Evict 框架（retention 窗口 / Evictor goroutine / OrderEvictedEvent / 健康熔断）已在 ADR-0063 全部移除；订单终态即同步从 byID 删除。
 - 日期: 2026-04-22
 - 决策者: xargin, Claude
 - 相关 ADR: 0001（Kafka SoT）、0015（client-order-id 索引）、0018（per-user sequencer + counterSeq）、0048（snapshot + offset 原子绑定）、0054（per-symbol order slots）、0057（Asset service + Transfer Saga, ring buffer 设计参考）、0058（Counter 虚拟分片 + 实例锁）、0060（Counter 消费异步化 + TECheckpoint，本 ADR 的 M1 + M5 是 0060 的 recovery 前提）

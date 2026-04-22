@@ -302,18 +302,20 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 		t.Fatalf("u2 USDT = %+v", u2Q)
 	}
 
-	// Both orders must be FILLED.
-	buyO := state.Orders().Get(buy.OrderID)
-	sellO := state.Orders().Get(sell.OrderID)
-	if buyO.Status != engine.OrderStatusFilled || sellO.Status != engine.OrderStatusFilled {
-		t.Fatalf("statuses: buy=%s sell=%s", buyO.Status, sellO.Status)
+	// ADR-0063: Filled orders are deleted from byID at the terminal
+	// transition. The absence of buy / sell from byID is the success
+	// signal here (status check is implicit: only terminal orders get
+	// deleted in this path).
+	if state.Orders().Get(buy.OrderID) != nil {
+		t.Fatalf("buy order %d should be deleted from byID after Filled", buy.OrderID)
+	}
+	if state.Orders().Get(sell.OrderID) != nil {
+		t.Fatalf("sell order %d should be deleted from byID after Filled", sell.OrderID)
 	}
 
-	// publisher saw: 2 seed transfers + 2 place-order journal events should
-	// not appear here (those go through txn publisher). This publisher should
-	// see: 2 seed TransferEvents + 2 settlement journal events + 1 accepted
-	// status event = 5. (Actual counts may vary; just ensure >=5.)
-	if got := len(pub.Events()); got < 5 {
-		t.Fatalf("publisher events = %d, want >= 5", got)
+	// publisher saw: 2 seed transfers + 1 accepted status event + 2
+	// settlement events + 2 terminal OrderStatusEvent(Filled) = 7.
+	if got := len(pub.Events()); got < 7 {
+		t.Fatalf("publisher events = %d, want >= 7", got)
 	}
 }

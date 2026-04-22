@@ -355,52 +355,6 @@ func BuildTECheckpointEvent(in TECheckpointEventInput) *eventpb.CounterJournalEv
 	}
 }
 
-// OrderEvictedEventInput is the input to BuildOrderEvictedEvent. ADR-0062.
-//
-// AccountVersion stays at whatever the account currently carries —
-// eviction touches no balance and is purely a shrink-state fan-out
-// signal to trade-dump's shadow engine + MySQL projection pipeline.
-type OrderEvictedEventInput struct {
-	CounterSeqID   uint64
-	TsUnixMS       int64
-	TraceID        string
-	ProducerID     string
-	AccountVersion uint64
-
-	UserID        string
-	OrderID       uint64
-	Symbol        string
-	FinalStatus   engine.OrderStatus
-	TerminatedAt  int64 // ms, mirrors engine.Order.TerminatedAt
-	ClientOrderID string
-}
-
-// BuildOrderEvictedEvent wraps an OrderEvictedEvent payload into a
-// CounterJournalEvent envelope.
-func BuildOrderEvictedEvent(in OrderEvictedEventInput) *eventpb.CounterJournalEvent {
-	ts := in.TsUnixMS
-	if ts == 0 {
-		ts = time.Now().UnixMilli()
-	}
-	return &eventpb.CounterJournalEvent{
-		Meta: &eventpb.EventMeta{
-			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
-		},
-		AccountVersion: in.AccountVersion,
-		CounterSeqId:   in.CounterSeqID,
-		Payload: &eventpb.CounterJournalEvent_OrderEvicted{
-			OrderEvicted: &eventpb.OrderEvictedEvent{
-				UserId:        in.UserID,
-				OrderId:       in.OrderID,
-				Symbol:        in.Symbol,
-				FinalStatus:   orderStatusToProto(in.FinalStatus),
-				TerminatedAt:  in.TerminatedAt,
-				ClientOrderId: in.ClientOrderID,
-			},
-		},
-	}
-}
-
 // BuildOrderStatusEvent wraps an OrderStatusEvent payload into a
 // CounterJournalEvent envelope.
 func BuildOrderStatusEvent(in OrderStatusEventInput) *eventpb.CounterJournalEvent {

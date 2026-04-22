@@ -53,15 +53,14 @@ message CounterJournalEvent {
     OrderStatusEvent  order_status  = 14;
     CancelRequested   cancel_req    = 15;
 
-    // Tags 50-51 reserved for ADR-0060 / ADR-0062 signalling events that
-    // mutate no balance (pure fan-out to downstream consumers).
+    // Tag 50 reserved for ADR-0060 signalling event (no balance
+    // mutation; pure fan-out to downstream consumers):
     //   50: TECheckpointEvent  (ADR-0060, published by the consume-loop
     //       advancer to flag "te_offset <= N fully processed")
-    //   51: OrderEvictedEvent  (ADR-0062, published by the evictor when
-    //       removing a terminal order from byID; shadow engine uses it
-    //       to shrink its mirror state)
+    // Tag 51 (OrderEvictedEvent, ADR-0062) is permanently retired by
+    // ADR-0063 — terminal OrderStatusEvent now subsumes the evict
+    // signal. Do not reuse this tag.
     TECheckpointEvent te_checkpoint = 50;
-    OrderEvictedEvent order_evicted = 51;
   }
 }
 
@@ -184,18 +183,3 @@ message TECheckpointEvent {
                            // have all committed on this partition
 }
 
-// OrderEvictedEvent is published by the ADR-0062 evictor goroutine
-// when a terminal order has aged past the retention window and is
-// about to be removed from OrderStore.byID. It carries enough payload
-// for trade-dump's shadow engine to mirror the delete, and for the
-// MySQL projection pipeline to stamp an evicted_at audit entry on the
-// orders table. It does NOT mutate any balance, so AccountVersion on
-// the envelope stays at whatever value the account currently carries.
-message OrderEvictedEvent {
-  string user_id = 1;
-  uint64 order_id = 2;
-  string symbol = 3;
-  InternalOrderStatus final_status = 4; // Filled / Canceled / Rejected / Expired
-  int64  terminated_at = 5;             // ms timestamp captured at terminal transition
-  string client_order_id = 6;
-}

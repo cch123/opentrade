@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -58,19 +57,6 @@ const (
 	// Kafka record's headers for downstream audit.
 	TransactionalIDFormat = "counter-vshard-%03d"
 
-	// ADR-0062 evictor defaults. Chosen so steady-state trade-dump lag
-	// (<1s typical, minutes in failure) is comfortably covered by the
-	// retention window, while batch size bounds a single scan at well
-	// under 100ms even on a ~200w entry byID map.
-	defaultOrderEvictInterval  = 30 * time.Second
-	defaultOrderEvictRetention = 1 * time.Hour
-	defaultOrderEvictMaxBatch  = 500
-
-	// ADR-0062 §5 circuit-breaker default for TECheckpoint publish
-	// staleness. Snapshot staleness lives in trade-dump's own
-	// monitoring (`trade_dump_snapshot_age_seconds`, ADR-0061 §7) —
-	// Counter no longer produces snapshots so can't self-sample age.
-	defaultEvictCheckpointStaleAfter = 5 * time.Minute
 )
 
 // Config wires all per-vshard dependencies. Brokers / topics / store
@@ -100,29 +86,6 @@ type Config struct {
 	DefaultMaxOpenLimitOrders uint32
 	SymbolLookup              service.SymbolLookup // optional precision source
 
-	// ADR-0062 terminal-order eviction.
-	//
-	// OrderEvictInterval is the scan cadence. 0 falls back to the
-	// default (30s); explicitly negative disables the loop (tests).
-	// OrderEvictRetention is the minimum age a terminal order must
-	// reach before it becomes eligible. Default 1h.
-	// OrderEvictMaxBatch caps the number of orders processed per round
-	// so a single scan cannot monopolise the user sequencer. Default 500.
-	OrderEvictInterval  time.Duration
-	OrderEvictRetention time.Duration
-	OrderEvictMaxBatch  int
-
-	// EvictCheckpointStaleAfter is the age at which a missing
-	// TECheckpoint publish halts eviction — downstream (trade-dump)
-	// stops advancing its te_watermark so newly evicted orders would
-	// miss the snapshot pipeline. 0 falls back to the default (5m).
-	//
-	// Snapshot-staleness check moved out of Counter with ADR-0061
-	// (trade-dump owns snapshot production); watch
-	// `trade_dump_snapshot_age_seconds` in trade-dump's metrics
-	// instead.
-	EvictCheckpointStaleAfter time.Duration
-
 	// Metrics is the optional ADR-0060 M8 + ADR-0062 M8 observability
 	// hook. Nil disables emission (tests / legacy paths). Production
 	// main.go constructs a single *metrics.Counter and shares it
@@ -147,11 +110,6 @@ type VShardWorker struct {
 	// goroutines (ADR-0060 §1.3). Populated before the first consumer
 	// record is dispatched; reads are safe once Ready() closes.
 	pending *pendingList
-
-	// lastCheckpointAtMs is the advancer's last successful
-	// TECheckpoint publish time, sampled by the ADR-0062 §5 evict
-	// circuit breaker. Updated by emitCheckpoint on success.
-	lastCheckpointAtMs atomic.Int64
 
 	ready chan struct{}
 }
@@ -185,19 +143,6 @@ func New(cfg Config) (*VShardWorker, error) {
 	}
 	if cfg.DedupTTL <= 0 {
 		cfg.DedupTTL = 24 * time.Hour
-	}
-	// Negative -> explicit disable (tests). Zero -> default.
-	if cfg.OrderEvictInterval == 0 {
-		cfg.OrderEvictInterval = defaultOrderEvictInterval
-	}
-	if cfg.OrderEvictRetention <= 0 {
-		cfg.OrderEvictRetention = defaultOrderEvictRetention
-	}
-	if cfg.OrderEvictMaxBatch <= 0 {
-		cfg.OrderEvictMaxBatch = defaultOrderEvictMaxBatch
-	}
-	if cfg.EvictCheckpointStaleAfter <= 0 {
-		cfg.EvictCheckpointStaleAfter = defaultEvictCheckpointStaleAfter
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
@@ -354,15 +299,6 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		w.runAdvancer(ctx, pending, advanceSignal)
 	}()
 
-	// ADR-0062 evictor — age out terminal orders from byID after the
-	// retention window and publish OrderEvictedEvent so trade-dump's
-	// shadow engine + MySQL projection can shrink in lockstep.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		w.runOrderEvictor(ctx)
-	}()
-
 	<-ctx.Done()
 	logger.Info("vshard worker shutting down")
 
@@ -484,11 +420,6 @@ func (w *VShardWorker) emitCheckpoint(
 	}
 	w.cfg.Metrics.RecordCheckpointPublish(int32(w.cfg.VShardID), true)
 	w.svc.AdvanceOffset(partition, maxOffset+1)
-	// Stamp advancer liveness for the ADR-0062 §5 evict circuit
-	// breaker. "Last publish" means a checkpoint actually landed on
-	// Kafka — publish failures above do NOT touch this so the
-	// breaker sees the real outage.
-	w.lastCheckpointAtMs.Store(time.Now().UnixMilli())
 	// Refresh pendingList gauge on each successful advance — the
 	// gauge's denominator is the same list this advancer just
 	// shortened, so post-pop is the natural sampling point. Using
@@ -497,144 +428,5 @@ func (w *VShardWorker) emitCheckpoint(
 	if pending != nil {
 		w.cfg.Metrics.RecordPendingSize(int32(w.cfg.VShardID), pending.Len())
 	}
-}
-
-// journalWriter is the narrow TxnProducer subset the evictor needs.
-// Defined as an interface so tests can exercise the ring→journal→delete
-// sequence without a live Kafka broker — the real implementation is
-// *journal.TxnProducer.
-type journalWriter interface {
-	Publish(ctx context.Context, partitionKey string, evt *eventpb.CounterJournalEvent) error
-}
-
-// runOrderEvictor periodically ages out terminal orders from
-// OrderStore.byID per ADR-0062. Each round queries CandidatesForEvict,
-// then for each candidate runs the strict ring→journal→delete sequence
-// under the user's sequencer so it interleaves correctly with other
-// per-user work. Publish failures surface as errors on the returned
-// task; the evictor logs and moves on to the next candidate (the
-// failed order will reappear in the next scan).
-//
-// OrderEvictInterval <= 0 disables the loop entirely (tests set this
-// to a negative sentinel; the defaults path in New turns zero into
-// the 30s default).
-func (w *VShardWorker) runOrderEvictor(ctx context.Context) {
-	if w.cfg.OrderEvictInterval <= 0 {
-		return
-	}
-	logger := w.cfg.Logger.With(zap.Int("vshard", int(w.cfg.VShardID)))
-	ticker := time.NewTicker(w.cfg.OrderEvictInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !w.evictHealthCheck(logger) {
-				// Circuit breaker tripped — skip this round. The
-				// health-check itself emits the metric + log so
-				// operators have a trail. Orders stay in byID
-				// until either health recovers or Counter
-				// restarts.
-				continue
-			}
-			w.evictOneRound(ctx, logger, w.producer)
-		}
-	}
-}
-
-// evictHealthCheck implements ADR-0062 §5: before each round, verify
-// the advancer is publishing TECheckpoints. Stale checkpoint means
-// no new watermark reaches trade-dump and evict pre-emptively halts
-// to avoid a loss window. Returns true to proceed, false to skip
-// the round; a false return logs + increments
-// counter_evict_halted_total for dashboards.
-//
-// Zero timestamp (cold start before first checkpoint) is treated
-// as "healthy" so the evictor can warm up on fresh pods; the
-// retention window (1h default) is longer than any reasonable
-// startup so nothing gets evicted in this window anyway.
-//
-// Snapshot-staleness monitoring moved to trade-dump per ADR-0061
-// (trade-dump is the snapshot producer so Counter can't locally
-// sample the production timestamp). Watch
-// `trade_dump_snapshot_age_seconds` upstream.
-func (w *VShardWorker) evictHealthCheck(logger *zap.Logger) bool {
-	if ts := w.lastCheckpointAtMs.Load(); ts > 0 {
-		age := time.Since(time.UnixMilli(ts))
-		if age > w.cfg.EvictCheckpointStaleAfter {
-			logger.Warn("evict halted: checkpoint stale",
-				zap.Duration("age", age),
-				zap.Duration("threshold", w.cfg.EvictCheckpointStaleAfter))
-			w.cfg.Metrics.RecordEvictHalted(int32(w.cfg.VShardID), "checkpoint_stale")
-			return false
-		}
-	}
-	return true
-}
-
-// evictOneRound is one tick of the evictor loop. pub is injected so
-// tests can capture emitted journal events without a real Kafka
-// producer; production callers pass w.producer.
-func (w *VShardWorker) evictOneRound(ctx context.Context, logger *zap.Logger, pub journalWriter) {
-	now := time.Now().UnixMilli()
-	retentionMS := w.cfg.OrderEvictRetention.Milliseconds()
-	candidates := w.state.Orders().CandidatesForEvict(now, retentionMS, w.cfg.OrderEvictMaxBatch)
-	if len(candidates) == 0 {
-		return
-	}
-	for _, o := range candidates {
-		err := w.evictOne(ctx, o, pub)
-		w.cfg.Metrics.RecordEvictProcessed(int32(w.cfg.VShardID), err == nil)
-		if err != nil {
-			logger.Error("evict order",
-				zap.Uint64("order_id", o.ID),
-				zap.String("user_id", o.UserID),
-				zap.Error(err))
-			// Do not abort the round — the failed order will be
-			// reconsidered on the next tick. Later scans are idempotent
-			// (ring remember + journal publish + byID delete are all
-			// crash-safe under retry).
-		}
-	}
-}
-
-// evictOneRound emits its per-order outcome to metrics after each
-// evictOne returns (ADR-0062 M8). Wraps the bare loop so the metric
-// label stays close to the error-surfacing point.
-//
-// evictOne performs the journal→delete two-step for a single terminal
-// order under the user's sequencer:
-//  1. Publish OrderEvictedEvent: ADR-0060 TxnProducer.Publish, sync
-//     Kafka commit.
-//  2. Orders().Delete: removes the order from byID.
-//
-// A crash between the two steps is harmless: on restart the candidate
-// still matches on the next scan (Publish adds a duplicate journal event
-// which shadow consumers apply idempotently; Delete is
-// ErrOrderNotFound-safe).
-func (w *VShardWorker) evictOne(ctx context.Context, o *engine.Order, pub journalWriter) error {
-	_, err := w.seq.Execute(o.UserID, func(counterSeq uint64) (any, error) {
-		acc := w.state.Account(o.UserID)
-		evt := journal.BuildOrderEvictedEvent(journal.OrderEvictedEventInput{
-			CounterSeqID:   counterSeq,
-			ProducerID:     w.cfg.NodeID,
-			AccountVersion: acc.Version(),
-			UserID:         o.UserID,
-			OrderID:        o.ID,
-			Symbol:         o.Symbol,
-			FinalStatus:    o.Status,
-			TerminatedAt:   o.TerminatedAt,
-			ClientOrderID:  o.ClientOrderID,
-		})
-		if err := pub.Publish(ctx, o.UserID, evt); err != nil {
-			return nil, fmt.Errorf("publish OrderEvicted: %w", err)
-		}
-		if err := w.state.Orders().Delete(o.ID); err != nil && !errors.Is(err, engine.ErrOrderNotFound) {
-			return nil, fmt.Errorf("delete order: %w", err)
-		}
-		return nil, nil
-	})
-	return err
 }
 

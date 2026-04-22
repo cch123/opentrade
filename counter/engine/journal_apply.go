@@ -64,8 +64,6 @@ func ApplyCounterJournalEvent(state *ShardState, evt *eventpb.CounterJournalEven
 		// engine) read the payload separately; the apply here is a
 		// deliberate no-op.
 		return nil
-	case *eventpb.CounterJournalEvent_OrderEvicted:
-		return applyOrderEvictedEvent(state, p.OrderEvicted)
 	case nil:
 		return nil
 	default:
@@ -268,9 +266,14 @@ func applyTransferEvent(state *ShardState, evt *eventpb.TransferEvent) error {
 }
 
 // applyOrderStatusEvent: sets Status and FilledQty. No-op if the
-// order isn't in byID (foreign / already evicted). Status updates
-// flow through OrderStore.UpdateStatus so derived indices
-// (activeByCOID / activeLimits / TerminatedAt) stay consistent.
+// order isn't in byID (foreign / already deleted via earlier terminal
+// transition). Status updates flow through OrderStore.UpdateStatus so
+// derived indices (activeByCOID / activeLimits) stay consistent.
+//
+// ADR-0063: when new_status is terminal, the order is also Delete'd from
+// byID in the same step — terminal state is the eviction signal, no
+// retention window. Both Counter catch-up and trade-dump shadow engine
+// share this entry point, so the byID/snapshot view stays uniform.
 func applyOrderStatusEvent(state *ShardState, evt *eventpb.OrderStatusEvent) error {
 	if evt == nil || evt.OrderId == 0 {
 		return nil
@@ -301,17 +304,10 @@ func applyOrderStatusEvent(state *ShardState, evt *eventpb.OrderStatusEvent) err
 			return fmt.Errorf("order status: %w", err)
 		}
 	}
-	return nil
-}
-
-// applyOrderEvictedEvent removes the order from byID. Delete is idempotent
-// (ErrOrderNotFound-safe) so duplicate events are harmless.
-func applyOrderEvictedEvent(state *ShardState, evt *eventpb.OrderEvictedEvent) error {
-	if evt == nil || evt.UserId == "" || evt.OrderId == 0 {
-		return nil
-	}
-	if err := state.Orders().Delete(evt.OrderId); err != nil && !errors.Is(err, ErrOrderNotFound) {
-		return fmt.Errorf("evict delete: %w", err)
+	if newStatus.IsTerminal() {
+		if err := state.Orders().Delete(evt.OrderId); err != nil && !errors.Is(err, ErrOrderNotFound) {
+			return fmt.Errorf("terminal delete: %w", err)
+		}
 	}
 	return nil
 }

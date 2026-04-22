@@ -24,10 +24,6 @@
 //                                           attempt_range = 1 /
 //                                           "2-5" / "6+" so the
 //                                           histogram stays compact).
-//   counter_evict_processed_total{vshard, result}
-//                                         — counter, one inc per
-//                                           evicted order (result =
-//                                           "ok" / "err").
 //   counter_snapshot_duration_seconds{vshard}
 //                                         — histogram, observed by
 //                                           writeSnapshot around the
@@ -53,14 +49,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Counter bundles the Prometheus series emitted by ADR-0060 /
-// ADR-0062 observability. Nil receivers skip all work.
+// Counter bundles the Prometheus series emitted by ADR-0060
+// observability. Nil receivers skip all work.
 type Counter struct {
 	PendingListSize         *prometheus.GaugeVec
 	CheckpointPublishTotal  *prometheus.CounterVec
 	PublishRetryTotal       *prometheus.CounterVec
-	EvictProcessedTotal     *prometheus.CounterVec
-	EvictHaltedTotal        *prometheus.CounterVec
 	SnapshotDurationSec     *prometheus.HistogramVec
 	CatchUpEventsApplied    *prometheus.CounterVec
 	CounterSeqHighWatermark *prometheus.GaugeVec
@@ -94,18 +88,6 @@ func NewCounter(reg prometheus.Registerer) *Counter {
 			ConstLabels: labels,
 		}, []string{"op", "attempt_range"}),
 
-		EvictProcessedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name:        "counter_evict_processed_total",
-			Help:        "Terminal orders processed by the evictor (ADR-0062 M8).",
-			ConstLabels: labels,
-		}, []string{"vshard", "result"}),
-
-		EvictHaltedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name:        "counter_evict_halted_total",
-			Help:        "Evict rounds skipped by the health-check circuit breaker (ADR-0062 §5). reason=snapshot_stale | checkpoint_stale.",
-			ConstLabels: labels,
-		}, []string{"vshard", "reason"}),
-
 		SnapshotDurationSec: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:        "counter_snapshot_duration_seconds",
 			Help:        "writeSnapshot critical-section duration (Flush + Capture + Save) — bounds M7 stop-the-world window.",
@@ -129,8 +111,6 @@ func NewCounter(reg prometheus.Registerer) *Counter {
 	reg.MustRegister(c.PendingListSize)
 	reg.MustRegister(c.CheckpointPublishTotal)
 	reg.MustRegister(c.PublishRetryTotal)
-	reg.MustRegister(c.EvictProcessedTotal)
-	reg.MustRegister(c.EvictHaltedTotal)
 	reg.MustRegister(c.SnapshotDurationSec)
 	reg.MustRegister(c.CatchUpEventsApplied)
 	reg.MustRegister(c.CounterSeqHighWatermark)
@@ -167,28 +147,6 @@ func (c *Counter) RecordPublishRetry(op string, attempt int) {
 		return
 	}
 	c.PublishRetryTotal.WithLabelValues(op, attemptRange(attempt)).Inc()
-}
-
-// RecordEvictProcessed bumps the evictor outcome counter.
-// Nil receiver is a no-op.
-func (c *Counter) RecordEvictProcessed(vshard int32, ok bool) {
-	if c == nil || c.EvictProcessedTotal == nil {
-		return
-	}
-	result := "ok"
-	if !ok {
-		result = "err"
-	}
-	c.EvictProcessedTotal.WithLabelValues(vshardLabel(vshard), result).Inc()
-}
-
-// RecordEvictHalted bumps the circuit-breaker counter with the
-// specific reason label. Nil receiver is a no-op.
-func (c *Counter) RecordEvictHalted(vshard int32, reason string) {
-	if c == nil || c.EvictHaltedTotal == nil {
-		return
-	}
-	c.EvictHaltedTotal.WithLabelValues(vshardLabel(vshard), reason).Inc()
 }
 
 // RecordSnapshotDuration observes the writeSnapshot critical-section

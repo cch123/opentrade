@@ -46,7 +46,7 @@ ADR-0060 把 Counter 消费循环异步化了，但 Counter 自产 snapshot 的 
 ### 为什么现在做
 
 - ADR-0060 的 M7 是显式标记"过渡方案"，本 ADR 是其归宿
-- ADR-0062 的 `OrderEvictedEvent` 需要 shadow engine apply，协议在本 ADR 定义
+- ~~ADR-0062 的 `OrderEvictedEvent` 需要 shadow engine apply，协议在本 ADR 定义~~ —— ADR-0063 已移除 `OrderEvictedEvent`，shadow engine 通过 `OrderStatusEvent` 的终态分支隐式删 byID
 - 未上线，breaking change 无顾虑（MEMORY）
 
 ## 决策 (Decision)
@@ -97,9 +97,8 @@ func (e *ShadowEngine) Apply(evt *CounterJournalEvent, kafkaOffset int64) error 
     case *SettleEvent:      return e.applySettle(body)
     case *FreezeEvent:      return e.applyFreeze(body)
     case *TransferEvent:    return e.applyTransfer(body)
-    case *OrderStatusEvent: return e.applyOrderStatus(body)
+    case *OrderStatusEvent: return e.applyOrderStatus(body)  // 终态时同步 Delete byID（ADR-0063）
     case *TECheckpointEvent: return e.applyCheckpoint(body)  // 推进 teWatermark
-    case *OrderEvictedEvent: return e.applyOrderEvicted(body) // 从 byID 删 + ring 记录
     ...
     }
     e.counterSeq = max(e.counterSeq, evt.CounterSeqId)
@@ -118,9 +117,9 @@ func (e *ShadowEngine) Apply(evt *CounterJournalEvent, kafkaOffset int64) error 
 | `SettleEvent` | 更新 balance + order.filledQty + match_seq | `(user, symbol, match_seq)` guard（ADR-0018）|
 | `FreezeEvent` | 更新 balance.available/frozen + insert Order | client_order_id + counter_seq |
 | `TransferEvent` | 更新 balance + `RememberTransfer(transfer_id)` | transfer_id ring（ADR-0057）|
-| `OrderStatusEvent` | 更新 Order.Status（含终态转换）+ `TerminatedAt` 设置 | order_id + status terminal check |
+| `OrderStatusEvent` | 更新 Order.Status；终态转换时同步 `state.Orders().Delete(order_id)`（ADR-0063） | order_id + status terminal check；Delete 是 ErrOrderNotFound-safe |
 | `TECheckpointEvent` (ADR-0060) | 推进 `teWatermark[te_partition] = te_offset + 1` | 单调推进，低于当前水位的 checkpoint 忽略 |
-| `OrderEvictedEvent` (ADR-0062) | 从 `state.Orders().byID` 删除 + `Account.RememberTerminated` | 重复 apply 幂等（Delete 不存在 no-op + Remember 重复记录覆盖）|
+| ~~`OrderEvictedEvent` (ADR-0062)~~ | 已由 ADR-0063 移除 —— 终态由 `OrderStatusEvent` 隐式承担 | — |
 
 **所有 apply 严格幂等**：重启时 shadow engine 从上次 commit 的 offset 开始，重复 apply 不改变最终状态。
 
@@ -405,7 +404,8 @@ Snapshot 记录两个 offset：journal_offset（catch-up 起点）和 te_waterma
 - ADR-0058: Counter 虚拟分片 + 实例锁（vshard 粒度基础）
 - ADR-0059 §A.5.5: Snapshot pipeline 的归属决策（本 ADR 是其落地）
 - ADR-0060: Counter 消费异步化（定义 TECheckpoint event + recovery 协议契约）
-- ADR-0062: 订单终态 evict（shadow engine apply OrderEvicted 的协议）
+- ADR-0062: 订单终态 evict（已被 ADR-0063 取代）
+- ADR-0063: 终态即 evict —— shadow engine 通过 `OrderStatusEvent` 终态分支同步删 byID
 
 ### 讨论
 
