@@ -38,6 +38,20 @@ message CounterAccount {
   repeated CounterBalance balances = 3;
   map<string, uint64> last_match_seq = 4;        // ADR-0048 #2
   repeated string recent_transfer_ids = 5;       // ADR-0048 #4, oldest → newest
+  repeated CounterTerminatedOrder recent_terminated_orders = 6; // ADR-0062, oldest → newest
+}
+
+// CounterTerminatedOrder is the per-user ring-buffer payload for orders
+// that have been evicted from OrderStore.byID (ADR-0062). Stored oldest
+// → newest so Restore can rebuild ring insertion order. Payload is
+// minimal — only enough to let CancelOrder return an idempotent terminal
+// response after the order is gone from byID.
+message CounterTerminatedOrder {
+  uint64 order_id = 1;
+  uint32 final_status = 2;                       // engine.OrderStatus (uint8)
+  int64  terminated_at = 3;                      // ms timestamp
+  string client_order_id = 4;
+  string symbol = 5;
 }
 
 message CounterBalance {
