@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -39,12 +40,14 @@ import (
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/counter/internal/clustering"
+	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/server"
 	"github.com/xargin/opentrade/counter/internal/snapshot"
 	"github.com/xargin/opentrade/counter/internal/symregistry"
 	"github.com/xargin/opentrade/counter/internal/worker"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
+	sharedmetrics "github.com/xargin/opentrade/pkg/metrics"
 )
 
 // Config captures every runtime knob. ADR-0058 removed shard-id /
@@ -82,6 +85,9 @@ type Config struct {
 	DedupTTL                  time.Duration
 	DefaultMaxOpenLimitOrders uint32
 
+	// Observability (ADR-0060 M8 + ADR-0062 M8)
+	MetricsAddr string
+
 	Env      string
 	LogLevel string
 }
@@ -117,6 +123,15 @@ func main() {
 	if err != nil {
 		logger.Fatal("snapshot store init", zap.Error(err))
 	}
+
+	// ADR-0060 M8 / ADR-0062 M8: one Prometheus registry per process,
+	// shared by the framework metrics and the Counter-specific series.
+	// Served on --metrics-addr. Empty address disables the endpoint
+	// but still constructs the counter struct so emission is a no-op
+	// without extra nil guards downstream.
+	promReg := sharedmetrics.NewRegistry()
+	_ = sharedmetrics.NewFramework("counter", promReg)
+	counterMetrics := metrics.NewCounter(promReg)
 
 	etcdClient, err := clientv3.New(clientv3.Config{
 		Endpoints:   cfg.EtcdEndpoints,
@@ -172,6 +187,7 @@ func main() {
 		DedupTTL:                  cfg.DedupTTL,
 		DefaultMaxOpenLimitOrders: cfg.DefaultMaxOpenLimitOrders,
 		SymbolLookup:              symbolLookup,
+		Metrics:                   counterMetrics,
 	}, logger)
 	if err != nil {
 		logger.Fatal("worker manager init", zap.Error(err))
@@ -210,8 +226,44 @@ func main() {
 		}
 	}()
 
+	// ADR-0060 M8 / ADR-0062 M8: Prometheus /metrics + /healthz on a
+	// separate HTTP port so ops scrape doesn't compete with gRPC.
+	var metricsSrv *http.Server
+	metricsDone := make(chan struct{})
+	if cfg.MetricsAddr != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", sharedmetrics.Handler(promReg))
+		metricsMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		})
+		metricsSrv = &http.Server{
+			Addr:              cfg.MetricsAddr,
+			Handler:           metricsMux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(metricsDone)
+			logger.Info("metrics HTTP listening", zap.String("addr", cfg.MetricsAddr))
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("metrics server exited", zap.Error(err))
+			}
+		}()
+	} else {
+		close(metricsDone)
+	}
+
 	<-rootCtx.Done()
 	logger.Info("counter shutting down")
+
+	if metricsSrv != nil {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = metricsSrv.Shutdown(shutdownCtx)
+		cancelShutdown()
+		<-metricsDone
+	}
 
 	// Stop gRPC first so no new RPC arrives while workers are draining.
 	grpcServer.GracefulStop()
@@ -309,6 +361,7 @@ func parseFlags() Config {
 		SnapshotFormat:            snapshot.FormatProto,
 		DedupTTL:                  24 * time.Hour,
 		DefaultMaxOpenLimitOrders: 100,
+		MetricsAddr:               ":9101",
 		Env:                       "dev",
 		LogLevel:                  "info",
 	}
@@ -341,6 +394,8 @@ func parseFlags() Config {
 	flag.DurationVar(&cfg.DedupTTL, "dedup-ttl", cfg.DedupTTL, "transfer_id dedup TTL")
 	var defaultMaxOpenLimitOrders uint
 	flag.UintVar(&defaultMaxOpenLimitOrders, "default-max-open-limit-orders", uint(cfg.DefaultMaxOpenLimitOrders), "ADR-0054 fallback per-(user, symbol) LIMIT cap when SymbolConfig.MaxOpenLimitOrders is zero (0 disables cap; default 100)")
+
+	flag.StringVar(&cfg.MetricsAddr, "metrics-addr", cfg.MetricsAddr, "HTTP /metrics listen address (empty disables; ADR-0060 M8 / ADR-0062 M8)")
 
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")

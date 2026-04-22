@@ -140,6 +140,8 @@ func (w *VShardWorker) catchUpJournal(ctx context.Context, startOffset int64) er
 		w.producer.NoteObservedJournalOffset(lastOffset)
 	}
 
+	w.cfg.Metrics.RecordCatchUpApplied(int32(w.cfg.VShardID), applied)
+
 	logger.Info("catchup complete",
 		zap.Int("applied", applied),
 		zap.Int64("last_offset", lastOffset))

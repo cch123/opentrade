@@ -1,0 +1,212 @@
+# Counter 运维手册 (Runbook)
+
+> 对应 ADR-0060 M8 / ADR-0062 M8。覆盖异步消费 + TECheckpoint + 订单 evict + 恢复流程相关的告警、诊断与恢复动作。
+
+## 1. 观测端点
+
+| 端点 | 默认地址 | 用途 |
+|---|---|---|
+| `/metrics` | `:9101` (`--metrics-addr`) | Prometheus scrape |
+| `/healthz` | `:9101/healthz` | liveness (200=ok) |
+| gRPC | `:8081` (`--grpc-addr`) | CounterService / AssetHolder RPC |
+
+## 2. 关键 Prometheus 序列
+
+### 2.1 消费 / 推进 (ADR-0060)
+
+| Metric | 类型 | 标签 | 解读 |
+|---|---|---|---|
+| `counter_pendinglist_size` | Gauge | `vshard` | 每 vshard pendingList 深度。稳态 < 100；> 10k 告警 |
+| `counter_checkpoint_publish_total{result=ok\|err}` | Counter | `vshard, result` | TECheckpoint 发布结果。`err` 连续 ≥ 3 → advancer 卡住或 Kafka 异常 |
+| `counter_publish_retry_total` | Counter | `op, attempt_range` | `TxnProducer.runTxnWithRetry` 内重试分布。`attempt_range=6+` 出现即高风险 |
+| `counter_seq_high_watermark` | Gauge | `vshard` | UserSequencer.CounterSeq 最新值。不应回退 |
+| `counter_catchup_events_applied_total` | Counter | `vshard` | Recovery 时 catch-up 应用 event 数。启动时一次性增长是正常 |
+| `counter_snapshot_duration_seconds` | Histogram | `vshard` | writeSnapshot 临界段（含 SnapshotMu.W + Flush + Capture）耗时 p99 |
+
+### 2.2 订单 evict (ADR-0062)
+
+| Metric | 类型 | 标签 | 解读 |
+|---|---|---|---|
+| `counter_evict_processed_total{result=ok\|err}` | Counter | `vshard, result` | Evictor 处理订单数 |
+
+### 2.3 通用框架 (pkg/metrics)
+
+- `cex_rpc_requests_total{service="counter", method, code}`
+- `cex_rpc_duration_seconds{service="counter", method}`
+- `cex_kafka_produce_total{topic, result}`
+- `cex_kafka_consume_lag{topic, partition}`
+
+## 3. 告警阈值 (推荐)
+
+```yaml
+# ADR-0060 M8 建议基线
+- alert: CounterPendingListHigh
+  expr: counter_pendinglist_size > 10000
+  for: 2m
+  labels: {severity: warning}
+  annotations:
+    summary: "vshard {{ $labels.vshard }} pendingList 深度 > 10k"
+    runbook: "docs/runbook-counter.md#4-pendinglist-失控"
+
+- alert: CounterCheckpointPublishErrorBurst
+  expr: rate(counter_checkpoint_publish_total{result="err"}[5m]) > 0.1
+  for: 3m
+  labels: {severity: warning}
+
+- alert: CounterPublishRetryEscalating
+  expr: rate(counter_publish_retry_total{attempt_range="6+"}[5m]) > 0
+  for: 1m
+  labels: {severity: critical}
+  annotations:
+    runbook: "docs/runbook-counter.md#5-publish-重试持续-5s-即-panic"
+
+- alert: CounterSnapshotDurationSlow
+  expr: histogram_quantile(0.99, rate(counter_snapshot_duration_seconds_bucket[5m])) > 1.0
+  for: 5m
+  labels: {severity: warning}
+  annotations:
+    summary: "vshard {{ $labels.vshard }} snapshot p99 > 1s"
+    runbook: "docs/runbook-counter.md#6-snapshot-阻塞过久"
+
+- alert: CounterEvictErrorRate
+  expr: |
+    rate(counter_evict_processed_total{result="err"}[10m])
+    / rate(counter_evict_processed_total[10m]) > 0.1
+  for: 10m
+  labels: {severity: warning}
+  annotations:
+    runbook: "docs/runbook-counter.md#7-evict-持续失败"
+```
+
+## 4. pendingList 失控
+
+### 4.1 症状
+
+`counter_pendinglist_size{vshard="X"}` 单调上升，典型节奏数分钟内到 100k+。
+
+### 4.2 可能原因
+
+1. **下游 per-user 卡顿**：某 user 的 fn 在 Kafka Publish 内部卡住，drain goroutine 一直不返回 → 对应 vshard 的 pendingList 无限累积（ADR-0060 Known Gap G6）。应同时触发 `counter_publish_retry_total{attempt_range="6+"}` 告警。
+2. **advancer 本身卡死**：runAdvancer 信号 chan 接收阻塞 / panic → `counter_checkpoint_publish_total` 停止增长。
+3. **Kafka 集群压力**：整个集群抖动，大部分 Publish 重试但没到 panic 线 → `cex_kafka_produce_total{result="err"}` 增长。
+
+### 4.3 诊断步骤
+
+```bash
+# 1. 确认 vshard 所在 pod
+kubectl get pods -l app=counter -o wide
+
+# 2. 直接拉 /metrics 看趋势（哪个 vshard，是否仍在涨）
+curl http://<pod>:9101/metrics | grep -E 'counter_pendinglist|counter_publish_retry|counter_checkpoint'
+
+# 3. 看 pod 日志里是否有 "journal publish failed; retrying"
+kubectl logs <pod> --tail=200 | grep -E 'publish|retry|panic'
+
+# 4. 确认 Kafka broker 健康 — 按 operator 集群 dashboard
+```
+
+### 4.4 应急操作
+
+- **Kafka 侧问题**：按 Kafka 告警响应（先稳 broker，再看 Counter）。
+- **单 vshard 卡住**：kill 对应 pod，让 ADR-0058 cold handoff 把 vshard 迁走（lease 失效后约 10-30s 新 owner 接管）。
+  ```bash
+  kubectl delete pod <counter-pod> --grace-period=0
+  ```
+- **全局 advancer bug**：回滚最近一次发布到上一 build。
+
+## 5. Publish 重试持续 5s 即 panic
+
+### 5.1 症状
+
+Pod 短时间内反复重启，`counter_publish_retry_total{attempt_range="6+"}` 在重启前快速上升；日志最后一行：
+```
+panic: journal: Publish failed after N attempts over 5s: <kafka error>
+```
+
+### 5.2 原因
+
+ADR-0060 §3 的故障边界：Publish 连续 5s 失败触发 panic，让 vshard 通过 ADR-0058 cold handoff 迁到健康节点。
+
+### 5.3 动作
+
+- **Kafka 分区 leader 抖动/长时间不可用**：应同步看 Kafka broker 告警。Counter panic 是预期行为，**无需抑制**，抑制反而会掩盖 Kafka 问题。
+- **整个集群 restart loop**（ADR-0060 Known Gap G1）：表明 Kafka 集群长时间不可用，**停止 Counter 写流量（降级 BFF 层）**，恢复 Kafka 后再放流量。
+
+## 6. Snapshot 阻塞过久
+
+### 6.1 症状
+
+`counter_snapshot_duration_seconds` p99 持续 > 1s（正常 < 50ms，巨大账户规模下 < 200ms）。
+
+### 6.2 原因
+
+1. **SnapshotMu.W 被长时间 R holder 持有**：某个 fn 死锁或 Publish 卡住。**检查同时是否有 G6 告警**。
+2. **Blob store 慢**：S3 / MinIO 延迟飙升（Save 在 lock 外，不会延长临界段，但进入 lock 前的 Flush 可能慢）。
+3. **账户规模爆炸**：单 vshard 账户数突增（monitoring 账户数 gauge 在 ADR-0061 后加）。
+
+### 6.3 动作
+
+按实际原因：
+- fn 死锁 → pod kill + lease failover。
+- Blob store 慢 → 联系存储 SRE。
+- 规模问题 → 评估扩容 vshard 数（需要 ADR 级变更）。
+
+## 7. Evict 持续失败
+
+### 7.1 症状
+
+`counter_evict_processed_total{result="err"}` 增长速率 > `{result="ok"}`。
+
+### 7.2 原因
+
+- **Publish OrderEvictedEvent 失败**：Kafka 问题（同 §5）。
+- **下游订单状态异常**（concurrent state 被破坏）：极少见。
+
+### 7.3 动作
+
+- 同步 Kafka 健康。
+- 查单条失败 log：`kubectl logs ... | grep 'evict order'`，定位 error 类型。
+- Evict 失败是软故障（订单仍在 byID，下次 tick 重试），**不紧急**；除非 byID 增长率异常（监控 `counter_byid_size` — 本 ADR 暂无，后续补）。
+
+## 8. Recovery (catch-up journal replay)
+
+### 8.1 症状
+
+正常启动：日志 `catchup complete applied=N last_offset=M`，`counter_catchup_events_applied_total` 一次性增长。
+
+### 8.2 异常情况
+
+- `catchup: budget exhausted after N events` → 预算 2min 耗尽。通常是 counter-journal 历史堆积过长 + replay apply 慢。重试一次；重复失败则需 hand-roll 更大的 `defaultCatchUpMaxDuration`。
+- `catchup: client closed unexpectedly` → Kafka 连接异常 / auth。排查 broker。
+- **snap.journal_offset > counter-journal earliest offset** (ADR-0060 Known Gap G4)：对应 panic，应该在启动时出现明显 assertion 日志。修正 Kafka retention 配置后重启。
+
+## 9. 常用排障一行
+
+```bash
+# 总体状态
+curl -s http://<pod>:9101/metrics | \
+    grep -E '^counter_(pendinglist|checkpoint|publish_retry|snapshot|evict|catchup|seq)'
+
+# 特定 vshard
+curl -s http://<pod>:9101/metrics | \
+    grep -E 'vshard="42"'
+
+# 所有 vshard 的 pendingList 深度（排序）
+curl -s http://<pod>:9101/metrics | \
+    awk '/counter_pendinglist_size{.*}/ {print $0}' | sort -t= -k2 -nr | head
+
+# etcd 看当前 vshard 分配
+etcdctl --endpoints=$ETCD get --prefix /cex/counter/assignments/
+```
+
+## 10. 相关 ADR
+
+- [ADR-0048](adr/0048-snapshot-offset-atomicity.md) — snapshot + offset 原子
+- [ADR-0058](adr/0058-counter-vshard-and-instance-lock.md) — Counter 虚拟分片 + 冷切
+- [ADR-0060](adr/0060-counter-async-consumption-and-te-checkpoint.md) — 本 runbook 主要依据
+- [ADR-0062](adr/0062-order-terminal-eviction-and-idempotency-ring.md) — 订单 evict 流程
+- [ADR-0061](adr/0061-trade-dump-snapshot-pipeline.md) — (未来) trade-dump 接管 snapshot 生产
+
+## 11. 变更日志
+
+- 2026-04-22 初稿（ADR-0060 M8 / ADR-0062 M8 落地）

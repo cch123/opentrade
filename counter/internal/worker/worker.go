@@ -32,6 +32,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/counter/internal/journal"
+	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/counter/internal/snapshot"
@@ -107,6 +108,12 @@ type Config struct {
 	OrderEvictInterval  time.Duration
 	OrderEvictRetention time.Duration
 	OrderEvictMaxBatch  int
+
+	// Metrics is the optional ADR-0060 M8 + ADR-0062 M8 observability
+	// hook. Nil disables emission (tests / legacy paths). Production
+	// main.go constructs a single *metrics.Counter and shares it
+	// across every VShardWorker + the shared /metrics HTTP handler.
+	Metrics *metrics.Counter
 
 	Logger *zap.Logger
 }
@@ -225,6 +232,13 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		return fmt.Errorf("snapshot load: %w", err)
 	}
 
+	// Avoid Go's "non-nil interface holding a nil pointer" gotcha:
+	// assign the concrete pointer to the interface only when it's
+	// non-nil, so txn_producer's `!= nil` check reflects reality.
+	var retryMetrics journal.RetryMetrics
+	if w.cfg.Metrics != nil {
+		retryMetrics = w.cfg.Metrics
+	}
 	txnID := fmt.Sprintf(TransactionalIDFormat, w.cfg.VShardID)
 	producer, err := journal.NewTxnProducer(ctx, journal.TxnProducerConfig{
 		Brokers:               w.cfg.Brokers,
@@ -236,6 +250,7 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		VShardCount:           w.cfg.VShardCount,
 		WriterNodeID:          w.cfg.NodeID,
 		WriterEpoch:           w.cfg.Epoch,
+		RetryMetrics:          retryMetrics,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("txn producer: %w", err)
@@ -455,7 +470,7 @@ func (w *VShardWorker) runAdvancerWithPublisher(
 				if !ok {
 					break
 				}
-				w.emitCheckpoint(ctx, logger, pub, partition, maxOffset)
+				w.emitCheckpoint(ctx, logger, pub, pending, partition, maxOffset)
 			}
 		}
 	}
@@ -470,6 +485,7 @@ func (w *VShardWorker) emitCheckpoint(
 	ctx context.Context,
 	logger *zap.Logger,
 	pub checkpointPublisher,
+	pending *pendingList,
 	partition int32,
 	maxOffset int64,
 ) {
@@ -486,9 +502,19 @@ func (w *VShardWorker) emitCheckpoint(
 			zap.Int32("te_partition", partition),
 			zap.Int64("te_offset", maxOffset),
 			zap.Error(err))
+		w.cfg.Metrics.RecordCheckpointPublish(int32(w.cfg.VShardID), false)
 		return
 	}
+	w.cfg.Metrics.RecordCheckpointPublish(int32(w.cfg.VShardID), true)
 	w.svc.AdvanceOffset(partition, maxOffset+1)
+	// Refresh pendingList gauge on each successful advance — the
+	// gauge's denominator is the same list this advancer just
+	// shortened, so post-pop is the natural sampling point. Using
+	// the injected pending reference keeps test harnesses that
+	// bypass Run() (and so never populate w.pending) from NPE'ing.
+	if pending != nil {
+		w.cfg.Metrics.RecordPendingSize(int32(w.cfg.VShardID), pending.Len())
+	}
 }
 
 // journalWriter is the narrow TxnProducer subset the evictor needs.
@@ -538,7 +564,9 @@ func (w *VShardWorker) evictOneRound(ctx context.Context, logger *zap.Logger, pu
 		return
 	}
 	for _, o := range candidates {
-		if err := w.evictOne(ctx, o, pub); err != nil {
+		err := w.evictOne(ctx, o, pub)
+		w.cfg.Metrics.RecordEvictProcessed(int32(w.cfg.VShardID), err == nil)
+		if err != nil {
 			logger.Error("evict order",
 				zap.Uint64("order_id", o.ID),
 				zap.String("user_id", o.UserID),
@@ -551,6 +579,10 @@ func (w *VShardWorker) evictOneRound(ctx context.Context, logger *zap.Logger, pu
 	}
 }
 
+// evictOneRound emits its per-order outcome to metrics after each
+// evictOne returns (ADR-0062 M8). Wraps the bare loop so the metric
+// label stays close to the error-surfacing point.
+//
 // evictOne performs the ring→journal→delete three-step for a single
 // terminal order under the user's sequencer. Strict ordering matters:
 //  1. RememberTerminated: populates the ring so CancelOrder retries
@@ -620,6 +652,7 @@ func (w *VShardWorker) evictOne(ctx context.Context, o *engine.Order, pub journa
 // moves snapshot production out of Counter the acquisition can be
 // removed along with the sequencer barrier.
 func (w *VShardWorker) writeSnapshot(ctx context.Context) error {
+	start := time.Now()
 	w.state.SnapshotMu.Lock()
 	if err := w.producer.Flush(ctx); err != nil {
 		w.state.SnapshotMu.Unlock()
@@ -634,5 +667,12 @@ func (w *VShardWorker) writeSnapshot(ctx context.Context) error {
 	)
 	w.state.SnapshotMu.Unlock()
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
-	return snapshot.Save(ctx, w.cfg.Store, key, snap, w.cfg.SnapshotFormat)
+	err := snapshot.Save(ctx, w.cfg.Store, key, snap, w.cfg.SnapshotFormat)
+	// Emit duration even on error so operators see stalls in the
+	// W-lock + Flush + Capture segment (Save may be skewed by blob
+	// store latency but the interesting cost is the critical
+	// section). ADR-0060 M8.
+	w.cfg.Metrics.RecordSnapshotDuration(int32(w.cfg.VShardID), time.Since(start).Seconds())
+	w.cfg.Metrics.RecordCounterSeq(int32(w.cfg.VShardID), w.seq.CounterSeq())
+	return err
 }

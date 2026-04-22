@@ -57,6 +57,21 @@ type TxnProducerConfig struct {
 	// PublishRetryBackoff is the sleep between retries. Zero falls
 	// back to the package default (50ms).
 	PublishRetryBackoff time.Duration
+
+	// RetryMetrics is the optional emitter for per-op retry counters
+	// (ADR-0060 M8). Pass nil to disable (tests + the synchronous
+	// MVP path). Fires one Inc per retry attempt beyond the first so
+	// operators can distinguish "healthy first-try success" from
+	// "riding out transient errors".
+	RetryMetrics RetryMetrics
+}
+
+// RetryMetrics is the nil-safe emission hook used by runTxnWithRetry.
+// Implemented by counter/internal/metrics.Counter but kept as an
+// interface here to avoid an import cycle (metrics -> journal would
+// loop via worker). Tests can pass a fake.
+type RetryMetrics interface {
+	RecordPublishRetry(op string, attempt int)
 }
 
 // TxnProducer wraps franz-go's transactional producer. Each BeginCommit cycle
@@ -262,6 +277,13 @@ func (p *TxnProducer) runTxnWithRetry(ctx context.Context, opName string, fn fun
 		attempts++
 		err := p.runTxn(ctx, fn)
 		if err == nil {
+			if attempts > 1 && p.cfg.RetryMetrics != nil {
+				// Emit one final "retry success" so operators can
+				// distinguish "we rode this out" from "every retry
+				// ultimately panicked" (the latter has no success
+				// emission).
+				p.cfg.RetryMetrics.RecordPublishRetry(opName, attempts)
+			}
 			return nil
 		}
 		lastErr = err
@@ -283,6 +305,9 @@ func (p *TxnProducer) runTxnWithRetry(ctx context.Context, opName string, fn fun
 			zap.String("op", opName),
 			zap.Int("attempt", attempts),
 			zap.Error(err))
+		if p.cfg.RetryMetrics != nil {
+			p.cfg.RetryMetrics.RecordPublishRetry(opName, attempts)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

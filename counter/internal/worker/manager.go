@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/xargin/opentrade/counter/internal/clustering"
+	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/counter/internal/snapshot"
 	"github.com/xargin/opentrade/pkg/shard"
@@ -58,6 +59,11 @@ type WorkerTemplate struct {
 
 	DefaultMaxOpenLimitOrders uint32
 	SymbolLookup              service.SymbolLookup
+
+	// Metrics is the shared ADR-0060 M8 + ADR-0062 M8 observability
+	// bundle. Nil disables emission; production main.go constructs
+	// one *metrics.Counter per process and passes it through.
+	Metrics *metrics.Counter
 }
 
 // workerRun tracks one running VShardWorker plus the goroutine plumbing
@@ -217,6 +223,7 @@ func (m *Manager) startUnlocked(ctx context.Context, a clustering.Assignment) er
 		DedupTTL:                  m.template.DedupTTL,
 		DefaultMaxOpenLimitOrders: m.template.DefaultMaxOpenLimitOrders,
 		SymbolLookup:              m.template.SymbolLookup,
+		Metrics:                   m.template.Metrics,
 		Logger:                    m.logger,
 	}
 	w, err := New(cfg)
