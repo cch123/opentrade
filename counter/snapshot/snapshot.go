@@ -235,10 +235,46 @@ type ShardSnapshot struct {
 // result here; zero is acceptable for pre-0060 callers / cold start
 // paths — catch-up on Restore becomes a no-op.
 func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, offsets map[int32]int64, journalOffset int64, tsMS int64) *ShardSnapshot {
+	snap := CaptureFromState(shardID, state, seq.CounterSeq(), offsets, journalOffset, tsMS)
+	// Legacy dedup.Table is no longer the source of truth for Transfer
+	// idempotency (ADR-0048 backlog item 4 方案 A moved to per-user ring
+	// stored in AccountSnapshot). We still drain whatever entries happen
+	// to be in dt — Service.Transfer no longer writes to it, so on steady
+	// state this slice is empty, but older snapshots / tests may seed it.
+	// Writing is kept so operators can mix pre-/post-ring builds without
+	// losing audit entries mid-migration.
+	for _, e := range dt.Snapshot() {
+		snap.Dedup = append(snap.Dedup, DedupEntrySnapshot{
+			Key:         e.Key,
+			ExpiresUnix: e.ExpiresAt.UnixMilli(),
+		})
+	}
+	return snap
+}
+
+// CaptureFromState is the shadow-engine-friendly variant of Capture
+// (ADR-0061 M2). It takes counterSeq as a plain uint64 — shadow
+// engine tracks this itself from apply-side event metadata — and
+// skips the legacy dedup.Table entirely, which shadow engine never
+// populates. Counter-side callers keep using Capture which is a
+// thin wrapper around this function.
+//
+// Same contract as Capture on the state + offsets + journalOffset
+// front: caller owns concurrency (ShadowEngine drives single-
+// threaded so there is no concurrent apply during Capture; Counter
+// holds SnapshotMu for the duration of its Capture wrap).
+func CaptureFromState(
+	shardID int,
+	state *engine.ShardState,
+	counterSeq uint64,
+	offsets map[int32]int64,
+	journalOffset int64,
+	tsMS int64,
+) *ShardSnapshot {
 	snap := &ShardSnapshot{
 		Version:       Version,
 		ShardID:       shardID,
-		CounterSeq:    seq.CounterSeq(),
+		CounterSeq:    counterSeq,
 		TimestampMS:   tsMS,
 		Offsets:       OffsetsMapToSlice(offsets),
 		JournalOffset: journalOffset,
@@ -273,19 +309,6 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			}
 		}
 		snap.Accounts = append(snap.Accounts, as)
-	}
-	// Legacy dedup.Table is no longer the source of truth for Transfer
-	// idempotency (ADR-0048 backlog item 4 方案 A moved to per-user ring
-	// stored in AccountSnapshot). We still drain whatever entries happen
-	// to be in dt — Service.Transfer no longer writes to it, so on steady
-	// state this slice is empty, but older snapshots / tests may seed it.
-	// Writing is kept so operators can mix pre-/post-ring builds without
-	// losing audit entries mid-migration.
-	for _, e := range dt.Snapshot() {
-		snap.Dedup = append(snap.Dedup, DedupEntrySnapshot{
-			Key:         e.Key,
-			ExpiresUnix: e.ExpiresAt.UnixMilli(),
-		})
 	}
 	for _, o := range state.Orders().All() {
 		snap.Orders = append(snap.Orders, OrderSnapshot{

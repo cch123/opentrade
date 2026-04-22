@@ -42,7 +42,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/server"
-	"github.com/xargin/opentrade/counter/internal/snapshot"
+	"github.com/xargin/opentrade/counter/snapshot"
 	"github.com/xargin/opentrade/counter/internal/symregistry"
 	"github.com/xargin/opentrade/counter/internal/worker"
 	"github.com/xargin/opentrade/pkg/etcdcfg"

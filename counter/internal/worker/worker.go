@@ -36,7 +36,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
-	"github.com/xargin/opentrade/counter/internal/snapshot"
+	"github.com/xargin/opentrade/counter/snapshot"
 	"github.com/xargin/opentrade/pkg/idgen"
 )
 
