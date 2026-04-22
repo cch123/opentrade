@@ -6,7 +6,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/counter/internal/engine"
+	"github.com/xargin/opentrade/counter/engine"
 )
 
 // ErrAdminCancelFilterEmpty is returned when neither user_id nor symbol is

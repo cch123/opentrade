@@ -24,7 +24,7 @@ import (
 
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/counter/internal/engine"
+	"github.com/xargin/opentrade/counter/engine"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )

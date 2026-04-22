@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/internal/engine"
+	"github.com/xargin/opentrade/counter/engine"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 

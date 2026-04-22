@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/internal/engine"
+	"github.com/xargin/opentrade/counter/engine"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )

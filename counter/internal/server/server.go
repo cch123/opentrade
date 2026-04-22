@@ -13,7 +13,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
-	"github.com/xargin/opentrade/counter/internal/engine"
+	"github.com/xargin/opentrade/counter/engine"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/pkg/dec"
 )

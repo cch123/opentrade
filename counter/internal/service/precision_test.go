@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xargin/opentrade/counter/internal/engine"
+	"github.com/xargin/opentrade/counter/engine"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 )

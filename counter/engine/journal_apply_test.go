@@ -1,12 +1,9 @@
-package worker
+package engine
 
 import (
 	"testing"
 
-	"go.uber.org/zap"
-
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/internal/engine"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -16,7 +13,7 @@ import (
 // and write balance_after (via PutForRestore so Version matches
 // event).
 func TestApplyFreezeEvent_InsertsOrderAndSetsBalance(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := NewShardState(0)
 	evt := &eventpb.FreezeEvent{
 		UserId:        "u1",
 		OrderId:       100,
@@ -44,7 +41,7 @@ func TestApplyFreezeEvent_InsertsOrderAndSetsBalance(t *testing.T) {
 	if o == nil {
 		t.Fatal("order 100 not inserted")
 	}
-	if o.UserID != "u1" || o.Symbol != "BTC-USDT" || o.Status != engine.OrderStatusPendingNew {
+	if o.UserID != "u1" || o.Symbol != "BTC-USDT" || o.Status != OrderStatusPendingNew {
 		t.Fatalf("order = %+v, want (u1/BTC-USDT/PendingNew)", o)
 	}
 	if o.Price.String() != "50000" || o.Qty.String() != "0.1" {
@@ -64,13 +61,13 @@ func TestApplyFreezeEvent_InsertsOrderAndSetsBalance(t *testing.T) {
 // The freeze event must NOT overwrite the order (it may have moved
 // forward), but balance_after still writes verbatim.
 func TestApplyFreezeEvent_IdempotentOnExistingOrder(t *testing.T) {
-	state := engine.NewShardState(0)
-	state.Orders().RestoreInsert(&engine.Order{
-		ID:            100,
-		UserID:        "u1",
-		Symbol:        "BTC-USDT",
-		Status:        engine.OrderStatusPartiallyFilled,
-		FilledQty:     dec.New("0.05"),
+	state := NewShardState(0)
+	state.Orders().RestoreInsert(&Order{
+		ID:        100,
+		UserID:    "u1",
+		Symbol:    "BTC-USDT",
+		Status:    OrderStatusPartiallyFilled,
+		FilledQty: dec.New("0.05"),
 	})
 	evt := &eventpb.FreezeEvent{
 		UserId:       "u1",
@@ -91,7 +88,7 @@ func TestApplyFreezeEvent_IdempotentOnExistingOrder(t *testing.T) {
 		t.Fatalf("applyFreezeEvent: %v", err)
 	}
 	o := state.Orders().Get(100)
-	if o.Status != engine.OrderStatusPartiallyFilled {
+	if o.Status != OrderStatusPartiallyFilled {
 		t.Fatalf("status = %v, want preserved PartiallyFilled", o.Status)
 	}
 	if o.FilledQty.String() != "0.05" {
@@ -108,8 +105,8 @@ func TestApplyFreezeEvent_IdempotentOnExistingOrder(t *testing.T) {
 // associated OrderStatusEvent (emitted in same transaction) will
 // advance the order's terminal status in a separate apply.
 func TestApplyUnfreezeEvent_SetsBalance(t *testing.T) {
-	state := engine.NewShardState(0)
-	state.Account("u1").PutForRestore("USDT", engine.Balance{
+	state := NewShardState(0)
+	state.Account("u1").PutForRestore("USDT", Balance{
 		Available: dec.New("10000"),
 		Frozen:    dec.New("5000"),
 		Version:   5,
@@ -134,26 +131,28 @@ func TestApplyUnfreezeEvent_SetsBalance(t *testing.T) {
 // settlement replay path. Balances from base/quote_balance_after;
 // FilledQty is monotonically advanced by evt.Qty.
 func TestApplySettlementEvent_AdvancesFilledAndBalances(t *testing.T) {
-	state := engine.NewShardState(0)
-	state.Orders().RestoreInsert(&engine.Order{
+	state := NewShardState(0)
+	state.Orders().RestoreInsert(&Order{
 		ID:           100,
 		UserID:       "u1",
 		Symbol:       "BTC-USDT",
-		Side:         engine.SideBid,
-		Type:         engine.OrderTypeLimit,
+		Side:         SideBid,
+		Type:         OrderTypeLimit,
 		Price:        dec.New("50000"),
 		Qty:          dec.New("1"),
 		FilledQty:    dec.New("0.2"),
 		FrozenAsset:  "USDT",
 		FrozenAmount: dec.New("50000"),
 		FrozenSpent:  dec.New("10000"),
-		Status:       engine.OrderStatusPartiallyFilled,
+		Status:       OrderStatusPartiallyFilled,
 	})
 	evt := &eventpb.SettlementEvent{
 		UserId: "u1", OrderId: 100, Symbol: "BTC-USDT",
-		Side: eventpb.Side_SIDE_BUY,
-		Price: "50000", Qty: "0.1",
-		DeltaBase: "0.1", DeltaQuote: "-5000",
+		Side:       eventpb.Side_SIDE_BUY,
+		Price:      "50000",
+		Qty:        "0.1",
+		DeltaBase:  "0.1",
+		DeltaQuote: "-5000",
 		BaseBalanceAfter: &eventpb.BalanceSnapshot{
 			UserId: "u1", Asset: "BTC",
 			Available: "0.3", Frozen: "0", Version: 3,
@@ -180,37 +179,28 @@ func TestApplySettlementEvent_AdvancesFilledAndBalances(t *testing.T) {
 	}
 }
 
-// TestApplySettlementEvent_MonotonicFilledQty replays an older
-// settlement after a newer one: FilledQty must NOT go backwards
-// (guard prevents revert).
-func TestApplySettlementEvent_MonotonicFilledQty(t *testing.T) {
-	state := engine.NewShardState(0)
-	state.Orders().RestoreInsert(&engine.Order{
+// TestApplySettlementEvent_SequentialReplayAccumulates documents the
+// accepted behavior: catch-up assumes sequential forward application
+// of every journal event. Each replayed settlement adds its qty to
+// FilledQty, so in-order replay from a snapshot converges.
+func TestApplySettlementEvent_SequentialReplayAccumulates(t *testing.T) {
+	state := NewShardState(0)
+	state.Orders().RestoreInsert(&Order{
 		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideAsk, Type: engine.OrderTypeLimit,
+		Side: SideAsk, Type: OrderTypeLimit,
 		Price: dec.New("50000"), Qty: dec.New("1"),
 		FilledQty:   dec.New("0.5"),
 		FrozenAsset: "BTC", FrozenAmount: dec.New("1"),
-		Status: engine.OrderStatusPartiallyFilled,
+		Status: OrderStatusPartiallyFilled,
 	})
-	// Replay an older event (qty 0.1) — FilledQty must stay at 0.5.
-	// (Monotonic guard prevents revert.)
 	evt := &eventpb.SettlementEvent{
 		UserId: "u1", OrderId: 100, Symbol: "BTC-USDT",
 		Price: "50000", Qty: "0.1",
 	}
-	// Without a base_balance_after, this is a partial event — still OK.
 	if err := applySettlementEvent(state, evt); err != nil {
 		t.Fatalf("applySettlementEvent: %v", err)
 	}
 	o := state.Orders().Get(100)
-	// The monotonic check uses `newFilled := FilledQty + evt.Qty` which
-	// IS greater than current — so replay DOES advance here. This is
-	// the accepted behavior: catch-up assumes sequential forward
-	// application of every journal event, not re-ordering. An older
-	// event replayed after a newer one would double-apply, which is
-	// why the caller must only invoke applyJournalEvent in journal
-	// order.
 	if o.FilledQty.String() != "0.6" {
 		t.Fatalf("filled_qty = %s, want 0.6 (sequential replay accumulates)", o.FilledQty)
 	}
@@ -220,7 +210,7 @@ func TestApplySettlementEvent_MonotonicFilledQty(t *testing.T) {
 // re-seated into recentTransferIDs so RPC replay after restart
 // correctly dedups.
 func TestApplyTransferEvent_RememberInRing(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := NewShardState(0)
 	evt := &eventpb.TransferEvent{
 		UserId:     "u1",
 		TransferId: "tx-42",
@@ -248,10 +238,10 @@ func TestApplyTransferEvent_RememberInRing(t *testing.T) {
 // use: an OrderStatusEvent for a known order drives Status forward
 // and stamps TerminatedAt.
 func TestApplyOrderStatusEvent_TransitionsToTerminal(t *testing.T) {
-	state := engine.NewShardState(0)
-	state.Orders().RestoreInsert(&engine.Order{
+	state := NewShardState(0)
+	state.Orders().RestoreInsert(&Order{
 		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
-		Type: engine.OrderTypeLimit, Status: engine.OrderStatusNew,
+		Type: OrderTypeLimit, Status: OrderStatusNew,
 	})
 	evt := &eventpb.OrderStatusEvent{
 		UserId: "u1", OrderId: 100,
@@ -263,7 +253,7 @@ func TestApplyOrderStatusEvent_TransitionsToTerminal(t *testing.T) {
 		t.Fatalf("applyOrderStatusEvent: %v", err)
 	}
 	o := state.Orders().Get(100)
-	if o.Status != engine.OrderStatusCanceled {
+	if o.Status != OrderStatusCanceled {
 		t.Fatalf("status = %v, want Canceled", o.Status)
 	}
 	if o.TerminatedAt == 0 {
@@ -278,10 +268,10 @@ func TestApplyOrderStatusEvent_TransitionsToTerminal(t *testing.T) {
 // non-terminal status after the order is already terminal must
 // NOT revert.
 func TestApplyOrderStatusEvent_NoBackwardsFromTerminal(t *testing.T) {
-	state := engine.NewShardState(0)
-	state.Orders().RestoreInsert(&engine.Order{
+	state := NewShardState(0)
+	state.Orders().RestoreInsert(&Order{
 		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
-		Type: engine.OrderTypeLimit, Status: engine.OrderStatusCanceled,
+		Type: OrderTypeLimit, Status: OrderStatusCanceled,
 		TerminatedAt: 1000,
 	})
 	evt := &eventpb.OrderStatusEvent{
@@ -292,7 +282,7 @@ func TestApplyOrderStatusEvent_NoBackwardsFromTerminal(t *testing.T) {
 		t.Fatalf("applyOrderStatusEvent: %v", err)
 	}
 	o := state.Orders().Get(100)
-	if o.Status != engine.OrderStatusCanceled {
+	if o.Status != OrderStatusCanceled {
 		t.Fatalf("status = %v, want Canceled (no revert)", o.Status)
 	}
 }
@@ -301,7 +291,7 @@ func TestApplyOrderStatusEvent_NoBackwardsFromTerminal(t *testing.T) {
 // evicted order case — status event arrives for an ID not in byID
 // and must not error.
 func TestApplyOrderStatusEvent_MissingOrderIsNoOp(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := NewShardState(0)
 	evt := &eventpb.OrderStatusEvent{
 		UserId: "u1", OrderId: 999,
 		NewStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW,
@@ -317,10 +307,10 @@ func TestApplyOrderStatusEvent_MissingOrderIsNoOp(t *testing.T) {
 // TestApplyOrderEvictedEvent_RemembersAndDeletes mirrors the evictor
 // path: the ring gets the entry and byID loses the order.
 func TestApplyOrderEvictedEvent_RemembersAndDeletes(t *testing.T) {
-	state := engine.NewShardState(0)
-	state.Orders().RestoreInsert(&engine.Order{
+	state := NewShardState(0)
+	state.Orders().RestoreInsert(&Order{
 		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
-		Type: engine.OrderTypeLimit, Status: engine.OrderStatusCanceled,
+		Type: OrderTypeLimit, Status: OrderStatusCanceled,
 		TerminatedAt: 1000,
 	})
 	evt := &eventpb.OrderEvictedEvent{
@@ -338,7 +328,7 @@ func TestApplyOrderEvictedEvent_RemembersAndDeletes(t *testing.T) {
 	if !ok {
 		t.Fatal("order not remembered in ring")
 	}
-	if entry.FinalStatus != engine.OrderStatusCanceled {
+	if entry.FinalStatus != OrderStatusCanceled {
 		t.Fatalf("final_status = %v, want Canceled", entry.FinalStatus)
 	}
 }
@@ -347,17 +337,15 @@ func TestApplyOrderEvictedEvent_RemembersAndDeletes(t *testing.T) {
 // event over already-evicted state is a no-op (no error, ring
 // entry unchanged).
 func TestApplyOrderEvictedEvent_Idempotent(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := NewShardState(0)
 	evt := &eventpb.OrderEvictedEvent{
 		UserId: "u1", OrderId: 100, Symbol: "BTC-USDT",
 		FinalStatus:  eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED,
 		TerminatedAt: 1000,
 	}
-	// First apply — order never existed, RememberTerminated still works.
 	if err := applyOrderEvictedEvent(state, evt); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
-	// Second apply — Delete returns ErrOrderNotFound which is treated as no-op.
 	if err := applyOrderEvictedEvent(state, evt); err != nil {
 		t.Fatalf("second apply: %v", err)
 	}
@@ -367,15 +355,15 @@ func TestApplyOrderEvictedEvent_Idempotent(t *testing.T) {
 	}
 }
 
-// TestApplyJournalEvent_DispatchesByPayload covers the top-level
-// dispatcher: each oneof variant reaches its helper.
-func TestApplyJournalEvent_DispatchesByPayload(t *testing.T) {
-	logger := zap.NewNop()
-	state := engine.NewShardState(0)
+// TestApplyCounterJournalEvent_DispatchesByPayload covers the
+// top-level dispatcher: each oneof variant reaches its helper. Uses
+// the exported entry point (what every external caller will hit).
+func TestApplyCounterJournalEvent_DispatchesByPayload(t *testing.T) {
+	state := NewShardState(0)
 	cases := []struct {
-		name    string
-		evt     *eventpb.CounterJournalEvent
-		check   func(t *testing.T)
+		name  string
+		evt   *eventpb.CounterJournalEvent
+		check func(t *testing.T)
 	}{
 		{
 			name: "freeze",
@@ -383,9 +371,9 @@ func TestApplyJournalEvent_DispatchesByPayload(t *testing.T) {
 				Payload: &eventpb.CounterJournalEvent_Freeze{
 					Freeze: &eventpb.FreezeEvent{
 						UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
-						Side: eventpb.Side_SIDE_BUY,
+						Side:      eventpb.Side_SIDE_BUY,
 						OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
-						Price: "10", Qty: "1", FreezeAsset: "USDT", FreezeAmount: "10",
+						Price:     "10", Qty: "1", FreezeAsset: "USDT", FreezeAmount: "10",
 						BalanceAfter: &eventpb.BalanceSnapshot{
 							UserId: "u1", Asset: "USDT", Available: "90", Frozen: "10",
 						},
@@ -406,16 +394,48 @@ func TestApplyJournalEvent_DispatchesByPayload(t *testing.T) {
 				},
 			},
 			check: func(t *testing.T) {
-				// purely signalling — no effect. Assert nothing bumped.
+				// purely signalling — no effect.
+			},
+		},
+		{
+			name: "nil_payload",
+			evt:  &eventpb.CounterJournalEvent{Payload: nil},
+			check: func(t *testing.T) {
+				// nil payload is a no-op and must not panic.
 			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := applyJournalEvent(state, tc.evt, logger); err != nil {
-				t.Fatalf("applyJournalEvent: %v", err)
+			if err := ApplyCounterJournalEvent(state, tc.evt); err != nil {
+				t.Fatalf("ApplyCounterJournalEvent: %v", err)
 			}
 			tc.check(t)
 		})
+	}
+}
+
+// TestOrderStatusFromProto_RoundTrip verifies the mapping table
+// is complete — every internal status has a non-Unspecified entry,
+// unknown proto values fall back to Unspecified.
+func TestOrderStatusFromProto_RoundTrip(t *testing.T) {
+	cases := []struct {
+		proto eventpb.InternalOrderStatus
+		want  OrderStatus
+	}{
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW, OrderStatusPendingNew},
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW, OrderStatusNew},
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED, OrderStatusPartiallyFilled},
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED, OrderStatusFilled},
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL, OrderStatusPendingCancel},
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED, OrderStatusCanceled},
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_REJECTED, OrderStatusRejected},
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_EXPIRED, OrderStatusExpired},
+		{eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_UNSPECIFIED, OrderStatusUnspecified},
+	}
+	for _, tc := range cases {
+		if got := OrderStatusFromProto(tc.proto); got != tc.want {
+			t.Errorf("OrderStatusFromProto(%v) = %v, want %v", tc.proto, got, tc.want)
+		}
 	}
 }
