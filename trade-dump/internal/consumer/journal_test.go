@@ -37,7 +37,7 @@ func TestDecodeJournalBatch_DropsMalformed(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("events: %d", len(events))
 	}
-	if events[0].GetTransfer().UserId != "u1" {
+	if events[0].Event.GetTransfer().UserId != "u1" {
 		t.Errorf("not decoded right: %+v", events[0])
 	}
 }

@@ -199,7 +199,7 @@ func upsertAccountsChunk(ctx context.Context, tx *sql.Tx, rows []AccountRow) err
 // account_logs
 // -----------------------------------------------------------------------------
 
-const accountLogCols = "vshard_id, counter_seq_id, asset, user_id, delta_avail, delta_frozen, avail_after, frozen_after, biz_type, biz_ref_id, ts"
+const accountLogCols = "vshard_id, counter_seq_id, asset, user_id, delta_avail, delta_frozen, avail_after, frozen_after, biz_type, biz_ref_id, ts, writer_node, writer_epoch"
 
 func (m *MySQL) applyAccountLogs(ctx context.Context, tx *sql.Tx, rows []AccountLogRow) error {
 	if len(rows) == 0 {
@@ -219,9 +219,9 @@ func (m *MySQL) applyAccountLogs(ctx context.Context, tx *sql.Tx, rows []Account
 
 func insertAccountLogsChunk(ctx context.Context, tx *sql.Tx, rows []AccountLogRow) error {
 	placeholders := make([]string, len(rows))
-	args := make([]any, 0, len(rows)*11)
+	args := make([]any, 0, len(rows)*13)
 	for i, r := range rows {
-		placeholders[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+		placeholders[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 		args = append(args,
 			r.VShardID,
 			r.CounterSeqID,
@@ -234,6 +234,8 @@ func insertAccountLogsChunk(ctx context.Context, tx *sql.Tx, rows []AccountLogRo
 			r.BizType,
 			r.BizRefID,
 			r.TsUnixMs,
+			r.WriterNode,
+			r.WriterEpoch,
 		)
 	}
 	q := "INSERT INTO account_logs (" + accountLogCols + ") VALUES " +

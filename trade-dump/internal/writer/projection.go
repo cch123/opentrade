@@ -72,7 +72,9 @@ type AccountRow struct {
 // AccountLogRow mirrors the `account_logs` table — one row per
 // (vshard, counter_seq_id, asset). Inserted with ON DUPLICATE KEY UPDATE
 // no-op so replays are idempotent. ADR-0058 renamed the shard column
-// to vshard_id.
+// to vshard_id; writer_node + writer_epoch come from the Kafka record
+// headers the counter TxnProducer attaches (ADR-0058 §4), used for
+// forensic queries after a failover / migration.
 type AccountLogRow struct {
 	VShardID     int32
 	CounterSeqID uint64
@@ -85,6 +87,19 @@ type AccountLogRow struct {
 	BizType      string
 	BizRefID     string
 	TsUnixMs     int64
+	WriterNode   string
+	WriterEpoch  uint64
+}
+
+// DecoratedJournalEvent pairs a decoded CounterJournalEvent with the
+// Kafka record headers trade-dump cares about (writer-node /
+// writer-epoch, ADR-0058 §4). The consumer layer fills it; the pure
+// BuildJournalBatch projector copies the audit fields into
+// AccountLogRow.
+type DecoratedJournalEvent struct {
+	Event       *eventpb.CounterJournalEvent
+	WriterNode  string
+	WriterEpoch uint64
 }
 
 // JournalBatch is the aggregate projection of a consumed slice of
@@ -111,18 +126,22 @@ type JournalWriter interface {
 // Pure builder: CounterJournalEvent → JournalBatch
 // -----------------------------------------------------------------------------
 
-// BuildJournalBatch projects a slice of events into a MySQL write batch. It
-// is a pure function with no I/O. Unknown or malformed events are skipped
-// (with a returned-error-but-partial-batch signal lost on purpose — batch
-// writing must be all-or-nothing within the consumed Kafka records, and a
-// single bad event should never block progress).
+// BuildJournalBatch projects a slice of decorated events into a MySQL
+// write batch. It is a pure function with no I/O. Unknown or malformed
+// events are skipped (with a returned-error-but-partial-batch signal
+// lost on purpose — batch writing must be all-or-nothing within the
+// consumed Kafka records, and a single bad event should never block
+// progress).
 //
-// The shardID is parsed from EventMeta.producer_id (e.g.
-// "counter-shard-3-main" → 3). Events without a parseable shard id are
-// skipped from account_logs (the other tables don't need shard_id).
-func BuildJournalBatch(events []*eventpb.CounterJournalEvent) JournalBatch {
+// The vshardID is parsed from EventMeta.producer_id
+// ("counter-vshard-NNN" per ADR-0058). Writer audit fields
+// (writer_node / writer_epoch) come from the Kafka record headers
+// attached by counter's TxnProducer and are forwarded straight into
+// AccountLogRow.
+func BuildJournalBatch(events []DecoratedJournalEvent) JournalBatch {
 	var batch JournalBatch
-	for _, evt := range events {
+	for _, d := range events {
+		evt := d.Event
 		if evt == nil {
 			continue
 		}
@@ -133,13 +152,13 @@ func BuildJournalBatch(events []*eventpb.CounterJournalEvent) JournalBatch {
 		accVer := evt.AccountVersion
 		switch p := evt.Payload.(type) {
 		case *eventpb.CounterJournalEvent_Freeze:
-			appendFromFreeze(&batch, p.Freeze, counterSeq, ts, shardID, hasShard, accVer)
+			appendFromFreeze(&batch, p.Freeze, counterSeq, ts, shardID, hasShard, accVer, d.WriterNode, d.WriterEpoch)
 		case *eventpb.CounterJournalEvent_Unfreeze:
-			appendFromUnfreeze(&batch, p.Unfreeze, counterSeq, ts, shardID, hasShard, accVer)
+			appendFromUnfreeze(&batch, p.Unfreeze, counterSeq, ts, shardID, hasShard, accVer, d.WriterNode, d.WriterEpoch)
 		case *eventpb.CounterJournalEvent_Settlement:
-			appendFromSettlement(&batch, p.Settlement, counterSeq, ts, shardID, hasShard, accVer)
+			appendFromSettlement(&batch, p.Settlement, counterSeq, ts, shardID, hasShard, accVer, d.WriterNode, d.WriterEpoch)
 		case *eventpb.CounterJournalEvent_Transfer:
-			appendFromTransfer(&batch, p.Transfer, counterSeq, ts, shardID, hasShard, accVer)
+			appendFromTransfer(&batch, p.Transfer, counterSeq, ts, shardID, hasShard, accVer, d.WriterNode, d.WriterEpoch)
 		case *eventpb.CounterJournalEvent_OrderStatus:
 			appendFromOrderStatus(&batch, p.OrderStatus, ts)
 		case *eventpb.CounterJournalEvent_CancelReq:
@@ -178,7 +197,7 @@ func shardIDFromProducer(producerID string) (int32, bool) {
 	return int32(n), true
 }
 
-func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
+func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64, writerNode string, writerEpoch uint64) {
 	if e == nil {
 		return
 	}
@@ -203,23 +222,25 @@ func appendFromFreeze(b *JournalBatch, e *eventpb.FreezeEvent, counterSeq uint64
 		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-				VShardID:    shardID,
+				VShardID:     shardID,
 				CounterSeqID: counterSeq,
-				Asset:       snap.Asset,
-				UserID:      e.UserId,
-				DeltaAvail:  "-" + trimDecimal(e.FreezeAmount),
-				DeltaFrozen: trimDecimal(e.FreezeAmount),
-				AvailAfter:  snap.Available,
-				FrozenAfter: snap.Frozen,
-				BizType:     "freeze_place_order",
-				BizRefID:    fmt.Sprintf("%d", e.OrderId),
-				TsUnixMs:    ts,
+				Asset:        snap.Asset,
+				UserID:       e.UserId,
+				DeltaAvail:   "-" + trimDecimal(e.FreezeAmount),
+				DeltaFrozen:  trimDecimal(e.FreezeAmount),
+				AvailAfter:   snap.Available,
+				FrozenAfter:  snap.Frozen,
+				BizType:      "freeze_place_order",
+				BizRefID:     fmt.Sprintf("%d", e.OrderId),
+				TsUnixMs:     ts,
+				WriterNode:   writerNode,
+				WriterEpoch:  writerEpoch,
 			})
 		}
 	}
 }
 
-func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
+func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64, writerNode string, writerEpoch uint64) {
 	if e == nil {
 		return
 	}
@@ -227,23 +248,25 @@ func appendFromUnfreeze(b *JournalBatch, e *eventpb.UnfreezeEvent, counterSeq ui
 		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-				VShardID:    shardID,
+				VShardID:     shardID,
 				CounterSeqID: counterSeq,
-				Asset:       snap.Asset,
-				UserID:      e.UserId,
-				DeltaAvail:  trimDecimal(e.Amount),
-				DeltaFrozen: "-" + trimDecimal(e.Amount),
-				AvailAfter:  snap.Available,
-				FrozenAfter: snap.Frozen,
-				BizType:     "unfreeze",
-				BizRefID:    fmt.Sprintf("%d", e.OrderId),
-				TsUnixMs:    ts,
+				Asset:        snap.Asset,
+				UserID:       e.UserId,
+				DeltaAvail:   trimDecimal(e.Amount),
+				DeltaFrozen:  "-" + trimDecimal(e.Amount),
+				AvailAfter:   snap.Available,
+				FrozenAfter:  snap.Frozen,
+				BizType:      "unfreeze",
+				BizRefID:     fmt.Sprintf("%d", e.OrderId),
+				TsUnixMs:     ts,
+				WriterNode:   writerNode,
+				WriterEpoch:  writerEpoch,
 			})
 		}
 	}
 }
 
-func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
+func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64, writerNode string, writerEpoch uint64) {
 	if e == nil {
 		return
 	}
@@ -252,17 +275,19 @@ func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, counterSe
 		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-				VShardID:    shardID,
+				VShardID:     shardID,
 				CounterSeqID: counterSeq,
-				Asset:       snap.Asset,
-				UserID:      e.UserId,
-				DeltaAvail:  trimDecimal(e.DeltaBase),
-				DeltaFrozen: negateDecimal(e.UnfreezeBase),
-				AvailAfter:  snap.Available,
-				FrozenAfter: snap.Frozen,
-				BizType:     "settlement",
-				BizRefID:    e.TradeId,
-				TsUnixMs:    ts,
+				Asset:        snap.Asset,
+				UserID:       e.UserId,
+				DeltaAvail:   trimDecimal(e.DeltaBase),
+				DeltaFrozen:  negateDecimal(e.UnfreezeBase),
+				AvailAfter:   snap.Available,
+				FrozenAfter:  snap.Frozen,
+				BizType:      "settlement",
+				BizRefID:     e.TradeId,
+				TsUnixMs:     ts,
+				WriterNode:   writerNode,
+				WriterEpoch:  writerEpoch,
 			})
 		}
 	}
@@ -271,23 +296,25 @@ func appendFromSettlement(b *JournalBatch, e *eventpb.SettlementEvent, counterSe
 		b.Accounts = append(b.Accounts, accountRowFromSnap(snap, counterSeq, accVer))
 		if hasShard {
 			b.AccountLogs = append(b.AccountLogs, AccountLogRow{
-				VShardID:    shardID,
+				VShardID:     shardID,
 				CounterSeqID: counterSeq,
-				Asset:       snap.Asset,
-				UserID:      e.UserId,
-				DeltaAvail:  trimDecimal(e.DeltaQuote),
-				DeltaFrozen: negateDecimal(e.UnfreezeQuote),
-				AvailAfter:  snap.Available,
-				FrozenAfter: snap.Frozen,
-				BizType:     "settlement",
-				BizRefID:    e.TradeId,
-				TsUnixMs:    ts,
+				Asset:        snap.Asset,
+				UserID:       e.UserId,
+				DeltaAvail:   trimDecimal(e.DeltaQuote),
+				DeltaFrozen:  negateDecimal(e.UnfreezeQuote),
+				AvailAfter:   snap.Available,
+				FrozenAfter:  snap.Frozen,
+				BizType:      "settlement",
+				BizRefID:     e.TradeId,
+				TsUnixMs:     ts,
+				WriterNode:   writerNode,
+				WriterEpoch:  writerEpoch,
 			})
 		}
 	}
 }
 
-func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64) {
+func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, counterSeq uint64, ts int64, shardID int32, hasShard bool, accVer uint64, writerNode string, writerEpoch uint64) {
 	if e == nil {
 		return
 	}
@@ -304,14 +331,16 @@ func appendFromTransfer(b *JournalBatch, e *eventpb.TransferEvent, counterSeq ui
 		VShardID:     shardID,
 		CounterSeqID: counterSeq,
 		Asset:        snap.Asset,
-		UserID:      e.UserId,
-		DeltaAvail:  deltaAvail,
-		DeltaFrozen: deltaFrozen,
-		AvailAfter:  snap.Available,
-		FrozenAfter: snap.Frozen,
-		BizType:     transferBizType(e.Type),
-		BizRefID:    firstNonEmpty(e.BizRefId, e.TransferId),
-		TsUnixMs:    ts,
+		UserID:       e.UserId,
+		DeltaAvail:   deltaAvail,
+		DeltaFrozen:  deltaFrozen,
+		AvailAfter:   snap.Available,
+		FrozenAfter:  snap.Frozen,
+		BizType:      transferBizType(e.Type),
+		BizRefID:     firstNonEmpty(e.BizRefId, e.TransferId),
+		TsUnixMs:     ts,
+		WriterNode:   writerNode,
+		WriterEpoch:  writerEpoch,
 	})
 }
 

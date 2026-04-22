@@ -75,6 +75,12 @@ CREATE TABLE IF NOT EXISTS trades (
 -- ADR-0058 renamed shard_id → vshard_id: Counter now routes by 256
 -- virtual shards instead of 10 physical ones. The column is parsed
 -- out of EventMeta.producer_id which is "counter-vshard-NNN".
+-- writer_node / writer_epoch are audit-only: trade-dump copies them
+-- from the Kafka record headers that counter's TxnProducer attaches
+-- (writer-node / writer-epoch per ADR-0058 §4). They identify which
+-- counter node + which assignment epoch produced the event, which is
+-- useful for forensic queries after a failover / migration ("which
+-- owner wrote this settlement?") but not part of any client-facing API.
 CREATE TABLE IF NOT EXISTS account_logs (
     vshard_id      INT             NOT NULL,
     counter_seq_id BIGINT UNSIGNED NOT NULL,
@@ -87,6 +93,8 @@ CREATE TABLE IF NOT EXISTS account_logs (
     biz_type       VARCHAR(32)     NOT NULL,
     biz_ref_id     VARCHAR(128)    NOT NULL DEFAULT '',
     ts             BIGINT          NOT NULL,
+    writer_node    VARCHAR(64)     NOT NULL DEFAULT '',
+    writer_epoch   BIGINT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (vshard_id, counter_seq_id, asset),
     KEY idx_user_ts (user_id, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

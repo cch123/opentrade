@@ -61,7 +61,7 @@ func TestBuildJournalBatch_Freeze(t *testing.T) {
 			},
 		}},
 	}
-	batch := BuildJournalBatch([]*eventpb.CounterJournalEvent{evt})
+	batch := BuildJournalBatch([]DecoratedJournalEvent{{Event: evt}})
 
 	if len(batch.Orders) != 1 {
 		t.Fatalf("orders: %+v", batch.Orders)
@@ -125,7 +125,7 @@ func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 			},
 		}},
 	}
-	batch := BuildJournalBatch([]*eventpb.CounterJournalEvent{evt})
+	batch := BuildJournalBatch([]DecoratedJournalEvent{{Event: evt}})
 
 	if len(batch.Orders) != 0 {
 		t.Errorf("settlement should not emit order rows: %+v", batch.Orders)
@@ -162,7 +162,7 @@ func TestBuildJournalBatch_OrderStatusUpdate(t *testing.T) {
 			FilledQty: "1",
 		}},
 	}
-	batch := BuildJournalBatch([]*eventpb.CounterJournalEvent{evt})
+	batch := BuildJournalBatch([]DecoratedJournalEvent{{Event: evt}})
 
 	if len(batch.Orders) != 1 {
 		t.Fatalf("orders: %+v", batch.Orders)
@@ -205,7 +205,7 @@ func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 			},
 		}},
 	}
-	batch := BuildJournalBatch([]*eventpb.CounterJournalEvent{deposit, withdraw})
+	batch := BuildJournalBatch([]DecoratedJournalEvent{{Event: deposit}, {Event: withdraw}})
 
 	if len(batch.AccountLogs) != 2 {
 		t.Fatalf("logs: %+v", batch.AccountLogs)
@@ -226,7 +226,7 @@ func TestBuildJournalBatch_CancelRequestedIsNoop(t *testing.T) {
 			UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",
 		}},
 	}
-	batch := BuildJournalBatch([]*eventpb.CounterJournalEvent{evt})
+	batch := BuildJournalBatch([]DecoratedJournalEvent{{Event: evt}})
 	if !batch.IsEmpty() {
 		t.Errorf("CancelRequested should not produce rows: %+v", batch)
 	}
@@ -242,7 +242,7 @@ func TestBuildJournalBatch_DropsUnparseableShard(t *testing.T) {
 			BalanceAfter: &eventpb.BalanceSnapshot{UserId: "u1", Asset: "USDT", Available: "1"},
 		}},
 	}
-	batch := BuildJournalBatch([]*eventpb.CounterJournalEvent{evt})
+	batch := BuildJournalBatch([]DecoratedJournalEvent{{Event: evt}})
 
 	// accounts still get projected — they don't need shard_id.
 	if len(batch.Accounts) != 1 {

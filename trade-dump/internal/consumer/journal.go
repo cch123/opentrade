@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
@@ -112,9 +113,11 @@ func (c *JournalConsumer) Run(ctx context.Context) error {
 
 // decodeJournalBatch unmarshals records, logging malformed ones. Their
 // offsets still get committed — we'd rather lose one bad event than stall
-// the whole pipeline.
-func decodeJournalBatch(records []*kgo.Record, logger *zap.Logger) []*eventpb.CounterJournalEvent {
-	out := make([]*eventpb.CounterJournalEvent, 0, len(records))
+// the whole pipeline. ADR-0058 §4 audit: copy the writer-node /
+// writer-epoch Kafka record headers through so BuildJournalBatch can
+// persist them on each AccountLogRow.
+func decodeJournalBatch(records []*kgo.Record, logger *zap.Logger) []writer.DecoratedJournalEvent {
+	out := make([]writer.DecoratedJournalEvent, 0, len(records))
 	for _, rec := range records {
 		var evt eventpb.CounterJournalEvent
 		if err := proto.Unmarshal(rec.Value, &evt); err != nil {
@@ -125,7 +128,32 @@ func decodeJournalBatch(records []*kgo.Record, logger *zap.Logger) []*eventpb.Co
 				zap.Error(err))
 			continue
 		}
-		out = append(out, &evt)
+		node, epoch := writerHeaders(rec.Headers)
+		out = append(out, writer.DecoratedJournalEvent{
+			Event:       &evt,
+			WriterNode:  node,
+			WriterEpoch: epoch,
+		})
 	}
 	return out
+}
+
+// writerHeaders extracts the "writer-node" + "writer-epoch" audit
+// headers emitted by counter's TxnProducer (ADR-0058 §4). Missing /
+// malformed values fall back to zero values so pre-ADR-0058 events
+// still flow through the pipeline; the audit columns just stay empty.
+func writerHeaders(headers []kgo.RecordHeader) (string, uint64) {
+	var node string
+	var epoch uint64
+	for _, h := range headers {
+		switch h.Key {
+		case "writer-node":
+			node = string(h.Value)
+		case "writer-epoch":
+			if v, err := strconv.ParseUint(string(h.Value), 10, 64); err == nil {
+				epoch = v
+			}
+		}
+	}
+	return node, epoch
 }
