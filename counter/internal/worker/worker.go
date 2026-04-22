@@ -122,6 +122,10 @@ type VShardWorker struct {
 	dedupTable *dedup.Table
 	svc        *service.Service
 	producer   *journal.TxnProducer
+	// pending tracks in-flight trade-events across per-user drain
+	// goroutines (ADR-0060 §1.3). Populated before the first consumer
+	// record is dispatched; reads are safe once Ready() closes.
+	pending *pendingList
 
 	ready chan struct{}
 }
@@ -260,13 +264,24 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	w.producer = producer
 	close(w.ready)
 
+	// ADR-0060: consumer loop is fire-and-forget. Each trade-event
+	// record is dispatched via Service.HandleTradeRecordAsync so the
+	// consumer can poll the next record immediately; the ordered
+	// advancer reads pendingList and advances the local offset map +
+	// (M3: publishes TECheckpointEvent) as per-user fns complete.
+	pending := newPendingList()
+	// Buffered by 1: signals are coalescing, drop duplicates.
+	advanceSignal := make(chan struct{}, 1)
+	w.pending = pending
+	asyncHandler := newAsyncTradeHandler(svc, pending, advanceSignal, logger)
+
 	consumer, err := journal.NewTradePartitionConsumer(journal.TradePartitionConsumerConfig{
 		Brokers:    w.cfg.Brokers,
 		ClientID:   fmt.Sprintf("%s-vshard-%03d-trade", w.cfg.NodeID, w.cfg.VShardID),
 		Topic:      w.cfg.TradeEventTopic,
 		Partitions: []int32{int32(w.cfg.VShardID)},
 		Offsets:    offsets,
-	}, svc, logger)
+	}, asyncHandler, logger)
 	if err != nil {
 		return fmt.Errorf("trade consumer: %w", err)
 	}
@@ -280,6 +295,12 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("trade consumer exited", zap.Error(err))
 		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.runAdvancer(ctx, pending, advanceSignal)
 	}()
 
 	// Periodic snapshot runs on a separate context so it can keep
@@ -358,6 +379,36 @@ func (w *VShardWorker) periodicSnapshot(ctx context.Context) {
 			if err != nil {
 				w.cfg.Logger.Error("periodic snapshot",
 					zap.Int("vshard", int(w.cfg.VShardID)), zap.Error(err))
+			}
+		}
+	}
+}
+
+// runAdvancer consumes pendingList signals, pops the consecutive-done
+// prefix, and advances the local offset map via Service.AdvanceOffset
+// so the next snapshot picks up the up-to-date te_watermark.
+//
+// ADR-0060 §1.4: this is the single goroutine responsible for offset
+// advancement on the async path. The synchronous HandleTradeRecord
+// path (legacy / tests) still advances via Service.HandleTradeRecord
+// directly; both paths converge on AdvanceOffset.
+//
+// M3 will extend this loop to also publish TECheckpointEvent to
+// counter-journal before advancing so the trade-dump snapshot pipeline
+// can track te_watermark progression. In M2 we only advance the
+// local map.
+func (w *VShardWorker) runAdvancer(ctx context.Context, pending *pendingList, signal <-chan struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signal:
+			for {
+				partition, maxOffset, ok := pending.PopConsecutiveDone()
+				if !ok {
+					break
+				}
+				w.svc.AdvanceOffset(partition, maxOffset+1)
 			}
 		}
 	}

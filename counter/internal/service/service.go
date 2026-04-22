@@ -157,10 +157,15 @@ func (s *Service) SetOffsets(m map[int32]int64) {
 	}
 }
 
-// advanceOffset bumps partition p to next (= Kafka record offset + 1).
+// AdvanceOffset bumps partition p to next (= Kafka record offset + 1).
 // Monotonic: earlier records that arrive out-of-order (shouldn't happen for
 // a single consumer per partition, but guard anyway) do not rewind.
-func (s *Service) advanceOffset(p int32, next int64) {
+//
+// Public (ADR-0060): the VShardWorker ordered advancer calls this after
+// PopConsecutiveDone pops a watermark-ready TE so the next snapshot
+// picks up the correct offset. The synchronous HandleTradeRecord path
+// also calls this directly on success.
+func (s *Service) AdvanceOffset(p int32, next int64) {
 	s.offsetsMu.Lock()
 	defer s.offsetsMu.Unlock()
 	if s.offsets == nil {
@@ -175,12 +180,29 @@ func (s *Service) advanceOffset(p int32, next int64) {
 // handler success the record's offset is recorded so the next snapshot will
 // persist it (ADR-0048). Failures do NOT advance the offset — the consumer
 // will re-poll the same record on restart.
+//
+// Legacy synchronous path: HandleTradeEvent blocks on per-user
+// Execute. Used by tests and the pre-ADR-0060 consumer loop.
+// Production code on ADR-0060 uses HandleTradeRecordAsync instead and
+// advances the offset from the ordered advancer, not here.
 func (s *Service) HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent, partition int32, offset int64) error {
 	if err := s.HandleTradeEvent(ctx, evt); err != nil {
 		return err
 	}
-	s.advanceOffset(partition, offset+1)
+	s.AdvanceOffset(partition, offset+1)
 	return nil
+}
+
+// HandleTradeRecordAsync is the ADR-0060 fire-and-forget entry point
+// for the VShardWorker consumer loop. Delegates to HandleTradeEventAsync
+// — the callback contract is defined there.
+//
+// The Kafka offset is NOT stamped by this method. The advancer is the
+// offset authority on the async path: it reads pendingList's watermark
+// and both publishes TECheckpointEvent AND advances the local offset
+// map via Service.advanceOffset.
+func (s *Service) HandleTradeRecordAsync(ctx context.Context, evt *eventpb.TradeEvent, onCount func(int32), cb func(err error)) {
+	s.HandleTradeEventAsync(ctx, evt, onCount, cb)
 }
 
 // ShardID returns the numeric shard id stamped on this Service.

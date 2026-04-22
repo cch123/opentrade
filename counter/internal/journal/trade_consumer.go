@@ -13,11 +13,12 @@ import (
 )
 
 // TradeHandler is the Service-side callback invoked for each trade-event
-// received from Kafka. HandleTradeRecord is the offset-aware variant used
-// by the consumer; HandleTradeEvent is kept for in-process tests that
-// don't care about per-partition offsets.
+// received from Kafka. Only HandleTradeRecord is called by the consumer;
+// the interface deliberately omits HandleTradeEvent so alternate handler
+// implementations (e.g. ADR-0060's async worker) don't have to fake a
+// synchronous entry point they never serve. In-process tests that need
+// sync semantics call Service.HandleTradeEvent directly.
 type TradeHandler interface {
-	HandleTradeEvent(ctx context.Context, evt *eventpb.TradeEvent) error
 	HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent, partition int32, offset int64) error
 }
 
