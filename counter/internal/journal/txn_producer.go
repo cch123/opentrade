@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
@@ -45,6 +46,16 @@ type TxnProducerConfig struct {
 	// values; transactional.id and EventMeta.producer_id stay stable.
 	WriterNodeID string
 	WriterEpoch  uint64
+
+	// PublishRetryBudget caps how long ADR-0060 §3 retry-then-panic
+	// keeps trying before escalating. Zero falls back to the package
+	// default (5s). Tests inject sub-second values to exercise the
+	// panic path deterministically.
+	PublishRetryBudget time.Duration
+
+	// PublishRetryBackoff is the sleep between retries. Zero falls
+	// back to the package default (50ms).
+	PublishRetryBackoff time.Duration
 }
 
 // TxnProducer wraps franz-go's transactional producer. Each BeginCommit cycle
@@ -109,7 +120,7 @@ func (p *TxnProducer) PublishOrderPlacement(
 	orderKey string,
 ) error {
 	orderTopic := p.orderEventTopicFor(orderKey)
-	return p.runTxn(ctx, func() error {
+	return p.runTxnWithRetry(ctx, "PublishOrderPlacement", func() error {
 		if err := p.produce(ctx, p.cfg.JournalTopic, journalKey, journalEvt); err != nil {
 			return fmt.Errorf("produce journal: %w", err)
 		}
@@ -136,12 +147,17 @@ func (p *TxnProducer) orderEventTopicFor(symbol string) string {
 // transactional.id fencing as PlaceOrder / CancelOrder (ADR-0017).
 // Signature matches service.Publisher so Service can depend on one
 // interface for both dual-write and single-write paths.
+//
+// ADR-0060 §3: transient Kafka errors trigger bounded retry (up to
+// PublishRetryBudget, default 5s); budget exhaustion panics. Callers
+// treat a successful return as "event committed"; a panic as "vshard
+// must be handed off" (ADR-0058 cold migration picks up).
 func (p *TxnProducer) Publish(
 	ctx context.Context,
 	partitionKey string,
 	evt *eventpb.CounterJournalEvent,
 ) error {
-	return p.runTxn(ctx, func() error {
+	return p.runTxnWithRetry(ctx, "Publish", func() error {
 		return p.produce(ctx, p.cfg.JournalTopic, partitionKey, evt)
 	})
 }
@@ -156,13 +172,16 @@ func (p *TxnProducer) Publish(
 // key is used only as the Kafka record key for audit / replay (no
 // consumer reads it for routing). Callers pass a descriptive token
 // like "vshard-042-checkpoint".
+//
+// Retry semantics (ADR-0060 §3): same as Publish — bounded retry,
+// panic on budget exhaustion.
 func (p *TxnProducer) PublishToVShard(
 	ctx context.Context,
 	vshardID int32,
 	key string,
 	evt *eventpb.CounterJournalEvent,
 ) error {
-	return p.runTxn(ctx, func() error {
+	return p.runTxnWithRetry(ctx, "PublishToVShard", func() error {
 		return p.produceToPartition(ctx, p.cfg.JournalTopic, vshardID, key, evt)
 	})
 }
@@ -178,6 +197,80 @@ func (p *TxnProducer) Close() { p.cli.Close() }
 // kgo.Client.Flush error (typically ctx cancellation).
 func (p *TxnProducer) Flush(ctx context.Context) error {
 	return p.cli.Flush(ctx)
+}
+
+// PublishRetryBudget bounds how long runTxnWithRetry keeps retrying
+// before escalating to panic. ADR-0060 §3 default = 5s: long enough to
+// ride out Kafka leader elections + transient network blips, short
+// enough that vshard failover (ADR-0058 cold handoff) kicks in before
+// upstream pendingList / SubmitAsync queues grow unbounded.
+//
+// Exposed as a var (not const) so tests can inject a sub-second
+// budget via TxnProducerConfig.PublishRetryBudget.
+var PublishRetryBudget = 5 * time.Second
+
+// PublishRetryBackoff is the sleep between retries. Fixed (not
+// exponential) — the expected failure modes are leader elections
+// that resolve in a few hundred ms; a slower backoff would burn
+// the budget on idle sleeps.
+var PublishRetryBackoff = 50 * time.Millisecond
+
+// runTxnWithRetry is runTxn with ADR-0060 §3 retry semantics: retry
+// on transient error until budget exhaustion, then panic. opName is
+// a short identifier embedded in the panic / log so operators can
+// see which call site tripped (Publish / PublishOrderPlacement /
+// PublishToVShard).
+//
+// Context cancellation surfaces immediately — callers that cancel
+// ctx get a ctx.Err() back without retry loops eating the signal.
+//
+// Panic semantics: the caller's deferred shutdown hooks still run
+// (consumer.Close, periodicSnapshot shutdown), but the Run()
+// goroutine exits. ADR-0058's clustering layer sees the vshard
+// lease expire and migrates to another node.
+func (p *TxnProducer) runTxnWithRetry(ctx context.Context, opName string, fn func() error) error {
+	budget := p.cfg.PublishRetryBudget
+	if budget <= 0 {
+		budget = PublishRetryBudget
+	}
+	backoff := p.cfg.PublishRetryBackoff
+	if backoff <= 0 {
+		backoff = PublishRetryBackoff
+	}
+	deadline := time.Now().Add(budget)
+	var lastErr error
+	attempts := 0
+	for {
+		attempts++
+		err := p.runTxn(ctx, fn)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		// Context cancelled — no retry.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			// Budget exhausted — escalate.
+			p.logger.Error("journal publish budget exhausted, panicking",
+				zap.String("op", opName),
+				zap.Int("attempts", attempts),
+				zap.Duration("budget", budget),
+				zap.Error(lastErr))
+			panic(fmt.Sprintf("journal: %s failed after %d attempts over %s: %v",
+				opName, attempts, budget, lastErr))
+		}
+		p.logger.Warn("journal publish failed; retrying",
+			zap.String("op", opName),
+			zap.Int("attempt", attempts),
+			zap.Error(err))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
 }
 
 // runTxn serializes Begin → user op → End for one transaction. On any error
