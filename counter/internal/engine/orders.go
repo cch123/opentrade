@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/xargin/opentrade/pkg/dec"
 )
@@ -83,6 +84,13 @@ func (s *OrderStore) Insert(o *Order) error {
 
 // UpdateStatus transitions an order to newStatus and maintains the active
 // clientOrderId index (drops the entry when reaching a terminal state).
+//
+// ADR-0062: on the first transition into any terminal state, stamps
+// o.TerminatedAt so the evictor can age the order out of byID later.
+// updatedAtMS is used for both UpdatedAt and TerminatedAt when > 0; if
+// updatedAtMS == 0 (e.g. the settlement.go:221 path, which preserves an
+// earlier UpdatedAt), TerminatedAt falls back to the wall clock so the
+// evictor's retention-window arithmetic is not fed a 1970 timestamp.
 func (s *OrderStore) UpdateStatus(id uint64, newStatus OrderStatus, updatedAtMS int64) (*Order, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,6 +113,16 @@ func (s *OrderStore) UpdateStatus(id uint64, newStatus OrderStatus, updatedAtMS 
 	}
 	o.Status = newStatus
 	o.UpdatedAt = updatedAtMS
+	// ADR-0062: stamp TerminatedAt on the first terminal transition.
+	// Idempotent — a second transition into a terminal state (should not
+	// happen but guarded defensively) leaves the original timestamp.
+	if !prev.IsTerminal() && newStatus.IsTerminal() && o.TerminatedAt == 0 {
+		if updatedAtMS > 0 {
+			o.TerminatedAt = updatedAtMS
+		} else {
+			o.TerminatedAt = time.Now().UnixMilli()
+		}
+	}
 	return o, nil
 }
 
@@ -181,6 +199,83 @@ func (s *OrderStore) CountActiveLimits(userID, symbol string) int {
 		return 0
 	}
 	return bySymbol[symbol]
+}
+
+// CandidatesForEvict returns up to maxBatch terminal orders whose
+// TerminatedAt is older than (now - retentionMS). Returned entries are
+// deep copies so the caller can iterate without racing concurrent
+// mutations. Scan order is non-deterministic (Go map iteration) — the
+// ADR-0062 evictor tolerates this; batch cap bounds single-round wall
+// time even on huge byID maps.
+//
+// nowMS and retentionMS are caller-supplied for testability; production
+// callers pass time.Now().UnixMilli() and the configured RetentionDuration
+// in ms. maxBatch ≤ 0 disables the cap; callers should bound it
+// (recommended 500).
+func (s *OrderStore) CandidatesForEvict(nowMS, retentionMS int64, maxBatch int) []*Order {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if maxBatch <= 0 {
+		maxBatch = len(s.byID)
+	}
+	out := make([]*Order, 0, maxBatch)
+	for _, o := range s.byID {
+		if !o.Status.IsTerminal() {
+			continue
+		}
+		if o.TerminatedAt <= 0 {
+			// Defensive: orders with no TerminatedAt (older snapshots,
+			// or bugs in UpdateStatus instrumentation) are not eligible.
+			// M3 sets it on every new terminal transition, but already-
+			// terminal entries loaded from pre-0062 snapshots will have
+			// zero here; the evictor will skip them and rely on natural
+			// attrition (restart after they've aged out naturally).
+			continue
+		}
+		if nowMS-o.TerminatedAt < retentionMS {
+			continue
+		}
+		out = append(out, o.Clone())
+		if len(out) >= maxBatch {
+			break
+		}
+	}
+	return out
+}
+
+// Delete removes the order from byID and all derived indices. Used by
+// the ADR-0062 evictor after the OrderEvictedEvent has been committed
+// to counter-journal. Returns ErrOrderNotFound if id does not exist;
+// callers should treat that as a no-op (crash-and-retry idempotency).
+//
+// Note: only terminal orders should be Delete'd in production. This
+// method does not enforce IsTerminal() so tests can exercise the path,
+// but the evictor's CandidatesForEvict + retention check is the real
+// gate.
+func (s *OrderStore) Delete(id uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	o, ok := s.byID[id]
+	if !ok {
+		return ErrOrderNotFound
+	}
+	// activeByCOID was already cleared on the terminal transition by
+	// UpdateStatus, but defensively re-check so a buggy caller cannot
+	// leave a dangling index entry.
+	if o.ClientOrderID != "" {
+		key := coidKey(o.UserID, o.ClientOrderID)
+		if s.activeByCOID[key] == id {
+			delete(s.activeByCOID, key)
+		}
+	}
+	// Same defensive re-check for activeLimits. In practice
+	// countsAsActiveLimit returns false for terminal orders so this
+	// is a no-op; we guard against partially-initialised state.
+	if countsAsActiveLimit(o) {
+		s.decActiveLimit(o.UserID, o.Symbol)
+	}
+	delete(s.byID, id)
+	return nil
 }
 
 // countsAsActiveLimit reports whether the order occupies a slot in the

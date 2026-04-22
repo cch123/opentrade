@@ -176,6 +176,7 @@ type OrderSnapshot struct {
 	PreCancelStatus uint8  `json:"pre_cancel_status,omitempty"`
 	CreatedAt       int64  `json:"created_at"`
 	UpdatedAt       int64  `json:"updated_at"`
+	TerminatedAt    int64  `json:"terminated_at,omitempty"` // ADR-0062; 0 when non-terminal
 }
 
 // ReservationSnapshot captures a conditional-order reservation
@@ -290,6 +291,7 @@ func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			PreCancelStatus: uint8(o.PreCancelStatus),
 			CreatedAt:       o.CreatedAt,
 			UpdatedAt:       o.UpdatedAt,
+			TerminatedAt:    o.TerminatedAt,
 		})
 	}
 	for _, r := range state.AllReservations() {
@@ -437,6 +439,7 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			PreCancelStatus: engine.OrderStatus(os.PreCancelStatus),
 			CreatedAt:       os.CreatedAt,
 			UpdatedAt:       os.UpdatedAt,
+			TerminatedAt:    os.TerminatedAt,
 		})
 	}
 	for _, rs := range snap.Reservations {
@@ -676,6 +679,7 @@ func orderToProto(o *OrderSnapshot) *snapshotpb.CounterOrder {
 		PreCancelStatus: uint32(o.PreCancelStatus),
 		CreatedAt:       o.CreatedAt,
 		UpdatedAt:       o.UpdatedAt,
+		TerminatedAt:    o.TerminatedAt,
 	}
 }
 
@@ -786,6 +790,7 @@ func orderFromProto(o *snapshotpb.CounterOrder) OrderSnapshot {
 		PreCancelStatus: uint8(o.PreCancelStatus),
 		CreatedAt:       o.CreatedAt,
 		UpdatedAt:       o.UpdatedAt,
+		TerminatedAt:    o.TerminatedAt,
 	}
 }
 

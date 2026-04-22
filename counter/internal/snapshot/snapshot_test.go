@@ -325,6 +325,93 @@ func testCaptureRestoreTerminatedRing(t *testing.T, format Format) {
 	}
 }
 
+// TestCaptureRestore_OrderTerminatedAt verifies ADR-0062 M3 adds
+// Order.TerminatedAt to the snapshot round-trip, covered through both
+// proto and JSON formats via the round-trip helper below.
+func TestCaptureRestore_OrderTerminatedAt_Proto(t *testing.T) {
+	testCaptureRestoreOrderTerminatedAt(t, FormatProto)
+}
+
+func TestCaptureRestore_OrderTerminatedAt_JSON(t *testing.T) {
+	testCaptureRestoreOrderTerminatedAt(t, FormatJSON)
+}
+
+func testCaptureRestoreOrderTerminatedAt(t *testing.T, format Format) {
+	t.Helper()
+	state := engine.NewShardState(0)
+	seq := sequencer.New()
+	dt := dedup.New(time.Hour)
+
+	// Seed two orders: one active (no TerminatedAt), one Canceled with
+	// a stamped TerminatedAt via UpdateStatus.
+	state.Orders().RestoreInsert(&engine.Order{
+		ID:           1,
+		UserID:       "u1",
+		Symbol:       "BTC-USDT",
+		Side:         engine.SideBid,
+		Type:         engine.OrderTypeLimit,
+		TIF:          engine.TIFGTC,
+		Price:        dec.New("1"),
+		Qty:          dec.New("1"),
+		FrozenAmount: dec.New("1"),
+		FrozenSpent:  dec.Zero,
+		FilledQty:    dec.Zero,
+		Status:       engine.OrderStatusNew,
+		CreatedAt:    1000,
+		UpdatedAt:    1000,
+	})
+	state.Orders().RestoreInsert(&engine.Order{
+		ID:           2,
+		UserID:       "u1",
+		Symbol:       "BTC-USDT",
+		Side:         engine.SideBid,
+		Type:         engine.OrderTypeLimit,
+		TIF:          engine.TIFGTC,
+		Price:        dec.New("1"),
+		Qty:          dec.New("1"),
+		FrozenAmount: dec.New("1"),
+		FrozenSpent:  dec.Zero,
+		FilledQty:    dec.Zero,
+		Status:       engine.OrderStatusNew,
+		CreatedAt:    2000,
+		UpdatedAt:    2000,
+	})
+	if _, err := state.Orders().UpdateStatus(2, engine.OrderStatusCanceled, 5000); err != nil {
+		t.Fatalf("seed terminal: %v", err)
+	}
+
+	snap := Capture(0, state, seq, dt, nil, 0)
+
+	ctx := context.Background()
+	store := newFSStore(t)
+	if err := Save(ctx, store, "shard-0", snap, format); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(ctx, store, "shard-0")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	state2 := engine.NewShardState(0)
+	seq2 := sequencer.New()
+	dt2 := dedup.New(time.Hour)
+	if err := Restore(0, state2, seq2, dt2, loaded); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got1 := state2.Orders().Get(1)
+	if got1 == nil || got1.TerminatedAt != 0 {
+		t.Fatalf("active order 1: TerminatedAt = %+v, want 0", got1)
+	}
+	got2 := state2.Orders().Get(2)
+	if got2 == nil || got2.TerminatedAt != 5000 {
+		t.Fatalf("terminal order 2: TerminatedAt = %+v, want 5000", got2)
+	}
+	if got2.Status != engine.OrderStatusCanceled {
+		t.Fatalf("terminal order 2: Status = %s", got2.Status)
+	}
+}
+
 // TestCaptureRestore_TerminatedRing_LegacySnapshotCompat verifies that
 // loading a snapshot written before ADR-0062 (no recent_terminated_orders
 // field) produces empty rings for all accounts, not an error.
