@@ -119,10 +119,15 @@ func TestIdleWorkerExits(t *testing.T) {
 	}
 }
 
-func TestQueueFullReturnsError(t *testing.T) {
-	s := New(WithQueueCapacity(2))
+// TestQueueAcceptsBeyondInitialCapacity — ADR-0060 made the queue
+// unbounded. The previous TestQueueFullReturnsError behaviour
+// (ErrQueueFull on overflow) is gone. Here we verify that many more
+// tasks than WithQueueCapacity still enqueue, all run in FIFO, and
+// none are lost.
+func TestQueueAcceptsBeyondInitialCapacity(t *testing.T) {
+	s := New(WithQueueCapacity(2)) // hint of 2; unbounded in practice
 
-	// Block the single u1 worker by issuing a long task.
+	// Block u1's drain with a long-running task so the rest pile up.
 	block := make(chan struct{})
 	release := make(chan struct{})
 	go func() {
@@ -134,30 +139,56 @@ func TestQueueFullReturnsError(t *testing.T) {
 	}()
 	<-block
 
-	// While the worker is parked, fill the queue to capacity.
-	fill := func() error {
-		_, err := s.Execute("u1", func(seq uint64) (any, error) { return nil, nil })
-		return err
+	// Submit 20 follow-up tasks — well beyond the 2-hint. All must
+	// succeed in enqueue and eventually run in FIFO order.
+	const n = 20
+	var mu sync.Mutex
+	seen := make([]int, 0, n)
+	errCh := make(chan error, n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			_, err := s.Execute("u1", func(seq uint64) (any, error) {
+				mu.Lock()
+				seen = append(seen, i)
+				mu.Unlock()
+				return nil, nil
+			})
+			errCh <- err
+		}()
 	}
 
-	// These two submissions should fit (capacity=2). They will block returning
-	// because the worker is still busy — invoke asynchronously.
-	errCh := make(chan error, 2)
-	go func() { errCh <- fill() }()
-	go func() { errCh <- fill() }()
+	// Give all follow-ups time to reach the queue.
+	time.Sleep(30 * time.Millisecond)
 
-	// Let the goroutines enqueue.
-	time.Sleep(20 * time.Millisecond)
-
-	// Third submission: channel full → expect ErrQueueFull.
-	if _, err := s.Execute("u1", func(seq uint64) (any, error) { return nil, nil }); err != ErrQueueFull {
-		t.Fatalf("expected ErrQueueFull, got %v", err)
+	// QueueDepth should reflect the pile-up (20 queued; the blocking
+	// task is currently executing so not on the list).
+	if got := s.QueueDepth("u1"); got == 0 {
+		t.Fatalf("QueueDepth=0 while 20 tasks are parked")
 	}
 
-	// Unblock everything.
 	close(release)
-	<-errCh
-	<-errCh
+	for i := 0; i < n; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("enqueue %d returned: %v", i, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != n {
+		t.Fatalf("processed %d tasks, want %d", len(seen), n)
+	}
+	// FIFO within the same user: followups launched in arbitrary
+	// goroutine order, so we only assert count + uniqueness (the
+	// handoff ordering is exercised by TestDrainPreservesUserFIFO in
+	// the async test file below).
+	set := make(map[int]bool)
+	for _, v := range seen {
+		if set[v] {
+			t.Fatalf("duplicate processing of id %d", v)
+		}
+		set[v] = true
+	}
 }
 
 func TestSetCounterSeq(t *testing.T) {
