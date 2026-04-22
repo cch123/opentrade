@@ -304,20 +304,12 @@ func applyOrderStatusEvent(state *ShardState, evt *eventpb.OrderStatusEvent) err
 	return nil
 }
 
-// applyOrderEvictedEvent: mirror the evictor's ring→delete dance.
-// Remember + Delete are both idempotent so duplicate events are safe.
+// applyOrderEvictedEvent removes the order from byID. Delete is idempotent
+// (ErrOrderNotFound-safe) so duplicate events are harmless.
 func applyOrderEvictedEvent(state *ShardState, evt *eventpb.OrderEvictedEvent) error {
 	if evt == nil || evt.UserId == "" || evt.OrderId == 0 {
 		return nil
 	}
-	acc := state.Account(evt.UserId)
-	acc.RememberTerminated(TerminatedOrderEntry{
-		OrderID:       evt.OrderId,
-		FinalStatus:   OrderStatusFromProto(evt.FinalStatus),
-		TerminatedAt:  evt.TerminatedAt,
-		ClientOrderID: evt.ClientOrderId,
-		Symbol:        evt.Symbol,
-	})
 	if err := state.Orders().Delete(evt.OrderId); err != nil && !errors.Is(err, ErrOrderNotFound) {
 		return fmt.Errorf("evict delete: %w", err)
 	}

@@ -603,29 +603,19 @@ func (w *VShardWorker) evictOneRound(ctx context.Context, logger *zap.Logger, pu
 // evictOne returns (ADR-0062 M8). Wraps the bare loop so the metric
 // label stays close to the error-surfacing point.
 //
-// evictOne performs the ring→journal→delete three-step for a single
-// terminal order under the user's sequencer. Strict ordering matters:
-//  1. RememberTerminated: populates the ring so CancelOrder retries
-//     across the brief window until the event is committed + byID is
-//     cleared still have an idempotent answer.
-//  2. Publish OrderEvictedEvent: ADR-0060 TxnProducer.Publish, sync
+// evictOne performs the journal→delete two-step for a single terminal
+// order under the user's sequencer:
+//  1. Publish OrderEvictedEvent: ADR-0060 TxnProducer.Publish, sync
 //     Kafka commit.
-//  3. Orders().Delete: removes the order from byID.
+//  2. Orders().Delete: removes the order from byID.
 //
-// A crash between any two steps is harmless: on restart the candidate
-// still matches on the next scan (RememberTerminated overwrites with
-// identical payload; Publish adds a duplicate journal event which
-// shadow consumers apply idempotently; Delete is ErrOrderNotFound-safe).
+// A crash between the two steps is harmless: on restart the candidate
+// still matches on the next scan (Publish adds a duplicate journal event
+// which shadow consumers apply idempotently; Delete is
+// ErrOrderNotFound-safe).
 func (w *VShardWorker) evictOne(ctx context.Context, o *engine.Order, pub journalWriter) error {
 	_, err := w.seq.Execute(o.UserID, func(counterSeq uint64) (any, error) {
 		acc := w.state.Account(o.UserID)
-		acc.RememberTerminated(engine.TerminatedOrderEntry{
-			OrderID:       o.ID,
-			FinalStatus:   o.Status,
-			TerminatedAt:  o.TerminatedAt,
-			ClientOrderID: o.ClientOrderID,
-			Symbol:        o.Symbol,
-		})
 		evt := journal.BuildOrderEvictedEvent(journal.OrderEvictedEventInput{
 			CounterSeqID:   counterSeq,
 			ProducerID:     w.cfg.NodeID,

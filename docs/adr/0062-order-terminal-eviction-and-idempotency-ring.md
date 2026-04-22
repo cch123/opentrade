@@ -1,9 +1,59 @@
 # ADR-0062: 订单终态 Evict + 幂等兜底 Ring Buffer
 
-- 状态: Accepted（M1–M6 + M8 落地；M7 shadow apply 协议在 ADR-0061 shadow engine 中实现；M9 load test 未做）
+- 状态: Superseded-in-part（2026-04-22 回退 Ring Buffer 部分；Evict 主体仍 Accepted）
 - 日期: 2026-04-22
 - 决策者: xargin, Claude
 - 相关 ADR: 0001（Kafka SoT）、0015（client-order-id 索引）、0018（per-user sequencer + counterSeq）、0048（snapshot + offset 原子绑定）、0054（per-symbol order slots）、0057（Asset service + Transfer Saga, ring buffer 设计参考）、0058（Counter 虚拟分片 + 实例锁）、0060（Counter 消费异步化 + TECheckpoint，本 ADR 的 M1 + M5 是 0060 的 recovery 前提）
+
+## 回退说明（2026-04-22）
+
+本 ADR 的 **Ring Buffer 部分（§2 / §6 路径 B / §3.2 step 1 / §4.4 ring apply / 容量策略 / G2 / G7）已全部回退**。Evict 主体（§1 时间窗 / §3 Evictor goroutine / §4.1-4.3 OrderEvictedEvent + journal + trade-dump MySQL / §5 健康熔断 / §6 byID 路径）保留。
+
+### 回退范围
+
+**移除**：
+- `Account.recentTerminated*` 字段（5 个）+ `terminated_ring.go` 整个文件
+- `engine.TerminatedOrderEntry` 类型 + `RememberTerminated` / `LookupTerminated` / `RecentTerminatedSnapshot` / `RestoreRecentTerminated` 方法
+- `TerminatedRingCapacityDefault` (1024) / `TerminatedRingCapacityMarketMaker` (16384) 常量
+- `CounterAccount.recent_terminated_orders` proto 字段 + `CounterTerminatedOrder` message
+- `AccountSnapshot.RecentTerminatedOrders` Go 字段 + `TerminatedOrderEntrySnapshot` 类型
+- `service.cancelResultFromRing` 函数 + `CancelOrder` 的 ring 兜底分支
+- `worker.evictOne` 三步骤里的 step 1（ring remember）→ 现在是 journal→delete 两步骤
+- `engine.applyOrderEvictedEvent` 里的 ring 写入
+- 上述功能的全部单测（`terminated_ring_test.go` 整文件 / snapshot ring round-trip / ring hit 测试）
+
+**保留**：
+- §1 Evict 时间窗策略（`Order.canEvict` + `RetentionDuration = 1h`）
+- §3.1 / §3.2 / §3.3 Evictor goroutine + `evictOneRound` + `CandidatesForEvict`（journal→delete 两步）
+- §4.1 / §4.2 / §4.3 `OrderEvictedEvent` + counter-journal 投递 + trade-dump MySQL pipeline 投影
+- §4.4 trade-dump shadow engine apply 协议（shadow byID delete，无 ring）
+- §5 Evict 全局熔断（`evictHealthCheck` 检查 trade-dump snapshot 新鲜度 + advancer 推进）
+- §6 `CancelOrder` 的 byID 路径（活跃 / terminal-in-byID / not-owner / pending-cancel 分支语义不变）
+
+### 回退原因（性价比分析）
+
+Ring 的唯一用途是 `CancelOrder` RPC 重入的幂等：客户端 timeout 重发 CancelOrder 时，订单已被 evict 出 byID，靠 ring 返回原终态而不是 ErrOrderNotFound。
+
+但这层防御实际收益极低：
+- **客户端 RPC 重试窗口是秒到分钟级**，而 retention 1h；绝大多数 CancelOrder 重入时订单还在 byID 里，根本走不到 ring 分支。Ring 只覆盖"订单 terminated 超过 1h 后客户端才发 CancelOrder"这种异常场景。
+- **代价巨大**：本 ADR §"负面"自陈 **3.2GB / vshard ring 内存开销**（普通用户部分），单机多 vshard 累积 40-160 GB；snapshot 体积同步膨胀。
+
+### 回退后的 CancelOrder 语义
+
+byID miss 时直接返回 `Accepted=false` + `RejectReason="Cancel Failed, Order Not Exist or Already Finished"`。客户端处理：
+- 这是异常路径（订单已不在内存且超过 1h evict 窗口）
+- 客户端可走 GetOrder（trade-dump MySQL）查询历史订单的最终状态
+- 不再保证 1h 之外的 CancelOrder RPC 重入返回原终态（接受 trade-off）
+
+### 不防御场景的变化
+
+- **G2（ring overflow）**：消失，不再有 ring。
+- **G7（ring 内存压力）**：消失。
+- **新增**：客户端在订单终态超过 1h 后发 CancelOrder 会拿到非幂等错误（之前能通过 ring 兜底到原终态）。
+
+---
+
+**以下为 ADR 原文（保留作为决策上下文）**：
 
 ## 术语 (Glossary)
 

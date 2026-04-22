@@ -304,9 +304,8 @@ func TestApplyOrderStatusEvent_MissingOrderIsNoOp(t *testing.T) {
 	}
 }
 
-// TestApplyOrderEvictedEvent_RemembersAndDeletes mirrors the evictor
-// path: the ring gets the entry and byID loses the order.
-func TestApplyOrderEvictedEvent_RemembersAndDeletes(t *testing.T) {
+// TestApplyOrderEvictedEvent_Deletes: byID loses the order after apply.
+func TestApplyOrderEvictedEvent_Deletes(t *testing.T) {
 	state := NewShardState(0)
 	state.Orders().RestoreInsert(&Order{
 		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
@@ -324,18 +323,10 @@ func TestApplyOrderEvictedEvent_RemembersAndDeletes(t *testing.T) {
 	if state.Orders().Get(100) != nil {
 		t.Fatal("order 100 should have been deleted")
 	}
-	entry, ok := state.Account("u1").LookupTerminated(100)
-	if !ok {
-		t.Fatal("order not remembered in ring")
-	}
-	if entry.FinalStatus != OrderStatusCanceled {
-		t.Fatalf("final_status = %v, want Canceled", entry.FinalStatus)
-	}
 }
 
 // TestApplyOrderEvictedEvent_Idempotent: replaying the same evict
-// event over already-evicted state is a no-op (no error, ring
-// entry unchanged).
+// event over already-evicted state is a no-op (no error).
 func TestApplyOrderEvictedEvent_Idempotent(t *testing.T) {
 	state := NewShardState(0)
 	evt := &eventpb.OrderEvictedEvent{
@@ -348,10 +339,6 @@ func TestApplyOrderEvictedEvent_Idempotent(t *testing.T) {
 	}
 	if err := applyOrderEvictedEvent(state, evt); err != nil {
 		t.Fatalf("second apply: %v", err)
-	}
-	entry, ok := state.Account("u1").LookupTerminated(100)
-	if !ok || entry.OrderID != 100 {
-		t.Fatalf("ring entry = %v ok=%v, want OrderID=100", entry, ok)
 	}
 }
 

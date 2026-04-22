@@ -209,57 +209,10 @@ func TestCancelOrderNotOwner(t *testing.T) {
 	}
 }
 
-// TestCancelOrder_EvictedOrder_RingHitCanceled — ADR-0062 M5 path:
-// order was Canceled then evicted from byID; CancelOrder retry must
-// return Accepted=true (idempotent success) using only the ring.
-func TestCancelOrder_EvictedOrder_RingHitCanceled(t *testing.T) {
-	svc, state, _, _ := newOrderFixture(t)
-	// Simulate a completed + evicted Canceled order via the ring only.
-	state.Account("u1").RememberTerminated(engine.TerminatedOrderEntry{
-		OrderID:      42,
-		FinalStatus:  engine.OrderStatusCanceled,
-		TerminatedAt: time.Now().UnixMilli() - time.Hour.Milliseconds() - 1,
-		Symbol:       "BTC-USDT",
-	})
-	res, err := svc.CancelOrder(context.Background(), CancelOrderRequest{
-		UserID: "u1", OrderID: 42,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Accepted || res.RejectReason != "" {
-		t.Fatalf("want accepted=true empty-reason, got %+v", res)
-	}
-}
-
-// TestCancelOrder_EvictedOrder_RingHitFilled — order was Filled then
-// evicted. CancelOrder retry must return Accepted=false with "already
-// terminal" so clients cannot race to cancel a filled order.
-func TestCancelOrder_EvictedOrder_RingHitFilled(t *testing.T) {
-	svc, state, _, _ := newOrderFixture(t)
-	state.Account("u1").RememberTerminated(engine.TerminatedOrderEntry{
-		OrderID:      43,
-		FinalStatus:  engine.OrderStatusFilled,
-		TerminatedAt: time.Now().UnixMilli() - time.Hour.Milliseconds() - 1,
-		Symbol:       "BTC-USDT",
-	})
-	res, err := svc.CancelOrder(context.Background(), CancelOrderRequest{
-		UserID: "u1", OrderID: 43,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Accepted {
-		t.Fatalf("filled order must not allow cancel retry: %+v", res)
-	}
-	if res.RejectReason != "order already terminal" {
-		t.Fatalf("reject reason = %q, want 'order already terminal'", res.RejectReason)
-	}
-}
-
-// TestCancelOrder_EvictedOrder_RingMiss — order never existed (or the
-// ring has expired past retention). CancelOrder returns ErrOrderNotFound.
-func TestCancelOrder_EvictedOrder_RingMiss(t *testing.T) {
+// TestCancelOrder_ByIDMiss — order id is not in byID (never existed, or
+// already evicted after its terminal transition). CancelOrder returns
+// Accepted=false with the "not exist or already finished" reject reason.
+func TestCancelOrder_ByIDMiss(t *testing.T) {
 	svc, _, _, _ := newOrderFixture(t)
 	res, err := svc.CancelOrder(context.Background(), CancelOrderRequest{
 		UserID: "u1", OrderID: 999,
@@ -270,48 +223,9 @@ func TestCancelOrder_EvictedOrder_RingMiss(t *testing.T) {
 	if res.Accepted {
 		t.Fatalf("unknown order must not be accepted: %+v", res)
 	}
-	if res.RejectReason != engine.ErrOrderNotFound.Error() {
-		t.Fatalf("reject reason = %q, want %q",
-			res.RejectReason, engine.ErrOrderNotFound.Error())
-	}
-}
-
-// TestCancelOrder_ByIDHitDominatesRing — if the same order_id is BOTH
-// still in byID AND (defensively) in the ring, byID wins. Should not
-// happen in production (evictor Deletes before / after ring remember),
-// but guards against any future refactor that might populate ring
-// without Deleting.
-func TestCancelOrder_ByIDHitDominatesRing(t *testing.T) {
-	svc, state, _, _ := newOrderFixture(t)
-	placed, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
-		Price: dec.New("100"), Qty: dec.New("1"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Defensively seed the ring with a FILLED entry for the same id.
-	state.Account("u1").RememberTerminated(engine.TerminatedOrderEntry{
-		OrderID:      placed.OrderID,
-		FinalStatus:  engine.OrderStatusFilled, // would say "already terminal"
-		TerminatedAt: time.Now().UnixMilli(),
-		Symbol:       "BTC-USDT",
-	})
-	res, err := svc.CancelOrder(context.Background(), CancelOrderRequest{
-		UserID: "u1", OrderID: placed.OrderID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// byID says it's active → cancel should proceed normally
-	// (PendingCancel, Accepted=true), overriding the stale ring entry.
-	if !res.Accepted {
-		t.Fatalf("active order must be cancellable: %+v", res)
-	}
-	o := state.Orders().Get(placed.OrderID)
-	if o.Status != engine.OrderStatusPendingCancel {
-		t.Fatalf("status = %s, want pending_cancel", o.Status)
+	const want = "Cancel Failed, Order Not Exist or Already Finished"
+	if res.RejectReason != want {
+		t.Fatalf("reject reason = %q, want %q", res.RejectReason, want)
 	}
 }
 

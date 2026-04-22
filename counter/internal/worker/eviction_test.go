@@ -71,7 +71,7 @@ func makeTerminalOrder(t *testing.T, state *engine.ShardState, id uint64, userID
 	return state.Orders().Get(id)
 }
 
-// TestEvictOne_HappyPath covers the ring→journal→delete three-step.
+// TestEvictOne_HappyPath covers the journal→delete two-step.
 func TestEvictOne_HappyPath(t *testing.T) {
 	state := engine.NewShardState(0)
 	seq := sequencer.New()
@@ -85,10 +85,6 @@ func TestEvictOne_HappyPath(t *testing.T) {
 
 	if err := w.evictOne(context.Background(), order, pub); err != nil {
 		t.Fatalf("evictOne: %v", err)
-	}
-	// Ring was populated.
-	if _, ok := state.Account("u1").LookupTerminated(1); !ok {
-		t.Fatal("ring missing evicted order")
 	}
 	// One journal event captured, with correct payload.
 	events := pub.Events()
@@ -109,9 +105,8 @@ func TestEvictOne_HappyPath(t *testing.T) {
 }
 
 // TestEvictOne_PublishFailLeavesByIDIntact verifies that a Publish
-// failure aborts the three-step before Delete, preserving retry
-// eligibility. Ring is already populated (Remember was step 1); that's
-// acceptable because ring overwrite on retry is idempotent.
+// failure aborts the two-step before Delete, preserving retry
+// eligibility.
 func TestEvictOne_PublishFailLeavesByIDIntact(t *testing.T) {
 	state := engine.NewShardState(0)
 	seq := sequencer.New()
@@ -131,11 +126,6 @@ func TestEvictOne_PublishFailLeavesByIDIntact(t *testing.T) {
 	// byID must still contain the order — next round will retry.
 	if state.Orders().Get(1) == nil {
 		t.Fatal("byID dropped order despite publish failure")
-	}
-	// Ring has the entry (step 1 already ran). A retry will refresh
-	// the ring and re-Publish; idempotent.
-	if _, ok := state.Account("u1").LookupTerminated(1); !ok {
-		t.Fatal("ring should hold the entry after step 1")
 	}
 }
 
@@ -175,16 +165,6 @@ func TestEvictOneRound_PicksEligibleSkipsInWindow(t *testing.T) {
 	}
 	if state.Orders().Get(3) == nil {
 		t.Fatal("in-window order was deleted")
-	}
-	// Rings populated for u1 and u2.
-	if _, ok := state.Account("u1").LookupTerminated(1); !ok {
-		t.Fatal("u1 ring missing")
-	}
-	if _, ok := state.Account("u2").LookupTerminated(2); !ok {
-		t.Fatal("u2 ring missing")
-	}
-	if _, ok := state.Account("u3").LookupTerminated(3); ok {
-		t.Fatal("u3 ring should be empty for in-window order")
 	}
 }
 

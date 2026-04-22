@@ -28,17 +28,6 @@ var (
 // chain still prevent double-apply in normal operation).
 const TransferRingCapacity = 256
 
-// TerminatedRingCapacityDefault is the default per-account ring capacity
-// for remembering terminal orders evicted from OrderStore.byID (ADR-0062).
-// Regular users use this value; market-maker accounts override at creation
-// time with TerminatedRingCapacityMarketMaker.
-const TerminatedRingCapacityDefault = 1024
-
-// TerminatedRingCapacityMarketMaker is the per-account ring capacity for
-// users identified as market makers via the ADR-0058 etcd white-list.
-// Sized to cover ~1h of high-frequency terminal order churn.
-const TerminatedRingCapacityMarketMaker = 16384
-
 type Account struct {
 	UserID string
 
@@ -67,38 +56,12 @@ type Account struct {
 	recentTransferSet  map[string]struct{}
 	recentTransferHead int // next insert slot when the ring is full
 	recentTransferSize int // 0..TransferRingCapacity
-
-	// recentTerminatedIDs is a fixed-capacity ring of order_ids for
-	// terminal orders evicted from OrderStore.byID (ADR-0062). Paired
-	// with recentTerminatedSet for O(1) lookup returning the cached
-	// TerminatedOrderEntry. Lazily allocated. Capacity is per-account
-	// (set at construction) so market makers can carry a wider window.
-	recentTerminatedIDs  []uint64
-	recentTerminatedSet  map[uint64]TerminatedOrderEntry
-	recentTerminatedHead int // next insert slot when the ring is full
-	recentTerminatedSize int // 0..recentTerminatedCap
-	recentTerminatedCap  int // capacity for this account (>0)
 }
 
 func newAccount(userID string) *Account {
-	return newAccountWithCap(userID, TerminatedRingCapacityDefault)
-}
-
-// newAccountWithCap constructs an Account with a caller-specified
-// terminated-ring capacity. Used by ShardState to give market-maker
-// accounts a wider ring (TerminatedRingCapacityMarketMaker) while
-// regular accounts use TerminatedRingCapacityDefault.
-//
-// cap must be > 0; callers supply TerminatedRingCapacityDefault or
-// TerminatedRingCapacityMarketMaker.
-func newAccountWithCap(userID string, cap int) *Account {
-	if cap <= 0 {
-		cap = TerminatedRingCapacityDefault
-	}
 	return &Account{
-		UserID:              userID,
-		balances:            make(map[string]*Balance),
-		recentTerminatedCap: cap,
+		UserID:   userID,
+		balances: make(map[string]*Balance),
 	}
 }
 

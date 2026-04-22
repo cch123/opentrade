@@ -146,15 +146,14 @@ func (x *CounterShardSnapshot) GetJournalOffset() int64 {
 }
 
 type CounterAccount struct {
-	state                  protoimpl.MessageState    `protogen:"open.v1"`
-	UserId                 string                    `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Version                uint64                    `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"` // ADR-0048 #1 user-level version
-	Balances               []*CounterBalance         `protobuf:"bytes,3,rep,name=balances,proto3" json:"balances,omitempty"`
-	LastMatchSeq           map[string]uint64         `protobuf:"bytes,4,rep,name=last_match_seq,json=lastMatchSeq,proto3" json:"last_match_seq,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // ADR-0048 #2
-	RecentTransferIds      []string                  `protobuf:"bytes,5,rep,name=recent_transfer_ids,json=recentTransferIds,proto3" json:"recent_transfer_ids,omitempty"`                                                             // ADR-0048 #4, oldest → newest
-	RecentTerminatedOrders []*CounterTerminatedOrder `protobuf:"bytes,6,rep,name=recent_terminated_orders,json=recentTerminatedOrders,proto3" json:"recent_terminated_orders,omitempty"`                                              // ADR-0062, oldest → newest
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	UserId            string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Version           uint64                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"` // ADR-0048 #1 user-level version
+	Balances          []*CounterBalance      `protobuf:"bytes,3,rep,name=balances,proto3" json:"balances,omitempty"`
+	LastMatchSeq      map[string]uint64      `protobuf:"bytes,4,rep,name=last_match_seq,json=lastMatchSeq,proto3" json:"last_match_seq,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // ADR-0048 #2
+	RecentTransferIds []string               `protobuf:"bytes,5,rep,name=recent_transfer_ids,json=recentTransferIds,proto3" json:"recent_transfer_ids,omitempty"`                                                             // ADR-0048 #4, oldest → newest
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CounterAccount) Reset() {
@@ -222,94 +221,6 @@ func (x *CounterAccount) GetRecentTransferIds() []string {
 	return nil
 }
 
-func (x *CounterAccount) GetRecentTerminatedOrders() []*CounterTerminatedOrder {
-	if x != nil {
-		return x.RecentTerminatedOrders
-	}
-	return nil
-}
-
-// CounterTerminatedOrder is the per-user ring-buffer payload for orders
-// that have been evicted from OrderStore.byID (ADR-0062). Stored oldest
-// → newest so Restore can rebuild ring insertion order. Payload is
-// minimal — only enough to let CancelOrder return an idempotent terminal
-// response after the order is gone from byID.
-type CounterTerminatedOrder struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OrderId       uint64                 `protobuf:"varint,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
-	FinalStatus   uint32                 `protobuf:"varint,2,opt,name=final_status,json=finalStatus,proto3" json:"final_status,omitempty"`    // engine.OrderStatus (uint8)
-	TerminatedAt  int64                  `protobuf:"varint,3,opt,name=terminated_at,json=terminatedAt,proto3" json:"terminated_at,omitempty"` // ms timestamp
-	ClientOrderId string                 `protobuf:"bytes,4,opt,name=client_order_id,json=clientOrderId,proto3" json:"client_order_id,omitempty"`
-	Symbol        string                 `protobuf:"bytes,5,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CounterTerminatedOrder) Reset() {
-	*x = CounterTerminatedOrder{}
-	mi := &file_snapshot_counter_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CounterTerminatedOrder) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CounterTerminatedOrder) ProtoMessage() {}
-
-func (x *CounterTerminatedOrder) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_counter_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CounterTerminatedOrder.ProtoReflect.Descriptor instead.
-func (*CounterTerminatedOrder) Descriptor() ([]byte, []int) {
-	return file_snapshot_counter_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *CounterTerminatedOrder) GetOrderId() uint64 {
-	if x != nil {
-		return x.OrderId
-	}
-	return 0
-}
-
-func (x *CounterTerminatedOrder) GetFinalStatus() uint32 {
-	if x != nil {
-		return x.FinalStatus
-	}
-	return 0
-}
-
-func (x *CounterTerminatedOrder) GetTerminatedAt() int64 {
-	if x != nil {
-		return x.TerminatedAt
-	}
-	return 0
-}
-
-func (x *CounterTerminatedOrder) GetClientOrderId() string {
-	if x != nil {
-		return x.ClientOrderId
-	}
-	return ""
-}
-
-func (x *CounterTerminatedOrder) GetSymbol() string {
-	if x != nil {
-		return x.Symbol
-	}
-	return ""
-}
-
 type CounterBalance struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Asset         string                 `protobuf:"bytes,1,opt,name=asset,proto3" json:"asset,omitempty"`
@@ -322,7 +233,7 @@ type CounterBalance struct {
 
 func (x *CounterBalance) Reset() {
 	*x = CounterBalance{}
-	mi := &file_snapshot_counter_proto_msgTypes[3]
+	mi := &file_snapshot_counter_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -334,7 +245,7 @@ func (x *CounterBalance) String() string {
 func (*CounterBalance) ProtoMessage() {}
 
 func (x *CounterBalance) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_counter_proto_msgTypes[3]
+	mi := &file_snapshot_counter_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -347,7 +258,7 @@ func (x *CounterBalance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CounterBalance.ProtoReflect.Descriptor instead.
 func (*CounterBalance) Descriptor() ([]byte, []int) {
-	return file_snapshot_counter_proto_rawDescGZIP(), []int{3}
+	return file_snapshot_counter_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *CounterBalance) GetAsset() string {
@@ -405,7 +316,7 @@ type CounterOrder struct {
 
 func (x *CounterOrder) Reset() {
 	*x = CounterOrder{}
-	mi := &file_snapshot_counter_proto_msgTypes[4]
+	mi := &file_snapshot_counter_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -417,7 +328,7 @@ func (x *CounterOrder) String() string {
 func (*CounterOrder) ProtoMessage() {}
 
 func (x *CounterOrder) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_counter_proto_msgTypes[4]
+	mi := &file_snapshot_counter_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -430,7 +341,7 @@ func (x *CounterOrder) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CounterOrder.ProtoReflect.Descriptor instead.
 func (*CounterOrder) Descriptor() ([]byte, []int) {
-	return file_snapshot_counter_proto_rawDescGZIP(), []int{4}
+	return file_snapshot_counter_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CounterOrder) GetId() uint64 {
@@ -576,7 +487,7 @@ type CounterDedupEntry struct {
 
 func (x *CounterDedupEntry) Reset() {
 	*x = CounterDedupEntry{}
-	mi := &file_snapshot_counter_proto_msgTypes[5]
+	mi := &file_snapshot_counter_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -588,7 +499,7 @@ func (x *CounterDedupEntry) String() string {
 func (*CounterDedupEntry) ProtoMessage() {}
 
 func (x *CounterDedupEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_counter_proto_msgTypes[5]
+	mi := &file_snapshot_counter_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -601,7 +512,7 @@ func (x *CounterDedupEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CounterDedupEntry.ProtoReflect.Descriptor instead.
 func (*CounterDedupEntry) Descriptor() ([]byte, []int) {
-	return file_snapshot_counter_proto_rawDescGZIP(), []int{5}
+	return file_snapshot_counter_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CounterDedupEntry) GetKey() string {
@@ -631,7 +542,7 @@ type CounterReservation struct {
 
 func (x *CounterReservation) Reset() {
 	*x = CounterReservation{}
-	mi := &file_snapshot_counter_proto_msgTypes[6]
+	mi := &file_snapshot_counter_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -643,7 +554,7 @@ func (x *CounterReservation) String() string {
 func (*CounterReservation) ProtoMessage() {}
 
 func (x *CounterReservation) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_counter_proto_msgTypes[6]
+	mi := &file_snapshot_counter_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -656,7 +567,7 @@ func (x *CounterReservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CounterReservation.ProtoReflect.Descriptor instead.
 func (*CounterReservation) Descriptor() ([]byte, []int) {
-	return file_snapshot_counter_proto_rawDescGZIP(), []int{6}
+	return file_snapshot_counter_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CounterReservation) GetUserId() string {
@@ -705,7 +616,7 @@ type CounterKafkaOffset struct {
 
 func (x *CounterKafkaOffset) Reset() {
 	*x = CounterKafkaOffset{}
-	mi := &file_snapshot_counter_proto_msgTypes[7]
+	mi := &file_snapshot_counter_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -717,7 +628,7 @@ func (x *CounterKafkaOffset) String() string {
 func (*CounterKafkaOffset) ProtoMessage() {}
 
 func (x *CounterKafkaOffset) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_counter_proto_msgTypes[7]
+	mi := &file_snapshot_counter_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -730,7 +641,7 @@ func (x *CounterKafkaOffset) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CounterKafkaOffset.ProtoReflect.Descriptor instead.
 func (*CounterKafkaOffset) Descriptor() ([]byte, []int) {
-	return file_snapshot_counter_proto_rawDescGZIP(), []int{7}
+	return file_snapshot_counter_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CounterKafkaOffset) GetTopic() string {
@@ -771,23 +682,16 @@ const file_snapshot_counter_proto_rawDesc = "" +
 	"\freservations\x18\b \x03(\v2&.opentrade.snapshot.CounterReservationR\freservations\x12@\n" +
 	"\aoffsets\x18\t \x03(\v2&.opentrade.snapshot.CounterKafkaOffsetR\aoffsets\x12%\n" +
 	"\x0ejournal_offset\x18\n" +
-	" \x01(\x03R\rjournalOffset\"\xb6\x03\n" +
+	" \x01(\x03R\rjournalOffset\"\xd0\x02\n" +
 	"\x0eCounterAccount\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x04R\aversion\x12>\n" +
 	"\bbalances\x18\x03 \x03(\v2\".opentrade.snapshot.CounterBalanceR\bbalances\x12Z\n" +
 	"\x0elast_match_seq\x18\x04 \x03(\v24.opentrade.snapshot.CounterAccount.LastMatchSeqEntryR\flastMatchSeq\x12.\n" +
-	"\x13recent_transfer_ids\x18\x05 \x03(\tR\x11recentTransferIds\x12d\n" +
-	"\x18recent_terminated_orders\x18\x06 \x03(\v2*.opentrade.snapshot.CounterTerminatedOrderR\x16recentTerminatedOrders\x1a?\n" +
+	"\x13recent_transfer_ids\x18\x05 \x03(\tR\x11recentTransferIds\x1a?\n" +
 	"\x11LastMatchSeqEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xbb\x01\n" +
-	"\x16CounterTerminatedOrder\x12\x19\n" +
-	"\border_id\x18\x01 \x01(\x04R\aorderId\x12!\n" +
-	"\ffinal_status\x18\x02 \x01(\rR\vfinalStatus\x12#\n" +
-	"\rterminated_at\x18\x03 \x01(\x03R\fterminatedAt\x12&\n" +
-	"\x0fclient_order_id\x18\x04 \x01(\tR\rclientOrderId\x12\x16\n" +
-	"\x06symbol\x18\x05 \x01(\tR\x06symbol\"v\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"v\n" +
 	"\x0eCounterBalance\x12\x14\n" +
 	"\x05asset\x18\x01 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x02 \x01(\tR\tavailable\x12\x16\n" +
@@ -843,32 +747,30 @@ func file_snapshot_counter_proto_rawDescGZIP() []byte {
 	return file_snapshot_counter_proto_rawDescData
 }
 
-var file_snapshot_counter_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_snapshot_counter_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_snapshot_counter_proto_goTypes = []any{
-	(*CounterShardSnapshot)(nil),   // 0: opentrade.snapshot.CounterShardSnapshot
-	(*CounterAccount)(nil),         // 1: opentrade.snapshot.CounterAccount
-	(*CounterTerminatedOrder)(nil), // 2: opentrade.snapshot.CounterTerminatedOrder
-	(*CounterBalance)(nil),         // 3: opentrade.snapshot.CounterBalance
-	(*CounterOrder)(nil),           // 4: opentrade.snapshot.CounterOrder
-	(*CounterDedupEntry)(nil),      // 5: opentrade.snapshot.CounterDedupEntry
-	(*CounterReservation)(nil),     // 6: opentrade.snapshot.CounterReservation
-	(*CounterKafkaOffset)(nil),     // 7: opentrade.snapshot.CounterKafkaOffset
-	nil,                            // 8: opentrade.snapshot.CounterAccount.LastMatchSeqEntry
+	(*CounterShardSnapshot)(nil), // 0: opentrade.snapshot.CounterShardSnapshot
+	(*CounterAccount)(nil),       // 1: opentrade.snapshot.CounterAccount
+	(*CounterBalance)(nil),       // 2: opentrade.snapshot.CounterBalance
+	(*CounterOrder)(nil),         // 3: opentrade.snapshot.CounterOrder
+	(*CounterDedupEntry)(nil),    // 4: opentrade.snapshot.CounterDedupEntry
+	(*CounterReservation)(nil),   // 5: opentrade.snapshot.CounterReservation
+	(*CounterKafkaOffset)(nil),   // 6: opentrade.snapshot.CounterKafkaOffset
+	nil,                          // 7: opentrade.snapshot.CounterAccount.LastMatchSeqEntry
 }
 var file_snapshot_counter_proto_depIdxs = []int32{
 	1, // 0: opentrade.snapshot.CounterShardSnapshot.accounts:type_name -> opentrade.snapshot.CounterAccount
-	4, // 1: opentrade.snapshot.CounterShardSnapshot.orders:type_name -> opentrade.snapshot.CounterOrder
-	5, // 2: opentrade.snapshot.CounterShardSnapshot.dedup:type_name -> opentrade.snapshot.CounterDedupEntry
-	6, // 3: opentrade.snapshot.CounterShardSnapshot.reservations:type_name -> opentrade.snapshot.CounterReservation
-	7, // 4: opentrade.snapshot.CounterShardSnapshot.offsets:type_name -> opentrade.snapshot.CounterKafkaOffset
-	3, // 5: opentrade.snapshot.CounterAccount.balances:type_name -> opentrade.snapshot.CounterBalance
-	8, // 6: opentrade.snapshot.CounterAccount.last_match_seq:type_name -> opentrade.snapshot.CounterAccount.LastMatchSeqEntry
-	2, // 7: opentrade.snapshot.CounterAccount.recent_terminated_orders:type_name -> opentrade.snapshot.CounterTerminatedOrder
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	3, // 1: opentrade.snapshot.CounterShardSnapshot.orders:type_name -> opentrade.snapshot.CounterOrder
+	4, // 2: opentrade.snapshot.CounterShardSnapshot.dedup:type_name -> opentrade.snapshot.CounterDedupEntry
+	5, // 3: opentrade.snapshot.CounterShardSnapshot.reservations:type_name -> opentrade.snapshot.CounterReservation
+	6, // 4: opentrade.snapshot.CounterShardSnapshot.offsets:type_name -> opentrade.snapshot.CounterKafkaOffset
+	2, // 5: opentrade.snapshot.CounterAccount.balances:type_name -> opentrade.snapshot.CounterBalance
+	7, // 6: opentrade.snapshot.CounterAccount.last_match_seq:type_name -> opentrade.snapshot.CounterAccount.LastMatchSeqEntry
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_snapshot_counter_proto_init() }
@@ -882,7 +784,7 @@ func file_snapshot_counter_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snapshot_counter_proto_rawDesc), len(file_snapshot_counter_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

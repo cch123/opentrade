@@ -119,30 +119,12 @@ type BalanceSnapshot struct {
 // backlog item 1 / 方案 B), and the recent-transfer ring for dedup
 // (ADR-0048 backlog item 4 / 方案 A). RecentTransferIDs is stored in
 // insertion order (oldest → newest) so Restore can rebuild the ring.
-//
-// RecentTerminatedOrders is the per-user ring of recently evicted terminal
-// orders (ADR-0062); same oldest → newest ordering contract as
-// RecentTransferIDs. Missing / empty in older snapshots — the ring is
-// dormant until the ADR-0062 evictor comes online in later milestones.
 type AccountSnapshot struct {
-	UserID                  string                          `json:"user_id"`
-	Version                 uint64                          `json:"version,omitempty"`
-	Balances                []BalanceSnapshot               `json:"balances"`
-	LastMatchSeq            map[string]uint64               `json:"last_match_seq,omitempty"`
-	RecentTransferIDs       []string                        `json:"recent_transfer_ids,omitempty"`
-	RecentTerminatedOrders  []TerminatedOrderEntrySnapshot  `json:"recent_terminated_orders,omitempty"`
-}
-
-// TerminatedOrderEntrySnapshot is the serialized form of
-// engine.TerminatedOrderEntry (ADR-0062). Kept small: just enough to let
-// CancelOrder produce an idempotent terminal response after the live
-// order has been evicted from OrderStore.byID.
-type TerminatedOrderEntrySnapshot struct {
-	OrderID       uint64 `json:"order_id"`
-	FinalStatus   uint8  `json:"final_status"`   // engine.OrderStatus
-	TerminatedAt  int64  `json:"terminated_at"`  // ms timestamp
-	ClientOrderID string `json:"client_order_id,omitempty"`
-	Symbol        string `json:"symbol,omitempty"`
+	UserID            string            `json:"user_id"`
+	Version           uint64            `json:"version,omitempty"`
+	Balances          []BalanceSnapshot `json:"balances"`
+	LastMatchSeq      map[string]uint64 `json:"last_match_seq,omitempty"`
+	RecentTransferIDs []string          `json:"recent_transfer_ids,omitempty"`
 }
 
 // DedupEntrySnapshot captured one transfer_id dedup record when Counter
@@ -296,18 +278,6 @@ func CaptureFromState(
 				Version:   bal.Version,
 			})
 		}
-		if terminated := acc.RecentTerminatedSnapshot(); len(terminated) > 0 {
-			as.RecentTerminatedOrders = make([]TerminatedOrderEntrySnapshot, 0, len(terminated))
-			for _, t := range terminated {
-				as.RecentTerminatedOrders = append(as.RecentTerminatedOrders, TerminatedOrderEntrySnapshot{
-					OrderID:       t.OrderID,
-					FinalStatus:   uint8(t.FinalStatus),
-					TerminatedAt:  t.TerminatedAt,
-					ClientOrderID: t.ClientOrderID,
-					Symbol:        t.Symbol,
-				})
-			}
-		}
 		snap.Accounts = append(snap.Accounts, as)
 	}
 	for _, o := range state.Orders().All() {
@@ -416,19 +386,6 @@ func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) er
 		acc.RestoreMatchSeq(as.LastMatchSeq)
 		acc.RestoreVersion(as.Version)
 		acc.RestoreRecentTransferIDs(as.RecentTransferIDs)
-		if len(as.RecentTerminatedOrders) > 0 {
-			entries := make([]engine.TerminatedOrderEntry, 0, len(as.RecentTerminatedOrders))
-			for _, t := range as.RecentTerminatedOrders {
-				entries = append(entries, engine.TerminatedOrderEntry{
-					OrderID:       t.OrderID,
-					FinalStatus:   engine.OrderStatus(t.FinalStatus),
-					TerminatedAt:  t.TerminatedAt,
-					ClientOrderID: t.ClientOrderID,
-					Symbol:        t.Symbol,
-				})
-			}
-			acc.RestoreRecentTerminated(entries)
-		}
 	}
 	for _, os := range snap.Orders {
 		price, err := dec.Parse(os.Price)
@@ -680,18 +637,6 @@ func accountToProto(a *AccountSnapshot) *snapshotpb.CounterAccount {
 			})
 		}
 	}
-	if len(a.RecentTerminatedOrders) > 0 {
-		out.RecentTerminatedOrders = make([]*snapshotpb.CounterTerminatedOrder, 0, len(a.RecentTerminatedOrders))
-		for _, t := range a.RecentTerminatedOrders {
-			out.RecentTerminatedOrders = append(out.RecentTerminatedOrders, &snapshotpb.CounterTerminatedOrder{
-				OrderId:       t.OrderID,
-				FinalStatus:   uint32(t.FinalStatus),
-				TerminatedAt:  t.TerminatedAt,
-				ClientOrderId: t.ClientOrderID,
-				Symbol:        t.Symbol,
-			})
-		}
-	}
 	return out
 }
 
@@ -789,18 +734,6 @@ func accountFromProto(a *snapshotpb.CounterAccount) AccountSnapshot {
 				Available: b.Available,
 				Frozen:    b.Frozen,
 				Version:   b.Version,
-			})
-		}
-	}
-	if n := len(a.RecentTerminatedOrders); n > 0 {
-		out.RecentTerminatedOrders = make([]TerminatedOrderEntrySnapshot, 0, n)
-		for _, t := range a.RecentTerminatedOrders {
-			out.RecentTerminatedOrders = append(out.RecentTerminatedOrders, TerminatedOrderEntrySnapshot{
-				OrderID:       t.OrderId,
-				FinalStatus:   uint8(t.FinalStatus),
-				TerminatedAt:  t.TerminatedAt,
-				ClientOrderID: t.ClientOrderId,
-				Symbol:        t.Symbol,
 			})
 		}
 	}
