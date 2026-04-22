@@ -51,6 +51,13 @@ type UserSequencer struct {
 
 	idleTimeout   time.Duration
 	queueCapacity int // initial list allocation hint; queue is unbounded
+
+	// applyBarrier, when non-nil, is RLock'ed around every task's fn
+	// execution. Provided by engine.ShardState.SnapshotMu per
+	// ADR-0060 §5 (M7) so Capture can briefly stop-the-world mutations
+	// and read consistent cross-account state. nil means no barrier —
+	// legacy behaviour, tests, and paths where snapshots aren't taken.
+	applyBarrier *sync.RWMutex
 }
 
 // Option configures a UserSequencer.
@@ -67,6 +74,18 @@ func WithIdleTimeout(d time.Duration) Option {
 // back-pressure threshold.
 func WithQueueCapacity(n int) Option {
 	return func(s *UserSequencer) { s.queueCapacity = n }
+}
+
+// WithApplyBarrier wires a shared RWMutex — typically
+// engine.ShardState.SnapshotMu — that every task's fn holds
+// R-locked for the duration of its execution. Capture (via
+// writeSnapshot) acquires Write to briefly pause all apply paths
+// and read a cross-account-consistent state (ADR-0060 §5, M7).
+// Passing nil (the default) disables the barrier, which is the
+// legacy behaviour and suitable for tests / paths without
+// snapshots.
+func WithApplyBarrier(mu *sync.RWMutex) Option {
+	return func(s *UserSequencer) { s.applyBarrier = mu }
 }
 
 // New constructs a UserSequencer.
@@ -249,6 +268,19 @@ func (s *UserSequencer) submit(userID string, t *task) {
 	}
 }
 
+// runUnderBarrier executes t with the apply barrier R-locked (if
+// configured). The lock is acquired fresh per task so a long-running
+// Capture W-Lock can interleave between tasks — it blocks the next
+// RLock, not the one already held. Panics inside t.run propagate
+// naturally with the R-lock released by the deferred Unlock.
+func (s *UserSequencer) runUnderBarrier(t *task, seq uint64) {
+	if s.applyBarrier != nil {
+		s.applyBarrier.RLock()
+		defer s.applyBarrier.RUnlock()
+	}
+	t.run(seq)
+}
+
 // popFront removes and returns the oldest task, or nil if empty. Must
 // run outside any other lock to avoid user-visible deadlock if the
 // task's fn re-enters the sequencer.
@@ -290,7 +322,7 @@ func (uq *userQueue) drain(s *UserSequencer) {
 		// Drain everything currently enqueued before waiting.
 		for t := uq.popFront(); t != nil; t = uq.popFront() {
 			seq := s.counterSeq.Add(1)
-			t.run(seq)
+			s.runUnderBarrier(t, seq)
 		}
 		// Reset idle timer (we just ran or we're at start).
 		if !idle.Stop() {

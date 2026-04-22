@@ -195,7 +195,10 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		zap.String("node", w.cfg.NodeID))
 
 	state := engine.NewShardState(int(w.cfg.VShardID))
-	seq := sequencer.New()
+	// ADR-0060 §5 (M7): wire SnapshotMu as the sequencer's apply
+	// barrier so every per-user fn runs under RLock; writeSnapshot
+	// takes the Write lock briefly for cross-account consistency.
+	seq := sequencer.New(sequencer.WithApplyBarrier(&state.SnapshotMu))
 	dt := dedup.New(w.cfg.DedupTTL)
 
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
@@ -593,20 +596,33 @@ func (w *VShardWorker) evictOne(ctx context.Context, o *engine.Order, pub journa
 	return err
 }
 
-// writeSnapshot captures state + offsets after flushing the Kafka
-// producer (ADR-0048 output flush barrier). All reads happen via the
-// Service / engine APIs that are concurrency-safe, so it runs alongside
-// the consumer without extra locking.
+// writeSnapshot captures state + offsets + journal_offset under
+// SnapshotMu.Lock (ADR-0060 §5, M7). Holding the write lock across
+// Flush + Capture briefly pauses every per-user fn (they're blocked
+// on SnapshotMu.RLock via the sequencer barrier) so the snapshot is
+// a cross-account-consistent point-in-time view. Save runs outside
+// the lock — the marshalled in-memory copy no longer depends on
+// live state.
 //
-// journal_offset is sampled AFTER Flush: Flush drains every in-flight
-// produce, so every publish whose state-mutation is visible to Capture
-// has its offset reflected in journalHighOffset. Any publishes that
-// happen between Flush return and Capture read race with state mutation
-// too, but both race targets move forward together — catch-up on
-// restore observes them as "events after the recorded offset" and
-// applies them idempotently.
+// journal_offset is sampled AFTER Flush + with the W-lock held:
+// Flush drains every in-flight produce (so all committed records
+// are reflected in journalHighOffset) and no new Publish can start
+// while we hold the lock (sequencer barrier prevents new fn
+// execution). Combined, the recorded journal_offset bounds every
+// event whose state effects are visible to Capture.
+//
+// Critical section length: Flush (ms scale on healthy Kafka) +
+// Capture (indirect Copy, 5-50ms for 1M accounts). Upstream fn
+// callers briefly queue; cumulative impact is bounded by
+// SnapshotInterval cadence (30s typical).
+//
+// This is a transitional lock per ADR-0060 §5 — once ADR-0061
+// moves snapshot production out of Counter the acquisition can be
+// removed along with the sequencer barrier.
 func (w *VShardWorker) writeSnapshot(ctx context.Context) error {
+	w.state.SnapshotMu.Lock()
 	if err := w.producer.Flush(ctx); err != nil {
+		w.state.SnapshotMu.Unlock()
 		return fmt.Errorf("flush before snapshot: %w", err)
 	}
 	snap := snapshot.Capture(
@@ -616,6 +632,7 @@ func (w *VShardWorker) writeSnapshot(ctx context.Context) error {
 		w.producer.JournalOffsetNext(),
 		time.Now().UnixMilli(),
 	)
+	w.state.SnapshotMu.Unlock()
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
 	return snapshot.Save(ctx, w.cfg.Store, key, snap, w.cfg.SnapshotFormat)
 }
