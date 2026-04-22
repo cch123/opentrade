@@ -213,6 +213,6 @@ type placeOrderBody struct {
   - [api/event/order_event.proto](../../api/event/order_event.proto)
   - [match/internal/orderbook/types.go](../../match/internal/orderbook/types.go)
   - [match/internal/engine/engine.go](../../match/internal/engine/engine.go)
-  - [counter/internal/engine/freeze.go](../../counter/internal/engine/freeze.go)
+  - [counter/engine/freeze.go](../../counter/engine/freeze.go)
   - [counter/internal/service/order.go](../../counter/internal/service/order.go)
   - [bff/internal/rest/orders.go](../../bff/internal/rest/orders.go)

@@ -30,7 +30,7 @@
 
 1. `pkg/etcdcfg/etcdcfg.go:28-40` 的 `SymbolConfig` 只有 `Shard / Trading / Version` 三个字段，没有 tickSize / stepSize / minQuoteAmount
 2. `match/internal/orderbook/types.go:109-110` 定义了 `RejectInvalidPriceTick` / `RejectInvalidLotSize` 常量，但撮合代码路径从未赋值
-3. Counter 冻结逻辑 `counter/internal/engine/freeze.go:42-81` 只检查 `qty > 0`
+3. Counter 冻结逻辑 `counter/engine/freeze.go:42-81` 只检查 `qty > 0`
 4. 撮合完成判定 `match/internal/engine/engine.go:179` 是严格零值（`Remaining == 0`），无 dust 阈值
 5. Quote-driven 市价买 `engine.go:127` 用 `quote/price.Truncate(18)`，必然产生 ~1e-14 级 Quote 残余（`engine_test.go:233-235` 已观测）
 
@@ -141,7 +141,7 @@ type PrecisionChange struct {
 | 层 | 职责 | 失败行为 | 新增代码位置 |
 |---|---|---|---|
 | BFF | 拉 symbol cache 做 client hint 预检（减少无效 RPC） | HTTP 400 + reason | `bff/internal/rest/orders.go`，可选 |
-| **Counter（权威）** | 下单前 `validateOrderAgainstTier(order, tier)`，冻结按 `QuoteStepSize` 向上取整 | `RejectInvalidPriceTick` / `RejectInvalidLotSize` / `RejectMinQuoteAmount`（新增） | `counter/internal/engine/validate.go`（新文件） |
+| **Counter（权威）** | 下单前 `validateOrderAgainstTier(order, tier)`，冻结按 `QuoteStepSize` 向上取整 | `RejectInvalidPriceTick` / `RejectInvalidLotSize` / `RejectMinQuoteAmount`（新增） | `counter/engine/validate.go`（新文件） |
 | **Match（防御性）** | 收到 order-command 后再校验一次 `AdmissionTier` 与 symbol 当前 `PrecisionVersion` 兼容 | 走现有 reject event | `match/internal/engine/engine.go:validate` |
 
 **reject reason 统一复用** `orderbook/types.go` 已有常量 + 新增：
@@ -292,7 +292,7 @@ pkg/etcdcfg/
   precision.go                     # floorToStep / roundToTick / validateOrderAgainstTier
   precision_test.go
 
-counter/internal/engine/
+counter/engine/
   validate.go                      # 下单前校验（新文件）
   freeze.go                        # 冻结按 QuoteStepSize 向上取整
   trade_event_consumer.go          # 处理 UnusedQuote 解冻
@@ -319,8 +319,8 @@ tools/opentrade-cli/
 
 - `pkg/etcdcfg/precision_test.go`：floorToStep / roundToTick 边界（零值、负数、极大 decimal）
 - `pkg/etcdcfg`：Tier 单调性校验（拒绝合并 / 删除 / 乱序）
-- `counter/internal/engine/validate_test.go`：六种 reject reason 全覆盖 + 兼容模式（零值 Tier 跳过校验）
-- `counter/internal/engine/freeze_test.go`：QuoteStepSize 向上取整的金额一致性
+- `counter/engine/validate_test.go`：六种 reject reason 全覆盖 + 兼容模式（零值 Tier 跳过校验）
+- `counter/engine/freeze_test.go`：QuoteStepSize 向上取整的金额一致性
 - `match/internal/engine`：
   - `admission_tier_assignment_test.go`：mid-price 落档
   - `dust_invariant_test.go`：随机化 fuzz 1000 轮，断言 orderbook `Remaining mod Step == 0`

@@ -1,9 +1,8 @@
 # ADR-0060: Counter 消费异步化 + Trade-Event Checkpoint
 
-- 状态: Proposed
+- 状态: Accepted（M1–M8 已落地；**M7 `SnapshotMu` 顶层锁**已随 ADR-0061 Phase B 撤销 — Counter 不再自产 snapshot，无需 stop-the-world 协调）
 - 日期: 2026-04-22
-- 决策者: xargin, Claude
-- 相关 ADR: 0001（Kafka SoT）、0003（Counter-Match via Kafka）、0004（counter-journal）、0017（Kafka transactional.id）、0018（per-user sequencer + counterSeq）、0048（snapshot + offset 原子绑定，本 ADR 部分 supersede）、0049（snapshot protobuf/json）、0054（per-symbol order slots）、0057（Asset service + Transfer Saga）、0058（Counter 虚拟分片 + 实例锁）、0059（Kafka 集群扩容长期调研）、0061（trade-dump snapshot pipeline，后续 ADR）、0062（订单终态 evict，配套 ADR）
+- 相关 ADR: 0001（Kafka SoT）、0003（Counter-Match via Kafka）、0004（counter-journal）、0017（Kafka transactional.id）、0018（per-user sequencer + counterSeq）、0048（snapshot + offset 原子绑定，本 ADR 部分 supersede）、0049（snapshot protobuf/json）、0054（per-symbol order slots）、0057（Asset service + Transfer Saga）、0058（Counter 虚拟分片 + 实例锁）、0059（Kafka 集群扩容长期调研）、0061（trade-dump snapshot pipeline，本 ADR §5 M7 在其 Phase B 撤销）、0062（订单终态 evict，配套 ADR）
 
 ## 术语 (Glossary)
 
@@ -45,7 +44,7 @@ func (s *Service) HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent
 
 **缺陷 2：snapshot cross-account 不一致**
 
-[snapshot/snapshot.go:203-229](../../counter/internal/snapshot/snapshot.go:203) 的 `Capture` 用 `sync.Map.Range` 遍历所有 user 并调用 `acc.Copy() / MatchSeqSnapshot() / RecentTransferIDsSnapshot()` 三次独立 RLock 读取。
+[snapshot/snapshot.go:203-229](../../counter/snapshot/snapshot.go:203) 的 `Capture` 用 `sync.Map.Range` 遍历所有 user 并调用 `acc.Copy() / MatchSeqSnapshot() / RecentTransferIDsSnapshot()` 三次独立 RLock 读取。
 
 `sync.Map.Range` 的 Go 官方文档明确：**"Range may reflect any mapping for that key from any point during the Range call"** —— 不是 consistent snapshot。
 
@@ -266,7 +265,7 @@ func (w *VShardWorker) restore(ctx context.Context) error {
 ```
 
 **关键前提**：
-- match_seq guard 严格幂等，粒度为 `(user, symbol)`（本 ADR 核对过 [state.go:267-281](../../counter/internal/engine/state.go:267)）
+- match_seq guard 严格幂等，粒度为 `(user, symbol)`（本 ADR 核对过 [state.go:267-281](../../counter/engine/state.go:267)）
 - Transfer 靠 per-user `recentTransferIDs` ring（ADR-0057）
 - 订单状态路径：**本 ADR 假设订单永不删**（ADR-0062 引入 evict 后由 `recentTerminatedOrders` ring 兜底）
 - Kafka 事务 + `read_committed` 过滤 aborted 事务
@@ -373,14 +372,14 @@ Counter 的 partition ↔ vshard 严格 1:1 绑定（ADR-0058），单 partition
 
 ## 实施里程碑 (Milestones)
 
-- **M1** — `pkg/sequencer` 新增 `SubmitAsync(userID, fn, cb)` API，userQueue 改无界链表。保留 `Execute` 兼容性供 RPC 路径使用。单测覆盖：1w 并发 SubmitAsync 不丢任务、drain 幂等、idle 退出协议
-- **M2** — `counter/internal/worker` 引入 `pendingList` + `ordered advancer`，改写 `VShardWorker` 消费循环为 fire-and-forget。单测覆盖：乱序 fn 完成时 watermark 正确推进、advancer 在 0/1/2 pending 场景下的行为
-- **M3** — `api/event/*.proto` 新增 `TECheckpointEvent`，`TxnProducer` 新增 `PublishCheckpoint(vshardKey, evt)` 方法。VShardWorker advancer 集成
-- **M4** — `TxnProducer.Publish*` 内部实现 5s retry + panic，覆盖单测（mock 瞬时失败、持续失败）
-- **M5** — 依赖 ADR-0062 的 M1 + M5（ring buffer + CancelOrder 查 ring）先落地。无依赖后 M5 可与 M1-M4 并行。Verification gate：ADR-0062 M1 + M5 已 commit 后才允许 M5 合入
-- **M6** — Snapshot 字段扩展：`snapshot_counter_seq` + `journal_offset`（新增），`te_watermark`（改名自 `Offsets`）。Recovery 流程重写：load snapshot → catch-up journal → seek trade-event。集成测试：构造 crash 场景（journal 已 commit、snapshot 未更新），重启后状态守恒
-- **M7** — `ShardState.snapshotMu` 顶层 RWMutex，Capture 持 W 锁，所有 apply 路径持 R 锁。构造跨账户 Transfer 并发 + 周期性 snapshot 的测试，断言 snapshot + restore 后资产守恒
-- **M8** — 监控指标 + Runbook：per-vshard pendingList 深度 / advancer lag / checkpoint publish 延迟 / Publish 重试次数。压测：10k trade-event/s + 周期 snapshot，验证 Counter p99 不受 snapshot 影响显著
+- **M1** ✅ `counter/internal/sequencer` 新增 `SubmitAsync(userID, fn, cb)` API；userQueue 改 `container/list.List` + signal chan 无界队列。`Execute` 路径保留给 RPC。单测覆盖 1w 并发 SubmitAsync 不丢、drain 幂等、idle 退出
+- **M2** ✅ `counter/internal/worker` 引入 `pendingList` + ordered advancer，消费循环 fire-and-forget。单测覆盖乱序 fn 完成时 watermark 推进、0/1/2 pending
+- **M3** ✅ `api/event/counter_journal.proto` 新增 `TECheckpointEvent`;`TxnProducer.PublishToVShard` 直接写指定 partition。advancer 每推进一次 publish 一条 checkpoint
+- **M4** ✅ `TxnProducer.runTxnWithRetry` 5s budget + panic;context 取消立即返回;单测覆盖瞬时失败 / 持续失败
+- **M5** ✅ 依赖 ADR-0062 M1 + M5（ring buffer + CancelOrder 查 ring）
+- **M6** ✅ `snapshot.JournalOffset` 字段;`TxnProducer.JournalOffsetNext()` / `NoteObservedJournalOffset()`;Counter 启动 `catchUpJournal` 从 `snap.JournalOffset` 消费到 HWM idle,用 `engine.ApplyCounterJournalEvent` 幂等 apply
+- **M7** ⚠️ 原方案:`ShardState.SnapshotMu` 顶层 RWMutex + `sequencer.WithApplyBarrier`。**已随 ADR-0061 Phase B 撤销** — Counter 不再自产 snapshot,trade-dump 的 ShadowEngine 单线程 Apply 天然无跨账户不一致问题,不再需要 stop-the-world 协调
+- **M8** ✅ `counter/internal/metrics` 包 + `--metrics-addr` HTTP /metrics;advancer / TxnProducer retry / evictor / catchUp 埋点;`docs/runbook-counter.md` runbook(snapshot 新鲜度相关监控已在 Phase B 后迁到 trade-dump runbook)
 
 ## 已知不防御场景 (Non-Goals / Known Gaps)
 

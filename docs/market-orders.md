@@ -144,5 +144,5 @@ BFF 翻译为 `LIMIT IOC price=49750 qty=0.5`。
 - [ADR-0034](./adr/0034-market-orders-client-side-translation.md) — 早期作废
   方案（历史记录）
 - [bff/internal/rest/orders.go](../bff/internal/rest/orders.go) — 实现
-- [counter/internal/engine/freeze.go](../counter/internal/engine/freeze.go) —
+- [counter/engine/freeze.go](../counter/engine/freeze.go) —
   freeze 规则

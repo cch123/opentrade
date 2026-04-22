@@ -255,9 +255,9 @@ Capture 扫 `state.AllReservations()`；Restore 遍历 + `state.RestoreReservati
 - ADR-0040: 条件单独立服务
 - 实现：
   - [api/rpc/counter/counter.proto](../../api/rpc/counter/counter.proto)
-  - [counter/internal/engine/reservations.go](../../counter/internal/engine/reservations.go)
+  - [counter/engine/reservations.go](../../counter/engine/reservations.go)
   - [counter/internal/service/reservation.go](../../counter/internal/service/reservation.go)
   - [counter/internal/service/order.go](../../counter/internal/service/order.go)
-  - [counter/internal/snapshot/snapshot.go](../../counter/internal/snapshot/snapshot.go)
+  - [counter/snapshot/snapshot.go](../../counter/snapshot/snapshot.go)
   - [conditional/internal/engine/engine.go](../../conditional/internal/engine/engine.go)
   - [conditional/internal/counterclient/client.go](../../conditional/internal/counterclient/client.go)

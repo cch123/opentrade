@@ -21,13 +21,19 @@
 | `counter_publish_retry_total` | Counter | `op, attempt_range` | `TxnProducer.runTxnWithRetry` 内重试分布。`attempt_range=6+` 出现即高风险 |
 | `counter_seq_high_watermark` | Gauge | `vshard` | UserSequencer.CounterSeq 最新值。不应回退 |
 | `counter_catchup_events_applied_total` | Counter | `vshard` | Recovery 时 catch-up 应用 event 数。启动时一次性增长是正常 |
-| `counter_snapshot_duration_seconds` | Histogram | `vshard` | writeSnapshot 临界段（含 SnapshotMu.W + Flush + Capture）耗时 p99 |
+
+> Counter 已不再自产 snapshot（ADR-0061 Phase B），原先的
+> `counter_snapshot_duration_seconds` / `counter_seq_high_watermark`
+> 已无写入点。snapshot 新鲜度监控迁到 **trade-dump** 侧：
+> `trade_dump_snapshot_age_seconds{vshard}` 与 `trade_dump_snapshot_capture_duration_ms{vshard}`。
+> 对应告警见 `docs/runbook-trade-dump.md`（后续）。
 
 ### 2.2 订单 evict (ADR-0062)
 
 | Metric | 类型 | 标签 | 解读 |
 |---|---|---|---|
 | `counter_evict_processed_total{result=ok\|err}` | Counter | `vshard, result` | Evictor 处理订单数 |
+| `counter_evict_halted_total{reason}` | Counter | `vshard, reason` | 熔断跳过的 evict 轮次。Counter 侧 `reason` 只会是 `checkpoint_stale`（snapshot-stale 判定已下放到 trade-dump） |
 
 ### 2.3 通用框架 (pkg/metrics)
 
@@ -60,13 +66,18 @@
   annotations:
     runbook: "docs/runbook-counter.md#5-publish-重试持续-5s-即-panic"
 
-- alert: CounterSnapshotDurationSlow
-  expr: histogram_quantile(0.99, rate(counter_snapshot_duration_seconds_bucket[5m])) > 1.0
+- alert: CounterEvictHaltedCheckpointStale
+  expr: rate(counter_evict_halted_total{reason="checkpoint_stale"}[10m]) > 0
   for: 5m
   labels: {severity: warning}
   annotations:
-    summary: "vshard {{ $labels.vshard }} snapshot p99 > 1s"
-    runbook: "docs/runbook-counter.md#6-snapshot-阻塞过久"
+    summary: "vshard {{ $labels.vshard }} evict halted by checkpoint staleness"
+    runbook: "docs/runbook-counter.md#7-evict-持续失败"
+
+# Snapshot freshness is now owned by trade-dump's snap pipeline
+# (ADR-0061). See docs/runbook-trade-dump.md for
+# trade_dump_snapshot_age_seconds / trade_dump_snapshot_*
+# alerting. Counter只保留 checkpoint-staleness 熔断。
 
 - alert: CounterEvictErrorRate
   expr: |
@@ -132,24 +143,23 @@ ADR-0060 §3 的故障边界：Publish 连续 5s 失败触发 panic，让 vshard
 - **Kafka 分区 leader 抖动/长时间不可用**：应同步看 Kafka broker 告警。Counter panic 是预期行为，**无需抑制**，抑制反而会掩盖 Kafka 问题。
 - **整个集群 restart loop**（ADR-0060 Known Gap G1）：表明 Kafka 集群长时间不可用，**停止 Counter 写流量（降级 BFF 层）**，恢复 Kafka 后再放流量。
 
-## 6. Snapshot 阻塞过久
+## 6. Snapshot 新鲜度 / 阻塞（迁往 trade-dump）
 
-### 6.1 症状
+ADR-0061 Phase B 后 Counter 不再自产 snapshot，对应的
+`counter_snapshot_duration_seconds` 已无数据。相关监控 + runbook
+在 **trade-dump** 侧：
 
-`counter_snapshot_duration_seconds` p99 持续 > 1s（正常 < 50ms，巨大账户规模下 < 200ms）。
+- 指标：`trade_dump_snapshot_age_seconds{vshard}` /
+  `trade_dump_snapshot_capture_duration_ms{vshard}` /
+  `trade_dump_snapshot_save_duration_ms{vshard}` /
+  `trade_dump_snapshot_apply_error_total{vshard}`
+- 告警 + 排障流程：`docs/runbook-trade-dump.md`（后续）
 
-### 6.2 原因
-
-1. **SnapshotMu.W 被长时间 R holder 持有**：某个 fn 死锁或 Publish 卡住。**检查同时是否有 G6 告警**。
-2. **Blob store 慢**：S3 / MinIO 延迟飙升（Save 在 lock 外，不会延长临界段，但进入 lock 前的 Flush 可能慢）。
-3. **账户规模爆炸**：单 vshard 账户数突增（monitoring 账户数 gauge 在 ADR-0061 后加）。
-
-### 6.3 动作
-
-按实际原因：
-- fn 死锁 → pod kill + lease failover。
-- Blob store 慢 → 联系存储 SRE。
-- 规模问题 → 评估扩容 vshard 数（需要 ADR 级变更）。
+Counter 侧仍保留 `checkpoint_stale` 熔断来阻止 evict 在
+advancer 自己卡住时工作（见 §7）；snapshot-stale 熔断已不在
+Counter 内 — 真的 snapshot pipeline 挂了，只会让
+`trade_dump_snapshot_age_seconds` 增长，由 trade-dump 的告警
+驱动响应。
 
 ## 7. Evict 持续失败
 

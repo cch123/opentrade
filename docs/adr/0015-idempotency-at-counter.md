@@ -60,7 +60,7 @@
 ### 数据结构
 
 ```go
-// counter/internal/engine/state.go
+// counter/engine/state.go
 type ShardState struct {
     // order_id → *Order
     orders map[uint64]*Order

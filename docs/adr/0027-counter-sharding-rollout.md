@@ -149,7 +149,7 @@ trade 进来时 orders map 命中不到，settlement 整个跳过。加显式 gu
      程启动）。
 - `--counter-shards` 在 bff 里现在没有连通性健康检查 —— `grpc.NewClient` 懒
   连接，第一条请求才发现 endpoint 挂了。未来可以在启动时做一轮 `Ping`。
-- 现有 `counter/internal/engine.ShardState` 已经携带 `ShardID`，snapshot 里
+- 现有 `counter/engine.ShardState` 已经携带 `ShardID`，snapshot 里
   也冻结（`snapshot.ShardID`）。启动时 `ShardID` 不匹配会 fatal：MVP-8 没改
   这个路径，但提醒：如果某天 shard id 重排，要先清 snapshot 文件。
 - `ErrWrongShard` → `codes.FailedPrecondition` 意图：让 BFF 的 gRPC 客户端

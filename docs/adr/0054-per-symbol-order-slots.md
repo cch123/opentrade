@@ -25,7 +25,7 @@
 
 当前状态：
 
-1. `counter/internal/engine/orders.go:19-25` 的 `OrderStore` 只有 `byID` 与 `activeByCOID` 两个索引，**无 per-(user, symbol) 活跃单计数**
+1. `counter/engine/orders.go:19-25` 的 `OrderStore` 只有 `byID` 与 `activeByCOID` 两个索引，**无 per-(user, symbol) 活跃单计数**
 2. `conditional/internal/engine/engine.go:171-177` 的 `pending / byClient / lastPrice`，**无 per-(user, symbol) 索引**，List/tryFire 都全表扫
 3. `pkg/etcdcfg/SymbolConfig` 目前只承载 shard、trading、精度（ADR-0053），**无数量上限字段**
 4. Counter `Service.PlaceOrder`（`counter/internal/service/order.go:74`）在精度校验 + 余额冻结之外**不限挂单数**；单用户可 DOS 自家 shard 内存 + 拖慢 Match orderbook

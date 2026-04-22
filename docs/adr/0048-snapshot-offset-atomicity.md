@@ -223,6 +223,6 @@ match 的 order-event topic 按 user_id (或 symbol) 分区，一个 partition �
   - [match/internal/snapshot/snapshot.go](../../match/internal/snapshot/snapshot.go)
   - [match/internal/sequencer/worker.go](../../match/internal/sequencer/worker.go)
   - [match/internal/journal/consumer.go](../../match/internal/journal/consumer.go)
-  - [counter/internal/snapshot/snapshot.go](../../counter/internal/snapshot/snapshot.go)
+  - [counter/snapshot/snapshot.go](../../counter/snapshot/snapshot.go)
   - [counter/internal/service/trade.go](../../counter/internal/service/trade.go)
   - [counter/internal/journal/trade_consumer.go](../../counter/internal/journal/trade_consumer.go)

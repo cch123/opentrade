@@ -1,6 +1,6 @@
 # ADR-0061: Trade-Dump Snapshot Pipeline（Shadow Replay + Counter Recovery 供给）
 
-- 状态: Proposed
+- 状态: Accepted（M1–M4 + M7 + M8 落地，直接跳 Phase A 并行对比，进入 Phase B：Counter 不自产 snapshot，由 trade-dump 独占）
 - 日期: 2026-04-22
 - 决策者: xargin, Claude
 - 相关 ADR: 0001（Kafka SoT）、0017（Kafka transactional.id）、0018（per-user sequencer + counterSeq）、0023（trade-dump MySQL 投影）、0048（snapshot + offset 原子绑定，本 ADR 承接 recovery 角色）、0049（snapshot protobuf/json）、0057（Asset service + Transfer Saga）、0058（Counter 虚拟分片 + 实例锁）、0059（Kafka 集群扩容长期调研 §A.5.5 本 ADR 是其落地）、0060（Counter 消费异步化，提供 TECheckpoint event + recovery 协议契约）、0062（订单终态 evict + OrderEvicted event）
@@ -107,7 +107,7 @@ func (e *ShadowEngine) Apply(evt *CounterJournalEvent, kafkaOffset int64) error 
 }
 ```
 
-**重用 `counter/internal/engine` 包**：Counter 和 shadow engine 共用 `engine.ShardState` / `engine.Account` / `engine.OrderStore` 等核心数据结构。apply 函数（`applySettle` / `applyFreeze` / ...）以纯函数形式暴露（不依赖 Kafka producer / gRPC server），两边各自调用。
+**重用 `counter/engine` 包**：Counter 和 shadow engine 共用 `engine.ShardState` / `engine.Account` / `engine.OrderStore` 等核心数据结构。apply 函数（`applySettle` / `applyFreeze` / ...）以纯函数形式暴露（不依赖 Kafka producer / gRPC server），两边各自调用。
 
 **不共享**：网络 I/O、sequencer（shadow engine 单线程 apply，不需要 per-user sequencer）。
 
@@ -369,27 +369,26 @@ Snapshot 记录两个 offset：journal_offset（catch-up 起点）和 te_waterma
 
 ## 实施里程碑 (Milestones)
 
-### Phase A（并行运行期）
+> 原计划分 Phase A（双 snapshotter 并行 1-2 周，M5 diff 工具日跑）和
+> Phase B（切换）。**实施时直接跳 Phase A** — 未上线、breaking change
+> 无顾虑（MEMORY），合入时就把 Counter 停自产了，不需要灰度共存。
 
-- **M1** — `engine` 包改造为纯函数 apply 接口：把 `counter/internal/engine` 里的 apply 逻辑从 `counter/internal/service` 中抽出，形成独立可调用函数。Counter 和 shadow engine 均调用此接口
-- **M2** — `trade-dump/internal/snapshot/shadow` 新包：`ShadowEngine` 结构 + `Apply` 方法 + `Capture` 方法
-- **M3** — `trade-dump/internal/snapshot/pipeline.go`：Kafka consumer（独立 group + assign per-partition）+ 触发判断 + 调 shadow.Capture → S3 上传
-- **M4** — `trade-dump --pipelines=sql,snap` 命令行 flag 支持，默认跑双 pipeline；snapshot pipeline 可独立启停
-- **M5** — Snapshot 对比工具：离线读 Counter 自产 snapshot + trade-dump 产 snapshot，按 vshard 对比 state 差异（balance / orders / match_seq / rings），输出差异报告
-- **M6** — 灰度环境部署 Phase A，运行 1-2 周，M5 工具日跑，差异率收敛到 0
-
-### Phase B（切换期）
-
-- **M7** — Counter recovery 改读 trade-dump 产 snapshot（key 改名），保留 legacy fallback 路径
-- **M8** — Counter 禁用自产 snapshot（`SnapshotInterval = 0`），撤销 ADR-0060 M7 的 `snapshotMu`
-- **M9** — 生产切换 + 监控 + SLO 验证：snapshot age p99 < 30s，Counter cold restart 成功率 100%
-- **M10** — 冷 rebuild 工具：`counter-rebuild-snapshot` CLI，从 trade-event offset 0 全量 replay 产生首份 snapshot（灾难恢复场景）
+- **M1** ✅ `counter/internal/engine` → `counter/engine`（脱 internal，trade-dump 可 import）；`engine.ApplyCounterJournalEvent` 作为共享幂等 apply 入口；Counter catch-up + trade-dump shadow 共用
+- **M2** ✅ `trade-dump/internal/snapshot/shadow`：`Engine` 结构（vshardID / state / counterSeq / teWatermark / nextJournalOffset）+ `Apply` + `Capture` + `RestoreFromSnapshot`。单测覆盖 Apply / Capture / RestoreFromSnapshot 往返
+- **M3** ✅ `trade-dump/internal/snapshot/pipeline`：kgo ConsumePartitions 多 partition 消费 + 每 vshard 单线程 Apply + 触发（10s 或 10000 条）+ 异步 Save + in-flight guard + Close drain。10 个单测
+- **M4** ✅ `trade-dump --pipelines=sql,snap` flag（默认双开）；复用 counter 侧的 BlobStore fs/s3 实现
+- **M5** ⏳ 未做 — Snapshot 差异对比工具（可选，灾难排查用）
+- **M6** ⏭️ 跳过 — 原计划 Phase A 并行 1-2 周验证,合入时直接走 Phase B（未上线、breaking-change 无顾虑）
+- **M7** ✅ Counter recovery 从同一 `vshard-NNN.pb` key 读 trade-dump 产出的 snapshot；key 格式未变,legacy fallback 路径不再需要
+- **M8** ✅ Counter 停自产 snapshot(`periodicSnapshot` + `writeSnapshot` 删除)；ADR-0060 M7 `SnapshotMu` + `sequencer.WithApplyBarrier` 撤销；`lastSnapshotAtMs` + `EvictSnapshotStaleAfter` 从 evict breaker 删除
+- **M9** ⏳ 未做 — 生产切换 + SLO 验证（需上线）
+- **M10** ⏳ 未做 — `counter-rebuild-snapshot` CLI（灾难恢复专用,集群无任何 snapshot 时从 trade-event offset 0 冷 replay）
 
 ## 实施约束 (Implementation Notes)
 
 - `engine` 包的 apply 函数必须保持 pure：入参是 `(state, event)`，出参是 `(new_state, error)` 或原地修改 `state`，不做 I/O
 - shadow engine 不需要 sequencer / TxnProducer / 任何 producer 组件
-- S3 上传路径使用 `counter/internal/snapshot/blobstore` 现有接口（复用）
+- S3 上传路径使用 `counter/snapshot/blobstore` 现有接口（复用）
 - Snapshot pipeline 的 goroutine 数 = 承担的 vshard 数（per-vshard 独立 apply loop），单进程 256 goroutine 不算多
 - Consumer group `trade-dump-snapshot` 的 rebalance 时要先完成当前 vshard 的 Capture 再 revoke partition（`kgo.OnPartitionsRevoked` hook）
 - `catchUpJournal` 工具函数（ADR-0060 recovery 用）和本 ADR 的 shadow apply 函数共用一份代码

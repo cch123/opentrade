@@ -1,6 +1,6 @@
 # ADR-0062: 订单终态 Evict + 幂等兜底 Ring Buffer
 
-- 状态: Proposed
+- 状态: Accepted（M1–M6 + M8 落地；M7 shadow apply 协议在 ADR-0061 shadow engine 中实现；M9 load test 未做）
 - 日期: 2026-04-22
 - 决策者: xargin, Claude
 - 相关 ADR: 0001（Kafka SoT）、0015（client-order-id 索引）、0018（per-user sequencer + counterSeq）、0048（snapshot + offset 原子绑定）、0054（per-symbol order slots）、0057（Asset service + Transfer Saga, ring buffer 设计参考）、0058（Counter 虚拟分片 + 实例锁）、0060（Counter 消费异步化 + TECheckpoint，本 ADR 的 M1 + M5 是 0060 的 recovery 前提）
@@ -20,7 +20,7 @@
 
 ### 当前问题
 
-[counter/internal/engine/orders.go:86-109](../../counter/internal/engine/orders.go:86) 的 `UpdateStatus`：
+[counter/engine/orders.go:86-109](../../counter/engine/orders.go:86) 的 `UpdateStatus`：
 
 ```go
 func (s *OrderStore) UpdateStatus(id uint64, newStatus OrderStatus, ...) (*Order, error) {
@@ -494,15 +494,15 @@ Evict 流程调 `state.Orders().Delete(id)` 是写操作，必须在 snapshotMu 
 
 按依赖顺序：
 
-- **M1** — `pkg/ring`（如果 ADR-0057 未抽取则抽出）+ `Account.recentTerminated` 字段 + `RememberTerminated` / `LookupTerminated` 方法。单测：FIFO、并发、capacity
-- **M2** — `AccountSnapshot` proto 扩展 + Capture / Restore 路径。单测：snapshot round-trip
-- **M3** — `Order.TerminatedAt` 字段 + `UpdateStatus` 所有终态转换路径设置。`OrderStore.CandidatesForEvict` 方法。单测：覆盖 4 种终态路径
-- **M4** — `OrderEvictedEvent` proto + `TxnProducer.PublishOrderEvicted` 方法。`VShardWorker.runOrderEvictor` goroutine + `evictOneRound`。集成测试：evict 触发 → journal 出现 event → byID 不含该订单
-- **M5** — `CancelOrder` 修改为三路径（byID / ring / not-found）。单测：所有路径的幂等断言。**Gate**：ADR-0060 M5 的 verification gate 在这一步解除
-- **M6** — `evictHealthCheck` 实现：读 snapshot 存储的 metadata、检查 advancer last publish。熔断触发日志 + metrics
-- **M7** — 配合 ADR-0061：shadow engine apply OrderEvicted 的协议定义（本 ADR 负责定义协议，ADR-0061 负责实现）
-- **M8** — 监控指标接入 + 告警配置：`evictor_last_round_ts` / `ring_overflow_total` / `ring_total_memory_bytes` / `evict_halted_due_to_snapshot_stale`
-- **M9** — 压测：模拟 1h 持续成交 + evict，验证 byID 稳态不增长 + CancelOrder 幂等不破
+- **M1** ✅ `Account.recentTerminated*` 字段 + `RememberTerminated` / `LookupTerminated` + ring snapshot round-trip 配套。FIFO / capacity / 并发单测
+- **M2** ✅ `AccountSnapshot.RecentTerminatedOrders` proto 扩展 + Capture / Restore（snapshot pkg 在 M1 后已移至 `counter/snapshot`）
+- **M3** ✅ `Order.TerminatedAt` 字段 + `UpdateStatus` 在所有终态转换路径 stamp；`OrderStore.CandidatesForEvict` + `Delete`；4 种终态路径单测
+- **M4** ✅ `OrderEvictedEvent` proto（tag 51）+ `journal.BuildOrderEvictedEvent`；`VShardWorker.runOrderEvictor` goroutine + `evictOneRound` + `evictOne` 在 sequencer 下的 ring→journal→delete 三步；集成测试：evict 触发 → journal event → byID 不含该订单
+- **M5** ✅ `CancelOrder` 三路径（byID / ring / not-found），`cancelResultFromRing` 辅助；所有路径的幂等断言单测（`TestCancelOrder_EvictedOrder_*`）；ADR-0060 M5 gate 解除
+- **M6** ✅ `evictHealthCheck` — Counter 侧只剩 checkpoint-stale 分支（`lastCheckpointAtMs` vs `EvictCheckpointStaleAfter`）；熔断日志 + `counter_evict_halted_total{reason=checkpoint_stale}`。**snapshot-stale 分支已下放到 trade-dump**（ADR-0061 Phase B 后 Counter 不再本地持有 snapshot 时间戳，由 `trade_dump_snapshot_age_seconds` 承担）
+- **M7** ✅ shadow engine apply `OrderEvicted` 协议在 `counter/engine.ApplyCounterJournalEvent` 统一实现（ADR-0061 M1），Counter catch-up + trade-dump shadow 都走这个入口
+- **M8** ✅ `counter_evict_processed_total{vshard, result}` + `counter_evict_halted_total{vshard, reason}` 接到 Prometheus；runbook-counter.md §7 提供排障路径
+- **M9** ⏳ 未做 — 压测（1h 持续成交 + evict，验证 byID 稳态 + CancelOrder 幂等不破）
 
 ## 实施约束 (Implementation Notes)
 
