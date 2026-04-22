@@ -384,20 +384,48 @@ func (w *VShardWorker) periodicSnapshot(ctx context.Context) {
 	}
 }
 
+// checkpointPublisher is the narrow TxnProducer subset the advancer
+// uses. Defined as an interface so unit tests can capture emitted
+// checkpoint events without a Kafka connection.
+type checkpointPublisher interface {
+	PublishToVShard(ctx context.Context, vshardID int32, key string, evt *eventpb.CounterJournalEvent) error
+}
+
 // runAdvancer consumes pendingList signals, pops the consecutive-done
-// prefix, and advances the local offset map via Service.AdvanceOffset
-// so the next snapshot picks up the up-to-date te_watermark.
+// prefix, publishes a TECheckpointEvent for the new watermark to
+// counter-journal, and advances the local offset map via
+// Service.AdvanceOffset so the next snapshot picks up the up-to-date
+// te_watermark.
 //
 // ADR-0060 §1.4: this is the single goroutine responsible for offset
-// advancement on the async path. The synchronous HandleTradeRecord
-// path (legacy / tests) still advances via Service.HandleTradeRecord
-// directly; both paths converge on AdvanceOffset.
+// advancement on the async path. The TECheckpointEvent publish fires
+// BEFORE AdvanceOffset so trade-dump's shadow pipeline observes the
+// checkpoint in counter-journal partition order (after every business
+// event whose offset ≤ watermark) — the TxnProducer.mu lock
+// serialises the publish against per-user drain goroutines' publishes.
 //
-// M3 will extend this loop to also publish TECheckpointEvent to
-// counter-journal before advancing so the trade-dump snapshot pipeline
-// can track te_watermark progression. In M2 we only advance the
-// local map.
+// Publish failures log + skip AdvanceOffset for this round: next
+// ticker we retry from the same pendingList head (entries are
+// idempotent, PopConsecutiveDone isn't called again until the next
+// signal).
+//
+// The synchronous HandleTradeRecord path (legacy / tests) still
+// advances via Service.HandleTradeRecord directly and does not
+// publish checkpoints (only the async path does — pre-ADR-0060
+// consumers never expected them).
 func (w *VShardWorker) runAdvancer(ctx context.Context, pending *pendingList, signal <-chan struct{}) {
+	w.runAdvancerWithPublisher(ctx, pending, signal, w.producer)
+}
+
+// runAdvancerWithPublisher is runAdvancer with an injected publisher
+// for test-time substitution.
+func (w *VShardWorker) runAdvancerWithPublisher(
+	ctx context.Context,
+	pending *pendingList,
+	signal <-chan struct{},
+	pub checkpointPublisher,
+) {
+	logger := w.cfg.Logger.With(zap.Int("vshard", int(w.cfg.VShardID)))
 	for {
 		select {
 		case <-ctx.Done():
@@ -408,10 +436,40 @@ func (w *VShardWorker) runAdvancer(ctx context.Context, pending *pendingList, si
 				if !ok {
 					break
 				}
-				w.svc.AdvanceOffset(partition, maxOffset+1)
+				w.emitCheckpoint(ctx, logger, pub, partition, maxOffset)
 			}
 		}
 	}
+}
+
+// emitCheckpoint publishes a TECheckpointEvent for (partition,
+// maxOffset) and, on success, advances the local offset map. On
+// publish failure we log and return without advancing — the next
+// pendingList pop will retry (pendingList entries are already
+// removed; retry happens on new signal for the same or next offset).
+func (w *VShardWorker) emitCheckpoint(
+	ctx context.Context,
+	logger *zap.Logger,
+	pub checkpointPublisher,
+	partition int32,
+	maxOffset int64,
+) {
+	evt := journal.BuildTECheckpointEvent(journal.TECheckpointEventInput{
+		CounterSeqID:   w.seq.CounterSeq(),
+		ProducerID:     w.cfg.NodeID,
+		AccountVersion: 0,
+		TePartition:    partition,
+		TeOffset:       maxOffset,
+	})
+	key := fmt.Sprintf("vshard-%03d-checkpoint", w.cfg.VShardID)
+	if err := pub.PublishToVShard(ctx, int32(w.cfg.VShardID), key, evt); err != nil {
+		logger.Error("publish te checkpoint",
+			zap.Int32("te_partition", partition),
+			zap.Int64("te_offset", maxOffset),
+			zap.Error(err))
+		return
+	}
+	w.svc.AdvanceOffset(partition, maxOffset+1)
 }
 
 // journalWriter is the narrow TxnProducer subset the evictor needs.

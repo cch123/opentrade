@@ -315,6 +315,46 @@ type OrderStatusEventInput struct {
 	Reject    eventpb.RejectReason
 }
 
+// TECheckpointEventInput is the input to BuildTECheckpointEvent. ADR-0060 §2.
+//
+// AccountVersion has no meaningful value on a checkpoint (the event
+// mutates no balance); callers pass 0 or the vshard's most recent
+// account version — neither is material to correctness. CounterSeqID
+// is the advancer's allocation at publish time so downstream tracking
+// of counterSeq monotonicity stays intact.
+type TECheckpointEventInput struct {
+	CounterSeqID   uint64
+	TsUnixMS       int64
+	TraceID        string
+	ProducerID     string
+	AccountVersion uint64
+
+	TePartition int32
+	TeOffset    int64
+}
+
+// BuildTECheckpointEvent wraps a TECheckpointEvent payload into a
+// CounterJournalEvent envelope.
+func BuildTECheckpointEvent(in TECheckpointEventInput) *eventpb.CounterJournalEvent {
+	ts := in.TsUnixMS
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+	return &eventpb.CounterJournalEvent{
+		Meta: &eventpb.EventMeta{
+			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
+		},
+		AccountVersion: in.AccountVersion,
+		CounterSeqId:   in.CounterSeqID,
+		Payload: &eventpb.CounterJournalEvent_TeCheckpoint{
+			TeCheckpoint: &eventpb.TECheckpointEvent{
+				TePartition: in.TePartition,
+				TeOffset:    in.TeOffset,
+			},
+		},
+	}
+}
+
 // OrderEvictedEventInput is the input to BuildOrderEvictedEvent. ADR-0062.
 //
 // AccountVersion stays at whatever the account currently carries —

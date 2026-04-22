@@ -60,6 +60,7 @@ message CounterJournalEvent {
     //   51: OrderEvictedEvent  (ADR-0062, published by the evictor when
     //       removing a terminal order from byID; shadow engine uses it
     //       to shrink its mirror state)
+    TECheckpointEvent te_checkpoint = 50;
     OrderEvictedEvent order_evicted = 51;
   }
 }
@@ -159,6 +160,28 @@ message CancelRequested {
   string user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
+}
+
+// TECheckpointEvent is published by the ADR-0060 ordered advancer
+// when pendingList's consecutive-done prefix advances. It carries the
+// largest trade-event offset for which every derived business event
+// has already been committed upstream in this counter-journal
+// partition. trade-dump's shadow engine uses it as the authoritative
+// te_watermark source (ADR-0061 §3).
+//
+// Payload is intentionally minimal — the Kafka partition ordering
+// between this event and the preceding business events is the
+// substantive contract. Consumers treat te_checkpoint as a no-op for
+// state (no balance / order changes) and only advance their watermark
+// bookkeeping.
+//
+// The envelope's CounterSeqId carries the advancer's latest counterSeq
+// at publish time; consumers that track counterSeq monotonicity (e.g.
+// shadow engine restore) still see monotonic seqs.
+message TECheckpointEvent {
+  int32 te_partition = 1;  // = vshard_id; redundant field for debug
+  int64 te_offset    = 2;  // largest TE offset whose business events
+                           // have all committed on this partition
 }
 
 // OrderEvictedEvent is published by the ADR-0062 evictor goroutine

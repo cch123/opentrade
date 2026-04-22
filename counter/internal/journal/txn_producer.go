@@ -146,6 +146,27 @@ func (p *TxnProducer) Publish(
 	})
 }
 
+// PublishToVShard writes evt to the counter-journal partition that
+// owns vshardID, bypassing the usual shard.Index(key) hashing. Used
+// by ADR-0060's advancer to emit TECheckpointEvent on the current
+// vshard's partition — the event has no user-level identity and
+// hashing by a synthetic key would not guarantee landing in the
+// right partition.
+//
+// key is used only as the Kafka record key for audit / replay (no
+// consumer reads it for routing). Callers pass a descriptive token
+// like "vshard-042-checkpoint".
+func (p *TxnProducer) PublishToVShard(
+	ctx context.Context,
+	vshardID int32,
+	key string,
+	evt *eventpb.CounterJournalEvent,
+) error {
+	return p.runTxn(ctx, func() error {
+		return p.produceToPartition(ctx, p.cfg.JournalTopic, vshardID, key, evt)
+	})
+}
+
 // Close flushes and closes the underlying kgo client.
 func (p *TxnProducer) Close() { p.cli.Close() }
 
@@ -206,6 +227,24 @@ func (p *TxnProducer) produce(ctx context.Context, topic, key string, pb proto.M
 	if topic == p.cfg.JournalTopic {
 		// key == user_id for every counter-journal event.
 		rec.Partition = int32(shard.Index(key, p.cfg.VShardCount))
+	}
+	return p.cli.ProduceSync(ctx, rec).FirstErr()
+}
+
+// produceToPartition writes a record directly to a caller-specified
+// partition, bypassing shard.Index hashing. Used by PublishToVShard
+// for events that have no user-level identity.
+func (p *TxnProducer) produceToPartition(ctx context.Context, topic string, partition int32, key string, pb proto.Message) error {
+	payload, err := proto.Marshal(pb)
+	if err != nil {
+		return err
+	}
+	rec := &kgo.Record{
+		Topic:     topic,
+		Partition: partition,
+		Key:       []byte(key),
+		Value:     payload,
+		Headers:   p.writerHeaders(),
 	}
 	return p.cli.ProduceSync(ctx, rec).FirstErr()
 }

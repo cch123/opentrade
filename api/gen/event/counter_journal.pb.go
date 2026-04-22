@@ -183,6 +183,7 @@ type CounterJournalEvent struct {
 	//	*CounterJournalEvent_Transfer
 	//	*CounterJournalEvent_OrderStatus
 	//	*CounterJournalEvent_CancelReq
+	//	*CounterJournalEvent_TeCheckpoint
 	//	*CounterJournalEvent_OrderEvicted
 	Payload       isCounterJournalEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -301,6 +302,15 @@ func (x *CounterJournalEvent) GetCancelReq() *CancelRequested {
 	return nil
 }
 
+func (x *CounterJournalEvent) GetTeCheckpoint() *TECheckpointEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*CounterJournalEvent_TeCheckpoint); ok {
+			return x.TeCheckpoint
+		}
+	}
+	return nil
+}
+
 func (x *CounterJournalEvent) GetOrderEvicted() *OrderEvictedEvent {
 	if x != nil {
 		if x, ok := x.Payload.(*CounterJournalEvent_OrderEvicted); ok {
@@ -338,7 +348,7 @@ type CounterJournalEvent_CancelReq struct {
 	CancelReq *CancelRequested `protobuf:"bytes,15,opt,name=cancel_req,json=cancelReq,proto3,oneof"`
 }
 
-type CounterJournalEvent_OrderEvicted struct {
+type CounterJournalEvent_TeCheckpoint struct {
 	// Tags 50-51 reserved for ADR-0060 / ADR-0062 signalling events that
 	// mutate no balance (pure fan-out to downstream consumers).
 	//
@@ -347,6 +357,10 @@ type CounterJournalEvent_OrderEvicted struct {
 	//	51: OrderEvictedEvent  (ADR-0062, published by the evictor when
 	//	    removing a terminal order from byID; shadow engine uses it
 	//	    to shrink its mirror state)
+	TeCheckpoint *TECheckpointEvent `protobuf:"bytes,50,opt,name=te_checkpoint,json=teCheckpoint,proto3,oneof"`
+}
+
+type CounterJournalEvent_OrderEvicted struct {
 	OrderEvicted *OrderEvictedEvent `protobuf:"bytes,51,opt,name=order_evicted,json=orderEvicted,proto3,oneof"`
 }
 
@@ -361,6 +375,8 @@ func (*CounterJournalEvent_Transfer) isCounterJournalEvent_Payload() {}
 func (*CounterJournalEvent_OrderStatus) isCounterJournalEvent_Payload() {}
 
 func (*CounterJournalEvent_CancelReq) isCounterJournalEvent_Payload() {}
+
+func (*CounterJournalEvent_TeCheckpoint) isCounterJournalEvent_Payload() {}
 
 func (*CounterJournalEvent_OrderEvicted) isCounterJournalEvent_Payload() {}
 
@@ -999,6 +1015,74 @@ func (x *CancelRequested) GetSymbol() string {
 	return ""
 }
 
+// TECheckpointEvent is published by the ADR-0060 ordered advancer
+// when pendingList's consecutive-done prefix advances. It carries the
+// largest trade-event offset for which every derived business event
+// has already been committed upstream in this counter-journal
+// partition. trade-dump's shadow engine uses it as the authoritative
+// te_watermark source (ADR-0061 §3).
+//
+// Payload is intentionally minimal — the Kafka partition ordering
+// between this event and the preceding business events is the
+// substantive contract. Consumers treat te_checkpoint as a no-op for
+// state (no balance / order changes) and only advance their watermark
+// bookkeeping.
+//
+// The envelope's CounterSeqId carries the advancer's latest counterSeq
+// at publish time; consumers that track counterSeq monotonicity (e.g.
+// shadow engine restore) still see monotonic seqs.
+type TECheckpointEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TePartition   int32                  `protobuf:"varint,1,opt,name=te_partition,json=tePartition,proto3" json:"te_partition,omitempty"` // = vshard_id; redundant field for debug
+	TeOffset      int64                  `protobuf:"varint,2,opt,name=te_offset,json=teOffset,proto3" json:"te_offset,omitempty"`          // largest TE offset whose business events
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TECheckpointEvent) Reset() {
+	*x = TECheckpointEvent{}
+	mi := &file_event_counter_journal_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TECheckpointEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TECheckpointEvent) ProtoMessage() {}
+
+func (x *TECheckpointEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_event_counter_journal_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TECheckpointEvent.ProtoReflect.Descriptor instead.
+func (*TECheckpointEvent) Descriptor() ([]byte, []int) {
+	return file_event_counter_journal_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *TECheckpointEvent) GetTePartition() int32 {
+	if x != nil {
+		return x.TePartition
+	}
+	return 0
+}
+
+func (x *TECheckpointEvent) GetTeOffset() int64 {
+	if x != nil {
+		return x.TeOffset
+	}
+	return 0
+}
+
 // OrderEvictedEvent is published by the ADR-0062 evictor goroutine
 // when a terminal order has aged past the retention window and is
 // about to be removed from OrderStore.byID. It carries enough payload
@@ -1020,7 +1104,7 @@ type OrderEvictedEvent struct {
 
 func (x *OrderEvictedEvent) Reset() {
 	*x = OrderEvictedEvent{}
-	mi := &file_event_counter_journal_proto_msgTypes[8]
+	mi := &file_event_counter_journal_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1032,7 +1116,7 @@ func (x *OrderEvictedEvent) String() string {
 func (*OrderEvictedEvent) ProtoMessage() {}
 
 func (x *OrderEvictedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_counter_journal_proto_msgTypes[8]
+	mi := &file_event_counter_journal_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1045,7 +1129,7 @@ func (x *OrderEvictedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrderEvictedEvent.ProtoReflect.Descriptor instead.
 func (*OrderEvictedEvent) Descriptor() ([]byte, []int) {
-	return file_event_counter_journal_proto_rawDescGZIP(), []int{8}
+	return file_event_counter_journal_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *OrderEvictedEvent) GetUserId() string {
@@ -1100,7 +1184,7 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\x05asset\x18\x02 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x03 \x01(\tR\tavailable\x12\x16\n" +
 	"\x06frozen\x18\x04 \x01(\tR\x06frozen\x12\x18\n" +
-	"\aversion\x18\x05 \x01(\x04R\aversion\"\xed\x04\n" +
+	"\aversion\x18\x05 \x01(\x04R\aversion\"\xb8\x05\n" +
 	"\x13CounterJournalEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12'\n" +
 	"\x0faccount_version\x18\x02 \x01(\x04R\x0eaccountVersion\x12$\n" +
@@ -1115,6 +1199,7 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\forder_status\x18\x0e \x01(\v2!.opentrade.event.OrderStatusEventH\x00R\vorderStatus\x12A\n" +
 	"\n" +
 	"cancel_req\x18\x0f \x01(\v2 .opentrade.event.CancelRequestedH\x00R\tcancelReq\x12I\n" +
+	"\rte_checkpoint\x182 \x01(\v2\".opentrade.event.TECheckpointEventH\x00R\fteCheckpoint\x12I\n" +
 	"\rorder_evicted\x183 \x01(\v2\".opentrade.event.OrderEvictedEventH\x00R\forderEvictedB\t\n" +
 	"\apayload\"\xce\x03\n" +
 	"\vFreezeEvent\x12\x17\n" +
@@ -1189,7 +1274,10 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\x0fCancelRequested\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
-	"\x06symbol\x18\x03 \x01(\tR\x06symbol\"\xf5\x01\n" +
+	"\x06symbol\x18\x03 \x01(\tR\x06symbol\"S\n" +
+	"\x11TECheckpointEvent\x12!\n" +
+	"\fte_partition\x18\x01 \x01(\x05R\vtePartition\x12\x1b\n" +
+	"\tte_offset\x18\x02 \x01(\x03R\bteOffset\"\xf5\x01\n" +
 	"\x11OrderEvictedEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
@@ -1211,7 +1299,7 @@ func file_event_counter_journal_proto_rawDescGZIP() []byte {
 }
 
 var file_event_counter_journal_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_event_counter_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_event_counter_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_event_counter_journal_proto_goTypes = []any{
 	(TransferEvent_TransferType)(0), // 0: opentrade.event.TransferEvent.TransferType
 	(*BalanceSnapshot)(nil),         // 1: opentrade.event.BalanceSnapshot
@@ -1222,42 +1310,44 @@ var file_event_counter_journal_proto_goTypes = []any{
 	(*TransferEvent)(nil),           // 6: opentrade.event.TransferEvent
 	(*OrderStatusEvent)(nil),        // 7: opentrade.event.OrderStatusEvent
 	(*CancelRequested)(nil),         // 8: opentrade.event.CancelRequested
-	(*OrderEvictedEvent)(nil),       // 9: opentrade.event.OrderEvictedEvent
-	(*EventMeta)(nil),               // 10: opentrade.event.EventMeta
-	(Side)(0),                       // 11: opentrade.event.Side
-	(OrderType)(0),                  // 12: opentrade.event.OrderType
-	(TimeInForce)(0),                // 13: opentrade.event.TimeInForce
-	(InternalOrderStatus)(0),        // 14: opentrade.event.InternalOrderStatus
-	(RejectReason)(0),               // 15: opentrade.event.RejectReason
+	(*TECheckpointEvent)(nil),       // 9: opentrade.event.TECheckpointEvent
+	(*OrderEvictedEvent)(nil),       // 10: opentrade.event.OrderEvictedEvent
+	(*EventMeta)(nil),               // 11: opentrade.event.EventMeta
+	(Side)(0),                       // 12: opentrade.event.Side
+	(OrderType)(0),                  // 13: opentrade.event.OrderType
+	(TimeInForce)(0),                // 14: opentrade.event.TimeInForce
+	(InternalOrderStatus)(0),        // 15: opentrade.event.InternalOrderStatus
+	(RejectReason)(0),               // 16: opentrade.event.RejectReason
 }
 var file_event_counter_journal_proto_depIdxs = []int32{
-	10, // 0: opentrade.event.CounterJournalEvent.meta:type_name -> opentrade.event.EventMeta
+	11, // 0: opentrade.event.CounterJournalEvent.meta:type_name -> opentrade.event.EventMeta
 	3,  // 1: opentrade.event.CounterJournalEvent.freeze:type_name -> opentrade.event.FreezeEvent
 	4,  // 2: opentrade.event.CounterJournalEvent.unfreeze:type_name -> opentrade.event.UnfreezeEvent
 	5,  // 3: opentrade.event.CounterJournalEvent.settlement:type_name -> opentrade.event.SettlementEvent
 	6,  // 4: opentrade.event.CounterJournalEvent.transfer:type_name -> opentrade.event.TransferEvent
 	7,  // 5: opentrade.event.CounterJournalEvent.order_status:type_name -> opentrade.event.OrderStatusEvent
 	8,  // 6: opentrade.event.CounterJournalEvent.cancel_req:type_name -> opentrade.event.CancelRequested
-	9,  // 7: opentrade.event.CounterJournalEvent.order_evicted:type_name -> opentrade.event.OrderEvictedEvent
-	11, // 8: opentrade.event.FreezeEvent.side:type_name -> opentrade.event.Side
-	12, // 9: opentrade.event.FreezeEvent.order_type:type_name -> opentrade.event.OrderType
-	13, // 10: opentrade.event.FreezeEvent.tif:type_name -> opentrade.event.TimeInForce
-	1,  // 11: opentrade.event.FreezeEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
-	1,  // 12: opentrade.event.UnfreezeEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
-	11, // 13: opentrade.event.SettlementEvent.side:type_name -> opentrade.event.Side
-	1,  // 14: opentrade.event.SettlementEvent.base_balance_after:type_name -> opentrade.event.BalanceSnapshot
-	1,  // 15: opentrade.event.SettlementEvent.quote_balance_after:type_name -> opentrade.event.BalanceSnapshot
-	0,  // 16: opentrade.event.TransferEvent.type:type_name -> opentrade.event.TransferEvent.TransferType
-	1,  // 17: opentrade.event.TransferEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
-	14, // 18: opentrade.event.OrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
-	14, // 19: opentrade.event.OrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
-	15, // 20: opentrade.event.OrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
-	14, // 21: opentrade.event.OrderEvictedEvent.final_status:type_name -> opentrade.event.InternalOrderStatus
-	22, // [22:22] is the sub-list for method output_type
-	22, // [22:22] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	9,  // 7: opentrade.event.CounterJournalEvent.te_checkpoint:type_name -> opentrade.event.TECheckpointEvent
+	10, // 8: opentrade.event.CounterJournalEvent.order_evicted:type_name -> opentrade.event.OrderEvictedEvent
+	12, // 9: opentrade.event.FreezeEvent.side:type_name -> opentrade.event.Side
+	13, // 10: opentrade.event.FreezeEvent.order_type:type_name -> opentrade.event.OrderType
+	14, // 11: opentrade.event.FreezeEvent.tif:type_name -> opentrade.event.TimeInForce
+	1,  // 12: opentrade.event.FreezeEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
+	1,  // 13: opentrade.event.UnfreezeEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
+	12, // 14: opentrade.event.SettlementEvent.side:type_name -> opentrade.event.Side
+	1,  // 15: opentrade.event.SettlementEvent.base_balance_after:type_name -> opentrade.event.BalanceSnapshot
+	1,  // 16: opentrade.event.SettlementEvent.quote_balance_after:type_name -> opentrade.event.BalanceSnapshot
+	0,  // 17: opentrade.event.TransferEvent.type:type_name -> opentrade.event.TransferEvent.TransferType
+	1,  // 18: opentrade.event.TransferEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
+	15, // 19: opentrade.event.OrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
+	15, // 20: opentrade.event.OrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
+	16, // 21: opentrade.event.OrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
+	15, // 22: opentrade.event.OrderEvictedEvent.final_status:type_name -> opentrade.event.InternalOrderStatus
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_event_counter_journal_proto_init() }
@@ -1273,6 +1363,7 @@ func file_event_counter_journal_proto_init() {
 		(*CounterJournalEvent_Transfer)(nil),
 		(*CounterJournalEvent_OrderStatus)(nil),
 		(*CounterJournalEvent_CancelReq)(nil),
+		(*CounterJournalEvent_TeCheckpoint)(nil),
 		(*CounterJournalEvent_OrderEvicted)(nil),
 	}
 	type x struct{}
@@ -1281,7 +1372,7 @@ func file_event_counter_journal_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_counter_journal_proto_rawDesc), len(file_event_counter_journal_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
