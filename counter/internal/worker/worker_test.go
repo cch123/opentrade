@@ -95,12 +95,6 @@ func TestNew_FillsDefaults(t *testing.T) {
 	if got.DedupTTL != 24*time.Hour {
 		t.Errorf("DedupTTL = %v", got.DedupTTL)
 	}
-	if got.SnapshotFlushTimeout != defaultSnapshotFlushTimeout {
-		t.Errorf("SnapshotFlushTimeout = %v", got.SnapshotFlushTimeout)
-	}
-	if got.ShutdownFlushTimeout != defaultShutdownFlushTimeout {
-		t.Errorf("ShutdownFlushTimeout = %v", got.ShutdownFlushTimeout)
-	}
 	if got.Logger == nil {
 		t.Error("Logger should default to zap.NewNop(), got nil")
 	}

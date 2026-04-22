@@ -351,37 +351,17 @@ func (a *Account) RestoreMatchSeq(m map[string]uint64) {
 }
 
 // ShardState is the in-memory state for one Counter shard.
+//
+// ADR-0061: snapshot production moved to trade-dump's shadow
+// pipeline. Counter only reads snapshots (on startup for Restore);
+// the old cross-account SnapshotMu barrier (ADR-0060 §5) is gone
+// since there's no Capture step to coordinate with.
 type ShardState struct {
 	ShardID int
 
 	accounts     sync.Map // user_id → *Account
 	orders       *OrderStore
 	reservations *reservationStore
-
-	// SnapshotMu is the vshard-level RWMutex guarding state
-	// consistency across Capture / Restore and all apply paths
-	// (ADR-0060 §5, M7). Every per-user fn acquires RLock for the
-	// duration of its execution via the sequencer barrier; Capture
-	// acquires Lock so no balance / order mutation races concurrent
-	// snapshot reads across different accounts (the original cross-
-	// account inconsistency reported in ADR-0060 §背景缺陷 2).
-	//
-	// Exported so callers (sequencer.WithApplyBarrier,
-	// worker.writeSnapshot) can take the lock directly — wrapping
-	// it in a helper method would force every call site through the
-	// engine package for no readability win.
-	//
-	// Lifetime: the lock is held for the per-task apply duration,
-	// which is bounded by Publish 5s retry panic (ADR-0060 §3) +
-	// any state mutation (ns-scale). Capture holds Lock for the
-	// serialize duration (expected 5-50ms under the indirect Copy
-	// scheme).
-	//
-	// This is a transitional measure per ADR-0060 §5: once ADR-0061
-	// moves snapshot production out of Counter (trade-dump becomes
-	// the authoritative snapshotter), this field and all RLock
-	// acquisitions can be removed.
-	SnapshotMu sync.RWMutex
 }
 
 // NewShardState constructs an empty state.

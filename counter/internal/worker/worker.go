@@ -1,9 +1,15 @@
 // Package worker packages up everything needed to serve one virtual
-// shard (ADR-0058 phase 3b). A VShardWorker owns the per-vshard state,
-// sequencer, dedup table, transactional producer (with epoch-fenced
-// transactional id), trade-event partition consumer, snapshot
-// restore/save cycle, and the Service instance the gRPC dispatcher
-// will route requests to.
+// shard (ADR-0058 phase 3b). A VShardWorker owns the per-vshard
+// state, sequencer, dedup table, transactional producer (with
+// epoch-fenced transactional id), trade-event partition consumer,
+// and the Service instance the gRPC dispatcher routes to.
+//
+// Snapshot production moved out of this worker in ADR-0061 — the
+// trade-dump snapshot pipeline is the single authoritative writer.
+// Counter only READS snapshots on startup (for state restore +
+// consumer seek) and relies on trade-dump monitoring
+// (`trade_dump_snapshot_age_seconds`) for snapshot-freshness
+// alerts.
 //
 // Lifecycle:
 //
@@ -11,10 +17,6 @@
 //	go w.Run(ctx)        // blocks until ctx done
 //	<-w.Ready()          // safe to route traffic after this closes
 //	w.Service().Transfer(...)
-//
-// Out of scope for 3b-2A: Manager that spawns workers per
-// clustering.WatchAssignedVShards — that's phase 3b-2B. This file only
-// delivers the single-vshard unit.
 package worker
 
 import (
@@ -29,9 +31,9 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
+	"github.com/xargin/opentrade/counter/engine"
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/counter/engine"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
@@ -41,9 +43,9 @@ import (
 )
 
 const (
-	// SnapshotKeyFormat is the BlobStore key stem for each vshard's
-	// snapshot. Zero-padded so lexicographic listing matches numeric
-	// order.
+	// SnapshotKeyFormat is the BlobStore key stem Counter expects
+	// trade-dump's snapshot pipeline to use (ADR-0061). Zero-padded
+	// so lexicographic listing matches numeric order.
 	SnapshotKeyFormat = "vshard-%03d"
 
 	// TransactionalIDFormat is the Kafka transactional.id for a
@@ -56,9 +58,6 @@ const (
 	// Kafka record's headers for downstream audit.
 	TransactionalIDFormat = "counter-vshard-%03d"
 
-	defaultSnapshotFlushTimeout = 3 * time.Second
-	defaultShutdownFlushTimeout = 10 * time.Second
-
 	// ADR-0062 evictor defaults. Chosen so steady-state trade-dump lag
 	// (<1s typical, minutes in failure) is comfortably covered by the
 	// retention window, while batch size bounds a single scan at well
@@ -67,10 +66,10 @@ const (
 	defaultOrderEvictRetention = 1 * time.Hour
 	defaultOrderEvictMaxBatch  = 500
 
-	// ADR-0062 §5 circuit-breaker defaults. Snapshot staleness is
-	// the longer bound (trade-dump pipeline downtime tolerance);
-	// checkpoint staleness is the shorter bound (advancer liveness).
-	defaultEvictSnapshotStaleAfter   = 2 * time.Hour
+	// ADR-0062 §5 circuit-breaker default for TECheckpoint publish
+	// staleness. Snapshot staleness lives in trade-dump's own
+	// monitoring (`trade_dump_snapshot_age_seconds`, ADR-0061 §7) —
+	// Counter no longer produces snapshots so can't self-sample age.
 	defaultEvictCheckpointStaleAfter = 5 * time.Minute
 )
 
@@ -90,19 +89,16 @@ type Config struct {
 	OrderEventTopic       string // legacy single topic (ADR-0050 fallback)
 	OrderEventTopicPrefix string // per-symbol topics prefix (ADR-0050)
 
-	// State plumbing
-	Store            snapshot.BlobStore
-	SnapshotFormat   snapshot.Format
-	SnapshotInterval time.Duration
-	DedupTTL         time.Duration
+	// State plumbing. Store is READ-only from Counter's side per
+	// ADR-0061 — trade-dump owns snapshot production. Counter uses
+	// it on startup to Load the authoritative snapshot for
+	// ShardState restore + trade-event consumer seek.
+	Store    snapshot.BlobStore
+	DedupTTL time.Duration
 
 	// Behaviour
 	DefaultMaxOpenLimitOrders uint32
 	SymbolLookup              service.SymbolLookup // optional precision source
-
-	// Timeouts — zero defaults below.
-	SnapshotFlushTimeout time.Duration
-	ShutdownFlushTimeout time.Duration
 
 	// ADR-0062 terminal-order eviction.
 	//
@@ -116,18 +112,15 @@ type Config struct {
 	OrderEvictRetention time.Duration
 	OrderEvictMaxBatch  int
 
-	// EvictSnapshotStaleAfter is the age at which a missing snapshot
-	// round trips this vshard's evictor into the circuit-breaker halt
-	// state (ADR-0062 §5). Measured against VShardWorker's own last
-	// writeSnapshot success — in the post-ADR-0061 world this will
-	// be read from the authoritative snapshot store's metadata. 0
-	// falls back to the default (2h).
-	EvictSnapshotStaleAfter time.Duration
-
 	// EvictCheckpointStaleAfter is the age at which a missing
 	// TECheckpoint publish halts eviction — downstream (trade-dump)
 	// stops advancing its te_watermark so newly evicted orders would
 	// miss the snapshot pipeline. 0 falls back to the default (5m).
+	//
+	// Snapshot-staleness check moved out of Counter with ADR-0061
+	// (trade-dump owns snapshot production); watch
+	// `trade_dump_snapshot_age_seconds` in trade-dump's metrics
+	// instead.
 	EvictCheckpointStaleAfter time.Duration
 
 	// Metrics is the optional ADR-0060 M8 + ADR-0062 M8 observability
@@ -155,12 +148,10 @@ type VShardWorker struct {
 	// record is dispatched; reads are safe once Ready() closes.
 	pending *pendingList
 
-	// lastCheckpointAtMs / lastSnapshotAtMs are liveness timestamps
-	// sampled by the ADR-0062 §5 evict circuit breaker. Updated by
-	// emitCheckpoint + writeSnapshot on success; read by
-	// evictHealthCheck before each round.
+	// lastCheckpointAtMs is the advancer's last successful
+	// TECheckpoint publish time, sampled by the ADR-0062 §5 evict
+	// circuit breaker. Updated by emitCheckpoint on success.
 	lastCheckpointAtMs atomic.Int64
-	lastSnapshotAtMs   atomic.Int64
 
 	ready chan struct{}
 }
@@ -195,12 +186,6 @@ func New(cfg Config) (*VShardWorker, error) {
 	if cfg.DedupTTL <= 0 {
 		cfg.DedupTTL = 24 * time.Hour
 	}
-	if cfg.SnapshotFlushTimeout <= 0 {
-		cfg.SnapshotFlushTimeout = defaultSnapshotFlushTimeout
-	}
-	if cfg.ShutdownFlushTimeout <= 0 {
-		cfg.ShutdownFlushTimeout = defaultShutdownFlushTimeout
-	}
 	// Negative -> explicit disable (tests). Zero -> default.
 	if cfg.OrderEvictInterval == 0 {
 		cfg.OrderEvictInterval = defaultOrderEvictInterval
@@ -210,9 +195,6 @@ func New(cfg Config) (*VShardWorker, error) {
 	}
 	if cfg.OrderEvictMaxBatch <= 0 {
 		cfg.OrderEvictMaxBatch = defaultOrderEvictMaxBatch
-	}
-	if cfg.EvictSnapshotStaleAfter <= 0 {
-		cfg.EvictSnapshotStaleAfter = defaultEvictSnapshotStaleAfter
 	}
 	if cfg.EvictCheckpointStaleAfter <= 0 {
 		cfg.EvictCheckpointStaleAfter = defaultEvictCheckpointStaleAfter
@@ -236,10 +218,11 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		zap.String("node", w.cfg.NodeID))
 
 	state := engine.NewShardState(int(w.cfg.VShardID))
-	// ADR-0060 §5 (M7): wire SnapshotMu as the sequencer's apply
-	// barrier so every per-user fn runs under RLock; writeSnapshot
-	// takes the Write lock briefly for cross-account consistency.
-	seq := sequencer.New(sequencer.WithApplyBarrier(&state.SnapshotMu))
+	// ADR-0061: no apply barrier — Counter doesn't produce snapshots
+	// anymore, so there's no Capture step that needs cross-account
+	// stop-the-world coordination. trade-dump's shadow pipeline
+	// guarantees consistency via single-threaded Apply (ADR-0061 §4.2).
+	seq := sequencer.New()
 	dt := dedup.New(w.cfg.DedupTTL)
 
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
@@ -371,15 +354,6 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		w.runAdvancer(ctx, pending, advanceSignal)
 	}()
 
-	// Periodic snapshot runs on a separate context so it can keep
-	// draining Flush after ctx is cancelled, up to the shutdown path.
-	snapCtx, cancelSnap := context.WithCancel(context.Background())
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		w.periodicSnapshot(snapCtx)
-	}()
-
 	// ADR-0062 evictor — age out terminal orders from byID after the
 	// retention window and publish OrderEvictedEvent so trade-dump's
 	// shadow engine + MySQL projection can shrink in lockstep.
@@ -393,18 +367,12 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	logger.Info("vshard worker shutting down")
 
 	consumer.Close()
-	cancelSnap()
 	wg.Wait()
 
-	// Time-bounded: if Flush / Put stall past this, we log + move on
-	// so an unhealthy broker can't pin the process forever.
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), w.cfg.ShutdownFlushTimeout)
-	defer cancelShutdown()
-	if err := w.writeSnapshot(shutdownCtx); err != nil {
-		logger.Error("final snapshot failed", zap.Error(err))
-	} else {
-		logger.Info("final snapshot written")
-	}
+	// No final snapshot write — trade-dump's snapshot pipeline is
+	// the sole snapshot producer (ADR-0061). The last journal events
+	// this worker published before shutdown reach trade-dump via
+	// counter-journal and land in its next snapshot tick.
 	return nil
 }
 
@@ -426,31 +394,6 @@ func (w *VShardWorker) VShardID() clustering.VShardID { return w.cfg.VShardID }
 // carries a strictly larger epoch than the previous one, which is how
 // Kafka transactional fencing knows who is authoritative.
 func (w *VShardWorker) Epoch() uint64 { return w.cfg.Epoch }
-
-// periodicSnapshot fires every SnapshotInterval until snapCtx is
-// cancelled. SnapshotInterval <= 0 disables the loop entirely (only the
-// final shutdown snapshot runs).
-func (w *VShardWorker) periodicSnapshot(ctx context.Context) {
-	if w.cfg.SnapshotInterval <= 0 {
-		return
-	}
-	ticker := time.NewTicker(w.cfg.SnapshotInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			flushCtx, cancel := context.WithTimeout(ctx, w.cfg.SnapshotFlushTimeout)
-			err := w.writeSnapshot(flushCtx)
-			cancel()
-			if err != nil {
-				w.cfg.Logger.Error("periodic snapshot",
-					zap.Int("vshard", int(w.cfg.VShardID)), zap.Error(err))
-			}
-		}
-	}
-}
 
 // checkpointPublisher is the narrow TxnProducer subset the advancer
 // uses. Defined as an interface so unit tests can capture emitted
@@ -601,42 +544,24 @@ func (w *VShardWorker) runOrderEvictor(ctx context.Context) {
 }
 
 // evictHealthCheck implements ADR-0062 §5: before each round, verify
-// that downstream (trade-dump) is keeping up by checking two
-// liveness signals:
+// the advancer is publishing TECheckpoints. Stale checkpoint means
+// no new watermark reaches trade-dump and evict pre-emptively halts
+// to avoid a loss window. Returns true to proceed, false to skip
+// the round; a false return logs + increments
+// counter_evict_halted_total for dashboards.
 //
-//  1. lastSnapshotAtMs: the most recent successful writeSnapshot.
-//     In the Counter-writes-own-snapshot world this is our own
-//     snapshot; post-ADR-0061 it'll be trade-dump's snapshot read
-//     from blob-store metadata. Either way, stale snapshot means
-//     orders evicted now would not land in the authoritative
-//     snapshot within the retention window.
-//  2. lastCheckpointAtMs: the most recent successful
-//     TECheckpointEvent publish. Stale checkpoint means the
-//     advancer is stuck — no new watermark reaches trade-dump and
-//     evict pre-emptively halts to avoid a loss window.
+// Zero timestamp (cold start before first checkpoint) is treated
+// as "healthy" so the evictor can warm up on fresh pods; the
+// retention window (1h default) is longer than any reasonable
+// startup so nothing gets evicted in this window anyway.
 //
-// Returns true to proceed, false to skip the round. A false return
-// always logs + increments counter_evict_halted_total so it shows
-// up in dashboards.
-//
-// Zero timestamps (never set — cold start before first success)
-// are treated as "healthy" so the evictor can warm up on fresh
-// pods; the retention window (1h default) is longer than any
-// reasonable startup so nothing gets evicted in this window anyway.
+// Snapshot-staleness monitoring moved to trade-dump per ADR-0061
+// (trade-dump is the snapshot producer so Counter can't locally
+// sample the production timestamp). Watch
+// `trade_dump_snapshot_age_seconds` upstream.
 func (w *VShardWorker) evictHealthCheck(logger *zap.Logger) bool {
-	now := time.Now().UnixMilli()
-	if ts := w.lastSnapshotAtMs.Load(); ts > 0 {
-		age := time.Duration(now-ts) * time.Millisecond
-		if age > w.cfg.EvictSnapshotStaleAfter {
-			logger.Warn("evict halted: snapshot stale",
-				zap.Duration("age", age),
-				zap.Duration("threshold", w.cfg.EvictSnapshotStaleAfter))
-			w.cfg.Metrics.RecordEvictHalted(int32(w.cfg.VShardID), "snapshot_stale")
-			return false
-		}
-	}
 	if ts := w.lastCheckpointAtMs.Load(); ts > 0 {
-		age := time.Duration(now-ts) * time.Millisecond
+		age := time.Since(time.UnixMilli(ts))
 		if age > w.cfg.EvictCheckpointStaleAfter {
 			logger.Warn("evict halted: checkpoint stale",
 				zap.Duration("age", age),
@@ -723,58 +648,3 @@ func (w *VShardWorker) evictOne(ctx context.Context, o *engine.Order, pub journa
 	return err
 }
 
-// writeSnapshot captures state + offsets + journal_offset under
-// SnapshotMu.Lock (ADR-0060 §5, M7). Holding the write lock across
-// Flush + Capture briefly pauses every per-user fn (they're blocked
-// on SnapshotMu.RLock via the sequencer barrier) so the snapshot is
-// a cross-account-consistent point-in-time view. Save runs outside
-// the lock — the marshalled in-memory copy no longer depends on
-// live state.
-//
-// journal_offset is sampled AFTER Flush + with the W-lock held:
-// Flush drains every in-flight produce (so all committed records
-// are reflected in journalHighOffset) and no new Publish can start
-// while we hold the lock (sequencer barrier prevents new fn
-// execution). Combined, the recorded journal_offset bounds every
-// event whose state effects are visible to Capture.
-//
-// Critical section length: Flush (ms scale on healthy Kafka) +
-// Capture (indirect Copy, 5-50ms for 1M accounts). Upstream fn
-// callers briefly queue; cumulative impact is bounded by
-// SnapshotInterval cadence (30s typical).
-//
-// This is a transitional lock per ADR-0060 §5 — once ADR-0061
-// moves snapshot production out of Counter the acquisition can be
-// removed along with the sequencer barrier.
-func (w *VShardWorker) writeSnapshot(ctx context.Context) error {
-	start := time.Now()
-	w.state.SnapshotMu.Lock()
-	if err := w.producer.Flush(ctx); err != nil {
-		w.state.SnapshotMu.Unlock()
-		return fmt.Errorf("flush before snapshot: %w", err)
-	}
-	snap := snapshot.Capture(
-		int(w.cfg.VShardID),
-		w.state, w.seq, w.dedupTable,
-		w.svc.Offsets(),
-		w.producer.JournalOffsetNext(),
-		time.Now().UnixMilli(),
-	)
-	w.state.SnapshotMu.Unlock()
-	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
-	err := snapshot.Save(ctx, w.cfg.Store, key, snap, w.cfg.SnapshotFormat)
-	// Emit duration even on error so operators see stalls in the
-	// W-lock + Flush + Capture segment (Save may be skewed by blob
-	// store latency but the interesting cost is the critical
-	// section). ADR-0060 M8.
-	w.cfg.Metrics.RecordSnapshotDuration(int32(w.cfg.VShardID), time.Since(start).Seconds())
-	w.cfg.Metrics.RecordCounterSeq(int32(w.cfg.VShardID), w.seq.CounterSeq())
-	// Stamp snapshot liveness ONLY on Save success. The evict
-	// circuit breaker reads this to decide if trade-dump /
-	// downstream pipeline is healthy enough to accept evict
-	// deletes (ADR-0062 §5).
-	if err == nil {
-		w.lastSnapshotAtMs.Store(time.Now().UnixMilli())
-	}
-	return err
-}

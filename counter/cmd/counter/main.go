@@ -182,8 +182,6 @@ func main() {
 		OrderEventTopic:           cfg.OrderEventTopic,
 		OrderEventTopicPrefix:     cfg.OrderEventTopicPrefix,
 		Store:                     store,
-		SnapshotFormat:            cfg.SnapshotFormat,
-		SnapshotInterval:          cfg.SnapshotInterval,
 		DedupTTL:                  cfg.DedupTTL,
 		DefaultMaxOpenLimitOrders: cfg.DefaultMaxOpenLimitOrders,
 		SymbolLookup:              symbolLookup,

@@ -52,10 +52,11 @@ type WorkerTemplate struct {
 	OrderEventTopic       string
 	OrderEventTopicPrefix string
 
-	Store            snapshot.BlobStore
-	SnapshotFormat   snapshot.Format
-	SnapshotInterval time.Duration
-	DedupTTL         time.Duration
+	// Store is the snapshot blob store Counter READS from on
+	// startup. ADR-0061: trade-dump owns snapshot production;
+	// Counter never writes.
+	Store    snapshot.BlobStore
+	DedupTTL time.Duration
 
 	DefaultMaxOpenLimitOrders uint32
 	SymbolLookup              service.SymbolLookup
@@ -218,8 +219,6 @@ func (m *Manager) startUnlocked(ctx context.Context, a clustering.Assignment) er
 		OrderEventTopic:           m.template.OrderEventTopic,
 		OrderEventTopicPrefix:     m.template.OrderEventTopicPrefix,
 		Store:                     m.template.Store,
-		SnapshotFormat:            m.template.SnapshotFormat,
-		SnapshotInterval:          m.template.SnapshotInterval,
 		DedupTTL:                  m.template.DedupTTL,
 		DefaultMaxOpenLimitOrders: m.template.DefaultMaxOpenLimitOrders,
 		SymbolLookup:              m.template.SymbolLookup,

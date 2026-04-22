@@ -254,14 +254,35 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 	return v.(*PlaceOrderResult), nil
 }
 
+// cancelResultFromRing returns the CancelOrder idempotent response for
+// an order that the evictor has already removed from byID (ADR-0062).
+// Semantics mirror the in-byID-terminal branch:
+//   - Canceled: Accepted=true (cancel reached its terminal state, any
+//     retry of the same cancel is a success)
+//   - Filled / Rejected / Expired: Accepted=false + "order already
+//     terminal" — consistent with the byID path so clients cannot tell
+//     whether the order has been evicted or not.
+func cancelResultFromRing(orderID uint64, entry engine.TerminatedOrderEntry) *CancelOrderResult {
+	if entry.FinalStatus == engine.OrderStatusCanceled {
+		return &CancelOrderResult{OrderID: orderID, Accepted: true}
+	}
+	return &CancelOrderResult{
+		OrderID:      orderID,
+		Accepted:     false,
+		RejectReason: "order already terminal",
+	}
+}
+
 // CancelOrder requests cancellation of an existing order. Returns Accepted=
 // false if the order is absent / not owned / already terminal / already
 // pending cancel (idempotent).
 //
-// Once the evictor has removed a terminal order from byID, Get returns
-// nil and CancelOrder responds with "order not exist or already finished"
-// — the original terminal response was already acknowledged via the
-// PlaceOrder/Match flow, or the order id was never valid.
+// ADR-0062: once the evictor has removed a terminal order from byID,
+// CancelOrder falls back to the user's recent-terminated ring for an
+// idempotent answer. The ring window (default 1h post-terminal) covers
+// client retry latency. After that, a long-retry on an evicted order
+// returns ErrOrderNotFound — acceptable because by then any caller
+// must have observed the original terminal response.
 func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*CancelOrderResult, error) {
 	if s.txn == nil {
 		return nil, ErrOrderDepsNotConfigured
@@ -276,10 +297,18 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 	v, err := s.seq.Execute(req.UserID, func(counterSeq uint64) (any, error) {
 		o := s.state.Orders().Get(req.OrderID)
 		if o == nil {
+			// ADR-0062: once the evictor removes a terminal order from
+			// byID, Get returns nil even though the order did exist and
+			// finished in a well-defined state. Fall back to the user's
+			// recent-terminated ring so CancelOrder stays idempotent
+			// across the evict boundary.
+			if entry, ok := s.state.Account(req.UserID).LookupTerminated(req.OrderID); ok {
+				return cancelResultFromRing(req.OrderID, entry), nil
+			}
 			return &CancelOrderResult{
 				OrderID:      req.OrderID,
 				Accepted:     false,
-				RejectReason: "Cancel Failed, Order Not Exist or Already Finished",
+				RejectReason: engine.ErrOrderNotFound.Error(),
 			}, nil
 		}
 		if o.UserID != req.UserID {
