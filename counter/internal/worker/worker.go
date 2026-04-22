@@ -27,6 +27,7 @@ import (
 
 	"go.uber.org/zap"
 
+	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/engine"
@@ -55,6 +56,14 @@ const (
 
 	defaultSnapshotFlushTimeout = 3 * time.Second
 	defaultShutdownFlushTimeout = 10 * time.Second
+
+	// ADR-0062 evictor defaults. Chosen so steady-state trade-dump lag
+	// (<1s typical, minutes in failure) is comfortably covered by the
+	// retention window, while batch size bounds a single scan at well
+	// under 100ms even on a ~200w entry byID map.
+	defaultOrderEvictInterval  = 30 * time.Second
+	defaultOrderEvictRetention = 1 * time.Hour
+	defaultOrderEvictMaxBatch  = 500
 )
 
 // Config wires all per-vshard dependencies. Brokers / topics / store
@@ -86,6 +95,18 @@ type Config struct {
 	// Timeouts — zero defaults below.
 	SnapshotFlushTimeout time.Duration
 	ShutdownFlushTimeout time.Duration
+
+	// ADR-0062 terminal-order eviction.
+	//
+	// OrderEvictInterval is the scan cadence. 0 falls back to the
+	// default (30s); explicitly negative disables the loop (tests).
+	// OrderEvictRetention is the minimum age a terminal order must
+	// reach before it becomes eligible. Default 1h.
+	// OrderEvictMaxBatch caps the number of orders processed per round
+	// so a single scan cannot monopolise the user sequencer. Default 500.
+	OrderEvictInterval  time.Duration
+	OrderEvictRetention time.Duration
+	OrderEvictMaxBatch  int
 
 	Logger *zap.Logger
 }
@@ -140,6 +161,16 @@ func New(cfg Config) (*VShardWorker, error) {
 	}
 	if cfg.ShutdownFlushTimeout <= 0 {
 		cfg.ShutdownFlushTimeout = defaultShutdownFlushTimeout
+	}
+	// Negative -> explicit disable (tests). Zero -> default.
+	if cfg.OrderEvictInterval == 0 {
+		cfg.OrderEvictInterval = defaultOrderEvictInterval
+	}
+	if cfg.OrderEvictRetention <= 0 {
+		cfg.OrderEvictRetention = defaultOrderEvictRetention
+	}
+	if cfg.OrderEvictMaxBatch <= 0 {
+		cfg.OrderEvictMaxBatch = defaultOrderEvictMaxBatch
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
@@ -260,6 +291,15 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		w.periodicSnapshot(snapCtx)
 	}()
 
+	// ADR-0062 evictor — age out terminal orders from byID after the
+	// retention window and publish OrderEvictedEvent so trade-dump's
+	// shadow engine + MySQL projection can shrink in lockstep.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.runOrderEvictor(ctx)
+	}()
+
 	<-ctx.Done()
 	logger.Info("vshard worker shutting down")
 
@@ -321,6 +361,111 @@ func (w *VShardWorker) periodicSnapshot(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// journalWriter is the narrow TxnProducer subset the evictor needs.
+// Defined as an interface so tests can exercise the ring→journal→delete
+// sequence without a live Kafka broker — the real implementation is
+// *journal.TxnProducer.
+type journalWriter interface {
+	Publish(ctx context.Context, partitionKey string, evt *eventpb.CounterJournalEvent) error
+}
+
+// runOrderEvictor periodically ages out terminal orders from
+// OrderStore.byID per ADR-0062. Each round queries CandidatesForEvict,
+// then for each candidate runs the strict ring→journal→delete sequence
+// under the user's sequencer so it interleaves correctly with other
+// per-user work. Publish failures surface as errors on the returned
+// task; the evictor logs and moves on to the next candidate (the
+// failed order will reappear in the next scan).
+//
+// OrderEvictInterval <= 0 disables the loop entirely (tests set this
+// to a negative sentinel; the defaults path in New turns zero into
+// the 30s default).
+func (w *VShardWorker) runOrderEvictor(ctx context.Context) {
+	if w.cfg.OrderEvictInterval <= 0 {
+		return
+	}
+	logger := w.cfg.Logger.With(zap.Int("vshard", int(w.cfg.VShardID)))
+	ticker := time.NewTicker(w.cfg.OrderEvictInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.evictOneRound(ctx, logger, w.producer)
+		}
+	}
+}
+
+// evictOneRound is one tick of the evictor loop. pub is injected so
+// tests can capture emitted journal events without a real Kafka
+// producer; production callers pass w.producer.
+func (w *VShardWorker) evictOneRound(ctx context.Context, logger *zap.Logger, pub journalWriter) {
+	now := time.Now().UnixMilli()
+	retentionMS := w.cfg.OrderEvictRetention.Milliseconds()
+	candidates := w.state.Orders().CandidatesForEvict(now, retentionMS, w.cfg.OrderEvictMaxBatch)
+	if len(candidates) == 0 {
+		return
+	}
+	for _, o := range candidates {
+		if err := w.evictOne(ctx, o, pub); err != nil {
+			logger.Error("evict order",
+				zap.Uint64("order_id", o.ID),
+				zap.String("user_id", o.UserID),
+				zap.Error(err))
+			// Do not abort the round — the failed order will be
+			// reconsidered on the next tick. Later scans are idempotent
+			// (ring remember + journal publish + byID delete are all
+			// crash-safe under retry).
+		}
+	}
+}
+
+// evictOne performs the ring→journal→delete three-step for a single
+// terminal order under the user's sequencer. Strict ordering matters:
+//  1. RememberTerminated: populates the ring so CancelOrder retries
+//     across the brief window until the event is committed + byID is
+//     cleared still have an idempotent answer.
+//  2. Publish OrderEvictedEvent: ADR-0060 TxnProducer.Publish, sync
+//     Kafka commit.
+//  3. Orders().Delete: removes the order from byID.
+//
+// A crash between any two steps is harmless: on restart the candidate
+// still matches on the next scan (RememberTerminated overwrites with
+// identical payload; Publish adds a duplicate journal event which
+// shadow consumers apply idempotently; Delete is ErrOrderNotFound-safe).
+func (w *VShardWorker) evictOne(ctx context.Context, o *engine.Order, pub journalWriter) error {
+	_, err := w.seq.Execute(o.UserID, func(counterSeq uint64) (any, error) {
+		acc := w.state.Account(o.UserID)
+		acc.RememberTerminated(engine.TerminatedOrderEntry{
+			OrderID:       o.ID,
+			FinalStatus:   o.Status,
+			TerminatedAt:  o.TerminatedAt,
+			ClientOrderID: o.ClientOrderID,
+			Symbol:        o.Symbol,
+		})
+		evt := journal.BuildOrderEvictedEvent(journal.OrderEvictedEventInput{
+			CounterSeqID:   counterSeq,
+			ProducerID:     w.cfg.NodeID,
+			AccountVersion: acc.Version(),
+			UserID:         o.UserID,
+			OrderID:        o.ID,
+			Symbol:         o.Symbol,
+			FinalStatus:    o.Status,
+			TerminatedAt:   o.TerminatedAt,
+			ClientOrderID:  o.ClientOrderID,
+		})
+		if err := pub.Publish(ctx, o.UserID, evt); err != nil {
+			return nil, fmt.Errorf("publish OrderEvicted: %w", err)
+		}
+		if err := w.state.Orders().Delete(o.ID); err != nil && !errors.Is(err, engine.ErrOrderNotFound) {
+			return nil, fmt.Errorf("delete order: %w", err)
+		}
+		return nil, nil
+	})
+	return err
 }
 
 // writeSnapshot captures state + offsets after flushing the Kafka

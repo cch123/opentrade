@@ -183,6 +183,7 @@ type CounterJournalEvent struct {
 	//	*CounterJournalEvent_Transfer
 	//	*CounterJournalEvent_OrderStatus
 	//	*CounterJournalEvent_CancelReq
+	//	*CounterJournalEvent_OrderEvicted
 	Payload       isCounterJournalEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -300,6 +301,15 @@ func (x *CounterJournalEvent) GetCancelReq() *CancelRequested {
 	return nil
 }
 
+func (x *CounterJournalEvent) GetOrderEvicted() *OrderEvictedEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*CounterJournalEvent_OrderEvicted); ok {
+			return x.OrderEvicted
+		}
+	}
+	return nil
+}
+
 type isCounterJournalEvent_Payload interface {
 	isCounterJournalEvent_Payload()
 }
@@ -328,6 +338,18 @@ type CounterJournalEvent_CancelReq struct {
 	CancelReq *CancelRequested `protobuf:"bytes,15,opt,name=cancel_req,json=cancelReq,proto3,oneof"`
 }
 
+type CounterJournalEvent_OrderEvicted struct {
+	// Tags 50-51 reserved for ADR-0060 / ADR-0062 signalling events that
+	// mutate no balance (pure fan-out to downstream consumers).
+	//
+	//	50: TECheckpointEvent  (ADR-0060, published by the consume-loop
+	//	    advancer to flag "te_offset <= N fully processed")
+	//	51: OrderEvictedEvent  (ADR-0062, published by the evictor when
+	//	    removing a terminal order from byID; shadow engine uses it
+	//	    to shrink its mirror state)
+	OrderEvicted *OrderEvictedEvent `protobuf:"bytes,51,opt,name=order_evicted,json=orderEvicted,proto3,oneof"`
+}
+
 func (*CounterJournalEvent_Freeze) isCounterJournalEvent_Payload() {}
 
 func (*CounterJournalEvent_Unfreeze) isCounterJournalEvent_Payload() {}
@@ -339,6 +361,8 @@ func (*CounterJournalEvent_Transfer) isCounterJournalEvent_Payload() {}
 func (*CounterJournalEvent_OrderStatus) isCounterJournalEvent_Payload() {}
 
 func (*CounterJournalEvent_CancelReq) isCounterJournalEvent_Payload() {}
+
+func (*CounterJournalEvent_OrderEvicted) isCounterJournalEvent_Payload() {}
 
 // Funds frozen as result of PlaceOrder.
 type FreezeEvent struct {
@@ -975,6 +999,97 @@ func (x *CancelRequested) GetSymbol() string {
 	return ""
 }
 
+// OrderEvictedEvent is published by the ADR-0062 evictor goroutine
+// when a terminal order has aged past the retention window and is
+// about to be removed from OrderStore.byID. It carries enough payload
+// for trade-dump's shadow engine to mirror the delete, and for the
+// MySQL projection pipeline to stamp an evicted_at audit entry on the
+// orders table. It does NOT mutate any balance, so AccountVersion on
+// the envelope stays at whatever value the account currently carries.
+type OrderEvictedEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrderId       uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,3,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	FinalStatus   InternalOrderStatus    `protobuf:"varint,4,opt,name=final_status,json=finalStatus,proto3,enum=opentrade.event.InternalOrderStatus" json:"final_status,omitempty"` // Filled / Canceled / Rejected / Expired
+	TerminatedAt  int64                  `protobuf:"varint,5,opt,name=terminated_at,json=terminatedAt,proto3" json:"terminated_at,omitempty"`                                       // ms timestamp captured at terminal transition
+	ClientOrderId string                 `protobuf:"bytes,6,opt,name=client_order_id,json=clientOrderId,proto3" json:"client_order_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OrderEvictedEvent) Reset() {
+	*x = OrderEvictedEvent{}
+	mi := &file_event_counter_journal_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OrderEvictedEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OrderEvictedEvent) ProtoMessage() {}
+
+func (x *OrderEvictedEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_event_counter_journal_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OrderEvictedEvent.ProtoReflect.Descriptor instead.
+func (*OrderEvictedEvent) Descriptor() ([]byte, []int) {
+	return file_event_counter_journal_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *OrderEvictedEvent) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *OrderEvictedEvent) GetOrderId() uint64 {
+	if x != nil {
+		return x.OrderId
+	}
+	return 0
+}
+
+func (x *OrderEvictedEvent) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *OrderEvictedEvent) GetFinalStatus() InternalOrderStatus {
+	if x != nil {
+		return x.FinalStatus
+	}
+	return InternalOrderStatus_INTERNAL_ORDER_STATUS_UNSPECIFIED
+}
+
+func (x *OrderEvictedEvent) GetTerminatedAt() int64 {
+	if x != nil {
+		return x.TerminatedAt
+	}
+	return 0
+}
+
+func (x *OrderEvictedEvent) GetClientOrderId() string {
+	if x != nil {
+		return x.ClientOrderId
+	}
+	return ""
+}
+
 var File_event_counter_journal_proto protoreflect.FileDescriptor
 
 const file_event_counter_journal_proto_rawDesc = "" +
@@ -985,7 +1100,7 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\x05asset\x18\x02 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x03 \x01(\tR\tavailable\x12\x16\n" +
 	"\x06frozen\x18\x04 \x01(\tR\x06frozen\x12\x18\n" +
-	"\aversion\x18\x05 \x01(\x04R\aversion\"\xa2\x04\n" +
+	"\aversion\x18\x05 \x01(\x04R\aversion\"\xed\x04\n" +
 	"\x13CounterJournalEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12'\n" +
 	"\x0faccount_version\x18\x02 \x01(\x04R\x0eaccountVersion\x12$\n" +
@@ -999,7 +1114,8 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\btransfer\x18\r \x01(\v2\x1e.opentrade.event.TransferEventH\x00R\btransfer\x12F\n" +
 	"\forder_status\x18\x0e \x01(\v2!.opentrade.event.OrderStatusEventH\x00R\vorderStatus\x12A\n" +
 	"\n" +
-	"cancel_req\x18\x0f \x01(\v2 .opentrade.event.CancelRequestedH\x00R\tcancelReqB\t\n" +
+	"cancel_req\x18\x0f \x01(\v2 .opentrade.event.CancelRequestedH\x00R\tcancelReq\x12I\n" +
+	"\rorder_evicted\x183 \x01(\v2\".opentrade.event.OrderEvictedEventH\x00R\forderEvictedB\t\n" +
 	"\apayload\"\xce\x03\n" +
 	"\vFreezeEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
@@ -1073,7 +1189,14 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\x0fCancelRequested\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
-	"\x06symbol\x18\x03 \x01(\tR\x06symbolB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
+	"\x06symbol\x18\x03 \x01(\tR\x06symbol\"\xf5\x01\n" +
+	"\x11OrderEvictedEvent\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
+	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
+	"\x06symbol\x18\x03 \x01(\tR\x06symbol\x12G\n" +
+	"\ffinal_status\x18\x04 \x01(\x0e2$.opentrade.event.InternalOrderStatusR\vfinalStatus\x12#\n" +
+	"\rterminated_at\x18\x05 \x01(\x03R\fterminatedAt\x12&\n" +
+	"\x0fclient_order_id\x18\x06 \x01(\tR\rclientOrderIdB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
 var (
 	file_event_counter_journal_proto_rawDescOnce sync.Once
@@ -1088,7 +1211,7 @@ func file_event_counter_journal_proto_rawDescGZIP() []byte {
 }
 
 var file_event_counter_journal_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_event_counter_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_event_counter_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_event_counter_journal_proto_goTypes = []any{
 	(TransferEvent_TransferType)(0), // 0: opentrade.event.TransferEvent.TransferType
 	(*BalanceSnapshot)(nil),         // 1: opentrade.event.BalanceSnapshot
@@ -1099,39 +1222,42 @@ var file_event_counter_journal_proto_goTypes = []any{
 	(*TransferEvent)(nil),           // 6: opentrade.event.TransferEvent
 	(*OrderStatusEvent)(nil),        // 7: opentrade.event.OrderStatusEvent
 	(*CancelRequested)(nil),         // 8: opentrade.event.CancelRequested
-	(*EventMeta)(nil),               // 9: opentrade.event.EventMeta
-	(Side)(0),                       // 10: opentrade.event.Side
-	(OrderType)(0),                  // 11: opentrade.event.OrderType
-	(TimeInForce)(0),                // 12: opentrade.event.TimeInForce
-	(InternalOrderStatus)(0),        // 13: opentrade.event.InternalOrderStatus
-	(RejectReason)(0),               // 14: opentrade.event.RejectReason
+	(*OrderEvictedEvent)(nil),       // 9: opentrade.event.OrderEvictedEvent
+	(*EventMeta)(nil),               // 10: opentrade.event.EventMeta
+	(Side)(0),                       // 11: opentrade.event.Side
+	(OrderType)(0),                  // 12: opentrade.event.OrderType
+	(TimeInForce)(0),                // 13: opentrade.event.TimeInForce
+	(InternalOrderStatus)(0),        // 14: opentrade.event.InternalOrderStatus
+	(RejectReason)(0),               // 15: opentrade.event.RejectReason
 }
 var file_event_counter_journal_proto_depIdxs = []int32{
-	9,  // 0: opentrade.event.CounterJournalEvent.meta:type_name -> opentrade.event.EventMeta
+	10, // 0: opentrade.event.CounterJournalEvent.meta:type_name -> opentrade.event.EventMeta
 	3,  // 1: opentrade.event.CounterJournalEvent.freeze:type_name -> opentrade.event.FreezeEvent
 	4,  // 2: opentrade.event.CounterJournalEvent.unfreeze:type_name -> opentrade.event.UnfreezeEvent
 	5,  // 3: opentrade.event.CounterJournalEvent.settlement:type_name -> opentrade.event.SettlementEvent
 	6,  // 4: opentrade.event.CounterJournalEvent.transfer:type_name -> opentrade.event.TransferEvent
 	7,  // 5: opentrade.event.CounterJournalEvent.order_status:type_name -> opentrade.event.OrderStatusEvent
 	8,  // 6: opentrade.event.CounterJournalEvent.cancel_req:type_name -> opentrade.event.CancelRequested
-	10, // 7: opentrade.event.FreezeEvent.side:type_name -> opentrade.event.Side
-	11, // 8: opentrade.event.FreezeEvent.order_type:type_name -> opentrade.event.OrderType
-	12, // 9: opentrade.event.FreezeEvent.tif:type_name -> opentrade.event.TimeInForce
-	1,  // 10: opentrade.event.FreezeEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
-	1,  // 11: opentrade.event.UnfreezeEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
-	10, // 12: opentrade.event.SettlementEvent.side:type_name -> opentrade.event.Side
-	1,  // 13: opentrade.event.SettlementEvent.base_balance_after:type_name -> opentrade.event.BalanceSnapshot
-	1,  // 14: opentrade.event.SettlementEvent.quote_balance_after:type_name -> opentrade.event.BalanceSnapshot
-	0,  // 15: opentrade.event.TransferEvent.type:type_name -> opentrade.event.TransferEvent.TransferType
-	1,  // 16: opentrade.event.TransferEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
-	13, // 17: opentrade.event.OrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
-	13, // 18: opentrade.event.OrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
-	14, // 19: opentrade.event.OrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	9,  // 7: opentrade.event.CounterJournalEvent.order_evicted:type_name -> opentrade.event.OrderEvictedEvent
+	11, // 8: opentrade.event.FreezeEvent.side:type_name -> opentrade.event.Side
+	12, // 9: opentrade.event.FreezeEvent.order_type:type_name -> opentrade.event.OrderType
+	13, // 10: opentrade.event.FreezeEvent.tif:type_name -> opentrade.event.TimeInForce
+	1,  // 11: opentrade.event.FreezeEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
+	1,  // 12: opentrade.event.UnfreezeEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
+	11, // 13: opentrade.event.SettlementEvent.side:type_name -> opentrade.event.Side
+	1,  // 14: opentrade.event.SettlementEvent.base_balance_after:type_name -> opentrade.event.BalanceSnapshot
+	1,  // 15: opentrade.event.SettlementEvent.quote_balance_after:type_name -> opentrade.event.BalanceSnapshot
+	0,  // 16: opentrade.event.TransferEvent.type:type_name -> opentrade.event.TransferEvent.TransferType
+	1,  // 17: opentrade.event.TransferEvent.balance_after:type_name -> opentrade.event.BalanceSnapshot
+	14, // 18: opentrade.event.OrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
+	14, // 19: opentrade.event.OrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
+	15, // 20: opentrade.event.OrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
+	14, // 21: opentrade.event.OrderEvictedEvent.final_status:type_name -> opentrade.event.InternalOrderStatus
+	22, // [22:22] is the sub-list for method output_type
+	22, // [22:22] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_event_counter_journal_proto_init() }
@@ -1147,6 +1273,7 @@ func file_event_counter_journal_proto_init() {
 		(*CounterJournalEvent_Transfer)(nil),
 		(*CounterJournalEvent_OrderStatus)(nil),
 		(*CounterJournalEvent_CancelReq)(nil),
+		(*CounterJournalEvent_OrderEvicted)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1154,7 +1281,7 @@ func file_event_counter_journal_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_counter_journal_proto_rawDesc), len(file_event_counter_journal_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
