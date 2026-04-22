@@ -299,3 +299,136 @@ func TestShadow_StateTypeCompatibility(t *testing.T) {
 		t.Fatal("State() must be non-nil on a fresh engine")
 	}
 }
+
+// TestShadow_RestoreFromSnapshotRoundTrip exercises the
+// Apply → Capture → RestoreFromSnapshot → Apply cycle that
+// pipeline restarts go through. The post-restore engine must
+// resume from the captured watermark and continue to produce
+// identical state for subsequent events.
+func TestShadow_RestoreFromSnapshotRoundTrip(t *testing.T) {
+	a := New(3)
+	// Seed a few events.
+	deposit := &eventpb.CounterJournalEvent{
+		CounterSeqId: 1,
+		Payload: &eventpb.CounterJournalEvent_Transfer{
+			Transfer: &eventpb.TransferEvent{
+				UserId: "u1", TransferId: "tx-1", Asset: "USDT", Amount: "100",
+				Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
+				BalanceAfter: &eventpb.BalanceSnapshot{
+					UserId: "u1", Asset: "USDT",
+					Available: "100", Frozen: "0", Version: 1,
+				},
+			},
+		},
+	}
+	checkpoint := &eventpb.CounterJournalEvent{
+		CounterSeqId: 2,
+		Payload: &eventpb.CounterJournalEvent_TeCheckpoint{
+			TeCheckpoint: &eventpb.TECheckpointEvent{TePartition: 3, TeOffset: 777},
+		},
+	}
+	if err := a.Apply(deposit, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Apply(checkpoint, 11); err != nil {
+		t.Fatal(err)
+	}
+	snap := a.Capture(1)
+	a.ClearEventsSinceLastSnapshot()
+
+	// New engine restores.
+	b := New(3)
+	if err := b.RestoreFromSnapshot(snap); err != nil {
+		t.Fatalf("RestoreFromSnapshot: %v", err)
+	}
+	if b.CounterSeq() != 2 {
+		t.Fatalf("restored counterSeq = %d, want 2", b.CounterSeq())
+	}
+	if b.NextJournalOffset() != 12 {
+		t.Fatalf("restored NextJournalOffset = %d, want 12", b.NextJournalOffset())
+	}
+	_, off := b.TeWatermark()
+	if off != 777 {
+		t.Fatalf("restored teWatermark = %d, want 777", off)
+	}
+	if b.EventsSinceLastSnapshot() != 0 {
+		t.Fatalf("restored events counter = %d, want 0", b.EventsSinceLastSnapshot())
+	}
+	if bal := b.State().Balance("u1", "USDT"); bal.Available.String() != "100" {
+		t.Fatalf("restored u1 USDT available = %s, want 100", bal.Available)
+	}
+
+	// Apply a further event — engine b should behave identically
+	// to engine a continuing from the same point.
+	freeze := &eventpb.CounterJournalEvent{
+		CounterSeqId: 3,
+		Payload: &eventpb.CounterJournalEvent_Freeze{
+			Freeze: &eventpb.FreezeEvent{
+				UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",
+				Side:         eventpb.Side_SIDE_BUY,
+				OrderType:    eventpb.OrderType_ORDER_TYPE_LIMIT,
+				Price:        "50000", Qty: "0.001",
+				FreezeAsset: "USDT", FreezeAmount: "50",
+				BalanceAfter: &eventpb.BalanceSnapshot{
+					UserId: "u1", Asset: "USDT",
+					Available: "50", Frozen: "50", Version: 2,
+				},
+			},
+		},
+	}
+	if err := b.Apply(freeze, 12); err != nil {
+		t.Fatal(err)
+	}
+	// Apply the same event on engine a (for comparison).
+	if err := a.Apply(freeze, 12); err != nil {
+		t.Fatal(err)
+	}
+	if b.CounterSeq() != a.CounterSeq() {
+		t.Fatalf("post-restore counterSeq diverged: a=%d b=%d", a.CounterSeq(), b.CounterSeq())
+	}
+	if b.NextJournalOffset() != a.NextJournalOffset() {
+		t.Fatalf("post-restore NextJournalOffset diverged: a=%d b=%d", a.NextJournalOffset(), b.NextJournalOffset())
+	}
+	if b.State().Balance("u1", "USDT").Available.String() != "50" {
+		t.Fatal("post-restore balance diverged from a")
+	}
+	if b.State().Orders().Get(42) == nil {
+		t.Fatal("post-restore order 42 missing")
+	}
+}
+
+// TestShadow_RestoreFromSnapshotRejectsNonEmpty guards the
+// invariant: RestoreFromSnapshot must run on a fresh engine
+// (RestoreState errors on non-empty state). This prevents a
+// subtle bug where a pipeline accidentally restores an already-
+// active engine.
+func TestShadow_RestoreFromSnapshotRejectsNonEmpty(t *testing.T) {
+	e := New(0)
+	deposit := &eventpb.CounterJournalEvent{
+		CounterSeqId: 1,
+		Payload: &eventpb.CounterJournalEvent_Transfer{
+			Transfer: &eventpb.TransferEvent{
+				UserId: "u1", TransferId: "tx-1", Asset: "USDT", Amount: "1",
+				Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
+				BalanceAfter: &eventpb.BalanceSnapshot{
+					UserId: "u1", Asset: "USDT", Available: "1",
+				},
+			},
+		},
+	}
+	_ = e.Apply(deposit, 1)
+	snap := e.Capture(1)
+	if err := e.RestoreFromSnapshot(snap); err == nil {
+		t.Fatal("expected RestoreFromSnapshot to reject non-empty state")
+	}
+}
+
+// TestShadow_RestoreFromSnapshotNilRejected guards the nil case
+// explicitly — pipeline shouldn't silently start fresh just
+// because Load returned nil.
+func TestShadow_RestoreFromSnapshotNilRejected(t *testing.T) {
+	e := New(0)
+	if err := e.RestoreFromSnapshot(nil); err == nil {
+		t.Fatal("expected RestoreFromSnapshot(nil) to error")
+	}
+}

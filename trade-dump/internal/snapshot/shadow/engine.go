@@ -68,14 +68,51 @@ type Engine struct {
 }
 
 // New constructs a fresh ShadowEngine for vshardID. state is always
-// freshly allocated; callers that restore from a prior snapshot
-// must call RestoreFromSnapshot (future M3) after New.
+// freshly allocated; callers that need to resume from a prior
+// snapshot call RestoreFromSnapshot after New.
 func New(vshardID int) *Engine {
 	return &Engine{
 		vshardID:             vshardID,
 		state:                engine.NewShardState(vshardID),
 		teWatermarkPartition: int32(vshardID),
 	}
+}
+
+// RestoreFromSnapshot seeds the engine from a previously captured
+// snapshot so pipeline restarts resume at the last durable point
+// without replaying journal from offset 0. MUST be called before
+// any Apply — RestoreState requires empty state and the
+// pipeline-managed watermark fields are overwritten wholesale.
+//
+// On return the engine's invariants line up with Engine.Capture's
+// contract: NextJournalOffset is snap.JournalOffset, teWatermark is
+// the largest offset in snap.Offsets (falls back to zero if
+// absent), counterSeq is snap.CounterSeq. The pipeline seeks its
+// Kafka consumer to NextJournalOffset to resume.
+func (e *Engine) RestoreFromSnapshot(snap *snapshotpkg.ShardSnapshot) error {
+	if snap == nil {
+		return fmt.Errorf("shadow: RestoreFromSnapshot: nil snap")
+	}
+	if err := snapshotpkg.RestoreState(e.vshardID, e.state, snap); err != nil {
+		return fmt.Errorf("shadow: RestoreState: %w", err)
+	}
+	e.counterSeq = snap.CounterSeq
+	e.nextJournalOffset = snap.JournalOffset
+	// Pick the te_watermark from snap.Offsets. Post-ADR-0058 there
+	// is exactly one entry (vshard ↔ partition 1:1), but we defend
+	// against future re-sharding by taking the max offset across
+	// any entries that match the vshard's partition; otherwise the
+	// first matching entry wins.
+	e.teWatermark = 0
+	e.teWatermarkPartition = int32(e.vshardID)
+	for _, off := range snap.Offsets {
+		if off.Partition == int32(e.vshardID) && off.Offset > e.teWatermark {
+			e.teWatermark = off.Offset
+			e.teWatermarkPartition = off.Partition
+		}
+	}
+	e.eventsSinceLastSnapshot = 0
+	return nil
 }
 
 // VShardID returns the vshard this engine mirrors.

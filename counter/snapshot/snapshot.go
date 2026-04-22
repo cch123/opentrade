@@ -353,6 +353,37 @@ func CaptureFromState(
 // start the trade consumer at AtStart which equates to one full rescan
 // guarded by existing dedup / shard_seq idempotency.
 func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, snap *ShardSnapshot) error {
+	if err := RestoreState(shardID, state, snap); err != nil {
+		return err
+	}
+	seq.SetCounterSeq(snap.CounterSeq)
+	// Restore the legacy dedup.Table only so pre-ring snapshots still load
+	// without losing their entries in case operators re-export. Service is
+	// no longer reading from dt for Transfer idempotency (ADR-0048 backlog
+	// item 4 方案 A).
+	if len(snap.Dedup) > 0 {
+		entries := make([]dedup.Entry, 0, len(snap.Dedup))
+		for _, e := range snap.Dedup {
+			entries = append(entries, dedup.Entry{
+				Key:       e.Key,
+				Value:     nil, // tombstone
+				ExpiresAt: time.UnixMilli(e.ExpiresUnix),
+			})
+		}
+		dt.Restore(entries)
+	}
+	return nil
+}
+
+// RestoreState is the shadow-engine-friendly variant of Restore
+// (ADR-0061 M3). It drops the legacy dedup.Table + sequencer handling
+// — shadow engine tracks counter_seq engine-locally and never
+// populates the legacy dedup table — but otherwise rebuilds
+// ShardState bit-for-bit from snap.
+//
+// state MUST be empty; caller owns concurrency (pipeline calls
+// before any Apply goroutine starts).
+func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) error {
 	if snap == nil {
 		return fmt.Errorf("snapshot is nil")
 	}
@@ -376,33 +407,15 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			if err != nil {
 				return fmt.Errorf("account %s %s frozen: %w", as.UserID, bs.Asset, err)
 			}
-			// Apply a synthetic deposit-like write directly through Account.
-			// We intentionally bypass ApplyTransfer since this is restore, not
-			// a normal state transition. Pass through Version so the
-			// per-asset counter survives restart (ADR-0048 backlog: 双层
-			// version 方案 B). Missing Version in an older snapshot file
-			// decodes as 0, which is the correct cold-start value.
 			putBalance(acc, bs.Asset, engine.Balance{
 				Available: available,
 				Frozen:    frozen,
 				Version:   bs.Version,
 			})
 		}
-		// Restore the per-symbol match_seq guard. Empty map for v1 snapshots
-		// and for brand-new accounts — handlers treat missing entries as
-		// zero, which lets the first event through and primes the guard.
 		acc.RestoreMatchSeq(as.LastMatchSeq)
-		// Restore the user-level version counter. Same semantics as above:
-		// missing field decodes as 0.
 		acc.RestoreVersion(as.Version)
-		// Restore the recent-transfer ring (ADR-0048 backlog item 4).
-		// Missing / empty slice in older snapshots yields an empty ring,
-		// at which point any never-seen transfer_id flows through.
 		acc.RestoreRecentTransferIDs(as.RecentTransferIDs)
-		// Restore the recent-terminated-orders ring (ADR-0062). Missing
-		// / empty in pre-0062 snapshots yields an empty ring, which is
-		// semantically correct — on rollout the first wave of evictions
-		// will rebuild it naturally.
 		if len(as.RecentTerminatedOrders) > 0 {
 			entries := make([]engine.TerminatedOrderEntry, 0, len(as.RecentTerminatedOrders))
 			for _, t := range as.RecentTerminatedOrders {
@@ -416,23 +429,6 @@ func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer
 			}
 			acc.RestoreRecentTerminated(entries)
 		}
-	}
-	seq.SetCounterSeq(snap.CounterSeq)
-
-	// Restore the legacy dedup.Table only so pre-ring snapshots still load
-	// without losing their entries in case operators re-export. Service is
-	// no longer reading from dt for Transfer idempotency (ADR-0048 backlog
-	// item 4 方案 A).
-	if len(snap.Dedup) > 0 {
-		entries := make([]dedup.Entry, 0, len(snap.Dedup))
-		for _, e := range snap.Dedup {
-			entries = append(entries, dedup.Entry{
-				Key:       e.Key,
-				Value:     nil, // tombstone
-				ExpiresAt: time.UnixMilli(e.ExpiresUnix),
-			})
-		}
-		dt.Restore(entries)
 	}
 	for _, os := range snap.Orders {
 		price, err := dec.Parse(os.Price)
