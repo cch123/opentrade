@@ -852,12 +852,21 @@ ADR-0061 pipeline 是**单 Run goroutine 多路复用 256 vshard**。如果 Run 
 
 ### 分阶段落地
 
-| Milestone | 内容 | 状态 |
-|---|---|---|
-| M1 | trade-dump 新增 `TakeSnapshot` gRPC + `WaitAppliedTo` shadow 方法 + housekeeper | pending |
-| M2 | Counter 实现 on-demand 路径 + `--startup-mode=auto` 默认，灰度一个 vshard 观察 | pending |
-| M3 | 全量开启 on-demand，周期 snapshot 放松到 60s | pending |
-| M4 | 撤销 `--startup-mode=legacy` 强制配置选项（保留代码作为 fallback） | pending |
+实施拆成细粒度 milestone,每个一个 commit,每个过一轮 codex review(codex 在 M1a/M1b/M1c-α/M1c-β/M1d/M2c 各自抓到真 bug — P0×1 / P1×1 / P2×5 — 全部配回归测试落地)。
+
+| Milestone | 内容 | 状态 | Commit |
+|---|---|---|---|
+| M1a | `StartupFenceEvent` proto tag 52 + 双 engine apply no-op + forward-compat 测试 | ✅ shipped | [8778e11](https://github.com/cch123/opentrade/commit/8778e11) |
+| M1b | trade-dump gRPC skeleton(`TakeSnapshot` 返回 Unimplemented)+ main.go wire | ✅ shipped | [8cab19f](https://github.com/cch123/opentrade/commit/8cab19f) |
+| M1c-α | Shadow Engine 并发基础(Mutex / publishedOffset / WaitAppliedTo) | ✅ shipped | [6d261ae](https://github.com/cch123/opentrade/commit/6d261ae) |
+| M1c-β | TakeSnapshot 完整实装(EpochTracker / singleflight / semaphore / LEO / Capture / S3 upload) | ✅ shipped | [85c5b65](https://github.com/cch123/opentrade/commit/85c5b65) |
+| M1d | on-demand housekeeper(BlobLister + TTL 扫描 + 自动清理) | ✅ shipped | [aeb968d](https://github.com/cch123/opentrade/commit/aeb968d) |
+| M2a | `TxnProducer.ProduceFenceSentinel` + 纯函数单测 | ✅ shipped | [d9b1fd6](https://github.com/cch123/opentrade/commit/d9b1fd6) |
+| M2b | `tradedumpclient.Client` + `ErrFallback` 分类器 | ✅ shipped | [474832f](https://github.com/cch123/opentrade/commit/474832f) |
+| M2c | Counter `worker.Run` Phase 1/2 + `StartupMode` + manager/main wiring | ✅ shipped | [d4f39d5](https://github.com/cch123/opentrade/commit/d4f39d5) |
+| M2d | Counter 启动路径三个 Prometheus histogram + `OnDemandRPCResultLabel` | ✅ shipped | [caa1efb](https://github.com/cch123/opentrade/commit/caa1efb) |
+| M3 | 周期 snapshot 默认放松到 60s / 60000 events(on-demand 已承担 recovery cursor 职责) | ✅ shipped | [7012587](https://github.com/cch123/opentrade/commit/7012587) |
+| M4 | 撤销 `--startup-mode=legacy` 用户面选项(legacy 路径通过"不配 `--trade-dump-endpoint`"自动触达) | ✅ shipped | [955b6e6](https://github.com/cch123/opentrade/commit/955b6e6) |
 
 ### Runbook 影响
 
