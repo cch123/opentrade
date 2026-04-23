@@ -316,6 +316,151 @@ Phase 3 — 消费 + 对外
 
 Counter A 有 pending txn 时,sentinel produce 阶段会被 franz-go 的 retry loop 拖长(等 broker 完成 abort 写 marker)。worst case 受 `kgo.TransactionTimeout = 10s`(ADR-0058 §4.3)兜底。
 
+#### 3.1 端到端时序图(Counter A crashed,A 留有 pending txn 的场景)
+
+假设 Counter A 生前在 journal partition 5 上写了这些,并在 pending txn 中崩溃:
+
+```
+起点状态 (Counter A crashed before committing offset 100-102)
+
+journal partition 5:
+  offset 98:  A 的业务 event (committed — 属于 A 早前已成功 commit 的 txn)
+  offset 99:  commit marker for offset 98
+  offset 100: A 的业务 event (pending txn,被 crash 打断,未 commit)
+  offset 101: A 的业务 event (同一个 pending txn)
+  offset 102: A 的业务 event (同一个 pending txn)
+  ──────── LEO = 103 ────────
+  LSO = 100  (ReadCommitted 视角,卡在 pending txn 起点)
+
+trade-dump shadow engine (vshard=5, ReadCommitted consumer):
+  applied_offset = 100  (消费到 pending txn 起点就停了,等 decision)
+
+S3:
+  vshard-005.pb  ← 上次周期 snapshot,journal_offset = 95
+```
+
+v2 流程如下(省略 BFF 和下游消费者视角,聚焦 fence + on-demand + install):
+
+```
+Counter B                Kafka partition 5            trade-dump                  S3
+   │                           │                           │                       │
+   │── ① 拿 vshard 锁 ────────────────────────────────────────                    │
+   │                           │                           │                       │
+   │── ② NewTxnProducer ──────▶│  (kgo.NewClient 创建 client,                       │
+   │    franz-go 懒加载         │   不触发 InitProducerID,不 fence,无网络动作)          │
+   │                           │                           │                       │
+   │═══════════════════ Phase 1 开始 (非破坏性,可 fallback) ════════════              │
+   │                           │                           │                       │
+   │── ③ sentinel produce ──────────────────────────────                           │
+   │    BeginTransaction()     │                           │                       │
+   │    Produce(StartupFence)  │                           │                       │
+   │         │                 │                           │                       │
+   │         ├─ franz-go 首次触发 InitProducerID                                     │
+   │         │                 │                           │                       │
+   │         │ ◀── coordinator: "A's txn [100-102] pending                         │
+   │         │      → PrepareAbort → send WriteTxnMarkers(abort)"                  │
+   │         │                 │                           │                       │
+   │         │                 │ offset 103: abort marker ◀─ (by coordinator)      │
+   │         │                 │                           │                       │
+   │         │ ◀── broker: "CompleteAbort done, new epoch = N+1"                   │
+   │         │                 │                           │                       │
+   │         │                 │ offset 104: StartupFence ◀─ (B's sentinel record, │
+   │         │                 │             (pending B's txn)   payload 为 no-op) │
+   │         │                                                                     │
+   │    EndTransaction(commit) │                                                   │
+   │         │                 │ offset 105: commit marker ◀ (acks=AllISR)         │
+   │         │ ◀── success ────┤                                                   │
+   │                           │                                                   │
+   │    ★ LEO = 106 现在稳定 ★ │                                                   │
+   │                           │                                                   │
+   │              (同时,trade-dump Run goroutine 看到 abort marker 103 后,         │
+   │               自动跳过 100-102 的 aborted data,apply 104 (no-op),             │
+   │               consumer position 推进到 106)                                     │
+   │                           │─ fetch ─────────────────▶ │                       │
+   │                           │                           │ shadow.Apply:          │
+   │                           │                           │  offset 100-102 skipped│
+   │                           │                           │  offset 104 no-op      │
+   │                           │                           │  published_offset=106  │
+   │                           │                           │                       │
+   │── ④ gRPC TakeSnapshot(vshard=5, epoch=N+1) ─────────▶ │                       │
+   │                           │                           │                       │
+   │                           │                           │ 2.1 epochTracker 校验:│
+   │                           │                           │   req.epoch=N+1 ≥ last│
+   │                           │                           │   → 接受               │
+   │                           │                           │                       │
+   │                           │                           │ 2.2 Sem.Acquire(1)    │
+   │                           │                           │                       │
+   │                           │                           │ 2.3 singleflight      │
+   │                           │                           │                       │
+   │                           │ ◀── ListEndOffsets ──────│                       │
+   │                           │ ─── LEO = 106 ───────────▶│                       │
+   │                           │                           │                       │
+   │                           │                           │ 2.5 WaitAppliedTo(106)│
+   │                           │                           │   loop: Load>=106 ? OK│
+   │                           │                           │                       │
+   │                           │                           │ 2.6 Capture → bytes   │
+   │                           │                           │ ── upload ────────────▶│
+   │                           │                           │                       │ vshard-005-
+   │                           │                           │                       │ ondemand-
+   │                           │                           │                       │ 17xxx.pb
+   │                           │                           │                       │
+   │ ◀──── Response{key, leo=106, counter_seq} ───────────┤                       │
+   │                           │                           │                       │
+   │── ⑤ 下载 on-demand snap ────────────────────────────────────────────────────▶│
+   │ ◀──── snapshot bytes ───────────────────────────────────────────────────────┤
+   │    parse → freshState / freshSeq / freshOffsets                              │
+   │    (解析成功,Phase 1 结束;任一步失败则跳 ⑥' fallback)                            │
+   │                           │                           │                       │
+   │═══════════════════ Phase 2 开始 (原子 install,不可回退) ═════════              │
+   │                           │                           │                       │
+   │── ⑥ atomic install ─────                                                       │
+   │    w.state = freshState                                                        │
+   │    w.seq   = freshSeq                                                          │
+   │    svc     = service.New(freshState, freshSeq, producer, ...)                  │
+   │    svc.SetOffsets(freshOffsets)                                                │
+   │    w.svc   = svc                                                               │
+   │    ↑ 任何一步错误 → return 错误 → worker.Run 退出 → Counter process fatal exit   │
+   │                                                                                │
+   │── ⑦ 启动 trade-event consumer, seek to te_watermark                            │
+   │── ⑧ close(ready) → RPC 对外                                                    │
+   │                           │                           │                       │
+
+⑥' Fallback 路径 (仅 Phase 1 失败进入):
+   - Load legacy snap (S3: vshard-005.pb, journal_offset=95)
+   - freshState.Restore(legacySnap)        (fresh parse,不污染 worker)
+   - Phase 2 install (同 ⑥,原子 install 成功才继续)
+   - catchUpJournal(95 → end)              (ADR-0060 §4.2 原流程,
+                                             会消费到 StartupFenceEvent 并 no-op)
+   - ⑦ + ⑧ 同上
+```
+
+**barrier 的三重作用**(集中在 offset 104 的 StartupFenceEvent 这一条 record 上):
+
+1. **触发 InitProducerID**(barrier 的副作用):franz-go 懒加载 InitProducerID 被首次 Produce 调起,broker 借机 fence 老 A 并写 abort marker (offset 103)
+2. **作为物理 marker**(barrier 自身):trade-dump 读到这条就知道 "A 的所有未决状态已经定案"
+3. **顶住 LEO**(barrier 之后的副作用):commit marker (offset 105) 让 LEO = 106 稳定,trade-dump 的 LEO 查询有确定的等待终点
+
+shadow engine 对 StartupFenceEvent 的 `Apply` 是 **no-op**(不改 ShardState、不改 counterSeq),它的价值完全在"存在本身"。
+
+#### 3.2 被 abort 的 pending record 的处置
+
+Counter A crash 时遗留在 partition 里的 offset 100-102 这三条 record,sentinel produce 完成后的状态:
+
+- **物理层**:bytes 仍在 partition 的 log segment 里,不会立刻删除;segment retention(时间或大小)到期才随 segment 一起 GC
+- **逻辑层**(ReadCommitted consumer):**完全不可见**。fetch response 携带 `aborted_transactions: [{producer_id: A, first_offset: 100}]`,franz-go 客户端自动过滤这几条 record,不交给应用层 `Apply`。shadow engine 从未看到过它们
+- **consumer position**:直接从 100 跳到 104(跳过 aborted records 和 abort marker),position = 106
+
+**对业务的含义**:假设这几条是 `FreezeEvent`(A 处理 PlaceOrder 产生的):
+
+- A 生前在内存里冻结了资金,但这次冻结**从未被 commit**
+- Counter B 从 trade-dump shadow 恢复的 state 里,这次冻结**不存在**
+- BFF 之前发给 A 的 PlaceOrder 调用要么超时要么收到 `Unavailable` 错误
+- 客户端必须用幂等 key 重试(ADR-0048 / ADR-0057 的 `client_order_id` + `counter_seq` dedup),重试打到 Counter B,B 会重新处理产出新的、这次真的 commit 的 FreezeEvent
+
+这是标准 Kafka 事务的 exactly-once 语义落在 Counter 上的表现:**aborted = 从未发生**,客户端幂等重试覆盖 "A 崩溃时丢了那次 RPC" 的缺口。
+
+**隐性约束**:OpenTrade 内**禁止** ReadUncommitted consumer 消费 counter-journal。ReadUncommitted 会看到 aborted records 并误 apply,破坏幂等性。此约束写入 §实施约束.Kafka 相关。
+
 ### 4. Fallback 触发条件与重试策略
 
 | 条件 | 行为 |
@@ -617,6 +762,7 @@ ADR-0061 pipeline 是**单 Run goroutine 多路复用 256 vshard**。如果 Run 
   ```
 - `kgo.TransactionTimeout = 10s`(ADR-0058 §4.3)不变,仅兜底被动 abort
 - producer `transactional.id` 沿用 ADR-0058 的 `counter-vshard-{id}`
+- **所有 counter-journal consumer 必须用 `ReadCommitted` isolation level**(包括 trade-dump shadow consumer、counter 自己的 fallback catchUpJournal consumer、未来任何新增的 consumer)。`ReadUncommitted` 会看到 aborted record,误 apply 后 idempotency 保证失效(详见 §3.2)。code review 需要强制这条
 - franz-go 行为引用:[txn.go:901-904 anyAdded short-circuit](/Users/xargin/go/pkg/mod/github.com/twmb/franz-go@v1.18.0/pkg/kgo/txn.go:901)、[txn.go:998 doWithConcurrentTransactions](/Users/xargin/go/pkg/mod/github.com/twmb/franz-go@v1.18.0/pkg/kgo/txn.go:998)
 
 ### Counter 改动
