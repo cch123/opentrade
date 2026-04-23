@@ -101,9 +101,14 @@ type TakeSnapshotResponse struct {
 	// Housekept by trade-dump (delete after 1h) — Counter reads once
 	// and does not cache.
 	SnapshotKey string `protobuf:"bytes,1,opt,name=snapshot_key,json=snapshotKey,proto3" json:"snapshot_key,omitempty"`
-	// leo is the counter-journal partition LEO the snapshot is aligned
-	// to. Counter uses this as the authoritative JournalOffset when
-	// restoring (no local catchUpJournal needed on the on-demand path).
+	// leo is the counter-journal cursor the snapshot is actually
+	// aligned to == snapshot.ShardSnapshot.JournalOffset. Equal to
+	// the partition LEO queried at request time when the pipeline's
+	// Apply cursor has settled, slightly ahead when pipeline Apply
+	// advanced between WaitAppliedTo returning and Capture acquiring
+	// the shadow mutex. Counter uses it as the authoritative
+	// JournalOffset when restoring (no local catchUpJournal on the
+	// on-demand path).
 	Leo int64 `protobuf:"varint,2,opt,name=leo,proto3" json:"leo,omitempty"`
 	// counter_seq is the highest counter_seq_id observed by the shadow
 	// engine for this vshard at snapshot time. Counter seeds its

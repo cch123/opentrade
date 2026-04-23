@@ -367,6 +367,20 @@ func (p *Pipeline) getSavingFlag(part int32) *atomic.Bool {
 	return actual.(*atomic.Bool)
 }
 
-// Engines is a read-only view for tests / diagnostics. Not safe
-// during Run (engines are mutated there).
+// Engines is a read-only view for tests / diagnostics. The returned
+// map itself is populated in Start and not mutated afterward, so
+// concurrent access is safe; the *shadow.Engine values carry their
+// own internal synchronisation (ADR-0064 M1c-α mutex + atomic
+// cursor).
 func (p *Pipeline) Engines() map[int32]*shadow.Engine { return p.engines }
+
+// ShadowEngine returns the shadow engine for vshard (== Kafka
+// partition id) and ok=true if this pipeline owns it, else (nil,
+// false). ADR-0064 on-demand snapshot handler
+// (snapshotrpc.TakeSnapshot) uses this to reach the per-vshard
+// atomic cursor and Capture path without holding a reference to
+// the full engines map. Safe to call from any goroutine.
+func (p *Pipeline) ShadowEngine(vshard int32) (*shadow.Engine, bool) {
+	eng, ok := p.engines[vshard]
+	return eng, ok
+}

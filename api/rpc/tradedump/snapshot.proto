@@ -82,9 +82,14 @@ message TakeSnapshotResponse {
   // and does not cache.
   string snapshot_key = 1;
 
-  // leo is the counter-journal partition LEO the snapshot is aligned
-  // to. Counter uses this as the authoritative JournalOffset when
-  // restoring (no local catchUpJournal needed on the on-demand path).
+  // leo is the counter-journal cursor the snapshot is actually
+  // aligned to == snapshot.ShardSnapshot.JournalOffset. Equal to
+  // the partition LEO queried at request time when the pipeline's
+  // Apply cursor has settled, slightly ahead when pipeline Apply
+  // advanced between WaitAppliedTo returning and Capture acquiring
+  // the shadow mutex. Counter uses it as the authoritative
+  // JournalOffset when restoring (no local catchUpJournal on the
+  // on-demand path).
   int64 leo = 2;
 
   // counter_seq is the highest counter_seq_id observed by the shadow

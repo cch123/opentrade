@@ -29,6 +29,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -84,6 +86,17 @@ type Config struct {
 	// Default :8088 (chosen to avoid clashing with counter :8081,
 	// admin-gateway :8090).
 	GRPCAddr string
+
+	// OnDemandConcurrency bounds concurrent in-flight TakeSnapshot
+	// requests across all vshards on this instance (ADR-0064 §2.2
+	// whole-host restart protection). Default 16.
+	OnDemandConcurrency int
+
+	// OnDemandWaitApplyTimeout bounds the per-request wait for
+	// shadow to apply up to the partition's LEO. Default 2s.
+	// Counter's overall RPC deadline is 3s so this leaves ~1s for
+	// LEO query + Capture + upload.
+	OnDemandWaitApplyTimeout time.Duration
 
 	Env      string
 	LogLevel string
@@ -273,24 +286,28 @@ func main() {
 
 	// ---------------- gRPC server (ADR-0064 on-demand snapshot) ----------------
 	//
-	// Only started when the snap pipeline is running. Rationale
-	// (codex review catch, ADR-0064 M1b):
+	// Started only when the snap pipeline is running: the handler
+	// reaches into the pipeline's per-vshard shadow engines, so
+	// sql-only replicas would at best return Unimplemented and at
+	// worst (if Counter LB'd onto them) silently defeat the latency
+	// win by forcing fallback. Empty --grpc-addr disables the
+	// server even on snap replicas (single-process dev / tests).
 	//
-	//   - The TakeSnapshot handler fundamentally depends on the
-	//     shadow engine (ADR-0061). An sql-only trade-dump replica
-	//     has no shadow state to capture, so any client call would
-	//     at best return Unimplemented (M1b) or a stub error (M1c+).
-	//   - If sql-only replicas bind the same advertised port, a
-	//     Counter client load-balanced onto one would always take
-	//     the legacy fallback path even when a snap-capable replica
-	//     is healthy. That silently defeats the latency win.
-	//   - sql-only replicas should also not fail hard just because
-	//     `:8088` happens to be held by something else on the host.
-	//
-	// Empty --grpc-addr disables the server even on snap replicas
-	// (for single-process dev / tests that don't need the RPC).
+	// Dependency wiring (M1c):
+	//   - Shadow: the live pipeline (owns 256 engines, ShadowEngine
+	//     returns the engine keyed by counter-journal partition).
+	//   - Admin: a dedicated kadm.Client backed by its own kgo
+	//     client so LEO queries don't contend with the pipeline's
+	//     consumer hot path.
+	//   - BlobStore: shared with the pipeline so periodic + on-
+	//     demand snapshots live in one key-space (housekeeper
+	//     M1d scans it for cleanup).
+	//   - KeyPrefix: matches the SnapshotKeyFormat root (no prefix
+	//     in the default pipeline config — on-demand keys live
+	//     alongside "vshard-NNN.pb" as "vshard-NNN-ondemand-*.pb").
 	var grpcSrv *grpc.Server
 	grpcDone := make(chan struct{})
+	var grpcAdminClient *kgo.Client
 	switch {
 	case !wantSnap:
 		close(grpcDone)
@@ -298,20 +315,53 @@ func main() {
 	case cfg.GRPCAddr == "":
 		close(grpcDone)
 		logger.Info("grpc server disabled (--grpc-addr empty)")
+	case snapPipe == nil:
+		// Defensive: snap pipeline init failed earlier. We'd have
+		// fatal'd already, but keep the invariant explicit.
+		close(grpcDone)
+		logger.Warn("grpc server disabled (snap pipeline not constructed)")
 	default:
+		// Dedicated admin client — separate from pipeline's consumer
+		// so ListEndOffsets traffic is isolated. Closed during
+		// shutdown after GracefulStop drains handler goroutines.
+		grpcAdminClient, err = kgo.NewClient(
+			kgo.SeedBrokers(cfg.Brokers...),
+			kgo.ClientID(cfg.InstanceID+"-ondemand-admin"),
+		)
+		if err != nil {
+			logger.Fatal("grpc admin kgo.NewClient", zap.Error(err))
+		}
+		admin := snapshotrpc.NewKafkaAdminClient(kadm.NewClient(grpcAdminClient))
+
+		store, err := newSnapshotStore(rootCtx, cfg, logger)
+		if err != nil {
+			logger.Fatal("grpc snapshot store init", zap.Error(err))
+		}
+
 		lis, err := net.Listen("tcp", cfg.GRPCAddr)
 		if err != nil {
 			logger.Fatal("grpc listen", zap.Error(err), zap.String("addr", cfg.GRPCAddr))
 		}
 		grpcSrv = grpc.NewServer()
 		tradedumprpc.RegisterTradeDumpSnapshotServer(grpcSrv, snapshotrpc.New(snapshotrpc.Config{
-			Logger: logger,
+			Logger:           logger,
+			Shadow:           snapPipe,
+			Admin:            admin,
+			BlobStore:        store,
+			JournalTopic:     cfg.JournalTopic,
+			KeyPrefix:        cfg.SnapshotS3Prefix, // empty for fs backend; S3 uses the same prefix as periodic
+			Concurrency:      cfg.OnDemandConcurrency,
+			WaitApplyTimeout: cfg.OnDemandWaitApplyTimeout,
+			SnapshotFormat:   cfg.SnapshotFormat,
 		}))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer close(grpcDone)
-			logger.Info("grpc listening", zap.String("addr", cfg.GRPCAddr))
+			logger.Info("grpc listening",
+				zap.String("addr", cfg.GRPCAddr),
+				zap.Int("concurrency", cfg.OnDemandConcurrency),
+				zap.Duration("wait_apply_timeout", cfg.OnDemandWaitApplyTimeout))
 			if err := grpcSrv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 				logger.Error("grpc Serve", zap.Error(err))
 				stop()
@@ -324,6 +374,12 @@ func main() {
 	if grpcSrv != nil {
 		grpcSrv.GracefulStop()
 		<-grpcDone
+		// Close the dedicated admin client after Serve returns so
+		// any in-flight ListEndOffsets from draining handlers
+		// completes against a live client.
+		if grpcAdminClient != nil {
+			grpcAdminClient.Close()
+		}
 	}
 	if tradeCons != nil {
 		tradeCons.Close()
@@ -370,10 +426,12 @@ func parseFlags() Config {
 		SnapshotFormat:      snapshotpkg.FormatProto,
 		SnapshotInterval:    10 * time.Second,
 		SnapshotEventCount:  10000,
-		SnapshotSaveTimeout: 30 * time.Second,
-		GRPCAddr:            ":8088",
-		Env:                 "dev",
-		LogLevel:            "info",
+		SnapshotSaveTimeout:      30 * time.Second,
+		GRPCAddr:                 ":8088",
+		OnDemandConcurrency:      16,
+		OnDemandWaitApplyTimeout: 2 * time.Second,
+		Env:                      "dev",
+		LogLevel:                 "info",
 	}
 	var brokersStr, pipelinesStr, snapFmtStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (client id prefix)")
@@ -411,6 +469,8 @@ func parseFlags() Config {
 
 	// gRPC server flags (ADR-0064)
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address for on-demand snapshot (ADR-0064); empty string disables")
+	flag.IntVar(&cfg.OnDemandConcurrency, "ondemand-concurrency", cfg.OnDemandConcurrency, "max concurrent on-demand TakeSnapshot requests (ADR-0064 §2.2)")
+	flag.DurationVar(&cfg.OnDemandWaitApplyTimeout, "ondemand-wait-apply-timeout", cfg.OnDemandWaitApplyTimeout, "per-request budget for shadow to apply up to LEO before DeadlineExceeded (ADR-0064 §2.5)")
 
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
