@@ -219,6 +219,74 @@ func (p *TxnProducer) PublishToVShard(
 	})
 }
 
+// ProduceFenceSentinel writes a single StartupFenceEvent record to
+// this vshard's counter-journal partition inside a Kafka transaction.
+// This is ADR-0064 §3 Phase 1 step ③ — the real-Produce primitive
+// Counter invokes at startup to:
+//
+//  1. Force franz-go's lazy InitProducerID to fire on this
+//     transactional.id, which causes the broker's Transaction
+//     Coordinator to fence the prior owner and write abort markers
+//     for any of their still-pending transactions to this partition.
+//  2. Stabilise the partition LEO so trade-dump's on-demand
+//     WaitAppliedTo has a well-defined target (the commit marker
+//     this EndTransaction produces becomes the anchor LEO advances
+//     past).
+//
+// The record itself is a strict no-op at apply time (shadow engine
+// and Counter engine both treat StartupFenceEvent as no-op, pinned
+// by tests in M1a). Its value is entirely in its physical presence
+// — not in any state transition.
+//
+// Retry semantics (ADR-0060 §3): same as Publish — bounded retry,
+// panic on budget exhaustion. A transient Kafka hiccup at startup
+// is recoverable; a persistent failure aborts Counter boot and the
+// ADR-0058 cluster layer reassigns the vshard.
+//
+// Notes:
+//   - vshardID MUST match this producer's configured vshard; we
+//     cross-check against WriterEpoch / TransactionalID-derived
+//     identity in M2c when we have worker context to compare.
+//   - On return the journalHighOffset mirror is bumped past the
+//     sentinel's offset, so a subsequent snapshot picks a cursor
+//     >= startOffset (inherits Publish's invariant).
+//   - The sentinel's apply path must tolerate nodeID/epoch=0 zero
+//     values too — tests inject those for determinism.
+func (p *TxnProducer) ProduceFenceSentinel(ctx context.Context, vshardID int32) error {
+	evt := buildFenceSentinelEvent(p.cfg.WriterNodeID, p.cfg.WriterEpoch, time.Now().UnixMilli())
+	key := fenceSentinelKey(vshardID)
+	return p.runTxnWithRetry(ctx, "ProduceFenceSentinel", func() error {
+		return p.produceToPartition(ctx, p.cfg.JournalTopic, vshardID, key, evt)
+	})
+}
+
+// buildFenceSentinelEvent is the pure-function shape of the sentinel
+// envelope. Factored out so unit tests can assert the exact proto
+// payload without needing a live kgo.Client.
+func buildFenceSentinelEvent(nodeID string, epoch uint64, tsMs int64) *eventpb.CounterJournalEvent {
+	return &eventpb.CounterJournalEvent{
+		// Sentinels do not allocate a counter_seq (ADR-0064 §1.2).
+		// Shadow engine / Counter engine do NOT advance counterSeq
+		// on this payload — the zero here documents the contract.
+		CounterSeqId: 0,
+		Payload: &eventpb.CounterJournalEvent_StartupFence{
+			StartupFence: &eventpb.StartupFenceEvent{
+				NodeId: nodeID,
+				Epoch:  epoch,
+				TsMs:   tsMs,
+			},
+		},
+	}
+}
+
+// fenceSentinelKey returns the Kafka record key stamped on the
+// sentinel record. Purely for audit / log grep; consumers do not
+// route by this key. Format is fixed-width zero-padded so sorting
+// a raw journal dump keeps startup fences grouped by vshard.
+func fenceSentinelKey(vshardID int32) string {
+	return fmt.Sprintf("vshard-%03d-startup-fence", vshardID)
+}
+
 // Close flushes and closes the underlying kgo client.
 func (p *TxnProducer) Close() { p.cli.Close() }
 
