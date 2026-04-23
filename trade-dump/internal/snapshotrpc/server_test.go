@@ -415,6 +415,36 @@ func TestServer_TakeSnapshot_LEOQueryFailure(t *testing.T) {
 	}
 }
 
+func TestServer_TakeSnapshot_WorkTimeoutBoundsDetachedLEO(t *testing.T) {
+	sh := newStubShadow()
+	eng := sh.addEngine(0)
+	seedApply(t, eng, 1, 0)
+	admin := newStubAdmin()
+	admin.set(0, 1)
+	admin.block.Store(true)
+	blob := newStubBlob()
+	srv := New(Config{
+		Logger:           zap.NewNop(),
+		Shadow:           sh,
+		Admin:            admin,
+		BlobStore:        blob,
+		WaitApplyTimeout: time.Second,
+		WorkTimeout:      30 * time.Millisecond,
+		nowFn:            fixedNow(1_700_000_000_000),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := srv.TakeSnapshot(ctx, &tradedumprpc.TakeSnapshotRequest{
+		VshardId: 0, RequesterEpoch: 1,
+	})
+	if st, _ := status.FromError(err); st.Code() != codes.DeadlineExceeded {
+		t.Fatalf("want DeadlineExceeded from detached work timeout, got %v (msg=%v)", st.Code(), st.Message())
+	}
+	admin.block.Store(false)
+	close(admin.blockC)
+}
+
 // TestServer_TakeSnapshot_WaitApplyTimeout fires when shadow does
 // not catch up to LEO within WaitApplyTimeout. Maps to
 // DeadlineExceeded.

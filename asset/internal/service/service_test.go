@@ -14,10 +14,10 @@ import (
 )
 
 type fakePub struct {
-	mu       sync.Mutex
-	events   []*eventpb.AssetJournalEvent
-	seq      uint64
-	publish  error // if non-nil, Publish returns this
+	mu      sync.Mutex
+	events  []*eventpb.AssetJournalEvent
+	seq     uint64
+	publish error // if non-nil, Publish returns this
 }
 
 func (f *fakePub) Publish(_ context.Context, _ string, evt *eventpb.AssetJournalEvent) error {
@@ -147,6 +147,31 @@ func TestTransferIn_Duplicated(t *testing.T) {
 	defer pub.mu.Unlock()
 	if len(pub.events) != 1 {
 		t.Errorf("duplicate should not re-publish: %d events", len(pub.events))
+	}
+}
+
+func TestTransferIn_PublishFailureDoesNotCommit(t *testing.T) {
+	svc, pub := newSvc(t)
+	pub.publish = errors.New("kafka down")
+	req := holder("u1", "saga-1", "USDT", "50", t)
+
+	if _, err := svc.TransferIn(context.Background(), req); err == nil {
+		t.Fatal("expected publish error")
+	}
+	if got := svc.QueryFundingBalance("u1", "USDT")[0].Balance.Available; !got.IsZero() {
+		t.Fatalf("balance committed despite failed publish: %s", got)
+	}
+
+	pub.publish = nil
+	res, err := svc.TransferIn(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retry after failed publish: %v", err)
+	}
+	if res.Status != StatusConfirmed {
+		t.Fatalf("retry status = %v, want confirmed", res.Status)
+	}
+	if got := svc.QueryFundingBalance("u1", "USDT")[0].Balance.Available.String(); got != "50" {
+		t.Fatalf("balance after retry = %s, want 50", got)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 )
@@ -37,8 +38,8 @@ func (f *fakeStub) TakeSnapshot(
 	_ ...grpc.CallOption,
 ) (*tradedumprpc.TakeSnapshotResponse, error) {
 	f.calls.Add(1)
-	reqCopy := *req
-	f.lastReq.Store(&reqCopy)
+	reqCopy := proto.Clone(req).(*tradedumprpc.TakeSnapshotRequest)
+	f.lastReq.Store(reqCopy)
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
@@ -254,4 +255,3 @@ func TestDial_InsecureCredentialsImport(t *testing.T) {
 	// build / dep regressions.
 	_ = insecure.NewCredentials()
 }
-

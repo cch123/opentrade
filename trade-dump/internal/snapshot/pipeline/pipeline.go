@@ -1,8 +1,8 @@
 // Package pipeline is trade-dump's ADR-0061 snapshot pipeline.
 //
-// One Pipeline instance consumes every counter-journal partition
-// (assign mode, no consumer group) and maintains one ShadowEngine
-// per vshard. For each record:
+// One Pipeline instance consumes its explicitly-owned counter-journal
+// partitions (assign mode, no consumer group) and maintains one ShadowEngine
+// per owned vshard. For each record:
 //
 //  1. Decode the CounterJournalEvent.
 //  2. engine.Apply (advances shadow state and engine-local
@@ -20,7 +20,7 @@
 // deployment).
 //
 // Threading model (ADR-0061 §4.2): a single Run goroutine owns all
-// per-vshard ShadowEngine state, so Apply and Capture are
+// local per-vshard ShadowEngine state, so Apply and Capture are
 // trivially serialised. Save runs on a background goroutine per
 // vshard — at most one save in flight per vshard (new triggers
 // skip if busy) so we never race the blob store key overwrite.
@@ -59,9 +59,15 @@ type Config struct {
 	JournalTopic string
 
 	// VShardCount is how many vshards the cluster is running. ONE
-	// ShadowEngine is constructed per vshard; record.Partition is
+	// ShadowEngine is constructed per owned vshard; record.Partition is
 	// the vshard id (ADR-0058 §2a).
 	VShardCount int
+
+	// OwnedVShards limits this instance to a subset of vshards. Empty means
+	// own every vshard (single-instance/dev mode). Multi-instance deployments
+	// must pass disjoint subsets so two processes never race to overwrite the
+	// same snapshot key.
+	OwnedVShards []int
 
 	// Store is the blob store snapshots land in. Required; usually
 	// an S3 or FS implementation shared with Counter's reader.
@@ -129,6 +135,7 @@ type Pipeline struct {
 	// started / closed gate Start and Close so they're idempotent.
 	started atomic.Bool
 	closed  atomic.Bool
+	owned   []int
 }
 
 // New validates cfg and returns a Pipeline ready for Start.
@@ -168,12 +175,40 @@ func New(cfg Config) (*Pipeline, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
 	}
+	owned, err := normalizeOwnedVShards(cfg.VShardCount, cfg.OwnedVShards)
+	if err != nil {
+		return nil, err
+	}
 	return &Pipeline{
 		cfg:            cfg,
 		logger:         cfg.Logger.With(zap.String("component", "snapshot-pipeline")),
-		engines:        make(map[int32]*shadow.Engine, cfg.VShardCount),
-		lastSnapshotAt: make(map[int32]time.Time, cfg.VShardCount),
+		engines:        make(map[int32]*shadow.Engine, len(owned)),
+		lastSnapshotAt: make(map[int32]time.Time, len(owned)),
+		owned:          owned,
 	}, nil
+}
+
+func normalizeOwnedVShards(vshardCount int, owned []int) ([]int, error) {
+	if len(owned) == 0 {
+		out := make([]int, vshardCount)
+		for v := 0; v < vshardCount; v++ {
+			out[v] = v
+		}
+		return out, nil
+	}
+	out := make([]int, 0, len(owned))
+	seen := make(map[int]struct{}, len(owned))
+	for _, v := range owned {
+		if v < 0 || v >= vshardCount {
+			return nil, fmt.Errorf("pipeline: owned vshard %d outside [0,%d)", v, vshardCount)
+		}
+		if _, ok := seen[v]; ok {
+			return nil, fmt.Errorf("pipeline: duplicate owned vshard %d", v)
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // Start primes every vshard's ShadowEngine from the blob store (if
@@ -190,9 +225,9 @@ func (p *Pipeline) Start(ctx context.Context) error {
 		return errors.New("pipeline: Start already called")
 	}
 
-	partitionOffsets := make(map[int32]kgo.Offset, p.cfg.VShardCount)
+	partitionOffsets := make(map[int32]kgo.Offset, len(p.owned))
 	startedAt := time.Now()
-	for v := 0; v < p.cfg.VShardCount; v++ {
+	for _, v := range p.owned {
 		part := int32(v)
 		eng := shadow.New(v)
 		p.engines[part] = eng
@@ -382,6 +417,13 @@ func (p *Pipeline) getSavingFlag(part int32) *atomic.Bool {
 // own internal synchronisation (ADR-0064 M1c-α mutex + atomic
 // cursor).
 func (p *Pipeline) Engines() map[int32]*shadow.Engine { return p.engines }
+
+// OwnedVShards returns the vshard ids this pipeline instance consumes.
+func (p *Pipeline) OwnedVShards() []int {
+	out := make([]int, len(p.owned))
+	copy(out, p.owned)
+	return out
+}
 
 // ShadowEngine returns the shadow engine for vshard (== Kafka
 // partition id) and ok=true if this pipeline owns it, else (nil,

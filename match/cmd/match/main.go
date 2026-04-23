@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -62,13 +63,13 @@ type Config struct {
 	OrderTopicRegex  string // ADR-0050; e.g. `^order-event-.+$`
 	OrderTopicPrefix string // ADR-0050; used to map symbol → topic in snapshot offset hydration
 	TradeTopic       string
-	MarketDataTopic  string        // ADR-0055
+	MarketDataTopic  string // ADR-0055
 
 	// VShardCount is Counter's vshard count (ADR-0058 §2). Match uses
 	// it to compute trade-event partitions via shard.Index(user_id,
 	// VShardCount) and MUST match counter --vshard-count; production
 	// value is 256.
-	VShardCount int
+	VShardCount      int
 	ConsumerGroup    string
 	SnapshotDir      string
 	SnapshotInterval time.Duration
@@ -303,6 +304,8 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	var (
 		etcdSrc     *etcdcfg.EtcdSource
 		watchCancel context.CancelFunc
+		watchCtx    context.Context
+		watchCh     <-chan etcdcfg.Event
 		watchWG     sync.WaitGroup
 	)
 	if len(cfg.EtcdEndpoints) > 0 {
@@ -334,19 +337,15 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 			}
 		}
 
-		watchCtx, cancel := context.WithCancel(ctx)
+		wc, cancel := context.WithCancel(ctx)
+		watchCtx = wc
 		watchCancel = cancel
-		watchCh, err := etcdSrc.Watch(watchCtx, rev+1)
+		watchCh, err = etcdSrc.Watch(watchCtx, rev+1)
 		if err != nil {
 			logger.Error("etcd watch", zap.Error(err))
 			cancel()
 			return
 		}
-		watchWG.Add(1)
-		go func() {
-			defer watchWG.Done()
-			applyWatch(watchCtx, watchCh, reg, cfg.ShardID, logger)
-		}()
 	} else {
 		for _, s := range cfg.Symbols {
 			if err := reg.AddSymbol(s); err != nil {
@@ -371,18 +370,38 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 
 	consumer, err := journal.NewOrderConsumer(journal.ConsumerConfig{
-		Brokers:        cfg.Brokers,
-		ClientID:       cfg.InstanceID,
-		GroupID:        cfg.ConsumerGroup,
-		Topic:          cfg.OrderTopic,
-		TopicRegex:     cfg.OrderTopicRegex,
-		InitialOffsets: initialOffsets,
+		Brokers:           cfg.Brokers,
+		ClientID:          cfg.InstanceID,
+		GroupID:           cfg.ConsumerGroup,
+		Topic:             cfg.OrderTopic,
+		TopicRegex:        cfg.OrderTopicRegex,
+		Topics:            orderConsumerTopics(reg.Symbols(), cfg),
+		UseExplicitTopics: cfg.OrderTopicRegex == "" && cfg.OrderTopicPrefix != "",
+		InitialOffsets:    initialOffsets,
 	}, dispatcher, logger)
 	if err != nil {
 		logger.Error("order consumer", zap.Error(err))
 		return
 	}
 	defer consumer.Close()
+
+	if watchCh != nil {
+		hooks := symbolTopicHooks{}
+		if cfg.OrderTopicRegex == "" && cfg.OrderTopicPrefix != "" {
+			hooks.Add = func(symbol string) {
+				topic := orderEventTopicFor(symbol, cfg.OrderTopicPrefix, cfg.OrderTopic)
+				consumer.AddTopicsWithOffsets(mergeRestoredOffsets(reg, cfg.OrderTopicPrefix, cfg.OrderTopic), topic)
+			}
+			hooks.Remove = func(symbol string) {
+				consumer.RemoveTopics(orderEventTopicFor(symbol, cfg.OrderTopicPrefix, cfg.OrderTopic))
+			}
+		}
+		watchWG.Add(1)
+		go func() {
+			defer watchWG.Done()
+			applyWatch(watchCtx, watchCh, reg, cfg.ShardID, hooks, logger)
+		}()
+	}
 
 	var consumerWG sync.WaitGroup
 	consumerWG.Add(1)
@@ -437,7 +456,12 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 //	Put    && Owned(shard) && !active   → AddSymbol
 //	Put    && !Owned && active          → RemoveSymbol (trading: false or shard moved)
 //	Delete && active                    → RemoveSymbol
-func applyWatch(ctx context.Context, watchCh <-chan etcdcfg.Event, reg *registry.Registry, shardID string, logger *zap.Logger) {
+type symbolTopicHooks struct {
+	Add    func(symbol string)
+	Remove func(symbol string)
+}
+
+func applyWatch(ctx context.Context, watchCh <-chan etcdcfg.Event, reg *registry.Registry, shardID string, hooks symbolTopicHooks, logger *zap.Logger) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -454,8 +478,13 @@ func applyWatch(ctx context.Context, watchCh <-chan etcdcfg.Event, reg *registry
 					if err := reg.AddSymbol(ev.Symbol); err != nil {
 						logger.Error("watch add symbol",
 							zap.String("symbol", ev.Symbol), zap.Error(err))
+					} else if hooks.Add != nil {
+						hooks.Add(ev.Symbol)
 					}
 				case !ev.Config.Owned(shardID) && reg.HasSymbol(ev.Symbol):
+					if hooks.Remove != nil {
+						hooks.Remove(ev.Symbol)
+					}
 					if err := reg.RemoveSymbol(ev.Symbol); err != nil {
 						logger.Error("watch remove symbol",
 							zap.String("symbol", ev.Symbol), zap.Error(err))
@@ -463,6 +492,9 @@ func applyWatch(ctx context.Context, watchCh <-chan etcdcfg.Event, reg *registry
 				}
 			case etcdcfg.EventDelete:
 				if reg.HasSymbol(ev.Symbol) {
+					if hooks.Remove != nil {
+						hooks.Remove(ev.Symbol)
+					}
 					if err := reg.RemoveSymbol(ev.Symbol); err != nil {
 						logger.Error("watch delete symbol",
 							zap.String("symbol", ev.Symbol), zap.Error(err))
@@ -480,7 +512,7 @@ func applyWatch(ctx context.Context, watchCh <-chan etcdcfg.Event, reg *registry
 func parseFlags() Config {
 	cfg := Config{
 		OrderTopic:       "order-event",
-		OrderTopicRegex:  "^order-event-.+$", // ADR-0050
+		OrderTopicRegex:  "", // empty = consume only currently owned per-symbol topics
 		OrderTopicPrefix: "order-event",
 		TradeTopic:       "trade-event",
 		MarketDataTopic:  "market-data",
@@ -491,13 +523,13 @@ func parseFlags() Config {
 
 		OrderBookFullInterval: 5 * time.Second,
 		OrderBookFullTopN:     50,
-		EtcdPrefix:       etcdcfg.DefaultPrefix,
-		EtcdDialTimeout:  5 * time.Second,
-		HAMode:           "disabled",
-		LeaseTTL:         10,
-		CampaignBackoff:  2 * time.Second,
-		Env:              "dev",
-		LogLevel:         "info",
+		EtcdPrefix:            etcdcfg.DefaultPrefix,
+		EtcdDialTimeout:       5 * time.Second,
+		HAMode:                "disabled",
+		LeaseTTL:              10,
+		CampaignBackoff:       2 * time.Second,
+		Env:                   "dev",
+		LogLevel:              "info",
 	}
 	var (
 		brokersStr string
@@ -512,7 +544,7 @@ func parseFlags() Config {
 	flag.DurationVar(&cfg.EtcdDialTimeout, "etcd-dial-timeout", cfg.EtcdDialTimeout, "etcd dial timeout")
 	flag.StringVar(&symbolsStr, "symbols", "", "comma-separated static symbol list (used when --etcd is empty)")
 	flag.StringVar(&cfg.OrderTopic, "order-topic", cfg.OrderTopic, "legacy single order-event topic (used when --order-topic-regex is empty; ADR-0050)")
-	flag.StringVar(&cfg.OrderTopicRegex, "order-topic-regex", cfg.OrderTopicRegex, "regex matching per-symbol order-event topics (ADR-0050; default ^order-event-.+$)")
+	flag.StringVar(&cfg.OrderTopicRegex, "order-topic-regex", cfg.OrderTopicRegex, "regex matching per-symbol order-event topics (ADR-0050); empty means subscribe only to currently owned symbols")
 	flag.StringVar(&cfg.OrderTopicPrefix, "order-topic-prefix", cfg.OrderTopicPrefix, "per-symbol order-event topic prefix (ADR-0050). Used to map snapshot offsets: worker's symbol → `<prefix>-<symbol>`")
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
 	flag.IntVar(&cfg.VShardCount, "vshard-count", cfg.VShardCount, "Counter vshard count for trade-event partition routing (ADR-0058 §2; must match counter --vshard-count)")
@@ -737,6 +769,28 @@ func mergeRestoredOffsets(reg *registry.Registry, topicPrefix, legacyTopic strin
 		return nil
 	}
 	return merged
+}
+
+// orderConsumerTopics returns the explicit topic set this match instance
+// should consume. Regex mode opts out and leaves discovery to Kafka. In
+// default per-symbol mode, we subscribe only to currently-owned symbols; etcd
+// watch updates call AddTopics / RemoveTopics at runtime.
+func orderConsumerTopics(symbols []string, cfg Config) []string {
+	if cfg.OrderTopicRegex != "" {
+		return nil
+	}
+	if cfg.OrderTopicPrefix == "" {
+		if cfg.OrderTopic == "" {
+			return nil
+		}
+		return []string{cfg.OrderTopic}
+	}
+	sort.Strings(symbols)
+	topics := make([]string, 0, len(symbols))
+	for _, sym := range symbols {
+		topics = append(topics, orderEventTopicFor(sym, cfg.OrderTopicPrefix, cfg.OrderTopic))
+	}
+	return topics
 }
 
 // orderEventTopicFor returns the order-event topic name for a symbol under

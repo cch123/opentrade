@@ -11,6 +11,7 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"go.uber.org/zap"
 
@@ -78,45 +79,94 @@ type HolderRequest struct {
 }
 
 // TransferOut debits the funding wallet and publishes a FundingTransferOut
-// journal event. Returns StatusRejected with the engine error when the
-// balance would go negative; StatusDuplicated when the transfer_id hit
-// the idempotency ring.
+// journal event. The balance mutation commits only after Kafka acks the
+// journal event, so a failed publish leaves the transfer_id retryable.
+// Returns StatusRejected with the engine error when the balance would go
+// negative; StatusDuplicated when the transfer_id hit the idempotency ring.
 func (s *Service) TransferOut(ctx context.Context, req HolderRequest) (Result, error) {
-	res, err := s.state.ApplyTransferOut(req.Amount)
+	var published Result
+	res, err := s.state.ApplyTransferOutCommitted(req.Amount, func(res engine.Result) error {
+		var err error
+		published, err = s.publish(ctx, req, journal.KindTransferOut, res)
+		return err
+	})
 	if err != nil {
-		return rejectFor(err), nil
+		if isEngineReject(err) {
+			return rejectFor(err), nil
+		}
+		s.logger.Warn("asset-journal publish failed",
+			zap.String("transfer_id", req.TransferID),
+			zap.Error(err))
+		return Result{}, err
 	}
 	if res.Duplicated {
 		return duplicated(res), nil
 	}
-	return s.publishAndWrap(ctx, req, journal.KindTransferOut, res)
+	return published, nil
 }
 
-// TransferIn credits the funding wallet and publishes a
-// FundingTransferIn journal event.
+// TransferIn credits the funding wallet and publishes a FundingTransferIn
+// journal event.
 func (s *Service) TransferIn(ctx context.Context, req HolderRequest) (Result, error) {
-	res, err := s.state.ApplyTransferIn(req.Amount)
+	var published Result
+	res, err := s.state.ApplyTransferInCommitted(req.Amount, func(res engine.Result) error {
+		var err error
+		published, err = s.publish(ctx, req, journal.KindTransferIn, res)
+		return err
+	})
 	if err != nil {
-		return rejectFor(err), nil
+		if isEngineReject(err) {
+			return rejectFor(err), nil
+		}
+		s.logger.Warn("asset-journal publish failed",
+			zap.String("transfer_id", req.TransferID),
+			zap.Error(err))
+		return Result{}, err
 	}
 	if res.Duplicated {
 		return duplicated(res), nil
 	}
-	return s.publishAndWrap(ctx, req, journal.KindTransferIn, res)
+	return published, nil
 }
 
 // Compensate credits the funding wallet (same math as TransferIn) but
 // publishes a FundingCompensate journal event so audit /
 // reconciliation can distinguish compensations from normal credits.
 func (s *Service) Compensate(ctx context.Context, req HolderRequest) (Result, error) {
-	res, err := s.state.ApplyCompensate(req.Amount)
+	var published Result
+	res, err := s.state.ApplyCompensateCommitted(req.Amount, func(res engine.Result) error {
+		var err error
+		published, err = s.publish(ctx, req, journal.KindCompensate, res)
+		return err
+	})
 	if err != nil {
-		return rejectFor(err), nil
+		if isEngineReject(err) {
+			return rejectFor(err), nil
+		}
+		s.logger.Warn("asset-journal publish failed",
+			zap.String("transfer_id", req.TransferID),
+			zap.Error(err))
+		return Result{}, err
 	}
 	if res.Duplicated {
 		return duplicated(res), nil
 	}
-	return s.publishAndWrap(ctx, req, journal.KindCompensate, res)
+	return published, nil
+}
+
+func isEngineReject(err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, engine.ErrInsufficientAvailable),
+		errors.Is(err, engine.ErrInvalidAmount),
+		errors.Is(err, engine.ErrMissingUserID),
+		errors.Is(err, engine.ErrMissingAsset),
+		errors.Is(err, engine.ErrMissingTransferID):
+		return true
+	default:
+		return false
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -150,12 +200,10 @@ type FundingBalance struct {
 // helpers
 // ---------------------------------------------------------------------------
 
-// publishAndWrap emits the journal event and wraps engine.Result into a
-// service.Result. A failed publish returns the error to the caller
-// (server → FailedPrecondition / Internal) — the engine state has
-// already advanced, so on restart the saga driver will reconcile via
-// transfer_ledger (M3b).
-func (s *Service) publishAndWrap(ctx context.Context, req HolderRequest, kind journal.EventKind, res engine.Result) (Result, error) {
+// publish emits the journal event and wraps engine.Result into a
+// service.Result. Callers run this from the engine's committed apply path, so
+// a failed publish prevents the in-memory balance mutation from committing.
+func (s *Service) publish(ctx context.Context, req HolderRequest, kind journal.EventKind, res engine.Result) (Result, error) {
 	evt := journal.Build(journal.BuildInput{
 		Kind:            kind,
 		AssetSeqID:      s.publisher.NextSeq(),
@@ -171,9 +219,6 @@ func (s *Service) publishAndWrap(ctx context.Context, req HolderRequest, kind jo
 		BalanceAfter:    res.BalanceAfter,
 	})
 	if err := s.publisher.Publish(ctx, req.UserID, evt); err != nil {
-		s.logger.Warn("asset-journal publish failed",
-			zap.String("transfer_id", req.TransferID),
-			zap.Error(err))
 		return Result{}, err
 	}
 	return Result{

@@ -99,6 +99,16 @@ func TestNew_Validates(t *testing.T) {
 			cfg:  Config{Brokers: []string{"x"}, Store: snapshotpkg.NewFSBlobStore(t.TempDir())},
 			want: "VShardCount",
 		},
+		{
+			name: "owned_out_of_range",
+			cfg:  Config{Brokers: []string{"x"}, Store: snapshotpkg.NewFSBlobStore(t.TempDir()), VShardCount: 2, OwnedVShards: []int{2}},
+			want: "outside",
+		},
+		{
+			name: "owned_duplicate",
+			cfg:  Config{Brokers: []string{"x"}, Store: snapshotpkg.NewFSBlobStore(t.TempDir()), VShardCount: 2, OwnedVShards: []int{1, 1}},
+			want: "duplicate",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -160,6 +170,25 @@ func TestPrimeFromStore_ExistingSnapshot(t *testing.T) {
 	}
 	if p.engines[0].NextJournalOffset() != 0 {
 		t.Fatalf("eng0 cold offset = %d, want 0", p.engines[0].NextJournalOffset())
+	}
+}
+
+func TestPrimeFromStore_OwnedSubset(t *testing.T) {
+	p := mustPipeline(t, Config{VShardCount: 4, OwnedVShards: []int{1, 3}})
+	if err := p.primeEnginesFromStore(context.Background()); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+	if len(p.engines) != 2 {
+		t.Fatalf("engines = %d, want 2", len(p.engines))
+	}
+	if _, ok := p.ShadowEngine(1); !ok {
+		t.Fatal("vshard 1 should be owned")
+	}
+	if _, ok := p.ShadowEngine(3); !ok {
+		t.Fatal("vshard 3 should be owned")
+	}
+	if _, ok := p.ShadowEngine(0); ok {
+		t.Fatal("vshard 0 should not be owned")
 	}
 }
 
@@ -389,7 +418,7 @@ func (p *Pipeline) primeEnginesFromStore(ctx context.Context) error {
 		return errors.New("pipeline: already started")
 	}
 	startedAt := time.Now()
-	for v := 0; v < p.cfg.VShardCount; v++ {
+	for _, v := range p.owned {
 		part := int32(v)
 		eng := shadow.New(v)
 		p.engines[part] = eng

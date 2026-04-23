@@ -45,29 +45,29 @@ import (
 // -----------------------------------------------------------------------------
 
 var (
-	ErrMissingUserID       = errors.New("conditional: user_id required")
-	ErrMissingSymbol       = errors.New("conditional: symbol required")
-	ErrInvalidType         = errors.New("conditional: invalid type")
-	ErrInvalidSide         = errors.New("conditional: invalid side")
-	ErrInvalidStopPrice    = errors.New("conditional: stop_price must be > 0")
-	ErrLimitPriceRequired  = errors.New("conditional: limit_price required for *_LIMIT variant")
-	ErrLimitPriceForbidden = errors.New("conditional: limit_price not allowed for MARKET variant")
-	ErrQtyRequired         = errors.New("conditional: qty required")
-	ErrQuoteQtyShape       = errors.New("conditional: quote_qty only allowed for MARKET buy")
-	ErrBothQtyAndQuoteQty  = errors.New("conditional: provide either qty or quote_qty for market buy, not both")
-	ErrExpiryInPast        = errors.New("conditional: expires_at_unix_ms must be in the future")
+	ErrMissingUserID          = errors.New("conditional: user_id required")
+	ErrMissingSymbol          = errors.New("conditional: symbol required")
+	ErrInvalidType            = errors.New("conditional: invalid type")
+	ErrInvalidSide            = errors.New("conditional: invalid side")
+	ErrInvalidStopPrice       = errors.New("conditional: stop_price must be > 0")
+	ErrLimitPriceRequired     = errors.New("conditional: limit_price required for *_LIMIT variant")
+	ErrLimitPriceForbidden    = errors.New("conditional: limit_price not allowed for MARKET variant")
+	ErrQtyRequired            = errors.New("conditional: qty required")
+	ErrQuoteQtyShape          = errors.New("conditional: quote_qty only allowed for MARKET buy")
+	ErrBothQtyAndQuoteQty     = errors.New("conditional: provide either qty or quote_qty for market buy, not both")
+	ErrExpiryInPast           = errors.New("conditional: expires_at_unix_ms must be in the future")
 	ErrTrailingDeltaNeeded    = errors.New("conditional: trailing_delta_bps required for TRAILING_STOP_LOSS")
 	ErrTrailingDeltaForbidden = errors.New("conditional: trailing_delta_bps only allowed for TRAILING_STOP_LOSS")
 	ErrTrailingDeltaRange     = errors.New("conditional: trailing_delta_bps must be in (0, 10000]")
 	ErrActivationPriceShape   = errors.New("conditional: activation_price only allowed for TRAILING_STOP_LOSS")
 	ErrStopPriceForbidden     = errors.New("conditional: stop_price not used by TRAILING_STOP_LOSS (derived from watermark)")
-	ErrOCONeedsTwoLegs     = errors.New("conditional: OCO request needs at least two legs")
-	ErrOCOSymbolMismatch   = errors.New("conditional: OCO legs must share the same symbol")
-	ErrOCOSideMismatch     = errors.New("conditional: OCO legs must share the same side")
-	ErrOCOUserMismatch     = errors.New("conditional: OCO legs must share the same user_id")
-	ErrNotFound            = errors.New("conditional: not found")
-	ErrNotOwner            = errors.New("conditional: user does not own this conditional")
-	ErrNotActive           = errors.New("conditional: already terminal")
+	ErrOCONeedsTwoLegs        = errors.New("conditional: OCO request needs at least two legs")
+	ErrOCOSymbolMismatch      = errors.New("conditional: OCO legs must share the same symbol")
+	ErrOCOSideMismatch        = errors.New("conditional: OCO legs must share the same side")
+	ErrOCOUserMismatch        = errors.New("conditional: OCO legs must share the same user_id")
+	ErrNotFound               = errors.New("conditional: not found")
+	ErrNotOwner               = errors.New("conditional: user does not own this conditional")
+	ErrNotActive              = errors.New("conditional: already terminal")
 )
 
 // -----------------------------------------------------------------------------
@@ -104,22 +104,22 @@ type Reservations interface {
 // Conditional holds the parsed numeric state for speed. External surfaces
 // (ToProto) re-stringify on the way out.
 type Conditional struct {
-	ID             uint64
-	ClientCondID   string
-	UserID         string
-	Symbol         string
-	Side           eventpb.Side
-	Type           condrpc.ConditionalType
-	StopPrice      dec.Decimal
-	LimitPrice     dec.Decimal
-	Qty            dec.Decimal
-	QuoteQty       dec.Decimal
-	TIF            eventpb.TimeInForce
-	Status         condrpc.ConditionalStatus
-	CreatedAtMs    int64
-	TriggeredAtMs  int64
-	PlacedOrderID  uint64
-	RejectReason   string
+	ID            uint64
+	ClientCondID  string
+	UserID        string
+	Symbol        string
+	Side          eventpb.Side
+	Type          condrpc.ConditionalType
+	StopPrice     dec.Decimal
+	LimitPrice    dec.Decimal
+	Qty           dec.Decimal
+	QuoteQty      dec.Decimal
+	TIF           eventpb.TimeInForce
+	Status        condrpc.ConditionalStatus
+	CreatedAtMs   int64
+	TriggeredAtMs int64
+	PlacedOrderID uint64
+	RejectReason  string
 	// ExpiresAtMs, when > 0, is the absolute wall-clock ms at which a
 	// PENDING conditional flips to EXPIRED via SweepExpired (ADR-0043).
 	ExpiresAtMs int64
@@ -171,9 +171,10 @@ var ErrMaxActiveConditionalOrdersExceeded = errors.New("conditional: max active 
 
 // JournalSink receives a post-change clone of a Conditional after every
 // state transition (PENDING / TRIGGERED / CANCELED / REJECTED / EXPIRED).
-// Implementations MUST NOT block — the engine calls Emit on its hot path.
-// Nil (the default) means journaling is disabled, which is the MVP-14 /
-// test behaviour.
+// Implementations may apply backpressure; Engine calls Emit after releasing
+// its state lock so a durable journal sink can block without deadlocking the
+// matching / expiry path. Nil (the default) means journaling is disabled,
+// which is the MVP-14 / test behaviour.
 type JournalSink interface {
 	Emit(c *Conditional)
 }
@@ -186,14 +187,14 @@ type Engine struct {
 	reserver Reservations // may be nil → MVP-14a behaviour
 	logger   *zap.Logger
 
-	mu         sync.Mutex
-	pending    map[uint64]*Conditional
-	terminals  map[uint64]*Conditional
-	termOrder  []uint64 // FIFO of terminal ids for trim
-	byClient   map[string]uint64
+	mu          sync.Mutex
+	pending     map[uint64]*Conditional
+	terminals   map[uint64]*Conditional
+	termOrder   []uint64 // FIFO of terminal ids for trim
+	byClient    map[string]uint64
 	ocoByClient map[string]string // client_oco_id → oco_group_id (ADR-0044)
-	lastPrice  map[string]dec.Decimal
-	offsets    map[int32]int64
+	lastPrice   map[string]dec.Decimal
+	offsets     map[int32]int64
 	// activeConditionals counts pending conditionals per (user, symbol) for
 	// the ADR-0054 slot cap. Derived index, rebuilt from pending on
 	// Restore — not persisted.

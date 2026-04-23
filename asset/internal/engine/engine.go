@@ -181,6 +181,19 @@ type Result struct {
 // ApplyTransferIn credits amount to (user, asset).available. Errors on
 // invalid amount. Idempotent on req.TransferID.
 func (s *State) ApplyTransferIn(req TransferRequest) (Result, error) {
+	return s.applyTransferIn(req, nil)
+}
+
+// ApplyTransferInCommitted is ApplyTransferIn plus an atomic commit hook.
+// The hook runs while the user's account lock is held, after the next
+// balance is visible to the hook but before transfer_id is remembered. If
+// commit returns an error, the balance/version mutation is rolled back and
+// the transfer remains retryable.
+func (s *State) ApplyTransferInCommitted(req TransferRequest, commit func(Result) error) (Result, error) {
+	return s.applyTransferIn(req, commit)
+}
+
+func (s *State) applyTransferIn(req TransferRequest, commit func(Result) error) (Result, error) {
 	if err := validate(req); err != nil {
 		return Result{}, err
 	}
@@ -192,7 +205,8 @@ func (s *State) ApplyTransferIn(req TransferRequest) (Result, error) {
 		bal := acc.balances[req.Asset]
 		return Result{BalanceAfter: bal, FundingVersion: acc.version, Duplicated: true}, nil
 	}
-	cur := acc.balances[req.Asset]
+	cur, hadBalance := acc.balances[req.Asset]
+	prevVersion := acc.version
 	next := Balance{
 		Available: cur.Available.Add(req.Amount),
 		Frozen:    cur.Frozen,
@@ -200,8 +214,20 @@ func (s *State) ApplyTransferIn(req TransferRequest) (Result, error) {
 	}
 	acc.balances[req.Asset] = next
 	acc.version++
+	res := Result{BalanceAfter: next, FundingVersion: acc.version}
+	if commit != nil {
+		if err := commit(res); err != nil {
+			if hadBalance {
+				acc.balances[req.Asset] = cur
+			} else {
+				delete(acc.balances, req.Asset)
+			}
+			acc.version = prevVersion
+			return Result{}, err
+		}
+	}
 	acc.remember(req.TransferID)
-	return Result{BalanceAfter: next, FundingVersion: acc.version}, nil
+	return res, nil
 }
 
 // ApplyTransferOut debits amount from (user, asset).available. Returns
@@ -209,6 +235,16 @@ func (s *State) ApplyTransferIn(req TransferRequest) (Result, error) {
 // is NOT updated on rejection so the caller may retry with corrected
 // params. Idempotent on req.TransferID.
 func (s *State) ApplyTransferOut(req TransferRequest) (Result, error) {
+	return s.applyTransferOut(req, nil)
+}
+
+// ApplyTransferOutCommitted is ApplyTransferOut plus an atomic commit hook.
+// See ApplyTransferInCommitted for the rollback/retry contract.
+func (s *State) ApplyTransferOutCommitted(req TransferRequest, commit func(Result) error) (Result, error) {
+	return s.applyTransferOut(req, commit)
+}
+
+func (s *State) applyTransferOut(req TransferRequest, commit func(Result) error) (Result, error) {
 	if err := validate(req); err != nil {
 		return Result{}, err
 	}
@@ -220,10 +256,11 @@ func (s *State) ApplyTransferOut(req TransferRequest) (Result, error) {
 		bal := acc.balances[req.Asset]
 		return Result{BalanceAfter: bal, FundingVersion: acc.version, Duplicated: true}, nil
 	}
-	cur := acc.balances[req.Asset]
+	cur, hadBalance := acc.balances[req.Asset]
 	if cur.Available.Cmp(req.Amount) < 0 {
 		return Result{}, ErrInsufficientAvailable
 	}
+	prevVersion := acc.version
 	next := Balance{
 		Available: cur.Available.Sub(req.Amount),
 		Frozen:    cur.Frozen,
@@ -231,8 +268,20 @@ func (s *State) ApplyTransferOut(req TransferRequest) (Result, error) {
 	}
 	acc.balances[req.Asset] = next
 	acc.version++
+	res := Result{BalanceAfter: next, FundingVersion: acc.version}
+	if commit != nil {
+		if err := commit(res); err != nil {
+			if hadBalance {
+				acc.balances[req.Asset] = cur
+			} else {
+				delete(acc.balances, req.Asset)
+			}
+			acc.version = prevVersion
+			return Result{}, err
+		}
+	}
 	acc.remember(req.TransferID)
-	return Result{BalanceAfter: next, FundingVersion: acc.version}, nil
+	return res, nil
 }
 
 // ApplyCompensate is semantically a credit (mirrors TransferIn) but the
@@ -241,6 +290,11 @@ func (s *State) ApplyTransferOut(req TransferRequest) (Result, error) {
 // engine itself is agnostic — same math.
 func (s *State) ApplyCompensate(req TransferRequest) (Result, error) {
 	return s.ApplyTransferIn(req)
+}
+
+// ApplyCompensateCommitted is ApplyCompensate plus an atomic commit hook.
+func (s *State) ApplyCompensateCommitted(req TransferRequest, commit func(Result) error) (Result, error) {
+	return s.ApplyTransferInCommitted(req, commit)
 }
 
 func validate(req TransferRequest) error {

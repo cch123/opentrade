@@ -11,11 +11,12 @@
 //   - Publish FundingTransferOut/In/Compensate and SagaStateChange
 //     envelopes to the asset-journal Kafka topic for trade-dump to
 //     project into MySQL.
+//   - Replay asset-journal on startup to restore the funding wallet before
+//     opening the gRPC listener.
 //
 // Not yet wired (tracked in ADR-0057 follow-ups):
 //
-//   - Snapshot of in-memory funding state + HA cold-standby via etcd
-//     lease (M3c)
+//   - HA cold-standby via etcd lease (M3c)
 //   - biz_line discovery (currently flag-driven via --peer-<biz>=host:port)
 //
 // Single-instance for MVP; partitioning / sharding is deferred per
@@ -68,6 +69,10 @@ type Config struct {
 	// Reconciler tick interval (ADR-0057 M6). 0 = default (30s).
 	ReconcileInterval time.Duration
 
+	// FundingRecoveryTimeout bounds startup replay of asset-journal into the
+	// in-memory funding wallet. 0 = default (60s).
+	FundingRecoveryTimeout time.Duration
+
 	// MySQL for transfer_ledger.
 	LedgerDSN string
 
@@ -119,6 +124,26 @@ func main() {
 	if err != nil {
 		logger.Fatal("journal producer init", zap.Error(err))
 	}
+	recoverTimeout := cfg.FundingRecoveryTimeout
+	if recoverTimeout <= 0 {
+		recoverTimeout = journal.DefaultRecoveryTimeout
+	}
+	recoverCtx, recoverCancel := context.WithTimeout(rootCtx, recoverTimeout)
+	recovered, err := journal.ReplayFundingState(recoverCtx, journal.RecoveryConfig{
+		Brokers:  cfg.Brokers,
+		Topic:    cfg.JournalTopic,
+		ClientID: cfg.InstanceID + "-funding-recovery",
+		Logger:   logger,
+	}, state)
+	recoverCancel()
+	if err != nil {
+		logger.Fatal("funding wallet recovery", zap.Error(err))
+	}
+	pub.SetSeqAtLeast(recovered.MaxAssetSeqID)
+	logger.Info("funding wallet recovered",
+		zap.Int("applied", recovered.Applied),
+		zap.Uint64("max_asset_seq_id", recovered.MaxAssetSeqID),
+		zap.Int("partitions", recovered.Partitions))
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -245,7 +270,6 @@ func main() {
 	logger.Info("asset shutdown complete")
 }
 
-
 // registerPeerHolders dials each peer biz_line and registers the
 // resulting Client. Returns the list of opened conns so the caller can
 // Close() them on shutdown. "funding" is skipped because asset-service
@@ -282,20 +306,22 @@ func parseFlags() Config {
 		ledgerDSN      = flag.String("ledger-dsn", "", "MySQL DSN for opentrade_asset.transfer_ledger; empty = funding-holder-only mode")
 		peerFlag       = flag.String("peer-holders", "", "biz_line peer list, e.g. 'spot=counter-0:18000,spot=counter-1:18000,futures=futures:19500'. Keys may repeat; last one wins.")
 		reconcileEvery = flag.Duration("reconcile-interval", saga.DefaultReconcileInterval, "saga reconciler tick interval (refreshes saga_state_count gauge)")
+		recoverTimeout = flag.Duration("funding-recovery-timeout", journal.DefaultRecoveryTimeout, "startup budget for replaying asset-journal into the funding wallet")
 	)
 	flag.Parse()
 
 	return Config{
-		InstanceID:        *instance,
-		GRPCAddr:          *grpcAddr,
-		MetricsAddr:       *metricsAddr,
-		Brokers:           splitCSV(*brokers),
-		JournalTopic:      *topic,
-		Env:               *env,
-		LogLevel:          *level,
-		LedgerDSN:         *ledgerDSN,
-		PeerHolders:       parsePeerList(*peerFlag),
-		ReconcileInterval: *reconcileEvery,
+		InstanceID:             *instance,
+		GRPCAddr:               *grpcAddr,
+		MetricsAddr:            *metricsAddr,
+		Brokers:                splitCSV(*brokers),
+		JournalTopic:           *topic,
+		Env:                    *env,
+		LogLevel:               *level,
+		LedgerDSN:              *ledgerDSN,
+		PeerHolders:            parsePeerList(*peerFlag),
+		ReconcileInterval:      *reconcileEvery,
+		FundingRecoveryTimeout: *recoverTimeout,
 	}
 }
 

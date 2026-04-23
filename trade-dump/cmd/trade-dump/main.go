@@ -68,17 +68,19 @@ type Config struct {
 	MySQLInsertChunkMax int
 
 	// -- Snapshot pipeline (ADR-0061) --
-	VShardCount        int
-	SnapshotBackend    string // fs | s3
-	SnapshotDir        string
-	SnapshotS3Bucket   string
-	SnapshotS3Prefix   string
-	SnapshotS3Region   string
-	SnapshotS3Endpoint string
-	SnapshotFormat     snapshotpkg.Format
-	SnapshotInterval   time.Duration
-	SnapshotEventCount uint64
+	VShardCount         int
+	SnapshotBackend     string // fs | s3
+	SnapshotDir         string
+	SnapshotS3Bucket    string
+	SnapshotS3Prefix    string
+	SnapshotS3Region    string
+	SnapshotS3Endpoint  string
+	SnapshotFormat      snapshotpkg.Format
+	SnapshotInterval    time.Duration
+	SnapshotEventCount  uint64
 	SnapshotSaveTimeout time.Duration
+	SnapshotOwnerIndex  int
+	SnapshotOwnerCount  int
 
 	// -- gRPC server (ADR-0064) --
 	// GRPCAddr is the TCP address for trade-dump's on-demand
@@ -97,6 +99,10 @@ type Config struct {
 	// Counter's overall RPC deadline is 3s so this leaves ~1s for
 	// LEO query + Capture + upload.
 	OnDemandWaitApplyTimeout time.Duration
+
+	// OnDemandWorkTimeout bounds the detached TakeSnapshot worker's total
+	// runtime after singleflight starts it. Default 8s.
+	OnDemandWorkTimeout time.Duration
 
 	// OnDemandTTL is the max age an on-demand snapshot blob-store
 	// object may retain before the housekeeper deletes it
@@ -263,6 +269,7 @@ func main() {
 			ClientID:           cfg.InstanceID + "-snap",
 			JournalTopic:       cfg.JournalTopic,
 			VShardCount:        cfg.VShardCount,
+			OwnedVShards:       ownedSnapshotVShards(cfg.VShardCount, cfg.SnapshotOwnerIndex, cfg.SnapshotOwnerCount),
 			Store:              store,
 			SnapshotFormat:     cfg.SnapshotFormat,
 			SnapshotInterval:   cfg.SnapshotInterval,
@@ -286,6 +293,9 @@ func main() {
 		}()
 		logger.Info("snapshot pipeline enabled",
 			zap.Int("vshard_count", cfg.VShardCount),
+			zap.Int("owner_index", cfg.SnapshotOwnerIndex),
+			zap.Int("owner_count", cfg.SnapshotOwnerCount),
+			zap.Ints("owned_vshards", snapPipe.OwnedVShards()),
 			zap.String("backend", cfg.SnapshotBackend),
 			zap.Duration("interval", cfg.SnapshotInterval),
 			zap.Uint64("event_count", cfg.SnapshotEventCount))
@@ -368,6 +378,7 @@ func main() {
 			KeyPrefix:        "",
 			Concurrency:      cfg.OnDemandConcurrency,
 			WaitApplyTimeout: cfg.OnDemandWaitApplyTimeout,
+			WorkTimeout:      cfg.OnDemandWorkTimeout,
 			SnapshotFormat:   cfg.SnapshotFormat,
 		}))
 		wg.Add(1)
@@ -454,29 +465,32 @@ func hasPipeline(set []string, want string) bool {
 
 func parseFlags() Config {
 	cfg := Config{
-		InstanceID:          "trade-dump-0",
-		TradeTopic:          "trade-event",
-		JournalTopic:        "counter-journal",
-		ConditionalTopic:    "conditional-event",
-		AssetTopic:          "asset-journal",
-		MySQLDSN:            "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
-		MySQLMaxOpenConns:   16,
-		MySQLMaxIdleConns:   4,
-		MySQLConnMaxLife:    30 * time.Minute,
-		VShardCount:         256, // ADR-0058 §2
-		SnapshotBackend:     "fs",
-		SnapshotDir:         "./data/trade-dump-snap",
-		SnapshotFormat:      snapshotpkg.FormatProto,
+		InstanceID:        "trade-dump-0",
+		TradeTopic:        "trade-event",
+		JournalTopic:      "counter-journal",
+		ConditionalTopic:  "conditional-event",
+		AssetTopic:        "asset-journal",
+		MySQLDSN:          "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
+		MySQLMaxOpenConns: 16,
+		MySQLMaxIdleConns: 4,
+		MySQLConnMaxLife:  30 * time.Minute,
+		VShardCount:       256, // ADR-0058 §2
+		SnapshotBackend:   "fs",
+		SnapshotDir:       "./data/trade-dump-snap",
+		SnapshotFormat:    snapshotpkg.FormatProto,
 		// ADR-0064 §5: periodic snapshot relaxed from ADR-0061's
 		// 10s/10000 to 60s/60000 now that on-demand carries the
 		// hot-path recovery cursor. Operators wanting tighter
 		// fallback RPO can override via the flags below.
-		SnapshotInterval:    60 * time.Second,
-		SnapshotEventCount:  60000,
+		SnapshotInterval:         60 * time.Second,
+		SnapshotEventCount:       60000,
 		SnapshotSaveTimeout:      30 * time.Second,
+		SnapshotOwnerIndex:       0,
+		SnapshotOwnerCount:       1,
 		GRPCAddr:                 ":8088",
 		OnDemandConcurrency:      16,
 		OnDemandWaitApplyTimeout: 2 * time.Second,
+		OnDemandWorkTimeout:      8 * time.Second,
 		OnDemandTTL:              1 * time.Hour,
 		OnDemandSweepInterval:    5 * time.Minute,
 		Env:                      "dev",
@@ -515,11 +529,14 @@ func parseFlags() Config {
 	var snapEventCount uint
 	flag.UintVar(&snapEventCount, "snapshot-event-count", uint(cfg.SnapshotEventCount), "event-window trigger per vshard (default 60000 under ADR-0064 §5; was 10000 under ADR-0061)")
 	flag.DurationVar(&cfg.SnapshotSaveTimeout, "snapshot-save-timeout", cfg.SnapshotSaveTimeout, "max wall-time per blob-store Save")
+	flag.IntVar(&cfg.SnapshotOwnerIndex, "snapshot-owner-index", cfg.SnapshotOwnerIndex, "zero-based snap replica index; owns vshards where vshard % owner-count == owner-index")
+	flag.IntVar(&cfg.SnapshotOwnerCount, "snapshot-owner-count", cfg.SnapshotOwnerCount, "total snap replicas sharing vshards; 1 means this instance owns all vshards")
 
 	// gRPC server flags (ADR-0064)
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address for on-demand snapshot (ADR-0064); empty string disables")
 	flag.IntVar(&cfg.OnDemandConcurrency, "ondemand-concurrency", cfg.OnDemandConcurrency, "max concurrent on-demand TakeSnapshot requests (ADR-0064 §2.2)")
 	flag.DurationVar(&cfg.OnDemandWaitApplyTimeout, "ondemand-wait-apply-timeout", cfg.OnDemandWaitApplyTimeout, "per-request budget for shadow to apply up to LEO before DeadlineExceeded (ADR-0064 §2.5)")
+	flag.DurationVar(&cfg.OnDemandWorkTimeout, "ondemand-work-timeout", cfg.OnDemandWorkTimeout, "total budget for detached on-demand snapshot work, including LEO query and blob upload")
 	flag.DurationVar(&cfg.OnDemandTTL, "ondemand-ttl", cfg.OnDemandTTL, "max age of on-demand snapshot blob-store objects before housekeeper deletes (ADR-0064 §2.5)")
 	flag.DurationVar(&cfg.OnDemandSweepInterval, "ondemand-sweep-interval", cfg.OnDemandSweepInterval, "housekeeper sweep cadence (ADR-0064 §2.5)")
 
@@ -578,11 +595,37 @@ func (c *Config) validate() error {
 		if c.VShardCount <= 0 {
 			return fmt.Errorf("vshard-count > 0 required for snap pipeline")
 		}
+		if c.SnapshotOwnerCount <= 0 {
+			return fmt.Errorf("snapshot-owner-count must be > 0")
+		}
+		if c.SnapshotOwnerIndex < 0 || c.SnapshotOwnerIndex >= c.SnapshotOwnerCount {
+			return fmt.Errorf("snapshot-owner-index must be in [0,%d), got %d", c.SnapshotOwnerCount, c.SnapshotOwnerIndex)
+		}
+		if len(ownedSnapshotVShards(c.VShardCount, c.SnapshotOwnerIndex, c.SnapshotOwnerCount)) == 0 {
+			return fmt.Errorf("snapshot owner %d/%d owns no vshards (vshard-count=%d)", c.SnapshotOwnerIndex, c.SnapshotOwnerCount, c.VShardCount)
+		}
 		if c.SnapshotBackend == "s3" && c.SnapshotS3Bucket == "" {
 			return fmt.Errorf("snapshot-s3-bucket required when --snapshot-backend=s3")
 		}
 	}
 	return nil
+}
+
+func ownedSnapshotVShards(vshardCount, ownerIndex, ownerCount int) []int {
+	if ownerCount <= 1 {
+		out := make([]int, vshardCount)
+		for v := 0; v < vshardCount; v++ {
+			out[v] = v
+		}
+		return out
+	}
+	out := make([]int, 0, (vshardCount+ownerCount-1)/ownerCount)
+	for v := 0; v < vshardCount; v++ {
+		if v%ownerCount == ownerIndex {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // newSnapshotStore mirrors counter/cmd/counter/main.go.newSnapshotStore

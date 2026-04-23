@@ -168,6 +168,13 @@ type Config struct {
 	// leaves ~1s for LEO query + Capture + upload.
 	WaitApplyTimeout time.Duration
 
+	// WorkTimeout bounds the detached singleflight worker's total lifetime,
+	// including semaphore wait, LEO query, WaitAppliedTo, Capture, and blob
+	// upload. Zero derives a conservative budget from WaitApplyTimeout and
+	// SemAcquireTimeout. This is intentionally independent from any single
+	// caller's ctx so a short-deadline leader does not poison followers.
+	WorkTimeout time.Duration
+
 	// SnapshotFormat controls the encoding passed to
 	// snapshotpkg.Save. Default snapshotpkg.FormatProto (same as
 	// pipeline).
@@ -194,6 +201,7 @@ type Server struct {
 	epoch             *EpochTracker
 	nowFn             func() time.Time
 	semAcquireTimeout time.Duration
+	workTimeout       time.Duration
 }
 
 // New constructs a Server with the given Config. Nil Config fields
@@ -230,12 +238,17 @@ func New(cfg Config) *Server {
 	if semTimeout <= 0 {
 		semTimeout = defaultSemAcquireTimeout
 	}
+	workTimeout := cfg.WorkTimeout
+	if workTimeout <= 0 {
+		workTimeout = cfg.WaitApplyTimeout + semTimeout + 5*time.Second
+	}
 	return &Server{
 		cfg:               cfg,
 		sem:               semaphore.NewWeighted(int64(cfg.Concurrency)),
 		epoch:             epoch,
 		nowFn:             cfg.nowFn,
 		semAcquireTimeout: semTimeout,
+		workTimeout:       workTimeout,
 	}
 }
 
@@ -309,7 +322,9 @@ func (s *Server) TakeSnapshot(
 	// is handled by gRPC GracefulStop draining handler goroutines.
 	sfKey := fmt.Sprintf("vshard-%d", partition)
 	ch := s.sf.DoChan(sfKey, func() (any, error) {
-		return s.takeSnapshotOnce(context.Background(), partition, eng)
+		workCtx, cancel := context.WithTimeout(context.Background(), s.workTimeout)
+		defer cancel()
+		return s.takeSnapshotOnce(workCtx, partition, eng)
 	})
 	select {
 	case res := <-ch:
@@ -360,6 +375,14 @@ func (s *Server) takeSnapshotOnce(
 	//    default isolation is ReadUncommitted.
 	leo, err := s.cfg.Admin.ListEndOffset(ctx, s.cfg.JournalTopic, partition)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, status.Errorf(codes.DeadlineExceeded,
+				"leo_query_timeout: %v", err)
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			return nil, status.Errorf(codes.Canceled,
+				"leo_query_canceled: %v", err)
+		}
 		return nil, status.Errorf(codes.Unavailable,
 			"leo_query_fail: %v", err)
 	}
@@ -405,6 +428,14 @@ func (s *Server) takeSnapshotOnce(
 		s.cfg.KeyPrefix, partition, now.UnixMilli())
 
 	if err := snapshotpkg.Save(ctx, s.cfg.BlobStore, key, snap, s.cfg.SnapshotFormat); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, status.Errorf(codes.DeadlineExceeded,
+				"snapshot_upload_timeout: %v", err)
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			return nil, status.Errorf(codes.Canceled,
+				"snapshot_upload_canceled: %v", err)
+		}
 		return nil, status.Errorf(codes.Unavailable,
 			"s3_upload_error: %v", err)
 	}

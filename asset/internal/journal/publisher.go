@@ -19,13 +19,14 @@ const DefaultTopic = "asset-journal"
 
 // Publisher is the contract the service layer sees. It intentionally
 // does NOT expose Kafka types — implementations may be in-memory fakes
-// (tests), async Kafka producers (production), or future transactional
+// (tests), synchronous Kafka producers (production), or future transactional
 // producers.
 type Publisher interface {
 	// Publish appends one envelope for the given user_id partition key.
-	// Returns nil on successful enqueue; actual Kafka acks are async
-	// inside the drain goroutine (MVP fire-and-forget, mirroring
-	// conditional/journal).
+	// Returns only after Kafka acks the record. The funding engine commits
+	// balance mutations after this call succeeds, so fire-and-forget would
+	// make the in-memory wallet diverge from asset-journal on producer
+	// failure.
 	Publish(ctx context.Context, userID string, evt *eventpb.AssetJournalEvent) error
 
 	// NextSeq returns the next monotonic asset_seq_id. Callers pass it
@@ -37,37 +38,30 @@ type Publisher interface {
 	Close(ctx context.Context) error
 }
 
-// KafkaConfig wires the async Kafka producer.
+// KafkaConfig wires the Kafka producer.
 type KafkaConfig struct {
 	Brokers    []string
 	Topic      string
 	ClientID   string
 	ProducerID string // populated on BuildInput.ProducerID by the service
-	QueueSize  int    // 0 → 4096
+	QueueSize  int    // deprecated: Publish is synchronous; retained for flag compatibility
 	Logger     *zap.Logger
 }
 
-// KafkaPublisher is the production Publisher: a franz-go idempotent
-// producer with an internal buffered channel. The producer is
-// non-transactional for MVP (ADR-0057 §6 "DB-first + Kafka retry");
-// upgrading to a transactional producer later is additive and doesn't
+// KafkaPublisher is the production Publisher: a franz-go idempotent producer.
+// Publish uses ProduceSync so the service can treat asset-journal as the
+// durable funding-wallet commit point. The producer is non-transactional for
+// MVP; upgrading to a transactional producer later is additive and doesn't
 // change the Publisher contract.
 type KafkaPublisher struct {
 	kc     *kgo.Client
 	topic  string
 	logger *zap.Logger
 
-	seq   atomic.Uint64
-	queue chan pendingRecord
-	done  chan struct{}
+	seq atomic.Uint64
 }
 
-type pendingRecord struct {
-	partitionKey string
-	evt          *eventpb.AssetJournalEvent
-}
-
-// NewKafkaPublisher opens the client and starts the drain goroutine.
+// NewKafkaPublisher opens the client.
 func NewKafkaPublisher(cfg KafkaConfig) (*KafkaPublisher, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, errors.New("journal: no brokers")
@@ -75,10 +69,6 @@ func NewKafkaPublisher(cfg KafkaConfig) (*KafkaPublisher, error) {
 	topic := cfg.Topic
 	if topic == "" {
 		topic = DefaultTopic
-	}
-	qs := cfg.QueueSize
-	if qs <= 0 {
-		qs = 4096
 	}
 	logger := cfg.Logger
 	if logger == nil {
@@ -97,29 +87,33 @@ func NewKafkaPublisher(cfg KafkaConfig) (*KafkaPublisher, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &KafkaPublisher{
+	return &KafkaPublisher{
 		kc:     kc,
 		topic:  topic,
 		logger: logger,
-		queue:  make(chan pendingRecord, qs),
-		done:   make(chan struct{}),
-	}
-	go p.drain()
-	return p, nil
+	}, nil
 }
 
-// Publish enqueues the record for async publication. The channel is
-// buffered; when full, Publish blocks until ctx is done or a slot frees.
-// We DO NOT silently drop here (vs conditional/journal) because asset-
-// journal is the system of record for saga projections — a dropped
-// event means a divergent MySQL projection downstream.
+// Publish writes the record synchronously. We do not silently drop or merely
+// enqueue here because asset-journal is the commit log used to recover the
+// funding wallet on restart.
 func (p *KafkaPublisher) Publish(ctx context.Context, userID string, evt *eventpb.AssetJournalEvent) error {
-	select {
-	case p.queue <- pendingRecord{partitionKey: userID, evt: evt}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	data, err := proto.Marshal(evt)
+	if err != nil {
+		return err
 	}
+	kr := &kgo.Record{
+		Topic: p.topic,
+		Key:   []byte(userID),
+		Value: data,
+	}
+	if err := p.kc.ProduceSync(ctx, kr).FirstErr(); err != nil {
+		p.logger.Warn("asset-journal produce failed",
+			zap.Uint64("asset_seq_id", evt.AssetSeqId),
+			zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // NextSeq returns the next asset_seq_id.
@@ -127,36 +121,23 @@ func (p *KafkaPublisher) NextSeq() uint64 {
 	return p.seq.Add(1)
 }
 
-// Close drains and shuts down the Kafka client.
-func (p *KafkaPublisher) Close(ctx context.Context) error {
-	close(p.queue)
-	select {
-	case <-p.done:
-	case <-ctx.Done():
+// SetSeqAtLeast raises the local asset_seq_id allocator so the next NextSeq
+// returns at least seq+1. Used after startup replay of asset-journal.
+func (p *KafkaPublisher) SetSeqAtLeast(seq uint64) {
+	for {
+		cur := p.seq.Load()
+		if cur >= seq {
+			return
+		}
+		if p.seq.CompareAndSwap(cur, seq) {
+			return
+		}
 	}
-	p.kc.Close()
-	return nil
 }
 
-func (p *KafkaPublisher) drain() {
-	defer close(p.done)
-	for rec := range p.queue {
-		data, err := proto.Marshal(rec.evt)
-		if err != nil {
-			p.logger.Warn("marshal asset-journal event", zap.Error(err))
-			continue
-		}
-		kr := &kgo.Record{
-			Topic: p.topic,
-			Key:   []byte(rec.partitionKey),
-			Value: data,
-		}
-		p.kc.Produce(context.Background(), kr, func(_ *kgo.Record, err error) {
-			if err != nil {
-				p.logger.Warn("asset-journal produce failed",
-					zap.Uint64("asset_seq_id", rec.evt.AssetSeqId),
-					zap.Error(err))
-			}
-		})
-	}
+// Close drains and shuts down the Kafka client.
+func (p *KafkaPublisher) Close(ctx context.Context) error {
+	_ = ctx
+	p.kc.Close()
+	return nil
 }
