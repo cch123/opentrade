@@ -15,8 +15,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // BlobStore is the minimal blob-level contract Save/Load depend on.
@@ -27,6 +30,46 @@ type BlobStore interface {
 	Put(ctx context.Context, key string, data []byte) error
 	// Get returns os.ErrNotExist (matchable by errors.Is) when key is absent.
 	Get(ctx context.Context, key string) ([]byte, error)
+}
+
+// BlobObject is the List result row. Callers inspect LastModified to
+// decide whether to delete (ADR-0064 M1d housekeeper scans on-demand
+// snapshot keys and deletes those older than the configured TTL).
+type BlobObject struct {
+	// Key is the full key as stored, EXCLUDING any implementation-
+	// specific prefix (e.g. S3BlobStore.prefix). Pass it back to
+	// Get / Delete verbatim.
+	Key string
+	// LastModified is the wall-clock time the backing store last
+	// wrote the object. For FSBlobStore this is the file mtime;
+	// for S3BlobStore this is the LastModified reported by
+	// ListObjectsV2. The ADR-0064 housekeeper compares this to
+	// time.Now()-TTL to decide deletion.
+	LastModified time.Time
+	// Size is the stored body size in bytes. Informational — the
+	// housekeeper does not use it.
+	Size int64
+}
+
+// BlobLister is the optional capability BlobStore implementations
+// can support for scan + delete workloads (ADR-0064 M1d on-demand
+// snapshot housekeeping, future periodic-snapshot archive rotation).
+// It is intentionally NOT part of the core BlobStore interface so
+// restricted-capability stubs (tests, read-only callers) stay
+// buildable without implementing List/Delete.
+//
+// Implementations:
+//   - *FSBlobStore: walks baseDir, filters by prefix, uses file
+//     mtime for LastModified.
+//   - *S3BlobStore: ListObjectsV2 with Prefix, paginated; reports
+//     S3's LastModified and Size.
+//
+// Keys returned from List use the same namespace as Put / Get keys:
+// for S3BlobStore the implementation-owned `prefix` is stripped so
+// callers work in a flat key-space.
+type BlobLister interface {
+	List(ctx context.Context, prefix string) ([]BlobObject, error)
+	Delete(ctx context.Context, key string) error
 }
 
 // FSBlobStore writes to a directory on the local filesystem using
@@ -85,4 +128,69 @@ func (s *FSBlobStore) Get(_ context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return data, nil
+}
+
+// List walks baseDir recursively and returns every regular file
+// whose relative path starts with prefix. Directories, symlinks,
+// and the staging *.tmp files used by Put are skipped so the
+// housekeeper never trips over a half-written object. An empty
+// prefix lists everything under baseDir. A non-existent baseDir
+// is treated as an empty store (returns nil, nil) — matches the
+// "cold store, nothing to clean up" housekeeping expectation.
+func (s *FSBlobStore) List(_ context.Context, prefix string) ([]BlobObject, error) {
+	var out []BlobObject
+	err := filepath.WalkDir(s.baseDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return filepath.SkipAll
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil // skip symlinks / devices
+		}
+		rel, err := filepath.Rel(s.baseDir, path)
+		if err != nil {
+			return fmt.Errorf("rel %s: %w", path, err)
+		}
+		// Put writes through a .tmp sibling; surfacing it here would
+		// confuse the housekeeper (it is never a snapshot object).
+		if strings.HasSuffix(rel, ".tmp") {
+			return nil
+		}
+		if prefix != "" && !strings.HasPrefix(rel, prefix) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		out = append(out, BlobObject{
+			Key:          filepath.ToSlash(rel),
+			LastModified: info.ModTime(),
+			Size:         info.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Delete removes baseDir/key. Missing files are a no-op (idempotent
+// cleanup is a non-goal of the housekeeper contract — missing key
+// means "already cleaned up").
+func (s *FSBlobStore) Delete(_ context.Context, key string) error {
+	path := filepath.Join(s.baseDir, key)
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	return nil
 }

@@ -184,3 +184,70 @@ func TestS3BlobStore_EmptyPrefix(t *testing.T) {
 		t.Fatalf("round trip: got seq=%d", got.CounterSeq)
 	}
 }
+
+// TestS3BlobStore_ListAndDelete exercises the BlobLister impl used
+// by the ADR-0064 M1d on-demand snapshot housekeeper. Seed a mix
+// of periodic + on-demand keys, verify prefix filter, delete one
+// on-demand key, verify it disappears from subsequent List.
+func TestS3BlobStore_ListAndDelete(t *testing.T) {
+	client, bucket := requireS3(t)
+	store := NewS3BlobStore(client, bucket, "ondemand-test/")
+	ctx := context.Background()
+
+	// Seed both periodic and on-demand keys.
+	seed := map[string][]byte{
+		"vshard-001.pb":                          []byte("periodic-1"),
+		"vshard-002.pb":                          []byte("periodic-2"),
+		"vshard-001-ondemand-1700000000000.pb":   []byte("ondemand-1a"),
+		"vshard-001-ondemand-1700000000001.pb":   []byte("ondemand-1b"),
+		"vshard-002-ondemand-1700000000002.pb":   []byte("ondemand-2"),
+	}
+	for k, v := range seed {
+		if err := store.Put(ctx, k, v); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+
+	// Prefix filter: on-demand for vshard-001.
+	got, err := store.List(ctx, "vshard-001-ondemand-")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("prefix filter want 2, got %d: %+v", len(got), got)
+	}
+	for _, o := range got {
+		if o.Size == 0 {
+			t.Errorf("List entry %q zero size", o.Key)
+		}
+		if o.LastModified.IsZero() {
+			t.Errorf("List entry %q zero LastModified", o.Key)
+		}
+		// Store-owned prefix must be stripped — caller works in
+		// Put/Get key space.
+		if len(o.Key) > 0 && o.Key[0] == '/' {
+			t.Errorf("List key %q has leading slash; store prefix not stripped", o.Key)
+		}
+	}
+
+	// Delete one on-demand key; subsequent List sees only the
+	// remaining one.
+	if err := store.Delete(ctx, "vshard-001-ondemand-1700000000000.pb"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	got, err = store.List(ctx, "vshard-001-ondemand-")
+	if err != nil {
+		t.Fatalf("List after Delete: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 after Delete, got %d: %+v", len(got), got)
+	}
+	if got[0].Key != "vshard-001-ondemand-1700000000001.pb" {
+		t.Errorf("remaining key = %q, want vshard-001-ondemand-1700000000001.pb", got[0].Key)
+	}
+
+	// Delete idempotent: deleting an already-gone key is nil.
+	if err := store.Delete(ctx, "vshard-001-ondemand-1700000000000.pb"); err != nil {
+		t.Fatalf("Delete (already gone) = %v, want nil", err)
+	}
+}

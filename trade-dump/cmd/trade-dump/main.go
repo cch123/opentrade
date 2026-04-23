@@ -98,6 +98,15 @@ type Config struct {
 	// LEO query + Capture + upload.
 	OnDemandWaitApplyTimeout time.Duration
 
+	// OnDemandTTL is the max age an on-demand snapshot blob-store
+	// object may retain before the housekeeper deletes it
+	// (ADR-0064 §2.5). Default 1h.
+	OnDemandTTL time.Duration
+
+	// OnDemandSweepInterval is the housekeeper's sweep cadence
+	// (ADR-0064 §2.5). Default 5min.
+	OnDemandSweepInterval time.Duration
+
 	Env      string
 	LogLevel string
 }
@@ -344,12 +353,19 @@ func main() {
 		}
 		grpcSrv = grpc.NewServer()
 		tradedumprpc.RegisterTradeDumpSnapshotServer(grpcSrv, snapshotrpc.New(snapshotrpc.Config{
-			Logger:           logger,
-			Shadow:           snapPipe,
-			Admin:            admin,
-			BlobStore:        store,
-			JournalTopic:     cfg.JournalTopic,
-			KeyPrefix:        cfg.SnapshotS3Prefix, // empty for fs backend; S3 uses the same prefix as periodic
+			Logger:       logger,
+			Shadow:       snapPipe,
+			Admin:        admin,
+			BlobStore:    store,
+			JournalTopic: cfg.JournalTopic,
+			// KeyPrefix stays empty: the BlobStore impl (FS or
+			// S3) already namespaces its keys internally — S3 via
+			// its configured Prefix, FS via its baseDir.
+			// Piping cfg.SnapshotS3Prefix in here would double-
+			// apply it (codex review catch) so on-demand objects
+			// would land outside the housekeeper's List prefix
+			// and accumulate forever.
+			KeyPrefix:        "",
 			Concurrency:      cfg.OnDemandConcurrency,
 			WaitApplyTimeout: cfg.OnDemandWaitApplyTimeout,
 			SnapshotFormat:   cfg.SnapshotFormat,
@@ -367,6 +383,33 @@ func main() {
 				stop()
 			}
 		}()
+
+		// ADR-0064 §2.5 M1d: on-demand snapshot housekeeper.
+		// Deletes stale `vshard-NNN-ondemand-*` blob-store keys
+		// older than OnDemandTTL. Driven off the shared blob store
+		// and its BlobLister capability. If the configured store
+		// impl doesn't implement BlobLister (future backend), we
+		// log and skip rather than crash — periodic keys still
+		// churn naturally via S3 Lifecycle / operator cleanup.
+		if lister, ok := store.(snapshotpkg.BlobLister); ok {
+			hk := snapshotrpc.NewHousekeeper(snapshotrpc.Housekeeper{
+				Lister:       lister,
+				OnDemandGlob: "vshard-",
+				TTL:          cfg.OnDemandTTL,
+				ScanInterval: cfg.OnDemandSweepInterval,
+				Logger:       logger,
+			})
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				hk.Run(rootCtx)
+			}()
+			logger.Info("on-demand housekeeper started",
+				zap.Duration("ttl", cfg.OnDemandTTL),
+				zap.Duration("sweep_interval", cfg.OnDemandSweepInterval))
+		} else {
+			logger.Warn("on-demand housekeeper disabled (BlobStore does not implement BlobLister)")
+		}
 	}
 
 	<-rootCtx.Done()
@@ -430,6 +473,8 @@ func parseFlags() Config {
 		GRPCAddr:                 ":8088",
 		OnDemandConcurrency:      16,
 		OnDemandWaitApplyTimeout: 2 * time.Second,
+		OnDemandTTL:              1 * time.Hour,
+		OnDemandSweepInterval:    5 * time.Minute,
 		Env:                      "dev",
 		LogLevel:                 "info",
 	}
@@ -471,6 +516,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address for on-demand snapshot (ADR-0064); empty string disables")
 	flag.IntVar(&cfg.OnDemandConcurrency, "ondemand-concurrency", cfg.OnDemandConcurrency, "max concurrent on-demand TakeSnapshot requests (ADR-0064 §2.2)")
 	flag.DurationVar(&cfg.OnDemandWaitApplyTimeout, "ondemand-wait-apply-timeout", cfg.OnDemandWaitApplyTimeout, "per-request budget for shadow to apply up to LEO before DeadlineExceeded (ADR-0064 §2.5)")
+	flag.DurationVar(&cfg.OnDemandTTL, "ondemand-ttl", cfg.OnDemandTTL, "max age of on-demand snapshot blob-store objects before housekeeper deletes (ADR-0064 §2.5)")
+	flag.DurationVar(&cfg.OnDemandSweepInterval, "ondemand-sweep-interval", cfg.OnDemandSweepInterval, "housekeeper sweep cadence (ADR-0064 §2.5)")
 
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")

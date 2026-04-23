@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -80,4 +81,79 @@ func (s *S3BlobStore) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("s3 read body: %w", err)
 	}
 	return data, nil
+}
+
+// List enumerates objects under s.prefix + prefix, paginated via
+// ListObjectsV2 continuation tokens. Returned BlobObject.Key is
+// stripped of the store-owned s.prefix so callers work in the same
+// flat key-space as Put / Get.
+//
+// ADR-0064 M1d housekeeper: expected to run against the on-demand
+// prefix (e.g. "vshard-") in a bucket with at most ~256 × few
+// in-flight keys. Pagination is implemented properly anyway so
+// larger sweeps don't silently truncate.
+func (s *S3BlobStore) List(ctx context.Context, prefix string) ([]BlobObject, error) {
+	var out []BlobObject
+	fullPrefix := s.prefix + prefix
+	var token *string
+	for {
+		resp, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(s.bucket),
+			Prefix:            aws.String(fullPrefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("s3 list %s/%s: %w", s.bucket, fullPrefix, err)
+		}
+		for _, obj := range resp.Contents {
+			if obj.Key == nil {
+				continue
+			}
+			// Strip the store-owned prefix so callers see the same
+			// keys they passed to Put.
+			key := *obj.Key
+			if s.prefix != "" && len(key) >= len(s.prefix) && key[:len(s.prefix)] == s.prefix {
+				key = key[len(s.prefix):]
+			}
+			var size int64
+			if obj.Size != nil {
+				size = *obj.Size
+			}
+			var mtime time.Time
+			if obj.LastModified != nil {
+				mtime = *obj.LastModified
+			}
+			out = append(out, BlobObject{
+				Key:          key,
+				LastModified: mtime,
+				Size:         size,
+			})
+		}
+		if resp.IsTruncated == nil || !*resp.IsTruncated {
+			break
+		}
+		token = resp.NextContinuationToken
+	}
+	return out, nil
+}
+
+// Delete removes s.prefix + key. Missing keys are treated as
+// success (idempotent cleanup).
+func (s *S3BlobStore) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.prefix + key),
+	})
+	if err != nil {
+		var nsk *s3types.NoSuchKey
+		if errors.As(err, &nsk) {
+			return nil
+		}
+		var nf *s3types.NotFound
+		if errors.As(err, &nf) {
+			return nil
+		}
+		return fmt.Errorf("s3 delete %s/%s%s: %w", s.bucket, s.prefix, key, err)
+	}
+	return nil
 }

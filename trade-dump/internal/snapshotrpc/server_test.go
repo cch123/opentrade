@@ -579,6 +579,86 @@ func TestServer_TakeSnapshot_SemaphoreLimitsInflight(t *testing.T) {
 	wg.Wait()
 }
 
+// autoPrefixBlob wraps a stubBlob to simulate S3BlobStore's internal
+// prefix behaviour: every Put/Get call has the configured prefix
+// prepended to the key before it reaches the backing map.
+//
+// Used by TestServer_TakeSnapshot_NoDoubleKeyPrefix to verify the
+// handler does NOT apply its own KeyPrefix on top of a store that
+// already self-prefixes (codex review M1d catch — double-prefixed
+// keys fall outside the housekeeper's scan prefix).
+type autoPrefixBlob struct {
+	inner  *stubBlob
+	prefix string
+}
+
+func (b *autoPrefixBlob) Put(ctx context.Context, key string, body []byte) error {
+	return b.inner.Put(ctx, b.prefix+key, body)
+}
+
+func (b *autoPrefixBlob) Get(ctx context.Context, key string) ([]byte, error) {
+	return b.inner.Get(ctx, b.prefix+key)
+}
+
+// TestServer_TakeSnapshot_NoDoubleKeyPrefix regression-tests the
+// M1d codex P2 finding: when the BlobStore self-prefixes (as
+// S3BlobStore does), the handler MUST NOT apply its own KeyPrefix
+// in addition — otherwise the final key would be
+// "<storeprefix><handlerprefix>vshard-NNN-ondemand-*", which the
+// housekeeper's List("vshard-") scan misses and stale snapshots
+// accumulate forever.
+//
+// We assert: with a store that prepends "s3prefix/" internally and
+// a handler Config.KeyPrefix="" (production default), the final
+// stored key is "s3prefix/vshard-NNN-ondemand-<ms>.pb" — a single
+// prefix, matching where List("vshard-") would look.
+func TestServer_TakeSnapshot_NoDoubleKeyPrefix(t *testing.T) {
+	sh := newStubShadow()
+	sh.addEngine(0)
+	seedApply(t, sh.engines[0], 1, 99)
+	admin := newStubAdmin()
+	admin.set(0, 100)
+	innerBlob := newStubBlob()
+	store := &autoPrefixBlob{inner: innerBlob, prefix: "s3prefix/"}
+
+	srv := New(Config{
+		Logger:           zap.NewNop(),
+		Shadow:           sh,
+		Admin:            admin,
+		BlobStore:        store,
+		KeyPrefix:        "", // production default — rely on store's own prefix
+		WaitApplyTimeout: 200 * time.Millisecond,
+		nowFn:            fixedNow(1_700_000_000_000),
+	})
+
+	resp, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+		VshardId: 0, RequesterEpoch: 1,
+	})
+	if err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+
+	// Handler-reported key is in the caller's namespace (pre-store-
+	// prefix). The backing map has the store-prefixed full key.
+	wantStoredKey := "s3prefix/vshard-000-ondemand-1700000000000.pb"
+	if !innerBlob.hasKey(wantStoredKey) {
+		t.Errorf("expected stored key %q not found; inner map = %+v",
+			wantStoredKey, innerBlob.objects)
+	}
+	// Regression: the double-prefix pathological key MUST NOT exist.
+	doubleKey := "s3prefix/s3prefix/vshard-000-ondemand-1700000000000.pb"
+	if innerBlob.hasKey(doubleKey) {
+		t.Errorf("double-prefixed key %q was written; handler applied prefix twice", doubleKey)
+	}
+	// Handler-returned SnapshotKey is in the caller-facing namespace
+	// (no store prefix), which Counter's Load will pass back to the
+	// same store's Get for automatic re-prefixing.
+	if resp.SnapshotKey != "vshard-000-ondemand-1700000000000" {
+		t.Errorf("resp.SnapshotKey = %q, want %q",
+			resp.SnapshotKey, "vshard-000-ondemand-1700000000000")
+	}
+}
+
 // TestServer_TakeSnapshot_LeoReportsCaptureCursor pins codex review
 // P1: when the pipeline's Apply cursor advances past the queried
 // LEO between the LEO query and Capture, the response MUST report

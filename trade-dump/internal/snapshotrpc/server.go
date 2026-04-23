@@ -143,9 +143,18 @@ type Config struct {
 	JournalTopic string
 
 	// KeyPrefix is prepended to the on-demand snapshot blob-store
-	// key. Default "" (root). Pass the same prefix the pipeline
-	// uses so housekeeping and periodic snapshots live in the
-	// same key-space.
+	// key inside this handler. Default "" (no extra prefix).
+	//
+	// IMPORTANT: this is NOT the store-level prefix
+	// (S3BlobStore.prefix / FSBlobStore.baseDir) — those are
+	// already applied by the store's Put. Setting KeyPrefix here
+	// causes it to be applied ON TOP, so "s3://bucket/foo/" with
+	// KeyPrefix="foo/" produces the key "foo/foo/vshard-...",
+	// which the housekeeper's List("vshard-") scan will miss.
+	//
+	// Leave empty in production wiring. Override only in tests
+	// that need a sub-namespace and use a stub BlobStore without
+	// its own prefix mechanism.
 	KeyPrefix string
 
 	// Concurrency is the global in-flight limit on concurrent
