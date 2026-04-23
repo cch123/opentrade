@@ -32,17 +32,18 @@ import (
 )
 
 type Config struct {
-	InstanceID       string
-	InstanceOrdinal  int // numeric shard position 0..TotalInstances-1 (ADR-0033)
-	TotalInstances   int // number of push instances in the cluster; 1 disables sticky
-	HTTPAddr         string
-	Brokers          []string
-	MarketDataTopic  string
+	InstanceID          string
+	InstanceOrdinal     int // numeric shard position 0..TotalInstances-1 (ADR-0033)
+	TotalInstances      int // number of push instances in the cluster; 1 disables sticky
+	HTTPAddr            string
+	Brokers             []string
+	MarketDataTopic     string
 	CounterJournalTopic string
-	MarketGroupID    string
-	PrivateGroupID   string
-	SendBuffer       int
-	WriteTimeout     time.Duration
+	MarketGroupID       string
+	PrivateGroupID      string
+	SendBuffer          int
+	WriteTimeout        time.Duration
+	TrustedHeaderSecret string
 
 	// Per-connection outbound rate limit (ADR-0037). Defaults are generous
 	// enough that a normal client never trips them; an abusive client or a
@@ -50,8 +51,8 @@ type Config struct {
 	MessageRate  float64
 	MessageBurst float64
 
-	Env              string
-	LogLevel         string
+	Env      string
+	LogLevel string
 }
 
 func main() {
@@ -95,7 +96,7 @@ func main() {
 		Brokers: cfg.Brokers, ClientID: cfg.InstanceID,
 		InstanceOrdinal: cfg.InstanceOrdinal,
 		TotalInstances:  cfg.TotalInstances,
-		GroupID: cfg.PrivateGroupID, Topic: cfg.CounterJournalTopic,
+		GroupID:         cfg.PrivateGroupID, Topic: cfg.CounterJournalTopic,
 	}, h, logger)
 	if err != nil {
 		logger.Fatal("private consumer init", zap.Error(err))
@@ -104,12 +105,13 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", ws.Handler(rootCtx, h, ws.Config{
-		SendBuffer:      cfg.SendBuffer,
-		WriteTimeout:    cfg.WriteTimeout,
-		MessageRate:     cfg.MessageRate,
-		MessageBurst:    cfg.MessageBurst,
-		InstanceOrdinal: cfg.InstanceOrdinal,
-		TotalInstances:  cfg.TotalInstances,
+		SendBuffer:          cfg.SendBuffer,
+		WriteTimeout:        cfg.WriteTimeout,
+		MessageRate:         cfg.MessageRate,
+		MessageBurst:        cfg.MessageBurst,
+		InstanceOrdinal:     cfg.InstanceOrdinal,
+		TotalInstances:      cfg.TotalInstances,
+		TrustedHeaderSecret: cfg.TrustedHeaderSecret,
 	}, logger))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -185,6 +187,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.PrivateGroupID, "private-group", "", "counter-journal consumer group (default push-priv-{instance-id})")
 	flag.IntVar(&cfg.SendBuffer, "send-buffer", cfg.SendBuffer, "per-connection outbound queue depth")
 	flag.DurationVar(&cfg.WriteTimeout, "write-timeout", cfg.WriteTimeout, "per-write deadline on WS")
+	flag.StringVar(&cfg.TrustedHeaderSecret, "trusted-header-secret", "", "shared BFF/LB secret required with X-User-Id in prod")
 	flag.Float64Var(&cfg.MessageRate, "msg-rate", cfg.MessageRate, "per-connection outbound rate (msgs/s); 0 disables")
 	flag.Float64Var(&cfg.MessageBurst, "msg-burst", cfg.MessageBurst, "per-connection outbound burst capacity (msgs)")
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
@@ -216,6 +219,9 @@ func (c *Config) validate() error {
 	}
 	if c.InstanceOrdinal < 0 || c.InstanceOrdinal >= c.TotalInstances {
 		return fmt.Errorf("instance-ordinal %d must be in [0, %d)", c.InstanceOrdinal, c.TotalInstances)
+	}
+	if c.Env == "prod" && c.TrustedHeaderSecret == "" {
+		return fmt.Errorf("--trusted-header-secret required when --env=prod")
 	}
 	return nil
 }

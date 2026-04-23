@@ -111,6 +111,39 @@ func TestMiddleware_Mixed_FallsBackToHeader(t *testing.T) {
 	}
 }
 
+func TestMiddleware_Mixed_BadJWTDoesNotFallBackToHeader(t *testing.T) {
+	secret := []byte("some-secret-32-chars-or-more-aaaa")
+	h := newHandler(t, Config{Mode: ModeMixed, JWTSecret: secret})
+	r := httptest.NewRequest("GET", "/x", nil)
+	r.Header.Set(HeaderAuthorization, "Bearer not-a-real-jwt")
+	r.Header.Set(HeaderUserID, "spoofed")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, r)
+	if rr.Body.String() != "-" {
+		t.Errorf("body = %q, want anonymous after bad jwt", rr.Body.String())
+	}
+}
+
+func TestMiddleware_Mixed_BadAPIKeyDoesNotFallBackToHeader(t *testing.T) {
+	store := &fakeStore{m: map[string]struct{ s, u, role string }{
+		"K": {s: "S", u: "api-user", role: RoleUser},
+	}}
+	now := time.Unix(1_700_000_000, 0)
+	h := newHandler(t, Config{
+		Mode:        ModeMixed,
+		APIKeyStore: store,
+		Now:         func() time.Time { return now },
+	})
+	r := httptest.NewRequest("GET", "/x?timestamp="+itoa(now.UnixMilli())+"&signature=deadbeef", nil)
+	r.Header.Set(HeaderAPIKey, "K")
+	r.Header.Set(HeaderUserID, "spoofed")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, r)
+	if rr.Body.String() != "-" {
+		t.Errorf("body = %q, want anonymous after bad api key", rr.Body.String())
+	}
+}
+
 func TestMiddleware_UnknownModeFails(t *testing.T) {
 	if _, err := NewMiddleware(Config{Mode: "gnmo"}); err == nil {
 		t.Fatal("expected error for unknown mode")

@@ -154,3 +154,67 @@ func TestSticky_SingleInstanceNoFilter(t *testing.T) {
 	}
 	_ = c.Close(websocket.StatusNormalClosure, "done")
 }
+
+func TestTrustedHeaderSecretRejectsSpoofedUserID(t *testing.T) {
+	logger := zap.NewNop()
+	h := hub.New(logger)
+	baseCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", ws.Handler(baseCtx, h, ws.Config{
+		SendBuffer:          4,
+		WriteTimeout:        time.Second,
+		TrustedHeaderSecret: "shared-secret",
+	}, logger))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, dialCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dialCancel()
+	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws"
+	header := http.Header{}
+	header.Set(ws.HeaderUserID, "alice")
+	_, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
+	if err == nil {
+		t.Fatal("expected dial to fail without trusted auth")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%v err=%v, want 401", statusCode(resp), err)
+	}
+}
+
+func TestTrustedHeaderSecretAcceptsBFFHeader(t *testing.T) {
+	logger := zap.NewNop()
+	h := hub.New(logger)
+	baseCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", ws.Handler(baseCtx, h, ws.Config{
+		SendBuffer:          4,
+		WriteTimeout:        time.Second,
+		TrustedHeaderSecret: "shared-secret",
+	}, logger))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, dialCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dialCancel()
+	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws"
+	header := http.Header{}
+	header.Set(ws.HeaderUserID, "alice")
+	header.Set(ws.HeaderTrustedAuth, "Bearer shared-secret")
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_ = c.Close(websocket.StatusNormalClosure, "done")
+}
+
+func statusCode(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}

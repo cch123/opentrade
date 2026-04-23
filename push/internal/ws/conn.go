@@ -58,6 +58,11 @@ type Config struct {
 	// before accepting the upgrade. <=1 disables the check.
 	InstanceOrdinal int
 	TotalInstances  int
+
+	// TrustedHeaderSecret gates private connections. When non-empty, the HTTP
+	// handler only accepts X-User-Id if BFF/LB also sends the matching
+	// X-OpenTrade-Internal-Auth header.
+	TrustedHeaderSecret string
 }
 
 // NewConn wraps ws into a ready-but-not-running Conn. The caller must call

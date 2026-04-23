@@ -36,30 +36,31 @@ import (
 )
 
 type Config struct {
-	HTTPAddr          string
-	CounterShards     []string
-	PushWSURL         string // upstream push /ws endpoint; empty disables the WS proxy
-	WSProxyDialTimeout time.Duration
-	UserRateLimit     int
-	UserRateWindow    time.Duration
-	IPRateLimit       int
-	IPRateWindow      time.Duration
-	ReadHeaderTimeout time.Duration
-	ShutdownGrace     time.Duration
+	HTTPAddr                string
+	CounterShards           []string
+	PushWSURL               string // upstream push /ws endpoint; empty disables the WS proxy
+	WSProxyDialTimeout      time.Duration
+	PushTrustedHeaderSecret string
+	UserRateLimit           int
+	UserRateWindow          time.Duration
+	IPRateLimit             int
+	IPRateWindow            time.Duration
+	ReadHeaderTimeout       time.Duration
+	ShutdownGrace           time.Duration
 
 	// Market-data cache for reconnect replay (ADR-0038). Empty brokers
 	// disables the cache and the /v1/depth + /v1/klines endpoints return
 	// 503.
-	MarketBrokers  []string
-	MarketTopic    string
-	MarketGroupID  string
-	KlineBuffer    int
+	MarketBrokers []string
+	MarketTopic   string
+	MarketGroupID string
+	KlineBuffer   int
 
 	// Auth (ADR-0039). AuthMode in {"header","jwt","api-key","mixed"}.
 	// Default "header" = legacy X-User-Id trust-the-header scheme.
-	AuthMode     string
-	JWTSecret    string
-	APIKeysFile  string
+	AuthMode    string
+	JWTSecret   string
+	APIKeysFile string
 
 	// Conditional service endpoint (ADR-0040). Empty disables the
 	// /v1/conditional endpoints with 503.
@@ -83,8 +84,8 @@ type Config struct {
 	VShardCount    int
 	ClusterRoot    string
 
-	Env               string
-	LogLevel          string
+	Env      string
+	LogLevel string
 }
 
 func main() {
@@ -171,8 +172,9 @@ func main() {
 	outer := http.NewServeMux()
 	if cfg.PushWSURL != "" {
 		proxy, err := bffws.New(bffws.Config{
-			UpstreamURL: cfg.PushWSURL,
-			DialTimeout: cfg.WSProxyDialTimeout,
+			UpstreamURL:         cfg.PushWSURL,
+			DialTimeout:         cfg.WSProxyDialTimeout,
+			TrustedHeaderSecret: cfg.PushTrustedHeaderSecret,
 		}, logger)
 		if err != nil {
 			logger.Fatal("ws proxy init", zap.Error(err))
@@ -461,6 +463,7 @@ func parseFlags() Config {
 		"single-shard convenience: used when --counter-shards is empty")
 	flag.StringVar(&cfg.PushWSURL, "push-ws", "", "push /ws endpoint to reverse-proxy (e.g. ws://push:8081/ws); empty disables /ws")
 	flag.DurationVar(&cfg.WSProxyDialTimeout, "ws-dial-timeout", cfg.WSProxyDialTimeout, "WS proxy upstream dial timeout")
+	flag.StringVar(&cfg.PushTrustedHeaderSecret, "push-trusted-header-secret", "", "shared secret sent to Push with proxied X-User-Id")
 	flag.IntVar(&cfg.UserRateLimit, "user-rate", cfg.UserRateLimit, "requests per user per window")
 	flag.DurationVar(&cfg.UserRateWindow, "user-window", cfg.UserRateWindow, "user rate window")
 	flag.IntVar(&cfg.IPRateLimit, "ip-rate", cfg.IPRateLimit, "requests per IP per window")
@@ -519,6 +522,9 @@ func (c *Config) validate() error {
 		}
 	default:
 		return fmt.Errorf("--clustering-mode must be disabled or enabled, got %q", c.ClusteringMode)
+	}
+	if c.Env == "prod" && c.PushWSURL != "" && c.PushTrustedHeaderSecret == "" {
+		return fmt.Errorf("--push-trusted-header-secret required when --env=prod and --push-ws is enabled")
 	}
 	return nil
 }

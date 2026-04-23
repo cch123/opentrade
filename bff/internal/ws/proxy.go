@@ -29,14 +29,20 @@ type Config struct {
 	UpstreamURL string
 	// DialTimeout bounds the upstream handshake. Defaults to 5s.
 	DialTimeout time.Duration
+	// TrustedHeaderSecret is sent to Push alongside X-User-Id so Push can
+	// reject direct client spoofing when configured with the same secret.
+	TrustedHeaderSecret string
 }
 
 // Proxy is the BFF-side WS reverse-proxy handler.
 type Proxy struct {
-	upstream    *url.URL
-	dialTimeout time.Duration
-	logger      *zap.Logger
+	upstream            *url.URL
+	dialTimeout         time.Duration
+	trustedHeaderSecret string
+	logger              *zap.Logger
 }
+
+const headerTrustedAuth = "X-OpenTrade-Internal-Auth"
 
 // New constructs a Proxy. Returns an error when UpstreamURL is malformed.
 func New(cfg Config, logger *zap.Logger) (*Proxy, error) {
@@ -60,7 +66,12 @@ func New(cfg Config, logger *zap.Logger) (*Proxy, error) {
 	if cfg.DialTimeout <= 0 {
 		cfg.DialTimeout = 5 * time.Second
 	}
-	return &Proxy{upstream: u, dialTimeout: cfg.DialTimeout, logger: logger}, nil
+	return &Proxy{
+		upstream:            u,
+		dialTimeout:         cfg.DialTimeout,
+		trustedHeaderSecret: cfg.TrustedHeaderSecret,
+		logger:              logger,
+	}, nil
 }
 
 // Handler returns the http.HandlerFunc that upgrades the client connection
@@ -100,6 +111,9 @@ func (p *Proxy) dialUpstream(ctx context.Context, userID string) (*websocket.Con
 	header := http.Header{}
 	if userID != "" {
 		header.Set("X-User-Id", userID)
+	}
+	if p.trustedHeaderSecret != "" {
+		header.Set(headerTrustedAuth, "Bearer "+p.trustedHeaderSecret)
 	}
 	conn, _, err := websocket.Dial(dialCtx, p.upstream.String(), &websocket.DialOptions{
 		HTTPHeader: header,

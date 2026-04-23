@@ -13,23 +13,25 @@ import (
 	"github.com/coder/websocket"
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/pkg/auth"
 	bffws "github.com/xargin/opentrade/bff/internal/ws"
+	"github.com/xargin/opentrade/pkg/auth"
 )
 
 // fakeUpstream is a minimal push stand-in. It records the X-User-Id it
 // received and echoes every client frame back with a "server:" prefix so
 // tests can verify both directions without depending on the real push hub.
 type fakeUpstream struct {
-	receivedUserID string
-	recvMu         sync.Mutex
-	recv           [][]byte
-	ready          chan struct{}
+	receivedUserID      string
+	receivedTrustedAuth string
+	recvMu              sync.Mutex
+	recv                [][]byte
+	ready               chan struct{}
 }
 
 func (u *fakeUpstream) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u.receivedUserID = r.Header.Get("X-User-Id")
+		u.receivedTrustedAuth = r.Header.Get("X-OpenTrade-Internal-Auth")
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			t.Errorf("upstream accept: %v", err)
@@ -71,7 +73,12 @@ func startUpstream(t *testing.T) (*fakeUpstream, *httptest.Server) {
 
 func startProxy(t *testing.T, upstreamURL string) *httptest.Server {
 	t.Helper()
-	proxy, err := bffws.New(bffws.Config{UpstreamURL: upstreamURL}, zap.NewNop())
+	return startProxyWithSecret(t, upstreamURL, "")
+}
+
+func startProxyWithSecret(t *testing.T, upstreamURL, secret string) *httptest.Server {
+	t.Helper()
+	proxy, err := bffws.New(bffws.Config{UpstreamURL: upstreamURL, TrustedHeaderSecret: secret}, zap.NewNop())
 	if err != nil {
 		t.Fatalf("proxy new: %v", err)
 	}
@@ -119,6 +126,27 @@ func TestProxy_ForwardsBothDirectionsAndInjectsUserID(t *testing.T) {
 	}
 	if frames := upstream.frames(); len(frames) != 1 || string(frames[0]) != "hello" {
 		t.Errorf("upstream frames: %q", frames)
+	}
+}
+
+func TestProxy_InjectsTrustedHeaderSecret(t *testing.T) {
+	upstream, upstreamSrv := startUpstream(t)
+	proxySrv := startProxyWithSecret(t, upstreamSrv.URL, "shared-secret")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	header := http.Header{}
+	header.Set("X-User-Id", "alice")
+	client, _, err := websocket.Dial(ctx, wsURL(proxySrv.URL), &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+	defer client.Close(websocket.StatusNormalClosure, "done")
+
+	<-upstream.ready
+	if upstream.receivedTrustedAuth != "Bearer shared-secret" {
+		t.Errorf("trusted auth = %q", upstream.receivedTrustedAuth)
 	}
 }
 

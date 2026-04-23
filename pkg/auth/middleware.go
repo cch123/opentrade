@@ -129,23 +129,32 @@ func AdminMiddleware(store APIKeyStore, logger *zap.Logger) (func(http.Handler) 
 	return wrap(authAPIKey(cfg)), nil
 }
 
+type authState uint8
+
+const (
+	authNoMatch authState = iota
+	authSuccess
+	authFailure
+)
+
 // authResult is the (user_id, role) a chain element extracted from the
-// request. Empty user_id means the scheme did not apply and the next
-// scheme (in mixed mode) should be tried.
+// request. authFailure means credentials for this scheme were present but
+// invalid; mixed mode must stop there instead of falling through to weaker
+// schemes such as the trusted header.
 type authResult struct {
+	state  authState
 	userID string
 	role   string
 }
 
-// authFn extracts auth details from the request. Empty result.userID means
-// this scheme doesn't apply (caller moves on to the next).
+// authFn extracts auth details from the request.
 type authFn func(r *http.Request) authResult
 
 func wrap(fn authFn) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			res := fn(r)
-			if res.userID != "" {
+			if res.state == authSuccess && res.userID != "" {
 				ctx := WithUserID(r.Context(), res.userID)
 				role := res.role
 				if role == "" {
@@ -160,7 +169,11 @@ func wrap(fn authFn) func(http.Handler) http.Handler {
 }
 
 func authHeader(r *http.Request) authResult {
-	return authResult{userID: r.Header.Get(HeaderUserID), role: RoleUser}
+	uid := r.Header.Get(HeaderUserID)
+	if uid == "" {
+		return authResult{}
+	}
+	return authResult{state: authSuccess, userID: uid, role: RoleUser}
 }
 
 func authJWT(cfg Config) authFn {
@@ -171,15 +184,15 @@ func authJWT(cfg Config) authFn {
 		}
 		token := strings.TrimPrefix(raw, "Bearer ")
 		if token == "" {
-			return authResult{}
+			return authResult{state: authFailure}
 		}
 		uid, err := VerifyHS256(token, cfg.JWTSecret, cfg.Now())
 		if err != nil {
 			cfg.Logger.Debug("jwt verify failed",
 				zap.String("path", r.URL.Path), zap.Error(err))
-			return authResult{}
+			return authResult{state: authFailure}
 		}
-		return authResult{userID: uid, role: RoleUser}
+		return authResult{state: authSuccess, userID: uid, role: RoleUser}
 	}
 }
 
@@ -192,16 +205,16 @@ func authAPIKey(cfg Config) authFn {
 		if err != nil {
 			cfg.Logger.Debug("api-key verify failed",
 				zap.String("path", r.URL.Path), zap.Error(err))
-			return authResult{}
+			return authResult{state: authFailure}
 		}
-		return authResult{userID: uid, role: role}
+		return authResult{state: authSuccess, userID: uid, role: role}
 	}
 }
 
 func authFirstMatch(fns ...authFn) authFn {
 	return func(r *http.Request) authResult {
 		for _, fn := range fns {
-			if res := fn(r); res.userID != "" {
+			if res := fn(r); res.state != authNoMatch {
 				return res
 			}
 		}

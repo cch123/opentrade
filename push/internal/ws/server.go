@@ -3,9 +3,11 @@ package ws
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/coder/websocket"
 	"go.uber.org/zap"
@@ -22,6 +24,11 @@ const HeaderUserID = "X-User-Id"
 // resolve where to reconnect (ADR-0033).
 const HeaderCorrectInstance = "X-Correct-Instance"
 
+// HeaderTrustedAuth is stamped by BFF/LB when forwarding authenticated users
+// to Push. Configure TrustedHeaderSecret to require this header whenever
+// X-User-Id is present.
+const HeaderTrustedAuth = "X-OpenTrade-Internal-Auth"
+
 // Handler returns an http.HandlerFunc that upgrades incoming requests to
 // WebSocket and spawns a Conn bound to the given Hub.
 //
@@ -36,6 +43,11 @@ const HeaderCorrectInstance = "X-Correct-Instance"
 func Handler(base context.Context, h *hub.Hub, cfg Config, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Header.Get(HeaderUserID)
+		if userID != "" && cfg.TrustedHeaderSecret != "" && !trustedHeaderOK(r, cfg.TrustedHeaderSecret) {
+			http.Error(w, "invalid trusted header", http.StatusUnauthorized)
+			logger.Warn("ws trusted header rejected", zap.String("remote", r.RemoteAddr))
+			return
+		}
 
 		if cfg.TotalInstances > 1 && userID != "" {
 			if owner := shard.Index(userID, cfg.TotalInstances); owner != cfg.InstanceOrdinal {
@@ -73,6 +85,21 @@ func Handler(base context.Context, h *hub.Hub, cfg Config, logger *zap.Logger) h
 
 		logger.Debug("ws disconnected", zap.String("conn", id))
 	}
+}
+
+func trustedHeaderOK(r *http.Request, secret string) bool {
+	raw := strings.TrimSpace(r.Header.Get(HeaderTrustedAuth))
+	if raw == "" {
+		return false
+	}
+	token := raw
+	if strings.HasPrefix(strings.ToLower(raw), "bearer ") {
+		token = strings.TrimSpace(raw[len("Bearer "):])
+	}
+	if token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(secret)) == 1
 }
 
 func newConnID() string {

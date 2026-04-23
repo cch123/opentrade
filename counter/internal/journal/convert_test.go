@@ -73,3 +73,94 @@ func TestTransferTypeCoverage(t *testing.T) {
 		t.Fatal("expected error for unknown type")
 	}
 }
+
+func TestBuildSettlementEventCarriesReplayFields(t *testing.T) {
+	state := engine.NewShardState(0)
+	state.Orders().RestoreInsert(&engine.Order{
+		ID:           77,
+		UserID:       "u1",
+		Symbol:       "BTC-USDT",
+		Side:         engine.SideBid,
+		Type:         engine.OrderTypeLimit,
+		Price:        dec.New("50000"),
+		Qty:          dec.New("1"),
+		FrozenAsset:  "USDT",
+		FrozenAmount: dec.New("50000"),
+		Status:       engine.OrderStatusNew,
+	})
+	evt, err := BuildSettlementEvent(SettlementEventInput{
+		CounterSeqID:   18,
+		ProducerID:     "counter-shard-0-main",
+		AccountVersion: 3,
+		Symbol:         "BTC-USDT",
+		TradeID:        "trade-1",
+		Side:           engine.SideBid,
+		Price:          "50000",
+		Qty:            "0.1",
+		Party: engine.PartySettlement{
+			UserID:           "u1",
+			OrderID:          77,
+			BaseDelta:        dec.New("0.1"),
+			QuoteDelta:       dec.New("-5000"),
+			FrozenQuoteDelta: dec.New("-5000"),
+			FilledQtyAfter:   dec.New("0.1"),
+			StatusAfter:      engine.OrderStatusPartiallyFilled,
+		},
+		BaseAfter: engine.Balance{
+			Available: dec.New("0.1"),
+			Version:   1,
+		},
+		QuoteAfter: engine.Balance{
+			Available: dec.New("45000"),
+			Frozen:    dec.New("45000"),
+			Version:   2,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settle := evt.GetSettlement()
+	if settle == nil {
+		t.Fatalf("payload = %T, want Settlement", evt.Payload)
+	}
+	if settle.Price != "50000" || settle.Qty != "0.1" || settle.Side != eventpb.Side_SIDE_BUY {
+		t.Fatalf("settlement replay fields = price %q qty %q side %v", settle.Price, settle.Qty, settle.Side)
+	}
+	if err := engine.ApplyCounterJournalEvent(state, evt); err != nil {
+		t.Fatalf("apply settlement: %v", err)
+	}
+	o := state.Orders().Get(77)
+	if o.FilledQty.String() != "0.1" {
+		t.Fatalf("filled_qty = %s, want 0.1", o.FilledQty)
+	}
+	if o.FrozenSpent.String() != "5000" {
+		t.Fatalf("frozen_spent = %s, want 5000", o.FrozenSpent)
+	}
+}
+
+func TestBuildUnfreezeEvent(t *testing.T) {
+	evt := BuildUnfreezeEvent(UnfreezeEventInput{
+		CounterSeqID:   19,
+		ProducerID:     "counter-shard-0-main",
+		AccountVersion: 4,
+		UserID:         "u1",
+		OrderID:        77,
+		Asset:          "USDT",
+		Amount:         "2500",
+		BalanceAfter: engine.Balance{
+			Available: dec.New("47500"),
+			Frozen:    dec.New("0"),
+			Version:   5,
+		},
+	})
+	unfreeze := evt.GetUnfreeze()
+	if unfreeze == nil {
+		t.Fatalf("payload = %T, want Unfreeze", evt.Payload)
+	}
+	if unfreeze.UserId != "u1" || unfreeze.OrderId != 77 || unfreeze.Asset != "USDT" || unfreeze.Amount != "2500" {
+		t.Fatalf("unfreeze = %+v", unfreeze)
+	}
+	if unfreeze.BalanceAfter.Available != "47500" || unfreeze.BalanceAfter.Frozen != "0" || unfreeze.BalanceAfter.Version != 5 {
+		t.Fatalf("balance_after = %+v", unfreeze.BalanceAfter)
+	}
+}

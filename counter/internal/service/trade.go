@@ -175,10 +175,14 @@ func (s *Service) buildRejectedFn(ctx context.Context, r *eventpb.OrderRejected,
 			return nil
 		}
 		oldStatus := o.Status
-		if err := s.unfreezeResidual(o); err != nil {
+		unfreeze, err := s.unfreezeResidual(o)
+		if err != nil {
 			return err
 		}
 		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusRejected, time.Now().UnixMilli()); err != nil {
+			return err
+		}
+		if err := s.emitUnfreeze(ctx, counterSeq, o, unfreeze); err != nil {
 			return err
 		}
 		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusRejected, r.Reason); err != nil {
@@ -374,6 +378,9 @@ func (s *Service) buildSelfTradeFn(ctx context.Context, ti engine.TradeInput, ma
 				Symbol:         ti.Symbol,
 				TradeID:        ti.TradeID,
 				Party:          party,
+				Side:           o.Side,
+				Price:          ti.Price.String(),
+				Qty:            ti.Qty.String(),
 				BaseAfter:      baseAfter,
 				QuoteAfter:     quoteAfter,
 			})
@@ -432,10 +439,14 @@ func (s *Service) buildCancelledFn(ctx context.Context, c *eventpb.OrderCancelle
 			return nil
 		}
 		oldStatus := o.Status
-		if err := s.unfreezeResidual(o); err != nil {
+		unfreeze, err := s.unfreezeResidual(o)
+		if err != nil {
 			return err
 		}
 		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusCanceled, time.Now().UnixMilli()); err != nil {
+			return err
+		}
+		if err := s.emitUnfreeze(ctx, counterSeq, o, unfreeze); err != nil {
 			return err
 		}
 		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusCanceled, 0); err != nil {
@@ -481,10 +492,14 @@ func (s *Service) buildExpiredFn(ctx context.Context, e *eventpb.OrderExpired, m
 			return nil
 		}
 		oldStatus := o.Status
-		if err := s.unfreezeResidual(o); err != nil {
+		unfreeze, err := s.unfreezeResidual(o)
+		if err != nil {
 			return err
 		}
 		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusExpired, time.Now().UnixMilli()); err != nil {
+			return err
+		}
+		if err := s.emitUnfreeze(ctx, counterSeq, o, unfreeze); err != nil {
 			return err
 		}
 		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusExpired, e.Reason); err != nil {
@@ -579,6 +594,9 @@ func (s *Service) buildPartyFn(ctx context.Context, ti engine.TradeInput, maker 
 			Symbol:         ti.Symbol,
 			TradeID:        ti.TradeID,
 			Party:          party,
+			Side:           o.Side,
+			Price:          ti.Price.String(),
+			Qty:            ti.Qty.String(),
 			BaseAfter:      baseAfter,
 			QuoteAfter:     quoteAfter,
 		})
@@ -643,23 +661,33 @@ func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInp
 //	market buy by quote:  QuoteQty       − Σ matchPrice * matchQty
 //
 // ADR-0035.
-func (s *Service) unfreezeResidual(o *engine.Order) error {
+type unfreezeResult struct {
+	amount       dec.Decimal
+	balanceAfter engine.Balance
+	ok           bool
+}
+
+func (s *Service) unfreezeResidual(o *engine.Order) (unfreezeResult, error) {
 	if o.FrozenAsset == "" {
-		return nil
+		return unfreezeResult{}, nil
 	}
 	residual := o.FrozenAmount.Sub(o.FrozenSpent)
 	if residual.Sign() <= 0 {
-		return nil
+		return unfreezeResult{}, nil
 	}
 	b := s.state.Balance(o.UserID, o.FrozenAsset)
 	b.Frozen = b.Frozen.Sub(residual)
 	b.Available = b.Available.Add(residual)
 	if b.Frozen.Sign() < 0 {
-		return fmt.Errorf("unfreeze: frozen would be negative for %s %s", o.UserID, o.FrozenAsset)
+		return unfreezeResult{}, fmt.Errorf("unfreeze: frozen would be negative for %s %s", o.UserID, o.FrozenAsset)
 	}
 	// CommitBalance goes through setBalance → version bumps on both layers.
 	s.state.CommitBalance(o.UserID, o.FrozenAsset, b)
-	return nil
+	return unfreezeResult{
+		amount:       residual,
+		balanceAfter: s.state.Balance(o.UserID, o.FrozenAsset),
+		ok:           true,
+	}, nil
 }
 
 // logForeignSkip records a trade-event record that belongs to another shard
@@ -686,6 +714,23 @@ func (s *Service) logForeignSkip(kind, userID string, orderID uint64) {
 // AccountVersion is read AT emit time. Callers that just called
 // unfreezeResidual will see the bumped value; pure-status transitions
 // (PENDING_NEW → NEW) emit the still-stable pre-call value.
+func (s *Service) emitUnfreeze(ctx context.Context, counterSeq uint64, o *engine.Order, res unfreezeResult) error {
+	if !res.ok {
+		return nil
+	}
+	evt := journal.BuildUnfreezeEvent(journal.UnfreezeEventInput{
+		CounterSeqID:   counterSeq,
+		ProducerID:     s.cfg.ProducerID,
+		AccountVersion: s.state.Account(o.UserID).Version(),
+		UserID:         o.UserID,
+		OrderID:        o.ID,
+		Asset:          o.FrozenAsset,
+		Amount:         res.amount.String(),
+		BalanceAfter:   res.balanceAfter,
+	})
+	return s.publisher.Publish(ctx, o.UserID, evt)
+}
+
 func (s *Service) emitStatus(ctx context.Context, counterSeq uint64, o *engine.Order, oldStatus, newStatus engine.OrderStatus, reason eventpb.RejectReason) error {
 	evt := journal.BuildOrderStatusEvent(journal.OrderStatusEventInput{
 		CounterSeqID:   counterSeq,

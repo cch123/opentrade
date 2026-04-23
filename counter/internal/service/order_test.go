@@ -11,16 +11,16 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
 type mockTxnPublisher struct {
-	mu        sync.Mutex
-	pairs     []txnPair
-	failNext  error
+	mu       sync.Mutex
+	pairs    []txnPair
+	failNext error
 }
 
 type txnPair struct {
@@ -317,5 +317,68 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 	// settlement events + 2 terminal OrderStatusEvent(Filled) = 7.
 	if got := len(pub.Events()); got < 7 {
 		t.Fatalf("publisher events = %d, want >= 7", got)
+	}
+}
+
+func TestTerminalCancelEmitsUnfreezeBeforeStatus(t *testing.T) {
+	svc, state, pub, txn := newOrderFixture(t)
+
+	placed, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
+		UserID: "u1", Symbol: "BTC-USDT",
+		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Price: dec.New("100"), Qty: dec.New("2"),
+	})
+	if err != nil || !placed.Accepted {
+		t.Fatalf("place: %+v %v", placed, err)
+	}
+	if err := svc.HandleTradeEvent(context.Background(), &eventpb.TradeEvent{
+		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
+			UserId: "u1", OrderId: placed.OrderID, Symbol: "BTC-USDT",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleTradeEvent(context.Background(), &eventpb.TradeEvent{
+		Payload: &eventpb.TradeEvent_Cancelled{Cancelled: &eventpb.OrderCancelled{
+			UserId: "u1", OrderId: placed.OrderID, Symbol: "BTC-USDT",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := pub.Events()
+	if len(events) < 5 {
+		t.Fatalf("publisher events = %d, want seed transfers + accepted + unfreeze + status", len(events))
+	}
+	unfreeze := events[len(events)-2].GetUnfreeze()
+	if unfreeze == nil {
+		t.Fatalf("penultimate event = %T, want Unfreeze", events[len(events)-2].Payload)
+	}
+	if unfreeze.Amount != "200" || unfreeze.BalanceAfter.Available != "1000" || unfreeze.BalanceAfter.Frozen != "0" {
+		t.Fatalf("unfreeze = %+v", unfreeze)
+	}
+	status := events[len(events)-1].GetOrderStatus()
+	if status == nil || status.NewStatus != eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED {
+		t.Fatalf("last event = %+v, want canceled status", status)
+	}
+
+	shadow := engine.NewShardState(0)
+	replay := append([]*eventpb.CounterJournalEvent{}, events[:2]...)
+	replay = append(replay, txn.pairs[0].Journal)
+	replay = append(replay, events[2:]...)
+	for _, evt := range replay {
+		if err := engine.ApplyCounterJournalEvent(shadow, evt); err != nil {
+			t.Fatalf("replay %T: %v", evt.Payload, err)
+		}
+	}
+	bal := shadow.Balance("u1", "USDT")
+	if bal.Available.String() != "1000" || bal.Frozen.String() != "0" {
+		t.Fatalf("shadow USDT = %+v, want available=1000 frozen=0", bal)
+	}
+	if o := shadow.Orders().Get(placed.OrderID); o != nil {
+		t.Fatalf("shadow order still present: %+v", o)
+	}
+	if bal = state.Balance("u1", "USDT"); bal.Available.String() != "1000" || bal.Frozen.String() != "0" {
+		t.Fatalf("live USDT = %+v, want available=1000 frozen=0", bal)
 	}
 }

@@ -238,6 +238,9 @@ type SettlementEventInput struct {
 	Symbol  string
 	Party   engine.PartySettlement
 	TradeID string
+	Side    engine.Side
+	Price   string
+	Qty     string
 
 	// Snapshot of the (base, quote) balances for the party AFTER applying the
 	// settlement. Balance.Version is propagated to BalanceSnapshot.Version.
@@ -256,6 +259,10 @@ func BuildSettlementEvent(in SettlementEventInput) (*eventpb.CounterJournalEvent
 	if ts == 0 {
 		ts = time.Now().UnixMilli()
 	}
+	side, err := sideToProto(in.Side)
+	if err != nil {
+		return nil, err
+	}
 	return &eventpb.CounterJournalEvent{
 		Meta: &eventpb.EventMeta{
 			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
@@ -268,13 +275,14 @@ func BuildSettlementEvent(in SettlementEventInput) (*eventpb.CounterJournalEvent
 				OrderId:       in.Party.OrderID,
 				TradeId:       in.TradeID,
 				Symbol:        in.Symbol,
+				Side:          side,
 				DeltaBase:     in.Party.BaseDelta.String(),
 				DeltaQuote:    in.Party.QuoteDelta.String(),
 				UnfreezeBase:  in.Party.FrozenBaseDelta.Neg().String(),
 				UnfreezeQuote: in.Party.FrozenQuoteDelta.Neg().String(),
 				FeeAmount:     "0",
-				Qty:           "",
-				Price:         "",
+				Qty:           in.Qty,
+				Price:         in.Price,
 				BaseBalanceAfter: &eventpb.BalanceSnapshot{
 					UserId:    in.Party.UserID,
 					Asset:     base,
@@ -292,6 +300,52 @@ func BuildSettlementEvent(in SettlementEventInput) (*eventpb.CounterJournalEvent
 			},
 		},
 	}, nil
+}
+
+// UnfreezeEventInput is the input to BuildUnfreezeEvent.
+type UnfreezeEventInput struct {
+	CounterSeqID   uint64
+	TsUnixMS       int64
+	TraceID        string
+	ProducerID     string
+	AccountVersion uint64
+
+	UserID       string
+	OrderID      uint64
+	Asset        string
+	Amount       string
+	BalanceAfter engine.Balance
+}
+
+// BuildUnfreezeEvent builds a CounterJournalEvent/UnfreezeEvent for terminal
+// residual releases (reject / cancel / expire).
+func BuildUnfreezeEvent(in UnfreezeEventInput) *eventpb.CounterJournalEvent {
+	ts := in.TsUnixMS
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+	return &eventpb.CounterJournalEvent{
+		Meta: &eventpb.EventMeta{
+			TsUnixMs: ts, TraceId: in.TraceID, ProducerId: in.ProducerID,
+		},
+		AccountVersion: in.AccountVersion,
+		CounterSeqId:   in.CounterSeqID,
+		Payload: &eventpb.CounterJournalEvent_Unfreeze{
+			Unfreeze: &eventpb.UnfreezeEvent{
+				UserId:  in.UserID,
+				OrderId: in.OrderID,
+				Asset:   in.Asset,
+				Amount:  in.Amount,
+				BalanceAfter: &eventpb.BalanceSnapshot{
+					UserId:    in.UserID,
+					Asset:     in.Asset,
+					Available: in.BalanceAfter.Available.String(),
+					Frozen:    in.BalanceAfter.Frozen.String(),
+					Version:   in.BalanceAfter.Version,
+				},
+			},
+		},
+	}
 }
 
 // OrderStatusEventInput is the input to BuildOrderStatusEvent.
