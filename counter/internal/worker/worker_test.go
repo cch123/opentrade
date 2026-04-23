@@ -153,3 +153,75 @@ func TestFormatConstants(t *testing.T) {
 		t.Errorf("txn id = %q, want counter-vshard-042", got)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// ADR-0064 M2c StartupMode tests
+// -----------------------------------------------------------------------------
+
+// TestStartupMode_StringRoundTrip — every enumerated value surfaces
+// a stable wire string AND ParseStartupMode accepts it. Operators
+// wire --startup-mode via CLI; drift between ParseStartupMode and
+// String would silently mis-route Counter boot.
+func TestStartupMode_StringRoundTrip(t *testing.T) {
+	cases := []struct {
+		mode StartupMode
+		name string
+	}{
+		{StartupModeAuto, "auto"},
+		{StartupModeOnDemand, "on-demand"},
+		{StartupModeLegacy, "legacy"},
+	}
+	for _, tc := range cases {
+		if got := tc.mode.String(); got != tc.name {
+			t.Errorf("%d.String() = %q, want %q", tc.mode, got, tc.name)
+		}
+		parsed, err := ParseStartupMode(tc.name)
+		if err != nil {
+			t.Errorf("ParseStartupMode(%q) err: %v", tc.name, err)
+		}
+		if parsed != tc.mode {
+			t.Errorf("ParseStartupMode(%q) = %d, want %d", tc.name, parsed, tc.mode)
+		}
+	}
+}
+
+// TestParseStartupMode_EmptyDefaultsAuto pins the CLI affordance:
+// unset --startup-mode (or blank env var) should yield Auto rather
+// than force operators to type "auto" explicitly.
+func TestParseStartupMode_EmptyDefaultsAuto(t *testing.T) {
+	got, err := ParseStartupMode("")
+	if err != nil {
+		t.Fatalf("ParseStartupMode(\"\") err: %v", err)
+	}
+	if got != StartupModeAuto {
+		t.Fatalf("ParseStartupMode(\"\") = %d, want StartupModeAuto(%d)",
+			got, StartupModeAuto)
+	}
+}
+
+// TestParseStartupMode_UnknownErrors — unknown values must be an
+// error, not silently downgraded to Auto. Silent downgrade would
+// mask typos in deployment configs.
+func TestParseStartupMode_UnknownErrors(t *testing.T) {
+	cases := []string{"AUTO", "Legacy", "ondemand", "disabled", "xxx"}
+	for _, s := range cases {
+		_, err := ParseStartupMode(s)
+		if err == nil {
+			t.Errorf("ParseStartupMode(%q) err = nil, want error", s)
+		}
+	}
+}
+
+// TestStartupMode_StringFallback: future values that haven't been
+// added to the String() switch still produce something readable
+// instead of Go's empty-string default.
+func TestStartupMode_StringFallback(t *testing.T) {
+	future := StartupMode(99)
+	got := future.String()
+	if got == "" {
+		t.Fatal("String() returned empty; expected a placeholder")
+	}
+	if !strings.Contains(got, "99") {
+		t.Errorf("String() = %q, want to contain raw number", got)
+	}
+}

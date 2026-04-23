@@ -44,6 +44,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/server"
 	"github.com/xargin/opentrade/counter/snapshot"
 	"github.com/xargin/opentrade/counter/internal/symregistry"
+	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
 	"github.com/xargin/opentrade/counter/internal/worker"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
@@ -87,6 +88,15 @@ type Config struct {
 
 	// Observability (ADR-0060 M8 + ADR-0062 M8)
 	MetricsAddr string
+
+	// ADR-0064 on-demand startup (hot path for faster Counter
+	// recovery). Empty endpoint / legacy StartupMode disables the
+	// path entirely — Counter falls back to ADR-0060 §4.2 load +
+	// catchUpJournal transparently, which is the only safe mode
+	// before trade-dump's TakeSnapshot surface is deployed.
+	StartupMode       string        // "auto" (default) | "on-demand" | "legacy"
+	TradeDumpEndpoint string        // host:port; empty disables on-demand regardless of mode
+	OnDemandTimeout   time.Duration // per-attempt budget (sentinel + RPC + download); 0 → worker default (3s)
 
 	Env      string
 	LogLevel string
@@ -173,6 +183,44 @@ func main() {
 		}
 	}()
 
+	// ADR-0064 on-demand startup wiring. Dial the trade-dump
+	// endpoint once per process so every VShardWorker shares a
+	// pooled connection. An empty endpoint (or an unparsable
+	// startup mode) disables on-demand — the template below still
+	// gets a nil OnDemandClient and legacy startup takes over.
+	startupMode, err := worker.ParseStartupMode(cfg.StartupMode)
+	if err != nil {
+		logger.Fatal("invalid --startup-mode", zap.Error(err))
+	}
+	var tdClient *tradedumpclient.Client
+	if cfg.TradeDumpEndpoint != "" && startupMode != worker.StartupModeLegacy {
+		tdClient, err = tradedumpclient.Dial(rootCtx, cfg.TradeDumpEndpoint, logger)
+		if err != nil {
+			// Dial failures should NOT keep Counter from booting —
+			// ADR-0064 §4 contract is that the legacy path always
+			// works without on-demand. Log prominently and degrade.
+			logger.Warn("trade-dump dial failed; on-demand disabled",
+				zap.String("endpoint", cfg.TradeDumpEndpoint),
+				zap.Error(err))
+			tdClient = nil
+		} else {
+			defer func() { _ = tdClient.Close() }()
+			logger.Info("on-demand startup enabled",
+				zap.String("endpoint", cfg.TradeDumpEndpoint),
+				zap.String("mode", startupMode.String()),
+				zap.Duration("timeout", cfg.OnDemandTimeout))
+		}
+	} else if startupMode == worker.StartupModeOnDemand {
+		// Explicit on-demand requirement with no endpoint is a
+		// deployment error — fail fast rather than silently falling
+		// back to legacy, which would defeat the operator's intent.
+		logger.Fatal("--startup-mode=on-demand requires --trade-dump-endpoint")
+	} else {
+		logger.Info("on-demand startup disabled",
+			zap.String("mode", startupMode.String()),
+			zap.String("endpoint", cfg.TradeDumpEndpoint))
+	}
+
 	mgr, err := worker.NewManager(cluster, worker.WorkerTemplate{
 		NodeID:                    cfg.NodeID,
 		VShardCount:               cfg.VShardCount,
@@ -186,6 +234,9 @@ func main() {
 		DefaultMaxOpenLimitOrders: cfg.DefaultMaxOpenLimitOrders,
 		SymbolLookup:              symbolLookup,
 		Metrics:                   counterMetrics,
+		StartupMode:               startupMode,
+		OnDemandClient:            tdClient,
+		OnDemandTimeout:           cfg.OnDemandTimeout,
 	}, logger)
 	if err != nil {
 		logger.Fatal("worker manager init", zap.Error(err))
@@ -394,6 +445,11 @@ func parseFlags() Config {
 	flag.UintVar(&defaultMaxOpenLimitOrders, "default-max-open-limit-orders", uint(cfg.DefaultMaxOpenLimitOrders), "ADR-0054 fallback per-(user, symbol) LIMIT cap when SymbolConfig.MaxOpenLimitOrders is zero (0 disables cap; default 100)")
 
 	flag.StringVar(&cfg.MetricsAddr, "metrics-addr", cfg.MetricsAddr, "HTTP /metrics listen address (empty disables; ADR-0060 M8 / ADR-0062 M8)")
+
+	// ADR-0064 on-demand startup flags (startup hot path — see ADR §3).
+	flag.StringVar(&cfg.StartupMode, "startup-mode", cfg.StartupMode, "startup recovery mode: auto (try on-demand, fallback to legacy) | on-demand (required, fatal on fallback) | legacy (skip on-demand). ADR-0064.")
+	flag.StringVar(&cfg.TradeDumpEndpoint, "trade-dump-endpoint", cfg.TradeDumpEndpoint, "host:port of trade-dump's TakeSnapshot gRPC server; empty disables on-demand regardless of --startup-mode. ADR-0064.")
+	flag.DurationVar(&cfg.OnDemandTimeout, "on-demand-timeout", cfg.OnDemandTimeout, "per-attempt budget for the full on-demand path (sentinel produce + RPC + blob download). 0 → worker default (3s). ADR-0064.")
 
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")

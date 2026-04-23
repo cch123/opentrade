@@ -238,10 +238,17 @@ func (p *TxnProducer) PublishToVShard(
 // by tests in M1a). Its value is entirely in its physical presence
 // — not in any state transition.
 //
-// Retry semantics (ADR-0060 §3): same as Publish — bounded retry,
-// panic on budget exhaustion. A transient Kafka hiccup at startup
-// is recoverable; a persistent failure aborts Counter boot and the
-// ADR-0058 cluster layer reassigns the vshard.
+// Retry semantics (ADR-0060 §3): same as Publish — bounded retry
+// with a panic on budget exhaustion (PublishRetryBudget, default
+// 5s). **IMPORTANT startup-path nuance**: runTxnWithRetry checks
+// ctx.Err() at the top of every iteration and returns ctx.Err()
+// BEFORE the budget-exhaustion panic. Callers that need this to
+// degrade to a fallback error rather than crash the process (e.g.
+// ADR-0064 §3 Phase 1 on-demand startup — the `worker.loadOnDemand`
+// path wraps this call in a bounded onDemandCtx) MUST pass a ctx
+// whose deadline is shorter than PublishRetryBudget. Steady-state
+// RPC callers keep the panic-on-exhaust semantics (ADR-0060 §3
+// vshard failover) by passing the long-lived worker ctx.
 //
 // Notes:
 //   - vshardID MUST match this producer's configured vshard; we

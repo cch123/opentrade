@@ -23,7 +23,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -37,6 +36,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
+	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
 	"github.com/xargin/opentrade/counter/snapshot"
 	"github.com/xargin/opentrade/pkg/idgen"
 )
@@ -92,7 +92,79 @@ type Config struct {
 	// across every VShardWorker + the shared /metrics HTTP handler.
 	Metrics *metrics.Counter
 
+	// ADR-0064 on-demand snapshot wiring.
+	//
+	// StartupMode controls which recovery path Run attempts first:
+	//
+	//   - StartupModeAuto    — try on-demand, fall back on failure
+	//   - StartupModeOnDemand — try on-demand only; fatal on failure
+	//   - StartupModeLegacy  — skip on-demand, go straight to
+	//                          ADR-0060 §4.2 load+catchup
+	//
+	// Zero value is StartupModeAuto. Legacy path still always exists
+	// so the on-demand toggle cannot break cold-start or disaster-
+	// recovery flows.
+	StartupMode StartupMode
+
+	// OnDemandClient is the trade-dump TakeSnapshot RPC wrapper.
+	// Required when StartupMode is On-demand / Auto AND on-demand
+	// is actually desired; nil disables the on-demand attempt (Auto
+	// mode degrades silently to legacy in that case).
+	OnDemandClient *tradedumpclient.Client
+
+	// OnDemandTimeout is the per-attempt budget for the full
+	// on-demand path (sentinel produce + RPC + download + decode).
+	// Zero defaults to 3s — Counter's overall startup budget.
+	OnDemandTimeout time.Duration
+
 	Logger *zap.Logger
+}
+
+// StartupMode is the ADR-0064 recovery mode dial. Each value is a
+// small integer so configs can compare + log safely.
+type StartupMode int
+
+const (
+	// StartupModeAuto prefers the on-demand path but transparently
+	// falls back to legacy on any fallback-class error.
+	StartupModeAuto StartupMode = iota
+
+	// StartupModeOnDemand forces on-demand — fallback errors become
+	// fatal. Use in test / staging to catch on-demand regressions.
+	StartupModeOnDemand
+
+	// StartupModeLegacy skips the on-demand attempt entirely, going
+	// straight to ADR-0060 §4.2 load + catchUpJournal. Use as a
+	// rollback switch during production rollout.
+	StartupModeLegacy
+)
+
+// String returns the flag-friendly name. Matches --startup-mode
+// values in main.go / CLI.
+func (m StartupMode) String() string {
+	switch m {
+	case StartupModeAuto:
+		return "auto"
+	case StartupModeOnDemand:
+		return "on-demand"
+	case StartupModeLegacy:
+		return "legacy"
+	}
+	return fmt.Sprintf("startup-mode-%d", int(m))
+}
+
+// ParseStartupMode maps a CLI / config string to the typed value.
+// Unknown values surface as an error rather than silently defaulting.
+func ParseStartupMode(s string) (StartupMode, error) {
+	switch s {
+	case "", "auto":
+		return StartupModeAuto, nil
+	case "on-demand":
+		return StartupModeOnDemand, nil
+	case "legacy":
+		return StartupModeLegacy, nil
+	}
+	return 0, fmt.Errorf("unknown startup mode %q (want auto|on-demand|legacy)", s)
 }
 
 // VShardWorker runs the lifecycle of a single virtual shard.
@@ -151,49 +223,39 @@ func New(cfg Config) (*VShardWorker, error) {
 }
 
 // Run is the worker's main loop. It restores state from the shared
-// snapshot, opens a transactional producer whose ID embeds the epoch
-// (fencing any previous owner), starts the per-partition trade-event
-// consumer and the periodic snapshot goroutine, then blocks until ctx
-// is cancelled. On exit it drains the consumer, flushes the producer,
-// and writes a final snapshot so the next owner can seek deterministically.
+// snapshot, opens a transactional producer, starts the per-partition
+// trade-event consumer + ADR-0060 advancer, then blocks until ctx is
+// cancelled.
+//
+// Restore has two paths (ADR-0064):
+//
+//   - On-demand (Phase 1): ProduceFenceSentinel fences the prior
+//     owner via InitProducerID, trade-dump's TakeSnapshot captures
+//     and uploads a fresh snapshot aligned to the current LEO, this
+//     worker downloads + Restores. No catch-up needed.
+//   - Legacy fallback (ADR-0060 §4.2): load the periodic snapshot
+//     from BlobStore, Restore, then catchUpJournal from its
+//     journal_offset to the partition HWM.
+//
+// Which path runs depends on Config.StartupMode:
+//
+//   - Auto      (default) — try on-demand, fall back on ErrFallback
+//   - OnDemand  — on-demand only; fallback errors become fatal
+//   - Legacy    — skip on-demand entirely
+//
+// Phase 2 (atomic install — worker fields) happens once a path
+// succeeds; any failure before Phase 2 is recoverable, any failure
+// during/after is fatal.
 func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	logger := w.cfg.Logger.With(
 		zap.Int("vshard", int(w.cfg.VShardID)),
 		zap.Uint64("epoch", w.cfg.Epoch),
 		zap.String("node", w.cfg.NodeID))
 
-	state := engine.NewShardState(int(w.cfg.VShardID))
-	// ADR-0061: no apply barrier — Counter doesn't produce snapshots
-	// anymore, so there's no Capture step that needs cross-account
-	// stop-the-world coordination. trade-dump's shadow pipeline
-	// guarantees consistency via single-threaded Apply (ADR-0061 §4.2).
-	seq := sequencer.New()
-	dt := dedup.New(w.cfg.DedupTTL)
-
-	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
-	snap, err := snapshot.Load(ctx, w.cfg.Store, key)
-	var offsets map[int32]int64
-	var journalOffset int64
-	switch {
-	case err == nil:
-		if err := snapshot.Restore(int(w.cfg.VShardID), state, seq, dt, snap); err != nil {
-			return fmt.Errorf("snapshot restore: %w", err)
-		}
-		offsets = snapshot.OffsetsSliceToMap(snap.Offsets)
-		journalOffset = snap.JournalOffset
-		logger.Info("restored from snapshot",
-			zap.Int("version", snap.Version),
-			zap.Uint64("counter_seq", snap.CounterSeq),
-			zap.Int("accounts", len(snap.Accounts)),
-			zap.Int("orders", len(snap.Orders)),
-			zap.Int("partitions", len(offsets)),
-			zap.Int64("journal_offset", journalOffset))
-	case errors.Is(err, os.ErrNotExist):
-		logger.Info("no snapshot found, starting fresh")
-	default:
-		return fmt.Errorf("snapshot load: %w", err)
-	}
-
+	// ---- TxnProducer up front ----
+	// Required by both paths:
+	//   - On-demand uses it for ProduceFenceSentinel (Phase 1 step ③).
+	//   - Legacy steady-state RPC uses it for every Publish.
 	// Avoid Go's "non-nil interface holding a nil pointer" gotcha:
 	// assign the concrete pointer to the interface only when it's
 	// non-nil, so txn_producer's `!= nil` check reflects reality.
@@ -219,6 +281,58 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	}
 	defer producer.Close()
 
+	// ---- Phase 1: populate state/seq/dt from a source ----
+	// Both paths produce local fresh state; install is deferred
+	// until Phase 2 so failure to populate is recoverable.
+	var (
+		state          *engine.ShardState
+		seq            *sequencer.UserSequencer
+		dt             *dedup.Table
+		offsets        map[int32]int64
+		journalOffset  int64
+		usedOnDemand   bool
+	)
+
+	tryOnDemand := w.cfg.StartupMode != StartupModeLegacy && w.cfg.OnDemandClient != nil
+	if tryOnDemand {
+		odState, odSeq, odDt, odOffsets, odJournal, err := w.loadOnDemand(ctx, producer, logger)
+		switch {
+		case err == nil:
+			state, seq, dt = odState, odSeq, odDt
+			offsets, journalOffset = odOffsets, odJournal
+			usedOnDemand = true
+			logger.Info("loaded via on-demand",
+				zap.Uint64("counter_seq", seq.CounterSeq()),
+				zap.Int64("journal_offset", journalOffset),
+				zap.Int("partitions", len(offsets)))
+		case errors.Is(err, tradedumpclient.ErrFallback):
+			if w.cfg.StartupMode == StartupModeOnDemand {
+				return fmt.Errorf("on-demand required but failed: %w", err)
+			}
+			logger.Info("on-demand unavailable; falling back to legacy load+catchup",
+				zap.Error(err))
+		default:
+			return fmt.Errorf("on-demand fatal: %w", err)
+		}
+	} else if w.cfg.StartupMode == StartupModeLegacy {
+		logger.Info("startup-mode=legacy; skipping on-demand path")
+	} else {
+		logger.Info("on-demand client not configured; using legacy path")
+	}
+
+	if !usedOnDemand {
+		lgState, lgSeq, lgDt, lgOffsets, lgJournal, err := w.loadLegacy(ctx, logger)
+		if err != nil {
+			return err
+		}
+		state, seq, dt = lgState, lgSeq, lgDt
+		offsets, journalOffset = lgOffsets, lgJournal
+	}
+
+	// ---- Phase 2: atomic install ----
+	// From here on, any failure is fatal — the worker's installed
+	// state/seq/dt are live and cannot be rolled back. The clustering
+	// layer (ADR-0058) picks up the reassignment on Run returning.
 	idg, err := idgen.NewGenerator(int(w.cfg.VShardID))
 	if err != nil {
 		return fmt.Errorf("idgen: %w", err)
@@ -246,13 +360,11 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	w.svc = svc
 	w.producer = producer
 
-	// ADR-0060 §4.2: catch-up journal replay happens BEFORE Ready
-	// closes so that any RPC or trade-event dispatched to this
-	// worker observes state that reflects every journal event
-	// committed by the previous owner (including publishes that
-	// raced the last snapshot). Skipped when the loaded snapshot
-	// has journal_offset == 0 (cold start / pre-0060 snapshot).
-	if journalOffset > 0 {
+	// ADR-0060 §4.2: legacy-path catch-up. Skipped on the on-demand
+	// path because snap.JournalOffset already equals the partition's
+	// committed cursor at Capture time (ADR-0064 §2.6). Also skipped
+	// on cold start (journalOffset == 0).
+	if !usedOnDemand && journalOffset > 0 {
 		if err := w.catchUpJournal(ctx, journalOffset); err != nil {
 			return fmt.Errorf("catchup journal: %w", err)
 		}

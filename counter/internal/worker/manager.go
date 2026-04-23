@@ -12,6 +12,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/service"
+	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
 	"github.com/xargin/opentrade/counter/snapshot"
 	"github.com/xargin/opentrade/pkg/shard"
 )
@@ -65,6 +66,16 @@ type WorkerTemplate struct {
 	// bundle. Nil disables emission; production main.go constructs
 	// one *metrics.Counter per process and passes it through.
 	Metrics *metrics.Counter
+
+	// ADR-0064 on-demand startup. Shared across every worker on
+	// this node — the gRPC client pools connections to trade-dump,
+	// StartupMode is a process-wide policy, OnDemandTimeout is the
+	// per-attempt budget. Each worker's VShardWorker.Config echoes
+	// these fields in startUnlocked. Nil / zero values degrade to
+	// legacy startup transparently.
+	StartupMode     StartupMode
+	OnDemandClient  *tradedumpclient.Client
+	OnDemandTimeout time.Duration
 }
 
 // workerRun tracks one running VShardWorker plus the goroutine plumbing
@@ -223,6 +234,9 @@ func (m *Manager) startUnlocked(ctx context.Context, a clustering.Assignment) er
 		DefaultMaxOpenLimitOrders: m.template.DefaultMaxOpenLimitOrders,
 		SymbolLookup:              m.template.SymbolLookup,
 		Metrics:                   m.template.Metrics,
+		StartupMode:               m.template.StartupMode,
+		OnDemandClient:            m.template.OnDemandClient,
+		OnDemandTimeout:           m.template.OnDemandTimeout,
 		Logger:                    m.logger,
 	}
 	w, err := New(cfg)
