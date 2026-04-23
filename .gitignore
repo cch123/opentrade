@@ -51,3 +51,4 @@ snapshots/
 .claude/
 tools/*/tui
 tools/*/web
+tools/*/precision-cli
