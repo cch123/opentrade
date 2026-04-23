@@ -432,3 +432,157 @@ func TestShadow_RestoreFromSnapshotNilRejected(t *testing.T) {
 		t.Fatal("expected RestoreFromSnapshot(nil) to error")
 	}
 }
+
+// TestShadow_ApplyStartupFenceIsNoOp pins ADR-0064 §1.2 + §3.1 on the
+// shadow-engine side: a StartupFence sentinel advances the journal
+// cursor (nextJournalOffset) and the event counter
+// (eventsSinceLastSnapshot) just like any other record, but DOES NOT
+// touch ShardState, counterSeq, or teWatermark. Its whole point is
+// its physical presence on the partition (fence + LEO stability,
+// §3.1 of the ADR).
+//
+// If this test fails because the shadow Apply started mutating state
+// on StartupFence, the on-demand snapshot contract is violated — a
+// startup-triggered sentinel must not poison the snapshot content.
+func TestShadow_ApplyStartupFenceIsNoOp(t *testing.T) {
+	sh := New(42)
+
+	// Seed some state so "unchanged" is observable.
+	seed := &eventpb.CounterJournalEvent{
+		CounterSeqId: 5,
+		Payload: &eventpb.CounterJournalEvent_Freeze{
+			Freeze: &eventpb.FreezeEvent{
+				UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
+				Side:         eventpb.Side_SIDE_BUY,
+				OrderType:    eventpb.OrderType_ORDER_TYPE_LIMIT,
+				Price:        "10", Qty: "1",
+				FreezeAsset:  "USDT",
+				FreezeAmount: "10",
+				BalanceAfter: &eventpb.BalanceSnapshot{
+					UserId: "u1", Asset: "USDT",
+					Available: "90", Frozen: "10", Version: 1,
+				},
+			},
+		},
+	}
+	if err := sh.Apply(seed, 100); err != nil {
+		t.Fatalf("seed apply: %v", err)
+	}
+	csBefore := sh.CounterSeq()
+	teP, teO := sh.TeWatermark()
+	balBefore := sh.State().Balance("u1", "USDT")
+	// Snapshot order fields as VALUES, not the *Order pointer. The
+	// store returns a live pointer; keeping only the pointer would
+	// alias any in-place mutation by Apply and make the post-check
+	// tautological (codex review catch).
+	orderPtr := sh.State().Orders().Get(1)
+	if orderPtr == nil {
+		t.Fatal("seed order missing")
+	}
+	orderStatusBefore := orderPtr.Status
+	orderFilledBefore := orderPtr.FilledQty
+	orderFrozenSpentBefore := orderPtr.FrozenSpent
+
+	// Apply a StartupFence at offset 101. CounterSeqId is 0 per
+	// ADR-0064 §1.2 convention — sentinels do not allocate a
+	// counter_seq. Shadow engine must:
+	//   - advance nextJournalOffset to 102
+	//   - advance eventsSinceLastSnapshot by 1
+	//   - NOT advance counterSeq (0 < current 5)
+	//   - NOT touch teWatermark
+	//   - NOT touch ShardState (balance, orders)
+	fence := &eventpb.CounterJournalEvent{
+		CounterSeqId: 0,
+		Payload: &eventpb.CounterJournalEvent_StartupFence{
+			StartupFence: &eventpb.StartupFenceEvent{
+				NodeId: "counter-node-B", Epoch: 7,
+				TsMs: 1_700_000_000_000,
+			},
+		},
+	}
+	if err := sh.Apply(fence, 101); err != nil {
+		t.Fatalf("apply StartupFence: %v", err)
+	}
+
+	// Journal cursor + event count advance.
+	if sh.NextJournalOffset() != 102 {
+		t.Fatalf("nextJournalOffset = %d, want 102", sh.NextJournalOffset())
+	}
+	if sh.EventsSinceLastSnapshot() != 2 {
+		t.Fatalf("eventsSinceLastSnapshot = %d, want 2", sh.EventsSinceLastSnapshot())
+	}
+
+	// counterSeq unchanged (fence carried 0 which < existing 5).
+	if sh.CounterSeq() != csBefore {
+		t.Fatalf("counterSeq mutated by StartupFence: %d → %d", csBefore, sh.CounterSeq())
+	}
+	// teWatermark unchanged.
+	teP2, teO2 := sh.TeWatermark()
+	if teP2 != teP || teO2 != teO {
+		t.Fatalf("teWatermark mutated by StartupFence: (%d,%d) → (%d,%d)", teP, teO, teP2, teO2)
+	}
+	// ShardState untouched.
+	balAfter := sh.State().Balance("u1", "USDT")
+	if balAfter.Available.Cmp(balBefore.Available) != 0 ||
+		balAfter.Frozen.Cmp(balBefore.Frozen) != 0 ||
+		balAfter.Version != balBefore.Version {
+		t.Fatalf("balance mutated by StartupFence: %+v → %+v", balBefore, balAfter)
+	}
+	orderAfter := sh.State().Orders().Get(1)
+	if orderAfter == nil {
+		t.Fatal("order disappeared after StartupFence apply")
+	}
+	if orderAfter.Status != orderStatusBefore {
+		t.Fatalf("order.Status mutated by StartupFence: %v → %v", orderStatusBefore, orderAfter.Status)
+	}
+	if orderAfter.FilledQty.Cmp(orderFilledBefore) != 0 {
+		t.Fatalf("order.FilledQty mutated by StartupFence: %s → %s", orderFilledBefore.String(), orderAfter.FilledQty.String())
+	}
+	if orderAfter.FrozenSpent.Cmp(orderFrozenSpentBefore) != 0 {
+		t.Fatalf("order.FrozenSpent mutated by StartupFence: %s → %s", orderFrozenSpentBefore.String(), orderAfter.FrozenSpent.String())
+	}
+}
+
+// TestShadow_ApplyUnknownPayloadIsNoOp locks ADR-0064 F10 forward-compat
+// on the shadow side. If trade-dump upgrades lag counter deployments
+// (or vice versa) and sees a journal event with an unknown oneof
+// variant, the shadow Apply must not panic, must not error, and must
+// still advance the cursor so consumption doesn't stall forever on
+// that record.
+func TestShadow_ApplyUnknownPayloadIsNoOp(t *testing.T) {
+	sh := New(7)
+
+	// Envelope with Payload deliberately unset. This is the
+	// programmatic stand-in for "a variant this binary doesn't
+	// compile yet".
+	evt := &eventpb.CounterJournalEvent{CounterSeqId: 3}
+	if err := sh.Apply(evt, 42); err != nil {
+		t.Fatalf("Apply(unknown payload): %v", err)
+	}
+
+	if sh.NextJournalOffset() != 43 {
+		t.Fatalf("nextJournalOffset = %d, want 43 (cursor must advance past unknown)", sh.NextJournalOffset())
+	}
+	if sh.EventsSinceLastSnapshot() != 1 {
+		t.Fatalf("eventsSinceLastSnapshot = %d, want 1", sh.EventsSinceLastSnapshot())
+	}
+	// counterSeq still advances (envelope-level field, not payload).
+	if sh.CounterSeq() != 3 {
+		t.Fatalf("counterSeq = %d, want 3", sh.CounterSeq())
+	}
+}
+
+// TestShadow_ApplyNilRecord guards the cheapest degenerate input —
+// a nil CounterJournalEvent. Historical behaviour: return nil and do
+// not advance the cursor (the record "didn't happen" from shadow's
+// viewpoint). Locking this down prevents accidental regression if a
+// future change starts treating nil as "unknown → advance cursor".
+func TestShadow_ApplyNilRecord(t *testing.T) {
+	sh := New(0)
+	if err := sh.Apply(nil, 500); err != nil {
+		t.Fatalf("Apply(nil): %v", err)
+	}
+	if sh.NextJournalOffset() != 0 {
+		t.Fatalf("nextJournalOffset = %d, want 0 (nil record must not advance)", sh.NextJournalOffset())
+	}
+}

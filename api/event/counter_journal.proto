@@ -60,7 +60,14 @@ message CounterJournalEvent {
     // Tag 51 (OrderEvictedEvent, ADR-0062) is permanently retired by
     // ADR-0063 — terminal OrderStatusEvent now subsumes the evict
     // signal. Do not reuse this tag.
+    // Tag 52 is ADR-0064's StartupFenceEvent: a sentinel record
+    // Counter emits at startup to force franz-go's lazy
+    // InitProducerID + fence the prior owner's pending txn, and to
+    // stabilize the partition LEO for trade-dump's on-demand
+    // snapshot. Shadow engine and Counter engine both apply it as a
+    // no-op — its value is entirely in "existing on the partition".
     TECheckpointEvent te_checkpoint = 50;
+    StartupFenceEvent startup_fence = 52;
   }
 }
 
@@ -181,5 +188,38 @@ message TECheckpointEvent {
   int32 te_partition = 1;  // = vshard_id; redundant field for debug
   int64 te_offset    = 2;  // largest TE offset whose business events
                            // have all committed on this partition
+}
+
+// StartupFenceEvent is emitted once by a Counter instance during its
+// startup flow (ADR-0064 §3 Phase 1 step ③) as a sentinel Produce
+// inside a new transaction. Its value is NOT the payload — payload is
+// no-op — but the mechanical effect of Produce + EndTransaction on the
+// counter-journal partition:
+//
+//   1. Triggers franz-go's lazy InitProducerID call, which causes the
+//      broker to fence any prior owner (old ADR-0058 epoch) of the
+//      same transactional.id and write an abort marker for its pending
+//      transaction to this partition.
+//   2. Once the abort marker is down, commit marker for this txn
+//      stabilizes partition LEO. trade-dump's on-demand snapshot path
+//      (ADR-0064 §2) queries LEO and waits its shadow consumer to
+//      apply through it.
+//
+// Consumers (shadow engine, Counter catchUpJournal, any future journal
+// consumer) MUST apply this event as a state no-op — no balance
+// change, no order change, no counter_seq advance. CounterJournalEvent
+// envelope fields for a sentinel record:
+//
+//   - meta populated with the emitting Counter's node_id + vshard_id
+//   - account_version = 0
+//   - counter_seq_id  = 0  (sentinels do not allocate counter_seq)
+//
+// The node_id + epoch + ts_ms in the payload are for audit only, read
+// by operators inspecting the journal (e.g. to correlate a Counter
+// restart with its sentinel commit marker).
+message StartupFenceEvent {
+  string node_id = 1;  // Counter node that emitted this sentinel
+  uint64 epoch   = 2;  // ADR-0058 vshard assignment.epoch at emit time
+  int64  ts_ms   = 3;  // Counter wall-clock at emit, UNIX ms
 }
 

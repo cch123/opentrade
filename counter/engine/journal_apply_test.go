@@ -381,6 +381,93 @@ func TestApplyCounterJournalEvent_DispatchesByPayload(t *testing.T) {
 	}
 }
 
+// TestApplyCounterJournalEvent_StartupFenceIsNoOp pins down ADR-0064
+// §1.2 + §3: the StartupFence sentinel applies as a strict no-op — no
+// balance movement, no order insert, no counter_seq advance. Its
+// whole value is in *existing* on the partition (fences prior epoch
+// + stabilizes LEO for trade-dump). If this test fails because a
+// future change taught the engine to mutate state on StartupFence,
+// that change is wrong: see ADR-0064 §1.2 "Apply 协议".
+func TestApplyCounterJournalEvent_StartupFenceIsNoOp(t *testing.T) {
+	state := NewShardState(0)
+	// Seed some benign state so "unchanged after apply" is observable.
+	state.Account("u1").PutForRestore("USDT", Balance{
+		Available: dec.New("100"), Frozen: dec.New("0"), Version: 1,
+	})
+	state.Orders().RestoreInsert(&Order{
+		ID: 42, UserID: "u1", Symbol: "BTC-USDT",
+		Status: OrderStatusNew,
+	})
+
+	evt := &eventpb.CounterJournalEvent{
+		CounterSeqId: 0, // sentinels do not allocate counter_seq
+		Payload: &eventpb.CounterJournalEvent_StartupFence{
+			StartupFence: &eventpb.StartupFenceEvent{
+				NodeId: "counter-node-B",
+				Epoch:  7,
+				TsMs:   1_700_000_000_000,
+			},
+		},
+	}
+	if err := ApplyCounterJournalEvent(state, evt); err != nil {
+		t.Fatalf("ApplyCounterJournalEvent(StartupFence): %v", err)
+	}
+
+	// Balance unchanged.
+	b := state.Balance("u1", "USDT")
+	if b.Available.String() != "100" || b.Frozen.String() != "0" || b.Version != 1 {
+		t.Fatalf("balance mutated by StartupFence apply: %+v", b)
+	}
+	// Order unchanged.
+	o := state.Orders().Get(42)
+	if o == nil {
+		t.Fatal("order 42 disappeared after StartupFence apply")
+	}
+	if o.Status != OrderStatusNew {
+		t.Fatalf("order status mutated by StartupFence apply: %v", o.Status)
+	}
+}
+
+// TestApplyCounterJournalEvent_UnknownPayloadIsNoOp locks in ADR-0064
+// F10 forward-compat constraint: an envelope with an unset oneof (or a
+// future variant not yet compiled into this binary) MUST NOT panic and
+// MUST return nil. Without this guarantee, rolling upgrades where one
+// side emits a new event type before the other side understands it
+// will crash consumers.
+//
+// We simulate "unknown variant" via the two already-reachable branches
+// of the switch that return nil without side effects: nil payload
+// (evt.Payload == nil) and nil event envelope. The default branch is
+// guarded by the same return-nil behaviour; future variants added to
+// the oneof without a corresponding case will hit it.
+func TestApplyCounterJournalEvent_UnknownPayloadIsNoOp(t *testing.T) {
+	state := NewShardState(0)
+	state.Account("u1").PutForRestore("USDT", Balance{
+		Available: dec.New("100"), Frozen: dec.New("0"), Version: 1,
+	})
+
+	// Case 1: nil envelope.
+	if err := ApplyCounterJournalEvent(state, nil); err != nil {
+		t.Fatalf("ApplyCounterJournalEvent(nil): %v", err)
+	}
+
+	// Case 2: envelope with Payload=nil (oneof unset — e.g. a consumer
+	// decoded a protobuf produced by a newer version that dropped a
+	// field we understood, or a malformed record).
+	if err := ApplyCounterJournalEvent(state, &eventpb.CounterJournalEvent{
+		CounterSeqId: 99,
+		// Payload deliberately unset.
+	}); err != nil {
+		t.Fatalf("ApplyCounterJournalEvent(empty payload): %v", err)
+	}
+
+	// Sanity: state untouched.
+	b := state.Balance("u1", "USDT")
+	if b.Available.String() != "100" || b.Version != 1 {
+		t.Fatalf("balance mutated by no-op applies: %+v", b)
+	}
+}
+
 // TestOrderStatusFromProto_RoundTrip verifies the mapping table
 // is complete — every internal status has a non-Unspecified entry,
 // unknown proto values fall back to Unspecified.

@@ -64,6 +64,23 @@ func ApplyCounterJournalEvent(state *ShardState, evt *eventpb.CounterJournalEven
 		// engine) read the payload separately; the apply here is a
 		// deliberate no-op.
 		return nil
+	case *eventpb.CounterJournalEvent_StartupFence:
+		// ADR-0064 §3 startup sentinel — no state effect. The
+		// record's value is entirely in "existing on the partition"
+		// (forces InitProducerID + fences prior epoch + stabilizes
+		// LEO). Consumers apply it as a strict no-op: no balance,
+		// no order, no counter_seq advance. Unlike TeCheckpoint it
+		// carries no watermark, so even the shadow engine's Apply
+		// wrapper has nothing extra to do.
+		//
+		// Disambiguation: "apply no-op" is distinct from the v1
+		// ADR's rejected "no-op commit" (an empty Kafka transaction
+		// that franz-go short-circuits to nothing, see ADR-0064
+		// 备选 6). The sentinel record IS produced and committed
+		// for real — its bytes land in the partition log, the
+		// commit marker advances LEO. Only the *apply* step against
+		// ShardState is a no-op.
+		return nil
 	case nil:
 		return nil
 	default:
