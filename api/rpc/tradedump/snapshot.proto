@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package opentrade.rpc.tradedump;
+
+option go_package = "github.com/xargin/opentrade/api/gen/rpc/tradedump;tradedumprpc";
+
+// -----------------------------------------------------------------------------
+// Trade-Dump gRPC surface (ADR-0064).
+//
+// trade-dump's MySQL pipeline and snapshot pipeline (ADR-0061) are both
+// Kafka-consumer-only workloads — no historical inbound RPC surface. This
+// file adds the first one: `TakeSnapshot`, called by Counter during its
+// startup flow to request an on-demand snapshot aligned to the latest
+// committed LEO on counter-journal (ADR-0064 §2).
+//
+// Not for BFF / client use. The endpoint is internal-only, intended for
+// service-to-service calls on the cluster network. No auth is added here;
+// trust boundary is the cluster itself, matching other internal RPCs in
+// this repo.
+// -----------------------------------------------------------------------------
+
+service TradeDumpSnapshot {
+  // TakeSnapshot asks trade-dump to produce a fresh per-vshard snapshot
+  // that is guaranteed to include every record on the counter-journal
+  // partition up to the current LEO. The returned snapshot_key is a
+  // blob-store object Counter then downloads and restores (ADR-0064
+  // §3 Phase 1 step ④–⑤).
+  //
+  // Semantics:
+  //
+  //   - Called exactly once per Counter startup, per vshard (no retry
+  //     on the Counter side; failures fall back to the legacy
+  //     "load last periodic snapshot + catchUpJournal" path).
+  //   - trade-dump may coalesce concurrent calls for the same vshard
+  //     via singleflight; callers see the same response in that case.
+  //   - trade-dump enforces a global in-flight limit (default 16) to
+  //     protect against whole-host restarts saturating the Capture
+  //     machinery; over-limit callers receive RESOURCE_EXHAUSTED.
+  //
+  // Error codes:
+  //
+  //   - INVALID_ARGUMENT    vshard_id out of range [0, vshard_count)
+  //   - FAILED_PRECONDITION requester_epoch older than the last seen
+  //                         epoch for this vshard (zombie-Counter
+  //                         defense; ADR-0058 vshard lock is the
+  //                         primary guard)
+  //   - DEADLINE_EXCEEDED   shadow engine could not apply up to the
+  //                         partition's LEO within the wait budget
+  //   - RESOURCE_EXHAUSTED  global in-flight limit reached
+  //   - INTERNAL            shadow / capture / serialize error
+  //   - UNAVAILABLE         Kafka metadata query (LEO) / blob-store
+  //                         upload failed, callers should fall back
+  //   - UNIMPLEMENTED       handler wiring present but actual logic
+  //                         not yet built out (ADR-0064 M1b
+  //                         skeleton — replaced in M1c)
+  rpc TakeSnapshot(TakeSnapshotRequest) returns (TakeSnapshotResponse);
+}
+
+message TakeSnapshotRequest {
+  // vshard_id is the ADR-0058 virtual shard id Counter is trying to
+  // bring online. trade-dump must own the corresponding shadow engine
+  // (i.e. this trade-dump instance consumes this counter-journal
+  // partition via its snapshot consumer group).
+  uint32 vshard_id = 1;
+
+  // requester_node_id is the ADR-0058 Counter node id (stamped for
+  // audit/log correlation). Not used for auth.
+  string requester_node_id = 2;
+
+  // requester_epoch is the ADR-0058 assignment.epoch the Counter
+  // believes it holds for this vshard. trade-dump compares against an
+  // in-memory last-seen-epoch per vshard and rejects stale requests
+  // with FAILED_PRECONDITION — defense in depth over the vshard lock.
+  uint64 requester_epoch = 3;
+}
+
+message TakeSnapshotResponse {
+  // snapshot_key is the blob-store key (S3 / fs backend) of the
+  // produced on-demand snapshot. Key format:
+  //   {prefix}vshard-{vshard_id:03d}-ondemand-{unix_ms}.pb
+  // Housekept by trade-dump (delete after 1h) — Counter reads once
+  // and does not cache.
+  string snapshot_key = 1;
+
+  // leo is the counter-journal partition LEO the snapshot is aligned
+  // to. Counter uses this as the authoritative JournalOffset when
+  // restoring (no local catchUpJournal needed on the on-demand path).
+  int64 leo = 2;
+
+  // counter_seq is the highest counter_seq_id observed by the shadow
+  // engine for this vshard at snapshot time. Counter seeds its
+  // UserSequencer with this value.
+  uint64 counter_seq = 3;
+}

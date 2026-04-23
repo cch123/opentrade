@@ -18,6 +18,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -29,11 +30,14 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 
+	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	snapshotpkg "github.com/xargin/opentrade/counter/snapshot"
 	"github.com/xargin/opentrade/pkg/logx"
 	"github.com/xargin/opentrade/trade-dump/internal/consumer"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/pipeline"
+	"github.com/xargin/opentrade/trade-dump/internal/snapshotrpc"
 	"github.com/xargin/opentrade/trade-dump/internal/writer"
 )
 
@@ -73,6 +77,13 @@ type Config struct {
 	SnapshotInterval   time.Duration
 	SnapshotEventCount uint64
 	SnapshotSaveTimeout time.Duration
+
+	// -- gRPC server (ADR-0064) --
+	// GRPCAddr is the TCP address for trade-dump's on-demand
+	// snapshot gRPC surface. Empty string disables the server.
+	// Default :8088 (chosen to avoid clashing with counter :8081,
+	// admin-gateway :8090).
+	GRPCAddr string
 
 	Env      string
 	LogLevel string
@@ -260,8 +271,60 @@ func main() {
 		logger.Info("snapshot pipeline disabled (--pipelines)")
 	}
 
+	// ---------------- gRPC server (ADR-0064 on-demand snapshot) ----------------
+	//
+	// Only started when the snap pipeline is running. Rationale
+	// (codex review catch, ADR-0064 M1b):
+	//
+	//   - The TakeSnapshot handler fundamentally depends on the
+	//     shadow engine (ADR-0061). An sql-only trade-dump replica
+	//     has no shadow state to capture, so any client call would
+	//     at best return Unimplemented (M1b) or a stub error (M1c+).
+	//   - If sql-only replicas bind the same advertised port, a
+	//     Counter client load-balanced onto one would always take
+	//     the legacy fallback path even when a snap-capable replica
+	//     is healthy. That silently defeats the latency win.
+	//   - sql-only replicas should also not fail hard just because
+	//     `:8088` happens to be held by something else on the host.
+	//
+	// Empty --grpc-addr disables the server even on snap replicas
+	// (for single-process dev / tests that don't need the RPC).
+	var grpcSrv *grpc.Server
+	grpcDone := make(chan struct{})
+	switch {
+	case !wantSnap:
+		close(grpcDone)
+		logger.Info("grpc server disabled (snap pipeline off — on-demand snapshot requires shadow engine)")
+	case cfg.GRPCAddr == "":
+		close(grpcDone)
+		logger.Info("grpc server disabled (--grpc-addr empty)")
+	default:
+		lis, err := net.Listen("tcp", cfg.GRPCAddr)
+		if err != nil {
+			logger.Fatal("grpc listen", zap.Error(err), zap.String("addr", cfg.GRPCAddr))
+		}
+		grpcSrv = grpc.NewServer()
+		tradedumprpc.RegisterTradeDumpSnapshotServer(grpcSrv, snapshotrpc.New(snapshotrpc.Config{
+			Logger: logger,
+		}))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(grpcDone)
+			logger.Info("grpc listening", zap.String("addr", cfg.GRPCAddr))
+			if err := grpcSrv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				logger.Error("grpc Serve", zap.Error(err))
+				stop()
+			}
+		}()
+	}
+
 	<-rootCtx.Done()
 	logger.Info("shutdown initiated")
+	if grpcSrv != nil {
+		grpcSrv.GracefulStop()
+		<-grpcDone
+	}
 	if tradeCons != nil {
 		tradeCons.Close()
 	}
@@ -308,6 +371,7 @@ func parseFlags() Config {
 		SnapshotInterval:    10 * time.Second,
 		SnapshotEventCount:  10000,
 		SnapshotSaveTimeout: 30 * time.Second,
+		GRPCAddr:            ":8088",
 		Env:                 "dev",
 		LogLevel:            "info",
 	}
@@ -344,6 +408,9 @@ func parseFlags() Config {
 	var snapEventCount uint
 	flag.UintVar(&snapEventCount, "snapshot-event-count", uint(cfg.SnapshotEventCount), "event-window trigger per vshard")
 	flag.DurationVar(&cfg.SnapshotSaveTimeout, "snapshot-save-timeout", cfg.SnapshotSaveTimeout, "max wall-time per blob-store Save")
+
+	// gRPC server flags (ADR-0064)
+	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address for on-demand snapshot (ADR-0064); empty string disables")
 
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
