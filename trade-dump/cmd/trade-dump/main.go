@@ -467,8 +467,12 @@ func parseFlags() Config {
 		SnapshotBackend:     "fs",
 		SnapshotDir:         "./data/trade-dump-snap",
 		SnapshotFormat:      snapshotpkg.FormatProto,
-		SnapshotInterval:    10 * time.Second,
-		SnapshotEventCount:  10000,
+		// ADR-0064 §5: periodic snapshot relaxed from ADR-0061's
+		// 10s/10000 to 60s/60000 now that on-demand carries the
+		// hot-path recovery cursor. Operators wanting tighter
+		// fallback RPO can override via the flags below.
+		SnapshotInterval:    60 * time.Second,
+		SnapshotEventCount:  60000,
 		SnapshotSaveTimeout:      30 * time.Second,
 		GRPCAddr:                 ":8088",
 		OnDemandConcurrency:      16,
@@ -507,9 +511,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.SnapshotS3Region, "snapshot-s3-region", cfg.SnapshotS3Region, "S3 region (empty = AWS SDK default chain)")
 	flag.StringVar(&cfg.SnapshotS3Endpoint, "snapshot-s3-endpoint", cfg.SnapshotS3Endpoint, "S3 endpoint override for MinIO / localstack")
 	flag.StringVar(&snapFmtStr, "snapshot-format", cfg.SnapshotFormat.String(), "snapshot encoding: proto (default) | json (ADR-0049)")
-	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "time-window trigger per vshard (ADR-0061 §4.1)")
+	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "time-window trigger per vshard (ADR-0061 §4.1; default relaxed to 60s by ADR-0064 §5 since on-demand carries the recovery cursor)")
 	var snapEventCount uint
-	flag.UintVar(&snapEventCount, "snapshot-event-count", uint(cfg.SnapshotEventCount), "event-window trigger per vshard")
+	flag.UintVar(&snapEventCount, "snapshot-event-count", uint(cfg.SnapshotEventCount), "event-window trigger per vshard (default 60000 under ADR-0064 §5; was 10000 under ADR-0061)")
 	flag.DurationVar(&cfg.SnapshotSaveTimeout, "snapshot-save-timeout", cfg.SnapshotSaveTimeout, "max wall-time per blob-store Save")
 
 	// gRPC server flags (ADR-0064)

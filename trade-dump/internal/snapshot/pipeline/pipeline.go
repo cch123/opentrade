@@ -77,12 +77,16 @@ type Config struct {
 	SnapshotKeyFormat string
 
 	// SnapshotInterval is the max wall-clock gap between two
-	// snapshots of the same vshard. Default 10s.
+	// snapshots of the same vshard. Default 60s (ADR-0064 §5 — the
+	// on-demand path took over "recovery main cursor" duty, so the
+	// periodic role collapsed to "fallback starting point when
+	// trade-dump is down". Earlier default was 10s from ADR-0061).
 	SnapshotInterval time.Duration
 
 	// SnapshotEventCount is the max number of applied events
 	// between snapshots (triggers first between interval and
-	// count). Default 10000.
+	// count). Default 60000 (ADR-0064 §5; was 10000 under
+	// ADR-0061).
 	SnapshotEventCount uint64
 
 	// SaveTimeout bounds each snapshot.Save call. Default 30s;
@@ -148,10 +152,15 @@ func New(cfg Config) (*Pipeline, error) {
 		cfg.SnapshotKeyFormat = "vshard-%03d"
 	}
 	if cfg.SnapshotInterval <= 0 {
-		cfg.SnapshotInterval = 10 * time.Second
+		// ADR-0064 §5: periodic snapshot is the fallback starting
+		// point, not the hot-path recovery cursor. 60s RPO is the
+		// ceiling the ADR commits to; tighten per deployment via
+		// --snapshot-interval if the operator wants shorter
+		// fallback windows.
+		cfg.SnapshotInterval = 60 * time.Second
 	}
 	if cfg.SnapshotEventCount == 0 {
-		cfg.SnapshotEventCount = 10000
+		cfg.SnapshotEventCount = 60000
 	}
 	if cfg.SaveTimeout <= 0 {
 		cfg.SaveTimeout = 30 * time.Second
