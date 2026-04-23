@@ -169,7 +169,6 @@ func TestStartupMode_StringRoundTrip(t *testing.T) {
 	}{
 		{StartupModeAuto, "auto"},
 		{StartupModeOnDemand, "on-demand"},
-		{StartupModeLegacy, "legacy"},
 	}
 	for _, tc := range cases {
 		if got := tc.mode.String(); got != tc.name {
@@ -209,6 +208,25 @@ func TestParseStartupMode_UnknownErrors(t *testing.T) {
 		if err == nil {
 			t.Errorf("ParseStartupMode(%q) err = nil, want error", s)
 		}
+	}
+}
+
+// TestParseStartupMode_LegacyRetired pins ADR-0064 M4: the
+// previously-supported "legacy" value now returns a directed
+// error that tells operators how to reach the legacy recovery
+// path through the --trade-dump-endpoint flag instead. Silent
+// downgrade to Auto would hide stale deployment configs that
+// explicitly asked for legacy.
+func TestParseStartupMode_LegacyRetired(t *testing.T) {
+	_, err := ParseStartupMode("legacy")
+	if err == nil {
+		t.Fatal("ParseStartupMode(\"legacy\") must error after M4")
+	}
+	// Error message should steer operators to the replacement
+	// so upgrading isn't a mystery — they just unset
+	// --trade-dump-endpoint.
+	if !strings.Contains(err.Error(), "trade-dump-endpoint") {
+		t.Errorf("error should reference --trade-dump-endpoint: %v", err)
 	}
 }
 

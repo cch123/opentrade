@@ -94,22 +94,25 @@ type Config struct {
 
 	// ADR-0064 on-demand snapshot wiring.
 	//
-	// StartupMode controls which recovery path Run attempts first:
+	// StartupMode controls Run's behaviour on on-demand failure:
 	//
-	//   - StartupModeAuto    — try on-demand, fall back on failure
-	//   - StartupModeOnDemand — try on-demand only; fatal on failure
-	//   - StartupModeLegacy  — skip on-demand, go straight to
-	//                          ADR-0060 §4.2 load+catchup
+	//   - StartupModeAuto    — fall back to legacy on any
+	//                          fallback-class error. Default.
+	//   - StartupModeOnDemand — fatal on any fallback-class error.
+	//                           Use in test / staging to catch
+	//                           on-demand regressions.
 	//
-	// Zero value is StartupModeAuto. Legacy path still always exists
-	// so the on-demand toggle cannot break cold-start or disaster-
-	// recovery flows.
+	// Zero value is StartupModeAuto. The legacy recovery path is
+	// reached automatically when OnDemandClient is nil (unset
+	// --trade-dump-endpoint) — ADR-0064 M4 removed the explicit
+	// "legacy" StartupMode value in favour of this simpler
+	// "configure or don't" knob.
 	StartupMode StartupMode
 
 	// OnDemandClient is the trade-dump TakeSnapshot RPC wrapper.
-	// Required when StartupMode is On-demand / Auto AND on-demand
-	// is actually desired; nil disables the on-demand attempt (Auto
-	// mode degrades silently to legacy in that case).
+	// Nil disables the on-demand attempt entirely — Run drops to
+	// the ADR-0060 §4.2 legacy path. Required when StartupMode is
+	// StartupModeOnDemand (main.go fails fast on misconfig).
 	OnDemandClient *tradedumpclient.Client
 
 	// OnDemandTimeout is the per-attempt budget for the full
@@ -122,21 +125,28 @@ type Config struct {
 
 // StartupMode is the ADR-0064 recovery mode dial. Each value is a
 // small integer so configs can compare + log safely.
+//
+// History: the transitional StartupModeLegacy "force legacy path"
+// value was removed in ADR-0064 M4 once the on-demand path was
+// trusted end-to-end. Operators who want to bypass on-demand now
+// simply unset --trade-dump-endpoint; the Config picks up a nil
+// OnDemandClient and Run takes the legacy path automatically
+// (same code path the old StartupModeLegacy branch reached).
 type StartupMode int
 
 const (
 	// StartupModeAuto prefers the on-demand path but transparently
-	// falls back to legacy on any fallback-class error.
+	// falls back to legacy on any fallback-class error. Default.
+	// With no OnDemandClient configured it degrades to legacy
+	// with zero operator involvement.
 	StartupModeAuto StartupMode = iota
 
-	// StartupModeOnDemand forces on-demand — fallback errors become
-	// fatal. Use in test / staging to catch on-demand regressions.
+	// StartupModeOnDemand requires on-demand — fallback errors
+	// become fatal. Use in test / staging to catch on-demand
+	// regressions before they hit production, or in production
+	// deployments that have accepted on-demand as the only
+	// supported recovery path.
 	StartupModeOnDemand
-
-	// StartupModeLegacy skips the on-demand attempt entirely, going
-	// straight to ADR-0060 §4.2 load + catchUpJournal. Use as a
-	// rollback switch during production rollout.
-	StartupModeLegacy
 )
 
 // String returns the flag-friendly name. Matches --startup-mode
@@ -147,14 +157,15 @@ func (m StartupMode) String() string {
 		return "auto"
 	case StartupModeOnDemand:
 		return "on-demand"
-	case StartupModeLegacy:
-		return "legacy"
 	}
 	return fmt.Sprintf("startup-mode-%d", int(m))
 }
 
 // ParseStartupMode maps a CLI / config string to the typed value.
-// Unknown values surface as an error rather than silently defaulting.
+// Unknown values — including the retired "legacy" from ADR-0064
+// v1/v2/v3 — surface as an error rather than silently defaulting,
+// so stale deployment configs fail loudly rather than silently
+// rolling back to behaviour the operator did not ask for.
 func ParseStartupMode(s string) (StartupMode, error) {
 	switch s {
 	case "", "auto":
@@ -162,9 +173,11 @@ func ParseStartupMode(s string) (StartupMode, error) {
 	case "on-demand":
 		return StartupModeOnDemand, nil
 	case "legacy":
-		return StartupModeLegacy, nil
+		return 0, fmt.Errorf("startup mode %q is no longer a valid value " +
+			"(ADR-0064 M4). Unset --trade-dump-endpoint instead to " +
+			"take the legacy recovery path", s)
 	}
-	return 0, fmt.Errorf("unknown startup mode %q (want auto|on-demand|legacy)", s)
+	return 0, fmt.Errorf("unknown startup mode %q (want auto|on-demand)", s)
 }
 
 // VShardWorker runs the lifecycle of a single virtual shard.
@@ -237,11 +250,18 @@ func New(cfg Config) (*VShardWorker, error) {
 //     from BlobStore, Restore, then catchUpJournal from its
 //     journal_offset to the partition HWM.
 //
-// Which path runs depends on Config.StartupMode:
+// Which path runs depends on (Config.OnDemandClient, Config.StartupMode):
 //
-//   - Auto      (default) — try on-demand, fall back on ErrFallback
-//   - OnDemand  — on-demand only; fallback errors become fatal
-//   - Legacy    — skip on-demand entirely
+//   - client set, Auto      (default) — try on-demand, fall back
+//                                        on ErrFallback
+//   - client set, OnDemand             — on-demand only; fallback
+//                                        errors become fatal
+//   - client nil                        — skip on-demand, go
+//                                        straight to legacy
+//
+// (ADR-0064 M4 removed the explicit StartupModeLegacy value —
+// operators who want the legacy path unset --trade-dump-endpoint
+// and the client stays nil.)
 //
 // Phase 2 (atomic install — worker fields) happens once a path
 // succeeds; any failure before Phase 2 is recoverable, any failure
@@ -314,7 +334,12 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		usedOnDemand   bool
 	)
 
-	tryOnDemand := w.cfg.StartupMode != StartupModeLegacy && w.cfg.OnDemandClient != nil
+	// ADR-0064 M4: on-demand is attempted whenever an OnDemandClient
+	// is wired. Operators who want the legacy path unset
+	// --trade-dump-endpoint, which leaves the client nil and skips
+	// the attempt entirely. StartupMode only governs fallback
+	// behaviour (auto → fall back, on-demand → fatal).
+	tryOnDemand := w.cfg.OnDemandClient != nil
 	if tryOnDemand {
 		odState, odSeq, odDt, odOffsets, odJournal, err := w.loadOnDemand(ctx, producer, logger)
 		switch {
@@ -336,9 +361,14 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		default:
 			return fmt.Errorf("on-demand fatal: %w", err)
 		}
-	} else if w.cfg.StartupMode == StartupModeLegacy {
-		logger.Info("startup-mode=legacy; skipping on-demand path")
 	} else {
+		// No OnDemandClient wired — drop straight to the legacy
+		// path. StartupModeOnDemand combined with no client is a
+		// deployment error and should have failed fast in main.go;
+		// we surface a fatal here too as belt-and-suspenders.
+		if w.cfg.StartupMode == StartupModeOnDemand {
+			return fmt.Errorf("startup-mode=on-demand but no OnDemandClient configured")
+		}
 		logger.Info("on-demand client not configured; using legacy path")
 	}
 

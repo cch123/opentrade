@@ -193,7 +193,7 @@ func main() {
 		logger.Fatal("invalid --startup-mode", zap.Error(err))
 	}
 	var tdClient *tradedumpclient.Client
-	if cfg.TradeDumpEndpoint != "" && startupMode != worker.StartupModeLegacy {
+	if cfg.TradeDumpEndpoint != "" {
 		tdClient, err = tradedumpclient.Dial(rootCtx, cfg.TradeDumpEndpoint, logger)
 		if err != nil {
 			// Dial failures should NOT keep Counter from booting —
@@ -447,8 +447,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.MetricsAddr, "metrics-addr", cfg.MetricsAddr, "HTTP /metrics listen address (empty disables; ADR-0060 M8 / ADR-0062 M8)")
 
 	// ADR-0064 on-demand startup flags (startup hot path — see ADR §3).
-	flag.StringVar(&cfg.StartupMode, "startup-mode", cfg.StartupMode, "startup recovery mode: auto (try on-demand, fallback to legacy) | on-demand (required, fatal on fallback) | legacy (skip on-demand). ADR-0064.")
-	flag.StringVar(&cfg.TradeDumpEndpoint, "trade-dump-endpoint", cfg.TradeDumpEndpoint, "host:port of trade-dump's TakeSnapshot gRPC server; empty disables on-demand regardless of --startup-mode. ADR-0064.")
+	flag.StringVar(&cfg.StartupMode, "startup-mode", cfg.StartupMode, "startup recovery mode: auto (default — fall back to legacy on on-demand error) | on-demand (fatal on on-demand error; use for staging verification). Unset --trade-dump-endpoint to take the legacy path entirely. ADR-0064 M4.")
+	flag.StringVar(&cfg.TradeDumpEndpoint, "trade-dump-endpoint", cfg.TradeDumpEndpoint, "host:port of trade-dump's TakeSnapshot gRPC server; empty takes the ADR-0060 §4.2 legacy recovery path. ADR-0064.")
 	flag.DurationVar(&cfg.OnDemandTimeout, "on-demand-timeout", cfg.OnDemandTimeout, "per-attempt budget for the full on-demand path (sentinel produce + RPC + blob download). 0 → worker default (3s). ADR-0064.")
 
 	flag.StringVar(&cfg.Env, "env", cfg.Env, "environment: dev | prod")
