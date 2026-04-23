@@ -27,7 +27,7 @@ const (
 type RejectReason int
 
 const (
-	ReasonUnspecified        RejectReason = 0
+	ReasonUnspecified         RejectReason = 0
 	ReasonInsufficientBalance RejectReason = 1
 	ReasonUnknownUser         RejectReason = 2
 	ReasonUnknownAsset        RejectReason = 3
@@ -36,8 +36,8 @@ const (
 	ReasonInternal            RejectReason = 99
 )
 
-// String returns a stable wire name for the reason (used in
-// transfer_ledger.reject_reason + SagaStateChangeEvent.reject_reason).
+// String returns a stable wire name for the reason, used in
+// transfer_ledger.reject_reason.
 func (r RejectReason) String() string {
 	switch r {
 	case ReasonUnspecified:

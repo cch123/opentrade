@@ -158,8 +158,8 @@ func (s *State) Account(userID string) *Account {
 
 // TransferRequest is the internal shape passed to Apply*. It carries
 // everything the engine needs to update state; RPC-layer fields (peer_biz,
-// memo, compensate_cause) flow separately into the journal envelope and
-// are not needed here.
+// memo, compensate_cause) are handled by the service/store boundary and are
+// not needed here.
 type TransferRequest struct {
 	UserID     string
 	TransferID string
@@ -284,10 +284,8 @@ func (s *State) applyTransferOut(req TransferRequest, commit func(Result) error)
 	return res, nil
 }
 
-// ApplyCompensate is semantically a credit (mirrors TransferIn) but the
-// service layer publishes a distinct journal event type so audit /
-// reconciliation can tell compensations apart from normal credits. The
-// engine itself is agnostic — same math.
+// ApplyCompensate is semantically a credit (mirrors TransferIn). The engine
+// itself is agnostic — same math.
 func (s *State) ApplyCompensate(req TransferRequest) (Result, error) {
 	return s.ApplyTransferIn(req)
 }

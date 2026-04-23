@@ -4,23 +4,76 @@ import (
 	"context"
 	"testing"
 
-	"go.uber.org/zap"
-
-	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/asset/internal/engine"
 	"github.com/xargin/opentrade/asset/internal/service"
+	"github.com/xargin/opentrade/asset/internal/store"
 )
 
-type nopPub struct{ seq uint64 }
+type fakeFundingStore struct {
+	state *engine.State
+}
 
-func (p *nopPub) Publish(context.Context, string, *eventpb.AssetJournalEvent) error { return nil }
-func (p *nopPub) NextSeq() uint64                                                    { p.seq++; return p.seq }
-func (p *nopPub) Close(context.Context) error                                         { return nil }
+func newFakeFundingStore() *fakeFundingStore {
+	return &fakeFundingStore{state: engine.NewState()}
+}
+
+func (f *fakeFundingStore) TransferOut(_ context.Context, req store.Request) (store.Result, error) {
+	res, err := f.state.ApplyTransferOut(toEngineReq(req))
+	if err != nil {
+		return store.Result{Status: store.StatusRejected, RejectReason: err}, nil
+	}
+	return fromEngineResult(res), nil
+}
+
+func (f *fakeFundingStore) TransferIn(_ context.Context, req store.Request) (store.Result, error) {
+	res, err := f.state.ApplyTransferIn(toEngineReq(req))
+	if err != nil {
+		return store.Result{Status: store.StatusRejected, RejectReason: err}, nil
+	}
+	return fromEngineResult(res), nil
+}
+
+func (f *fakeFundingStore) Compensate(ctx context.Context, req store.Request) (store.Result, error) {
+	return f.TransferIn(ctx, req)
+}
+
+func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID, asset string) ([]store.FundingBalance, error) {
+	acc := f.state.Account(userID)
+	if asset != "" {
+		return []store.FundingBalance{{Asset: asset, Balance: acc.Balance(asset)}}, nil
+	}
+	all := acc.Copy()
+	out := make([]store.FundingBalance, 0, len(all))
+	for a, b := range all {
+		out = append(out, store.FundingBalance{Asset: a, Balance: b})
+	}
+	return out, nil
+}
+
+func toEngineReq(req store.Request) engine.TransferRequest {
+	return engine.TransferRequest{
+		UserID:     req.UserID,
+		TransferID: req.TransferID,
+		Asset:      req.Asset,
+		Amount:     req.Amount,
+	}
+}
+
+func fromEngineResult(res engine.Result) store.Result {
+	status := store.StatusConfirmed
+	if res.Duplicated {
+		status = store.StatusDuplicated
+	}
+	return store.Result{
+		Status:         status,
+		BalanceAfter:   res.BalanceAfter,
+		FundingVersion: res.FundingVersion,
+	}
+}
 
 func newLocal(t *testing.T) *LocalFundingClient {
 	t.Helper()
-	state := engine.NewState()
-	svc := service.New(service.Config{ProducerID: "asset-test"}, state, &nopPub{}, zap.NewNop())
+	svc := service.New(newFakeFundingStore(), nil)
 	return NewLocalFundingClient(svc)
 }
 

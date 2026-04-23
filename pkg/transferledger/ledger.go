@@ -1,13 +1,12 @@
 // Package transferledger persists the asset-service saga state machine
 // defined in ADR-0057. It is the authority for "what stage is saga X at";
-// the asset-journal Kafka topic is a downstream projection produced by
-// asset-service AFTER a ledger transition commits.
+// funding wallet balances are owned separately by ADR-0065's MySQL store.
 //
 // The package owns one table, transfer_ledger (schema.sql), and exposes
 // four operations the saga driver needs:
 //
 //   - Create         — insert a new saga in INIT state (with idempotent
-//                       read-back on duplicate transfer_id).
+//     read-back on duplicate transfer_id).
 //   - Get            — point lookup by transfer_id.
 //   - UpdateState    — optimistic-lock transition (WHERE state = from).
 //   - ListPending    — recover in-flight sagas on service startup.
@@ -27,9 +26,8 @@ import (
 )
 
 // State is the saga state, stored as a string in MySQL so joins / ad-hoc
-// queries stay readable. Values match the SagaStateChangeEvent.old_state
-// / new_state strings in api/event/asset_journal.proto and the SagaState
-// enum names (minus prefix) in api/rpc/asset/asset.proto.
+// queries stay readable. Values match the SagaState enum names (minus
+// prefix) in api/rpc/asset/asset.proto.
 type State string
 
 // Saga state machine. See ADR-0057 §4.

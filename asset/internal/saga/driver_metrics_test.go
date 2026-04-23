@@ -34,23 +34,21 @@ func newMetricsDriver(t *testing.T) (*fixture, *assetmetrics.Saga) {
 	reg.Register("funding", from)
 	reg.Register("spot", to)
 
-	pub := &capturePub{}
 	sagaMetrics := assetmetrics.NewSaga(prometheus.NewRegistry())
 
 	d := New(Config{
-		ProducerID:        "asset-test",
 		RPCTimeout:        100 * time.Millisecond,
 		ForwardRetries:    2,
 		ForwardBackoff:    1 * time.Millisecond,
 		CompensateRetries: 3,
 		CompensateBackoff: 1 * time.Millisecond,
-	}, ledger, reg, pub, zap.NewNop(), sagaMetrics)
+	}, ledger, reg, zap.NewNop(), sagaMetrics)
 	d.SetSleep(func(context.Context, time.Duration) {})
 	d.SetClock(func() time.Time { return time.UnixMilli(1_700_000_000_000) })
 
 	return &fixture{
 		driver: d, ledger: ledger, registry: reg,
-		pub: pub, mock: mock, from: from, to: to, db: db,
+		mock: mock, from: from, to: to, db: db,
 	}, sagaMetrics
 }
 

@@ -1,6 +1,6 @@
 # ADR-0065: Funding wallet 以 MySQL 为权威源
 
-- 状态: Proposed
+- 状态: Accepted
 - 日期: 2026-04-23
 - 决策者: xargin, Codex
 - 相关 ADR: 0011(Counter Transfer 接口), 0046(History 服务), 0057(asset-service + transfer saga)

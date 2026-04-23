@@ -12,7 +12,6 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"go.uber.org/zap"
 
-	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/asset/internal/holder"
 	"github.com/xargin/opentrade/pkg/transferledger"
 )
@@ -25,13 +24,13 @@ import (
 type fakeHolder struct {
 	mu sync.Mutex
 
-	outResps  []holder.Result
-	outErrs   []error
-	outCalls  int32
+	outResps []holder.Result
+	outErrs  []error
+	outCalls int32
 
-	inResps  []holder.Result
-	inErrs   []error
-	inCalls  int32
+	inResps []holder.Result
+	inErrs  []error
+	inCalls int32
 
 	compResps []holder.Result
 	compErrs  []error
@@ -68,26 +67,6 @@ func pickResult(rs []holder.Result, es []error, i int) (holder.Result, error) {
 	return r, err
 }
 
-type capturePub struct {
-	mu     sync.Mutex
-	seq    uint64
-	events []*eventpb.AssetJournalEvent
-}
-
-func (p *capturePub) Publish(_ context.Context, _ string, evt *eventpb.AssetJournalEvent) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.events = append(p.events, evt)
-	return nil
-}
-func (p *capturePub) NextSeq() uint64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.seq++
-	return p.seq
-}
-func (p *capturePub) Close(context.Context) error { return nil }
-
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
@@ -96,7 +75,6 @@ type fixture struct {
 	driver   *Driver
 	ledger   *transferledger.Ledger
 	registry *holder.Registry
-	pub      *capturePub
 	mock     sqlmock.Sqlmock
 	from     *fakeHolder
 	to       *fakeHolder
@@ -119,22 +97,19 @@ func newFixture(t *testing.T) *fixture {
 	reg.Register("funding", from)
 	reg.Register("spot", to)
 
-	pub := &capturePub{}
-
 	d := New(Config{
-		ProducerID:        "asset-test",
 		RPCTimeout:        100 * time.Millisecond,
 		ForwardRetries:    2,
 		ForwardBackoff:    1 * time.Millisecond,
 		CompensateRetries: 3,
 		CompensateBackoff: 1 * time.Millisecond,
-	}, ledger, reg, pub, zap.NewNop(), nil)
+	}, ledger, reg, zap.NewNop(), nil)
 	d.SetSleep(func(context.Context, time.Duration) {}) // skip backoff waits
 	d.SetClock(func() time.Time { return time.UnixMilli(1_700_000_000_000) })
 
 	return &fixture{
 		driver: d, ledger: ledger, registry: reg,
-		pub: pub, mock: mock, from: from, to: to, db: db,
+		mock: mock, from: from, to: to, db: db,
 	}
 }
 
@@ -191,9 +166,6 @@ func TestRun_HappyPath(t *testing.T) {
 	}
 	if atomic.LoadInt32(&f.to.inCalls) != 1 {
 		t.Errorf("to.TransferIn calls = %d", f.to.inCalls)
-	}
-	if len(f.pub.events) != 2 {
-		t.Errorf("journal events = %d, want 2 (DEBITED, COMPLETED)", len(f.pub.events))
 	}
 	if err := f.mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
@@ -417,10 +389,10 @@ func TestRun_ToBizUnknown_StartsCompensate(t *testing.T) {
 	f.registry.Register("funding", f.from)
 	// Rebuild driver with the neutered registry.
 	f.driver = New(Config{
-		ProducerID: "asset-test", RPCTimeout: 100 * time.Millisecond,
+		RPCTimeout:     100 * time.Millisecond,
 		ForwardRetries: 1, ForwardBackoff: 1 * time.Millisecond,
 		CompensateRetries: 2, CompensateBackoff: 1 * time.Millisecond,
-	}, f.ledger, f.registry, f.pub, zap.NewNop(), nil)
+	}, f.ledger, f.registry, zap.NewNop(), nil)
 	f.driver.SetSleep(func(context.Context, time.Duration) {})
 	f.driver.SetClock(func() time.Time { return time.UnixMilli(1_700_000_000_000) })
 

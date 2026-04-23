@@ -32,9 +32,9 @@ service AssetHolder {
   // Reverse a previously CONFIRMED TransferOut. Used when the second leg
   // (to.TransferIn) fails and the saga must compensate. The compensator
   // credits the same (user_id, asset, amount) back; it is semantically
-  // identical to a TransferIn but carries a distinct label in the journal
-  // so audit / reconciliation can distinguish a compensate from a normal
-  // credit.
+  // identical to a TransferIn but should be recorded as a distinct holder
+  // operation so audit / reconciliation can distinguish a compensate from
+  // a normal credit.
   //
   // The transfer_id used here MUST equal the transfer_id of the original
   // TransferOut — holders key their idempotency table on it and MUST
@@ -82,8 +82,8 @@ message TransferOutRequest {
   // with REJECT_REASON_AMOUNT_INVALID.
   string amount = 4;
   // Counterparty biz_line ("funding" / "spot" / ...). Informational only;
-  // recorded in the holder's journal for audit and reconciliation. The
-  // holder does NOT validate it.
+  // recorded by the holder for audit and reconciliation. The holder does
+  // NOT validate it.
   string peer_biz = 5;
   // Free-form user memo. Length capped at 256 bytes by the server.
   string memo = 6;
@@ -132,7 +132,7 @@ message CompensateTransferOutRequest {
   // The biz_line whose TransferIn failed, triggering this compensate.
   string peer_biz = 5;
   // Short machine-readable cause (e.g. "peer_in_timeout",
-  // "peer_in_rejected"). Recorded in the journal.
+  // "peer_in_rejected"). Recorded by the holder.
   string compensate_cause = 6;
 }
 

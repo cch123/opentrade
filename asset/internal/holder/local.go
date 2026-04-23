@@ -50,8 +50,13 @@ func (c *LocalFundingClient) run(ctx context.Context, req Request, call func(con
 	}
 	res, err := call(ctx, hreq)
 	if err != nil {
-		// Service layer only returns transport/publish errors; business
-		// rejects ride Status.
+		if errors.Is(err, service.ErrIdempotencyConflict) {
+			return Result{
+				Status:       StatusRejected,
+				Reason:       ReasonInternal,
+				ReasonDetail: err.Error(),
+			}, nil
+		}
 		return Result{}, err
 	}
 	return serviceResultToHolder(res), nil

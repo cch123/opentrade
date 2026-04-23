@@ -2,12 +2,12 @@
 // surfaces:
 //
 //   - AssetHolder  (api/rpc/assetholder): TransferOut / TransferIn /
-//                  CompensateTransferOut. asset-service implements this
-//                  as the biz_line=funding holder, on equal footing
-//                  with counter's biz_line=spot implementation.
+//     CompensateTransferOut. asset-service implements this
+//     as the biz_line=funding holder, on equal footing
+//     with counter's biz_line=spot implementation.
 //   - AssetService (api/rpc/asset): QueryFundingBalance + Transfer (the
-//                  saga orchestrator entrypoint). M3a wires QueryFunding-
-//                  Balance only; Transfer + QueryTransfer land in M3b.
+//     saga orchestrator entrypoint). M3a wires QueryFunding-
+//     Balance only; Transfer + QueryTransfer land in M3b.
 package server
 
 import (
@@ -49,7 +49,7 @@ func (s *AssetHolderServer) TransferOut(ctx context.Context, req *assetholderrpc
 	}
 	res, err := s.svc.TransferOut(ctx, hreq)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, holderServiceErrToStatus(err)
 	}
 	return &assetholderrpc.TransferOutResponse{
 		Status:         holderStatusToProto(res.Status),
@@ -70,7 +70,7 @@ func (s *AssetHolderServer) TransferIn(ctx context.Context, req *assetholderrpc.
 	}
 	res, err := s.svc.TransferIn(ctx, hreq)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, holderServiceErrToStatus(err)
 	}
 	return &assetholderrpc.TransferInResponse{
 		Status:         holderStatusToProto(res.Status),
@@ -91,7 +91,7 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *asse
 	}
 	res, err := s.svc.Compensate(ctx, hreq)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, holderServiceErrToStatus(err)
 	}
 	return &assetholderrpc.CompensateTransferOutResponse{
 		Status:         holderStatusToProto(res.Status),
@@ -110,8 +110,8 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *asse
 // QueryFundingBalance uses the funding service directly.
 type AssetServer struct {
 	assetrpc.UnimplementedAssetServiceServer
-	svc    *service.Service
-	orch   *saga.Orchestrator
+	svc  *service.Service
+	orch *saga.Orchestrator
 }
 
 // NewAssetServer wires an AssetServer. orch may be nil for test setups
@@ -191,11 +191,14 @@ func (s *AssetServer) QueryTransfer(ctx context.Context, req *assetrpc.QueryTran
 // "" returns every tracked asset; when asset is given and the user has
 // no record the response includes a single zero-valued entry (same
 // shape as counter's QueryBalance).
-func (s *AssetServer) QueryFundingBalance(_ context.Context, req *assetrpc.QueryFundingBalanceRequest) (*assetrpc.QueryFundingBalanceResponse, error) {
+func (s *AssetServer) QueryFundingBalance(ctx context.Context, req *assetrpc.QueryFundingBalanceRequest) (*assetrpc.QueryFundingBalanceResponse, error) {
 	if req == nil || req.UserId == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
-	all := s.svc.QueryFundingBalance(req.UserId, req.Asset)
+	all, err := s.svc.QueryFundingBalance(ctx, req.UserId, req.Asset)
+	if err != nil {
+		return nil, holderServiceErrToStatus(err)
+	}
 	out := &assetrpc.QueryFundingBalanceResponse{
 		Balances: make([]*assetrpc.FundingBalance, 0, len(all)),
 	}
@@ -279,6 +282,13 @@ func rejectReasonToProto(err error) assetholderrpc.RejectReason {
 		return assetholderrpc.RejectReason_REJECT_REASON_AMOUNT_INVALID
 	}
 	return assetholderrpc.RejectReason_REJECT_REASON_INTERNAL
+}
+
+func holderServiceErrToStatus(err error) error {
+	if errors.Is(err, service.ErrIdempotencyConflict) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return status.Error(codes.Internal, err.Error())
 }
 
 // ---------------------------------------------------------------------------

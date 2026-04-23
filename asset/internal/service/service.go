@@ -1,22 +1,16 @@
-// Package service is asset-service's business orchestration layer. It
-// sits between the gRPC server (API boundary) and the engine (in-memory
-// state) and handles the "validate → apply → journal" sequence shared
-// by every AssetHolder method.
-//
-// For M3a the service only exposes the AssetHolder path (TransferOut /
-// TransferIn / Compensate). The cross-biz_line saga orchestrator
-// (AssetService.Transfer driving Counter's AssetHolder) lives in M3b
-// and will sit alongside this file.
+// Package service is asset-service's business boundary between gRPC and the
+// funding wallet store. ADR-0065 makes MySQL the authority for funding
+// balances, so the service no longer owns in-memory wallet state or event
+// publishing.
 package service
 
 import (
 	"context"
-	"errors"
 
 	"go.uber.org/zap"
 
 	"github.com/xargin/opentrade/asset/internal/engine"
-	"github.com/xargin/opentrade/asset/internal/journal"
+	"github.com/xargin/opentrade/asset/internal/store"
 )
 
 // Status mirrors api/rpc/assetholder.TransferStatus values. The server
@@ -38,27 +32,30 @@ type Result struct {
 	FundingVersion uint64
 }
 
-// Config wires the service. ProducerID is stamped into every journal
-// event's EventMeta so downstream consumers can attribute writes to a
-// specific asset-service instance.
-type Config struct {
-	ProducerID string
+// ErrIdempotencyConflict is surfaced when a caller retries the same
+// (transfer_id, op_type) with a different request shape.
+var ErrIdempotencyConflict = store.ErrIdempotencyConflict
+
+// FundingStore is the durable funding wallet contract used by Service.
+type FundingStore interface {
+	TransferOut(context.Context, store.Request) (store.Result, error)
+	TransferIn(context.Context, store.Request) (store.Result, error)
+	Compensate(context.Context, store.Request) (store.Result, error)
+	QueryFundingBalance(context.Context, string, string) ([]store.FundingBalance, error)
 }
 
 // Service orchestrates the funding-wallet AssetHolder path.
 type Service struct {
-	cfg       Config
-	state     *engine.State
-	publisher journal.Publisher
-	logger    *zap.Logger
+	funding FundingStore
+	logger  *zap.Logger
 }
 
 // New constructs a Service.
-func New(cfg Config, state *engine.State, pub journal.Publisher, logger *zap.Logger) *Service {
+func New(funding FundingStore, logger *zap.Logger) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Service{cfg: cfg, state: state, publisher: pub, logger: logger}
+	return &Service{funding: funding, logger: logger}
 }
 
 // ---------------------------------------------------------------------------
@@ -78,167 +75,81 @@ type HolderRequest struct {
 	CompensateCause string // only set on Compensate path
 }
 
-// TransferOut debits the funding wallet and publishes a FundingTransferOut
-// journal event. The balance mutation commits only after Kafka acks the
-// journal event, so a failed publish leaves the transfer_id retryable.
-// Returns StatusRejected with the engine error when the balance would go
-// negative; StatusDuplicated when the transfer_id hit the idempotency ring.
+// TransferOut debits the funding wallet in MySQL. Returns StatusRejected
+// when the store persists a business rejection, and StatusDuplicated when
+// funding_mutations already has the same confirmed transfer.
 func (s *Service) TransferOut(ctx context.Context, req HolderRequest) (Result, error) {
-	var published Result
-	res, err := s.state.ApplyTransferOutCommitted(req.Amount, func(res engine.Result) error {
-		var err error
-		published, err = s.publish(ctx, req, journal.KindTransferOut, res)
-		return err
-	})
+	res, err := s.funding.TransferOut(ctx, toStoreRequest(req))
 	if err != nil {
-		if isEngineReject(err) {
-			return rejectFor(err), nil
-		}
-		s.logger.Warn("asset-journal publish failed",
-			zap.String("transfer_id", req.TransferID),
-			zap.Error(err))
 		return Result{}, err
 	}
-	if res.Duplicated {
-		return duplicated(res), nil
-	}
-	return published, nil
+	return fromStoreResult(res), nil
 }
 
-// TransferIn credits the funding wallet and publishes a FundingTransferIn
-// journal event.
+// TransferIn credits the funding wallet in MySQL.
 func (s *Service) TransferIn(ctx context.Context, req HolderRequest) (Result, error) {
-	var published Result
-	res, err := s.state.ApplyTransferInCommitted(req.Amount, func(res engine.Result) error {
-		var err error
-		published, err = s.publish(ctx, req, journal.KindTransferIn, res)
-		return err
-	})
+	res, err := s.funding.TransferIn(ctx, toStoreRequest(req))
 	if err != nil {
-		if isEngineReject(err) {
-			return rejectFor(err), nil
-		}
-		s.logger.Warn("asset-journal publish failed",
-			zap.String("transfer_id", req.TransferID),
-			zap.Error(err))
 		return Result{}, err
 	}
-	if res.Duplicated {
-		return duplicated(res), nil
-	}
-	return published, nil
+	return fromStoreResult(res), nil
 }
 
-// Compensate credits the funding wallet (same math as TransferIn) but
-// publishes a FundingCompensate journal event so audit /
-// reconciliation can distinguish compensations from normal credits.
+// Compensate credits the funding wallet using a distinct idempotency op_type.
 func (s *Service) Compensate(ctx context.Context, req HolderRequest) (Result, error) {
-	var published Result
-	res, err := s.state.ApplyCompensateCommitted(req.Amount, func(res engine.Result) error {
-		var err error
-		published, err = s.publish(ctx, req, journal.KindCompensate, res)
-		return err
-	})
+	res, err := s.funding.Compensate(ctx, toStoreRequest(req))
 	if err != nil {
-		if isEngineReject(err) {
-			return rejectFor(err), nil
-		}
-		s.logger.Warn("asset-journal publish failed",
-			zap.String("transfer_id", req.TransferID),
-			zap.Error(err))
 		return Result{}, err
 	}
-	if res.Duplicated {
-		return duplicated(res), nil
-	}
-	return published, nil
-}
-
-func isEngineReject(err error) bool {
-	switch {
-	case err == nil:
-		return false
-	case errors.Is(err, engine.ErrInsufficientAvailable),
-		errors.Is(err, engine.ErrInvalidAmount),
-		errors.Is(err, engine.ErrMissingUserID),
-		errors.Is(err, engine.ErrMissingAsset),
-		errors.Is(err, engine.ErrMissingTransferID):
-		return true
-	default:
-		return false
-	}
+	return fromStoreResult(res), nil
 }
 
 // ---------------------------------------------------------------------------
 // Query
 // ---------------------------------------------------------------------------
 
-// QueryFundingBalance returns balances for the user. asset == "" returns
-// all assets.
-func (s *Service) QueryFundingBalance(userID, asset string) []FundingBalance {
-	acc := s.state.Account(userID)
-	if asset != "" {
-		bal := acc.Balance(asset)
-		return []FundingBalance{{Asset: asset, Balance: bal}}
-	}
-	all := acc.Copy()
-	out := make([]FundingBalance, 0, len(all))
-	for a, b := range all {
-		out = append(out, FundingBalance{Asset: a, Balance: b})
-	}
-	return out
+// QueryFundingBalance returns balances for the user. asset == "" returns all
+// persisted assets.
+func (s *Service) QueryFundingBalance(ctx context.Context, userID, asset string) ([]FundingBalance, error) {
+	return s.funding.QueryFundingBalance(ctx, userID, asset)
 }
 
-// FundingBalance is the pair (asset, Balance). Used only by the query
-// path.
-type FundingBalance struct {
-	Asset   string
-	Balance engine.Balance
-}
+// FundingBalance is the pair (asset, Balance). Used only by the query path.
+type FundingBalance = store.FundingBalance
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
-// publish emits the journal event and wraps engine.Result into a
-// service.Result. Callers run this from the engine's committed apply path, so
-// a failed publish prevents the in-memory balance mutation from committing.
-func (s *Service) publish(ctx context.Context, req HolderRequest, kind journal.EventKind, res engine.Result) (Result, error) {
-	evt := journal.Build(journal.BuildInput{
-		Kind:            kind,
-		AssetSeqID:      s.publisher.NextSeq(),
-		ProducerID:      s.cfg.ProducerID,
-		FundingVersion:  res.FundingVersion,
+func toStoreRequest(req HolderRequest) store.Request {
+	return store.Request{
 		UserID:          req.UserID,
 		TransferID:      req.TransferID,
 		Asset:           req.Asset,
-		Amount:          req.Amount.Amount.String(),
+		Amount:          req.Amount.Amount,
 		PeerBiz:         req.PeerBiz,
 		Memo:            req.Memo,
 		CompensateCause: req.CompensateCause,
-		BalanceAfter:    res.BalanceAfter,
-	})
-	if err := s.publisher.Publish(ctx, req.UserID, evt); err != nil {
-		return Result{}, err
-	}
-	return Result{
-		Status:         StatusConfirmed,
-		BalanceAfter:   res.BalanceAfter,
-		FundingVersion: res.FundingVersion,
-	}, nil
-}
-
-func rejectFor(err error) Result {
-	return Result{
-		Status:       StatusRejected,
-		RejectReason: err,
 	}
 }
 
-func duplicated(res engine.Result) Result {
+func fromStoreResult(res store.Result) Result {
 	return Result{
-		Status:         StatusDuplicated,
+		Status:         fromStoreStatus(res.Status),
+		RejectReason:   res.RejectReason,
 		BalanceAfter:   res.BalanceAfter,
 		FundingVersion: res.FundingVersion,
 	}
+}
+
+func fromStoreStatus(s store.Status) Status {
+	switch s {
+	case store.StatusConfirmed:
+		return StatusConfirmed
+	case store.StatusRejected:
+		return StatusRejected
+	case store.StatusDuplicated:
+		return StatusDuplicated
+	}
+	return StatusUnspecified
 }

@@ -2,47 +2,83 @@ package server
 
 import (
 	"context"
-	"sync"
 	"testing"
 
-	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	eventpb "github.com/xargin/opentrade/api/gen/event"
 	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
 	"github.com/xargin/opentrade/asset/internal/engine"
 	"github.com/xargin/opentrade/asset/internal/service"
+	"github.com/xargin/opentrade/asset/internal/store"
 )
 
-type fakePub struct {
-	mu     sync.Mutex
-	seq    uint64
-	events []*eventpb.AssetJournalEvent
+type fakeFundingStore struct {
+	state *engine.State
 }
 
-func (f *fakePub) Publish(_ context.Context, _ string, evt *eventpb.AssetJournalEvent) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.events = append(f.events, evt)
-	return nil
+func newFakeFundingStore() *fakeFundingStore {
+	return &fakeFundingStore{state: engine.NewState()}
 }
 
-func (f *fakePub) NextSeq() uint64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.seq++
-	return f.seq
+func (f *fakeFundingStore) TransferOut(_ context.Context, req store.Request) (store.Result, error) {
+	res, err := f.state.ApplyTransferOut(toEngineReq(req))
+	if err != nil {
+		return store.Result{Status: store.StatusRejected, RejectReason: err}, nil
+	}
+	return fromEngineResult(res), nil
 }
 
-func (f *fakePub) Close(context.Context) error { return nil }
+func (f *fakeFundingStore) TransferIn(_ context.Context, req store.Request) (store.Result, error) {
+	res, err := f.state.ApplyTransferIn(toEngineReq(req))
+	if err != nil {
+		return store.Result{Status: store.StatusRejected, RejectReason: err}, nil
+	}
+	return fromEngineResult(res), nil
+}
+
+func (f *fakeFundingStore) Compensate(ctx context.Context, req store.Request) (store.Result, error) {
+	return f.TransferIn(ctx, req)
+}
+
+func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID, asset string) ([]store.FundingBalance, error) {
+	acc := f.state.Account(userID)
+	if asset != "" {
+		return []store.FundingBalance{{Asset: asset, Balance: acc.Balance(asset)}}, nil
+	}
+	all := acc.Copy()
+	out := make([]store.FundingBalance, 0, len(all))
+	for a, b := range all {
+		out = append(out, store.FundingBalance{Asset: a, Balance: b})
+	}
+	return out, nil
+}
+
+func toEngineReq(req store.Request) engine.TransferRequest {
+	return engine.TransferRequest{
+		UserID:     req.UserID,
+		TransferID: req.TransferID,
+		Asset:      req.Asset,
+		Amount:     req.Amount,
+	}
+}
+
+func fromEngineResult(res engine.Result) store.Result {
+	status := store.StatusConfirmed
+	if res.Duplicated {
+		status = store.StatusDuplicated
+	}
+	return store.Result{
+		Status:         status,
+		BalanceAfter:   res.BalanceAfter,
+		FundingVersion: res.FundingVersion,
+	}
+}
 
 func newServers(t *testing.T) (*AssetHolderServer, *AssetServer) {
 	t.Helper()
-	state := engine.NewState()
-	pub := &fakePub{}
-	svc := service.New(service.Config{ProducerID: "asset-main"}, state, pub, zap.NewNop())
+	svc := service.New(newFakeFundingStore(), nil)
 	return NewAssetHolderServer(svc), NewAssetServer(svc, nil)
 }
 

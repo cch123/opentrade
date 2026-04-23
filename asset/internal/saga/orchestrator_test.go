@@ -19,13 +19,12 @@ import (
 // orchestrator so each test can script the DB/holder responses
 // precisely.
 type orchFixture struct {
-	orch     *Orchestrator
-	ledger   *transferledger.Ledger
-	mock     sqlmock.Sqlmock
-	from     *fakeHolder
-	to       *fakeHolder
-	pub      *capturePub
-	db       *sql.DB
+	orch   *Orchestrator
+	ledger *transferledger.Ledger
+	mock   sqlmock.Sqlmock
+	from   *fakeHolder
+	to     *fakeHolder
+	db     *sql.DB
 }
 
 func newOrchFixture(t *testing.T) *orchFixture {
@@ -44,15 +43,13 @@ func newOrchFixture(t *testing.T) *orchFixture {
 	reg.Register("funding", from)
 	reg.Register("spot", to)
 
-	pub := &capturePub{}
 	driver := New(Config{
-		ProducerID:        "asset-test",
 		RPCTimeout:        50 * time.Millisecond,
 		ForwardRetries:    1,
 		ForwardBackoff:    1 * time.Millisecond,
 		CompensateRetries: 2,
 		CompensateBackoff: 1 * time.Millisecond,
-	}, ledger, reg, pub, zap.NewNop(), nil)
+	}, ledger, reg, zap.NewNop(), nil)
 	driver.SetSleep(func(context.Context, time.Duration) {})
 	driver.SetClock(func() time.Time { return time.UnixMilli(1_700_000_000_000) })
 
@@ -60,7 +57,7 @@ func newOrchFixture(t *testing.T) *orchFixture {
 
 	return &orchFixture{
 		orch: orch, ledger: ledger, mock: mock,
-		from: from, to: to, pub: pub, db: db,
+		from: from, to: to, db: db,
 	}
 }
 
@@ -127,13 +124,13 @@ func TestOrchestrator_Transfer_InvalidArgs(t *testing.T) {
 	f := newOrchFixture(t)
 
 	cases := []TransferInput{
-		{TransferID: "t", FromBiz: "funding", ToBiz: "spot", Asset: "USDT", Amount: "100"},   // missing user
-		{UserID: "u1", FromBiz: "funding", ToBiz: "spot", Asset: "USDT", Amount: "100"},      // missing tx
-		{UserID: "u1", TransferID: "t", ToBiz: "spot", Asset: "USDT", Amount: "100"},         // missing from
-		{UserID: "u1", TransferID: "t", FromBiz: "funding", Asset: "USDT", Amount: "100"},    // missing to
+		{TransferID: "t", FromBiz: "funding", ToBiz: "spot", Asset: "USDT", Amount: "100"},             // missing user
+		{UserID: "u1", FromBiz: "funding", ToBiz: "spot", Asset: "USDT", Amount: "100"},                // missing tx
+		{UserID: "u1", TransferID: "t", ToBiz: "spot", Asset: "USDT", Amount: "100"},                   // missing from
+		{UserID: "u1", TransferID: "t", FromBiz: "funding", Asset: "USDT", Amount: "100"},              // missing to
 		{UserID: "u1", TransferID: "t", FromBiz: "funding", ToBiz: "funding", Asset: "X", Amount: "1"}, // same
-		{UserID: "u1", TransferID: "t", FromBiz: "funding", ToBiz: "spot", Amount: "100"},    // missing asset
-		{UserID: "u1", TransferID: "t", FromBiz: "funding", ToBiz: "spot", Asset: "USDT"},    // missing amount
+		{UserID: "u1", TransferID: "t", FromBiz: "funding", ToBiz: "spot", Amount: "100"},              // missing asset
+		{UserID: "u1", TransferID: "t", FromBiz: "funding", ToBiz: "spot", Asset: "USDT"},              // missing amount
 	}
 	for i, c := range cases {
 		_, err := f.orch.Transfer(context.Background(), c)

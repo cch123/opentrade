@@ -6,13 +6,8 @@
 //     CompensateTransferOut) for the biz_line=funding account book.
 //   - Serve AssetService.Transfer (the saga orchestrator entrypoint)
 //     plus QueryTransfer / QueryFundingBalance read paths.
-//   - Persist saga state to MySQL via pkg/transferledger; recover
-//     pending sagas on startup before opening the gRPC listener.
-//   - Publish FundingTransferOut/In/Compensate and SagaStateChange
-//     envelopes to the asset-journal Kafka topic for trade-dump to
-//     project into MySQL.
-//   - Replay asset-journal on startup to restore the funding wallet before
-//     opening the gRPC listener.
+//   - Persist funding balances + saga state to opentrade_asset MySQL;
+//     recover pending sagas on startup before opening the gRPC listener.
 //
 // Not yet wired (tracked in ADR-0057 follow-ups):
 //
@@ -45,36 +40,29 @@ import (
 
 	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
-	"github.com/xargin/opentrade/asset/internal/engine"
 	"github.com/xargin/opentrade/asset/internal/holder"
-	"github.com/xargin/opentrade/asset/internal/journal"
 	assetmetrics "github.com/xargin/opentrade/asset/internal/metrics"
 	"github.com/xargin/opentrade/asset/internal/saga"
 	"github.com/xargin/opentrade/asset/internal/server"
 	"github.com/xargin/opentrade/asset/internal/service"
+	"github.com/xargin/opentrade/asset/internal/store"
 	"github.com/xargin/opentrade/pkg/logx"
 	"github.com/xargin/opentrade/pkg/metrics"
 	"github.com/xargin/opentrade/pkg/transferledger"
 )
 
 type Config struct {
-	InstanceID   string
-	GRPCAddr     string
-	MetricsAddr  string
-	Brokers      []string
-	JournalTopic string
-	Env          string
-	LogLevel     string
+	InstanceID  string
+	GRPCAddr    string
+	MetricsAddr string
+	Env         string
+	LogLevel    string
 
 	// Reconciler tick interval (ADR-0057 M6). 0 = default (30s).
 	ReconcileInterval time.Duration
 
-	// FundingRecoveryTimeout bounds startup replay of asset-journal into the
-	// in-memory funding wallet. 0 = default (60s).
-	FundingRecoveryTimeout time.Duration
-
-	// MySQL for transfer_ledger.
-	LedgerDSN string
+	// MySQL for funding wallet + transfer_ledger.
+	MySQLDSN string
 
 	// Biz-line routing: `biz:addr` pairs parsed from --peer-holders.
 	// "funding" is always wired to the in-process Service and should
@@ -99,120 +87,67 @@ func main() {
 	logger.Info("asset starting",
 		zap.String("instance", cfg.InstanceID),
 		zap.String("grpc", cfg.GRPCAddr),
-		zap.Strings("brokers", cfg.Brokers),
-		zap.String("journal_topic", cfg.JournalTopic),
 		zap.Any("peer_holders", cfg.PeerHolders))
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Prometheus registry — one shared across framework + saga metrics.
-	// framework metrics cover RPC / Kafka shapes; sagaMetrics covers
-	// ADR-0057 M6 telemetry.
 	promReg := metrics.NewRegistry()
 	_ = metrics.NewFramework("asset", promReg)
 	sagaMetrics := assetmetrics.NewSaga(promReg)
 
-	state := engine.NewState()
+	fundingStore, err := store.New(store.Config{DSN: cfg.MySQLDSN})
+	if err != nil {
+		logger.Fatal("funding store init", zap.Error(err))
+	}
+	defer func() { _ = fundingStore.Close() }()
+	if err := fundingStore.Ping(rootCtx); err != nil {
+		logger.Fatal("funding store ping", zap.Error(err))
+	}
 
-	pub, err := journal.NewKafkaPublisher(journal.KafkaConfig{
-		Brokers:  cfg.Brokers,
-		Topic:    cfg.JournalTopic,
-		ClientID: cfg.InstanceID,
-		Logger:   logger,
-	})
+	svc := service.New(fundingStore, logger)
+
+	ledger, err := transferledger.NewLedger(transferledger.Config{DSN: cfg.MySQLDSN})
 	if err != nil {
-		logger.Fatal("journal producer init", zap.Error(err))
+		logger.Fatal("transfer_ledger init", zap.Error(err))
 	}
-	recoverTimeout := cfg.FundingRecoveryTimeout
-	if recoverTimeout <= 0 {
-		recoverTimeout = journal.DefaultRecoveryTimeout
-	}
-	recoverCtx, recoverCancel := context.WithTimeout(rootCtx, recoverTimeout)
-	recovered, err := journal.ReplayFundingState(recoverCtx, journal.RecoveryConfig{
-		Brokers:  cfg.Brokers,
-		Topic:    cfg.JournalTopic,
-		ClientID: cfg.InstanceID + "-funding-recovery",
-		Logger:   logger,
-	}, state)
-	recoverCancel()
+	defer func() { _ = ledger.Close() }()
+
+	registry := holder.NewRegistry()
+	registry.Register("funding", holder.NewLocalFundingClient(svc))
+	peerConns, err := registerPeerHolders(registry, cfg.PeerHolders)
 	if err != nil {
-		logger.Fatal("funding wallet recovery", zap.Error(err))
+		logger.Fatal("peer holders init", zap.Error(err))
 	}
-	pub.SetSeqAtLeast(recovered.MaxAssetSeqID)
-	logger.Info("funding wallet recovered",
-		zap.Int("applied", recovered.Applied),
-		zap.Uint64("max_asset_seq_id", recovered.MaxAssetSeqID),
-		zap.Int("partitions", recovered.Partitions))
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := pub.Close(shutdownCtx); err != nil {
-			logger.Warn("journal close", zap.Error(err))
+		for _, c := range peerConns {
+			_ = c.Close()
 		}
 	}()
 
-	svc := service.New(service.Config{ProducerID: cfg.InstanceID}, state, pub, logger)
+	driver := saga.New(saga.Config{}, ledger, registry, logger, sagaMetrics)
+	orch := saga.NewOrchestrator(saga.OrchestratorConfig{}, ledger, driver, logger, sagaMetrics)
 
-	// Saga layer (ADR-0057 §4). Wired only when a ledger DSN is given;
-	// without a DSN asset-service falls back to "funding holder only"
-	// mode — useful for local dev / integration tests where MySQL is
-	// not available.
-	var orch *saga.Orchestrator
-	var registry *holder.Registry
-	var ledger *transferledger.Ledger
-	var peerConns []*grpc.ClientConn
-
-	if cfg.LedgerDSN != "" {
-		var err error
-		ledger, err = transferledger.NewLedger(transferledger.Config{DSN: cfg.LedgerDSN})
-		if err != nil {
-			logger.Fatal("transfer_ledger init", zap.Error(err))
-		}
-		defer func() { _ = ledger.Close() }()
-
-		registry = holder.NewRegistry()
-		registry.Register("funding", holder.NewLocalFundingClient(svc))
-		peerConns, err = registerPeerHolders(registry, cfg.PeerHolders)
-		if err != nil {
-			logger.Fatal("peer holders init", zap.Error(err))
-		}
-		defer func() {
-			for _, c := range peerConns {
-				_ = c.Close()
-			}
-		}()
-
-		driver := saga.New(saga.Config{ProducerID: cfg.InstanceID}, ledger, registry, pub, logger, sagaMetrics)
-		orch = saga.NewOrchestrator(saga.OrchestratorConfig{}, ledger, driver, logger, sagaMetrics)
-
-		// Recover pending sagas BEFORE opening the gRPC listener so
-		// no fresh Transfer can race a resumed driver on the same id.
-		recoverCtx, cancel := context.WithTimeout(rootCtx, 60*time.Second)
-		if err := orch.Recover(recoverCtx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Warn("saga recover", zap.Error(err))
-		}
-		cancel()
-	} else {
-		logger.Warn("ledger DSN empty — running in funding-holder-only mode (no saga orchestrator)")
+	// Recover pending sagas BEFORE opening the gRPC listener so no fresh
+	// Transfer can race a resumed driver on the same id.
+	recoverCtx, cancel := context.WithTimeout(rootCtx, 60*time.Second)
+	if err := orch.Recover(recoverCtx); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Warn("saga recover", zap.Error(err))
 	}
+	cancel()
 
-	// Reconciler runs only when we have a ledger (no ledger = no state
-	// to aggregate). Prometheus scrapes will still see transitions
-	// counters from Driver without a reconciler running.
 	var reconciler *saga.Reconciler
 	var reconcilerWG sync.WaitGroup
-	if ledger != nil {
-		reconciler = saga.NewReconciler(saga.ReconcilerConfig{Interval: cfg.ReconcileInterval},
-			ledger, sagaMetrics, logger)
-		reconcilerWG.Add(1)
-		go func() {
-			defer reconcilerWG.Done()
-			if err := reconciler.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("reconciler exited", zap.Error(err))
-			}
-		}()
-	}
+	reconciler = saga.NewReconciler(saga.ReconcilerConfig{Interval: cfg.ReconcileInterval},
+		ledger, sagaMetrics, logger)
+	reconcilerWG.Add(1)
+	go func() {
+		defer reconcilerWG.Done()
+		if err := reconciler.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("reconciler exited", zap.Error(err))
+		}
+	}()
 
 	// Metrics HTTP endpoint. Separate listener from gRPC so Prometheus
 	// can scrape even when the gRPC side is saturated / blocked.
@@ -296,32 +231,31 @@ func registerPeerHolders(reg *holder.Registry, peers map[string]string) ([]*grpc
 
 func parseFlags() Config {
 	var (
-		instance       = flag.String("instance", "asset-main", "instance id; shows up in logs + journal ProducerID")
+		instance       = flag.String("instance", "asset-main", "instance id; shows up in logs")
 		grpcAddr       = flag.String("grpc", ":19000", "gRPC listen address")
 		metricsAddr    = flag.String("metrics-addr", ":19090", "Prometheus scrape endpoint (empty disables /metrics HTTP)")
-		brokers        = flag.String("brokers", "localhost:9092", "comma-separated Kafka bootstrap brokers")
-		topic          = flag.String("journal-topic", journal.DefaultTopic, "asset-journal Kafka topic")
 		env            = flag.String("env", "dev", "environment tag (dev/staging/prod)")
 		level          = flag.String("log-level", "info", "log level: debug | info | warn | error")
-		ledgerDSN      = flag.String("ledger-dsn", "", "MySQL DSN for opentrade_asset.transfer_ledger; empty = funding-holder-only mode")
+		mysqlDSN       = flag.String("mysql-dsn", "", "MySQL DSN for opentrade_asset funding wallet + transfer_ledger")
+		ledgerDSN      = flag.String("ledger-dsn", "", "deprecated alias for --mysql-dsn")
 		peerFlag       = flag.String("peer-holders", "", "biz_line peer list, e.g. 'spot=counter-0:18000,spot=counter-1:18000,futures=futures:19500'. Keys may repeat; last one wins.")
 		reconcileEvery = flag.Duration("reconcile-interval", saga.DefaultReconcileInterval, "saga reconciler tick interval (refreshes saga_state_count gauge)")
-		recoverTimeout = flag.Duration("funding-recovery-timeout", journal.DefaultRecoveryTimeout, "startup budget for replaying asset-journal into the funding wallet")
 	)
 	flag.Parse()
 
+	dsn := *mysqlDSN
+	if dsn == "" {
+		dsn = *ledgerDSN
+	}
 	return Config{
-		InstanceID:             *instance,
-		GRPCAddr:               *grpcAddr,
-		MetricsAddr:            *metricsAddr,
-		Brokers:                splitCSV(*brokers),
-		JournalTopic:           *topic,
-		Env:                    *env,
-		LogLevel:               *level,
-		LedgerDSN:              *ledgerDSN,
-		PeerHolders:            parsePeerList(*peerFlag),
-		ReconcileInterval:      *reconcileEvery,
-		FundingRecoveryTimeout: *recoverTimeout,
+		InstanceID:        *instance,
+		GRPCAddr:          *grpcAddr,
+		MetricsAddr:       *metricsAddr,
+		Env:               *env,
+		LogLevel:          *level,
+		MySQLDSN:          dsn,
+		PeerHolders:       parsePeerList(*peerFlag),
+		ReconcileInterval: *reconcileEvery,
 	}
 }
 
@@ -352,31 +286,12 @@ func parsePeerList(s string) map[string]string {
 	return out
 }
 
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
 func (c Config) validate() error {
 	if c.GRPCAddr == "" {
 		return errors.New("grpc addr required")
 	}
-	if len(c.Brokers) == 0 {
-		return errors.New("at least one Kafka broker required")
+	if c.MySQLDSN == "" {
+		return errors.New("mysql dsn required")
 	}
-	if c.JournalTopic == "" {
-		return errors.New("journal topic required")
-	}
-	// ledger DSN + peer holders: optional. A deployment can start in
-	// funding-holder-only mode and add saga config later.
 	return nil
 }

@@ -1,8 +1,7 @@
 // Package saga drives the cross-biz_line transfer state machine
 // defined in ADR-0057 §4. It reads/writes the transfer_ledger table
 // through pkg/transferledger, calls the two legs through holder.Client
-// from the biz_line registry, and emits SagaStateChangeEvent envelopes
-// to asset-journal on every transition.
+// from the biz_line registry, and records state transitions in MySQL.
 //
 // The driver has one public method: Run. Start (called once from main)
 // drives a freshly-created ledger row through to a terminal state;
@@ -36,7 +35,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/xargin/opentrade/asset/internal/holder"
-	"github.com/xargin/opentrade/asset/internal/journal"
 	"github.com/xargin/opentrade/asset/internal/metrics"
 	"github.com/xargin/opentrade/pkg/transferledger"
 )
@@ -45,10 +43,6 @@ import (
 // Default* constants below so callers can embed Config{} without
 // filling every field.
 type Config struct {
-	// ProducerID is stamped into every SagaStateChange event's
-	// EventMeta.producer_id.
-	ProducerID string
-
 	// RPCTimeout bounds each individual holder call (TransferOut /
 	// TransferIn / CompensateTransferOut).
 	RPCTimeout time.Duration
@@ -86,32 +80,30 @@ const (
 // Driver runs sagas. One process holds one Driver; concurrent Run calls
 // on different transfer_ids are safe.
 type Driver struct {
-	cfg       Config
-	ledger    *transferledger.Ledger
-	registry  *holder.Registry
-	publisher journal.Publisher
-	logger    *zap.Logger
-	metrics   *metrics.Saga
-	clock     func() time.Time
-	sleep     func(context.Context, time.Duration)
+	cfg      Config
+	ledger   *transferledger.Ledger
+	registry *holder.Registry
+	logger   *zap.Logger
+	metrics  *metrics.Saga
+	clock    func() time.Time
+	sleep    func(context.Context, time.Duration)
 }
 
 // New wires a Driver. metrics may be nil — in that case the driver
 // operates with no-op telemetry (useful for tests that don't care).
-func New(cfg Config, ledger *transferledger.Ledger, registry *holder.Registry, publisher journal.Publisher, logger *zap.Logger, m *metrics.Saga) *Driver {
+func New(cfg Config, ledger *transferledger.Ledger, registry *holder.Registry, logger *zap.Logger, m *metrics.Saga) *Driver {
 	applyDefaults(&cfg)
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &Driver{
-		cfg:       cfg,
-		ledger:    ledger,
-		registry:  registry,
-		publisher: publisher,
-		logger:    logger,
-		metrics:   m,
-		clock:     time.Now,
-		sleep:     sleepWithCtx,
+		cfg:      cfg,
+		ledger:   ledger,
+		registry: registry,
+		logger:   logger,
+		metrics:  m,
+		clock:    time.Now,
+		sleep:    sleepWithCtx,
 	}
 }
 
@@ -352,10 +344,9 @@ func (d *Driver) doCompensate(ctx context.Context, entry transferledger.Entry) (
 // helpers
 // ---------------------------------------------------------------------------
 
-// transition persists the ledger state change, emits a journal event,
-// and returns the updated entry for the caller. It is called at every
-// saga transition; errors here are considered unrecoverable because
-// they indicate ledger or publisher breakage.
+// transition persists the ledger state change and returns the updated entry
+// for the caller. It is called at every saga transition; errors here are
+// considered unrecoverable because they indicate ledger breakage.
 func (d *Driver) transition(ctx context.Context, entry transferledger.Entry, to transferledger.State, reason string) (transferledger.Entry, error) {
 	if err := d.ledger.UpdateState(ctx, entry.TransferID, entry.State, to, reason); err != nil {
 		if errors.Is(err, transferledger.ErrStateMismatch) {
@@ -373,36 +364,11 @@ func (d *Driver) transition(ctx context.Context, entry transferledger.Entry, to 
 		}
 		return entry, fmt.Errorf("saga: update ledger: %w", err)
 	}
-	// Ledger committed — bump telemetry before emitting the journal
-	// event so a publisher hiccup doesn't lose the transition count.
 	if d.metrics != nil {
 		d.metrics.TransitionsTotal.WithLabelValues(string(entry.State), string(to)).Inc()
 		if to == transferledger.StateCompensateStuck {
 			d.metrics.StuckTotal.Inc()
 		}
-	}
-	evt := journal.BuildSagaStateChange(journal.SagaStateChangeInput{
-		AssetSeqID:   d.publisher.NextSeq(),
-		TsUnixMS:     d.clock().UnixMilli(),
-		ProducerID:   d.cfg.ProducerID,
-		TransferID:   entry.TransferID,
-		UserID:       entry.UserID,
-		FromBiz:      entry.FromBiz,
-		ToBiz:        entry.ToBiz,
-		Asset:        entry.Asset,
-		Amount:       entry.Amount,
-		OldState:     string(entry.State),
-		NewState:     string(to),
-		RejectReason: reason,
-	})
-	if pubErr := d.publisher.Publish(ctx, entry.UserID, evt); pubErr != nil {
-		// DB-first + Kafka retry (ADR-0057 §6): ledger already
-		// committed, so publisher failure is recoverable — log and
-		// carry on. A Recover pass would re-emit via the same code
-		// path if needed.
-		d.logger.Warn("saga: state-change publish failed (ledger already committed)",
-			zap.String("transfer_id", entry.TransferID),
-			zap.Error(pubErr))
 	}
 	entry.State = to
 	entry.RejectReason = reason

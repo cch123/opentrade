@@ -3,41 +3,79 @@ package service
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 
 	"go.uber.org/zap"
 
-	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/asset/internal/engine"
+	"github.com/xargin/opentrade/asset/internal/store"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-type fakePub struct {
-	mu      sync.Mutex
-	events  []*eventpb.AssetJournalEvent
-	seq     uint64
-	publish error // if non-nil, Publish returns this
+type fakeFundingStore struct {
+	state *engine.State
 }
 
-func (f *fakePub) Publish(_ context.Context, _ string, evt *eventpb.AssetJournalEvent) error {
-	if f.publish != nil {
-		return f.publish
+func newFakeFundingStore() *fakeFundingStore {
+	return &fakeFundingStore{state: engine.NewState()}
+}
+
+func (f *fakeFundingStore) TransferOut(_ context.Context, req store.Request) (store.Result, error) {
+	res, err := f.state.ApplyTransferOut(toEngineReq(req))
+	if err != nil {
+		if errors.Is(err, engine.ErrInsufficientAvailable) {
+			return store.Result{Status: store.StatusRejected, RejectReason: err}, nil
+		}
+		return store.Result{Status: store.StatusRejected, RejectReason: err}, nil
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.events = append(f.events, evt)
-	return nil
+	return fromEngineResult(res), nil
 }
 
-func (f *fakePub) NextSeq() uint64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.seq++
-	return f.seq
+func (f *fakeFundingStore) TransferIn(_ context.Context, req store.Request) (store.Result, error) {
+	res, err := f.state.ApplyTransferIn(toEngineReq(req))
+	if err != nil {
+		return store.Result{Status: store.StatusRejected, RejectReason: err}, nil
+	}
+	return fromEngineResult(res), nil
 }
 
-func (f *fakePub) Close(context.Context) error { return nil }
+func (f *fakeFundingStore) Compensate(_ context.Context, req store.Request) (store.Result, error) {
+	return f.TransferIn(context.Background(), req)
+}
+
+func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID, asset string) ([]store.FundingBalance, error) {
+	acc := f.state.Account(userID)
+	if asset != "" {
+		return []store.FundingBalance{{Asset: asset, Balance: acc.Balance(asset)}}, nil
+	}
+	all := acc.Copy()
+	out := make([]store.FundingBalance, 0, len(all))
+	for a, b := range all {
+		out = append(out, store.FundingBalance{Asset: a, Balance: b})
+	}
+	return out, nil
+}
+
+func toEngineReq(req store.Request) engine.TransferRequest {
+	return engine.TransferRequest{
+		UserID:     req.UserID,
+		TransferID: req.TransferID,
+		Asset:      req.Asset,
+		Amount:     req.Amount,
+	}
+}
+
+func fromEngineResult(res engine.Result) store.Result {
+	status := store.StatusConfirmed
+	if res.Duplicated {
+		status = store.StatusDuplicated
+	}
+	return store.Result{
+		Status:         status,
+		BalanceAfter:   res.BalanceAfter,
+		FundingVersion: res.FundingVersion,
+	}
+}
 
 func mustDec(t *testing.T, s string) dec.Decimal {
 	t.Helper()
@@ -48,11 +86,9 @@ func mustDec(t *testing.T, s string) dec.Decimal {
 	return d
 }
 
-func newSvc(t *testing.T) (*Service, *fakePub) {
+func newSvc(t *testing.T) *Service {
 	t.Helper()
-	state := engine.NewState()
-	pub := &fakePub{}
-	return New(Config{ProducerID: "asset-main"}, state, pub, zap.NewNop()), pub
+	return New(newFakeFundingStore(), zap.NewNop())
 }
 
 func holder(userID, transferID, asset, amount string, t *testing.T) HolderRequest {
@@ -69,8 +105,8 @@ func holder(userID, transferID, asset, amount string, t *testing.T) HolderReques
 	}
 }
 
-func TestTransferIn_Confirmed_PublishesEvent(t *testing.T) {
-	svc, pub := newSvc(t)
+func TestTransferIn_Confirmed(t *testing.T) {
+	svc := newSvc(t)
 
 	req := holder("u1", "saga-1", "USDT", "100", t)
 	req.PeerBiz = "spot"
@@ -88,29 +124,10 @@ func TestTransferIn_Confirmed_PublishesEvent(t *testing.T) {
 	if res.FundingVersion != 1 {
 		t.Errorf("funding_version = %d", res.FundingVersion)
 	}
-
-	pub.mu.Lock()
-	defer pub.mu.Unlock()
-	if len(pub.events) != 1 {
-		t.Fatalf("events = %d", len(pub.events))
-	}
-	xin := pub.events[0].GetXferIn()
-	if xin == nil {
-		t.Fatalf("event payload not XferIn: %+v", pub.events[0])
-	}
-	if xin.TransferId != "saga-1" || xin.Amount != "100" || xin.PeerBiz != "spot" {
-		t.Errorf("event = %+v", xin)
-	}
-	if pub.events[0].FundingVersion != 1 {
-		t.Errorf("funding_version on envelope = %d", pub.events[0].FundingVersion)
-	}
-	if pub.events[0].AssetSeqId != 1 {
-		t.Errorf("asset_seq_id = %d", pub.events[0].AssetSeqId)
-	}
 }
 
-func TestTransferOut_Rejected_NoPublish(t *testing.T) {
-	svc, pub := newSvc(t)
+func TestTransferOut_Rejected(t *testing.T) {
+	svc := newSvc(t)
 
 	res, err := svc.TransferOut(context.Background(), holder("u1", "saga-out", "USDT", "100", t))
 	if err != nil {
@@ -122,15 +139,10 @@ func TestTransferOut_Rejected_NoPublish(t *testing.T) {
 	if !errors.Is(res.RejectReason, engine.ErrInsufficientAvailable) {
 		t.Errorf("reject = %v", res.RejectReason)
 	}
-	pub.mu.Lock()
-	defer pub.mu.Unlock()
-	if len(pub.events) != 0 {
-		t.Errorf("rejected transfer should not publish: %d events", len(pub.events))
-	}
 }
 
 func TestTransferIn_Duplicated(t *testing.T) {
-	svc, pub := newSvc(t)
+	svc := newSvc(t)
 	req := holder("u1", "saga-1", "USDT", "50", t)
 
 	if _, err := svc.TransferIn(context.Background(), req); err != nil {
@@ -143,40 +155,10 @@ func TestTransferIn_Duplicated(t *testing.T) {
 	if res.Status != StatusDuplicated {
 		t.Fatalf("status = %v, want Duplicated", res.Status)
 	}
-	pub.mu.Lock()
-	defer pub.mu.Unlock()
-	if len(pub.events) != 1 {
-		t.Errorf("duplicate should not re-publish: %d events", len(pub.events))
-	}
 }
 
-func TestTransferIn_PublishFailureDoesNotCommit(t *testing.T) {
-	svc, pub := newSvc(t)
-	pub.publish = errors.New("kafka down")
-	req := holder("u1", "saga-1", "USDT", "50", t)
-
-	if _, err := svc.TransferIn(context.Background(), req); err == nil {
-		t.Fatal("expected publish error")
-	}
-	if got := svc.QueryFundingBalance("u1", "USDT")[0].Balance.Available; !got.IsZero() {
-		t.Fatalf("balance committed despite failed publish: %s", got)
-	}
-
-	pub.publish = nil
-	res, err := svc.TransferIn(context.Background(), req)
-	if err != nil {
-		t.Fatalf("retry after failed publish: %v", err)
-	}
-	if res.Status != StatusConfirmed {
-		t.Fatalf("retry status = %v, want confirmed", res.Status)
-	}
-	if got := svc.QueryFundingBalance("u1", "USDT")[0].Balance.Available.String(); got != "50" {
-		t.Fatalf("balance after retry = %s, want 50", got)
-	}
-}
-
-func TestCompensate_EmitsCompensateKind(t *testing.T) {
-	svc, pub := newSvc(t)
+func TestCompensate_CreditsFunding(t *testing.T) {
+	svc := newSvc(t)
 	req := holder("u1", "saga-c", "USDT", "40", t)
 	req.PeerBiz = "spot"
 	req.CompensateCause = "peer_in_rejected"
@@ -188,36 +170,35 @@ func TestCompensate_EmitsCompensateKind(t *testing.T) {
 	if res.Status != StatusConfirmed {
 		t.Fatalf("status = %v", res.Status)
 	}
-	pub.mu.Lock()
-	defer pub.mu.Unlock()
-	if len(pub.events) != 1 {
-		t.Fatalf("events = %d", len(pub.events))
-	}
-	c := pub.events[0].GetCompensate()
-	if c == nil {
-		t.Fatalf("payload not Compensate")
-	}
-	if c.CompensateCause != "peer_in_rejected" {
-		t.Errorf("compensate_cause = %q", c.CompensateCause)
+	if res.BalanceAfter.Available.String() != "40" {
+		t.Errorf("available = %s", res.BalanceAfter.Available)
 	}
 }
 
 func TestQueryFundingBalance(t *testing.T) {
-	svc, _ := newSvc(t)
+	svc := newSvc(t)
 	_, _ = svc.TransferIn(context.Background(), holder("u1", "t-usdt", "USDT", "100", t))
 	_, _ = svc.TransferIn(context.Background(), holder("u1", "t-btc", "BTC", "0.5", t))
 
-	all := svc.QueryFundingBalance("u1", "")
+	all, err := svc.QueryFundingBalance(context.Background(), "u1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(all) != 2 {
 		t.Fatalf("all = %d, want 2", len(all))
 	}
-	one := svc.QueryFundingBalance("u1", "USDT")
+	one, err := svc.QueryFundingBalance(context.Background(), "u1", "USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(one) != 1 || one[0].Balance.Available.String() != "100" {
 		t.Errorf("one = %+v", one)
 	}
 
-	// Unknown user returns zero-valued balance, not an error.
-	miss := svc.QueryFundingBalance("stranger", "USDT")
+	miss, err := svc.QueryFundingBalance(context.Background(), "stranger", "USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(miss) != 1 || !miss[0].Balance.Available.IsZero() {
 		t.Errorf("miss = %+v", miss)
 	}
