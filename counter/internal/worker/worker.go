@@ -252,6 +252,27 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		zap.Uint64("epoch", w.cfg.Epoch),
 		zap.String("node", w.cfg.NodeID))
 
+	// ADR-0064 M2d: startup duration metric. The label describing
+	// which path we took (on-demand vs fallback) isn't known until
+	// the Phase 1 branches resolve, so we emit via a small closure
+	// the end of Run / error returns can call with the right
+	// mode + success values. Nil metrics are a no-op.
+	startupStart := time.Now()
+	startupMode := metrics.StartupModeLabelFallback
+	emitStartup := func(success bool) {
+		w.cfg.Metrics.RecordStartupDuration(
+			int32(w.cfg.VShardID),
+			startupMode,
+			time.Since(startupStart).Seconds(),
+			success,
+		)
+	}
+	defer func() {
+		if rerr != nil {
+			emitStartup(false)
+		}
+	}()
+
 	// ---- TxnProducer up front ----
 	// Required by both paths:
 	//   - On-demand uses it for ProduceFenceSentinel (Phase 1 step ③).
@@ -301,6 +322,7 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 			state, seq, dt = odState, odSeq, odDt
 			offsets, journalOffset = odOffsets, odJournal
 			usedOnDemand = true
+			startupMode = metrics.StartupModeLabelOnDemand
 			logger.Info("loaded via on-demand",
 				zap.Uint64("counter_seq", seq.CounterSeq()),
 				zap.Int64("journal_offset", journalOffset),
@@ -370,6 +392,10 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 		}
 	}
 
+	// Phase 2 install complete — record the successful boot latency
+	// tagged with the path we actually took. Error paths above rely
+	// on the deferred emitStartup(false) to record failed attempts.
+	emitStartup(true)
 	close(w.ready)
 
 	// ADR-0060: consumer loop is fire-and-forget. Each trade-event

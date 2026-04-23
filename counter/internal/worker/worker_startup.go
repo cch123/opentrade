@@ -12,6 +12,7 @@ import (
 	"github.com/xargin/opentrade/counter/engine"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/journal"
+	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
 	"github.com/xargin/opentrade/counter/snapshot"
@@ -78,19 +79,32 @@ func (w *VShardWorker) loadOnDemand(
 	// fallback path). Any error becomes ErrFallback — legacy path
 	// doesn't need the fence (its catchUpJournal reads whatever
 	// is in the partition up to HWM).
-	if err := producer.ProduceFenceSentinel(onDemandCtx, int32(w.cfg.VShardID)); err != nil {
+	sentinelStart := time.Now()
+	sentinelErr := producer.ProduceFenceSentinel(onDemandCtx, int32(w.cfg.VShardID))
+	w.cfg.Metrics.RecordSentinelProduceDuration(
+		int32(w.cfg.VShardID),
+		sentinelErr == nil,
+		time.Since(sentinelStart).Seconds(),
+	)
+	if sentinelErr != nil {
 		return nil, nil, nil, nil, 0, fmt.Errorf("%w: sentinel produce: %v",
-			tradedumpclient.ErrFallback, err)
+			tradedumpclient.ErrFallback, sentinelErr)
 	}
 
 	// Step ④: RPC under the shared budget. The client already maps
 	// every ADR-0064 §4 fallback-class error to ErrFallback, so we
 	// can pass err through verbatim.
+	rpcStart := time.Now()
 	resp, err := w.cfg.OnDemandClient.TakeSnapshot(
 		onDemandCtx,
 		uint32(w.cfg.VShardID),
 		w.cfg.NodeID,
 		w.cfg.Epoch,
+	)
+	w.cfg.Metrics.RecordOnDemandRPCDuration(
+		int32(w.cfg.VShardID),
+		metrics.OnDemandRPCResultLabel(err),
+		time.Since(rpcStart).Seconds(),
 	)
 	if err != nil {
 		return nil, nil, nil, nil, 0, err
