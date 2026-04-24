@@ -50,7 +50,7 @@
 ## 总体架构
 
 ```
-  服务（bff / counter / match / push / quote / trade-dump / history / conditional / admin-gateway）
+  服务（bff / counter / match / push / quote / trade-dump / history / trigger / admin-gateway）
      │           │                │
      │ zap JSON  │ Prom /metrics  │ OTel span
      │ stdout    │                │
@@ -117,7 +117,7 @@
 | bff | `cex_bff_ws_sessions`, `cex_bff_auth_fail_total{reason}` |
 | quote | `cex_quote_snapshot_age_seconds`, `cex_quote_diff_publish_total` |
 | trade-dump | `cex_trade_dump_lag_seconds`, `cex_trade_dump_write_bytes` |
-| conditional | `cex_cond_active_orders`, `cex_cond_trigger_total{reason}` |
+| trigger | `cex_cond_active_orders`, `cex_cond_trigger_total{reason}` |
 | admin-gateway | `cex_admin_op_total{op,status}` |
 
 **不做**：精心设计 label cardinality，只要别出现 user_id / order_id 这种真·高基数

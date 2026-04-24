@@ -3,7 +3,7 @@
 // Two pipelines, selectable via --pipelines:
 //
 //   - sql   (ADR-0008 / 0023 / 0028 / 0047 / 0057): consume
-//     trade-event + counter-journal + conditional-event +
+//     trade-event + counter-journal + trigger-event +
 //     asset-journal and idempotently project onto MySQL.
 //   - snap  (ADR-0061): consume counter-journal per vshard,
 //     maintain a ShadowEngine, and write per-vshard snapshots to
@@ -56,8 +56,8 @@ type Config struct {
 	TradeGroup       string
 	JournalTopic     string
 	JournalGroup     string
-	ConditionalTopic string
-	ConditionalGroup string
+	TriggerTopic string
+	TriggerGroup string
 	AssetTopic       string
 	AssetGroup       string
 
@@ -149,7 +149,7 @@ func main() {
 		mysqlWriter *writer.MySQL
 		tradeCons   *consumer.TradeConsumer
 		journalCons *consumer.JournalConsumer
-		condCons    *consumer.ConditionalConsumer
+		condCons    *consumer.TriggerConsumer
 		assetCons   *consumer.AssetConsumer
 	)
 	if wantSQL {
@@ -187,20 +187,20 @@ func main() {
 		}
 		defer journalCons.Close()
 
-		if cfg.ConditionalTopic != "" {
-			condCons, err = consumer.NewConditional(consumer.ConditionalConfig{
+		if cfg.TriggerTopic != "" {
+			condCons, err = consumer.NewTrigger(consumer.TriggerConfig{
 				Brokers:  cfg.Brokers,
-				ClientID: cfg.InstanceID + "-cond",
-				GroupID:  cfg.ConditionalGroup,
-				Topic:    cfg.ConditionalTopic,
+				ClientID: cfg.InstanceID + "-trigger",
+				GroupID:  cfg.TriggerGroup,
+				Topic:    cfg.TriggerTopic,
 			}, mysqlWriter, logger)
 			if err != nil {
-				logger.Fatal("conditional consumer init", zap.Error(err))
+				logger.Fatal("trigger consumer init", zap.Error(err))
 			}
 			defer condCons.Close()
-			logger.Info("conditional consumer enabled",
-				zap.String("topic", cfg.ConditionalTopic),
-				zap.String("group", cfg.ConditionalGroup))
+			logger.Info("trigger consumer enabled",
+				zap.String("topic", cfg.TriggerTopic),
+				zap.String("group", cfg.TriggerGroup))
 		}
 		if cfg.AssetTopic != "" {
 			assetCons, err = consumer.NewAsset(consumer.AssetConfig{
@@ -238,7 +238,7 @@ func main() {
 			go func() {
 				defer wg.Done()
 				if err := condCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
-					logger.Error("conditional consumer exited", zap.Error(err))
+					logger.Error("trigger consumer exited", zap.Error(err))
 					stop()
 				}
 			}()
@@ -468,7 +468,7 @@ func parseFlags() Config {
 		InstanceID:        "trade-dump-0",
 		TradeTopic:        "trade-event",
 		JournalTopic:      "counter-journal",
-		ConditionalTopic:  "conditional-event",
+		TriggerTopic:  "trigger-event",
 		AssetTopic:        "asset-journal",
 		MySQLDSN:          "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
 		MySQLMaxOpenConns: 16,
@@ -506,8 +506,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TradeGroup, "trade-group", "", "trade-event consumer group (default trade-dump-trade-{instance-id})")
 	flag.StringVar(&cfg.JournalTopic, "journal-topic", cfg.JournalTopic, "counter-journal topic name (shared by sql + snap pipelines)")
 	flag.StringVar(&cfg.JournalGroup, "journal-group", "", "counter-journal consumer group for sql pipeline (default trade-dump-journal-{instance-id})")
-	flag.StringVar(&cfg.ConditionalTopic, "conditional-topic", cfg.ConditionalTopic, "conditional-event topic name (empty disables; ADR-0047)")
-	flag.StringVar(&cfg.ConditionalGroup, "conditional-group", "", "conditional-event consumer group (default trade-dump-cond-{instance-id})")
+	flag.StringVar(&cfg.TriggerTopic, "trigger-topic", cfg.TriggerTopic, "trigger-event topic name (empty disables; ADR-0047)")
+	flag.StringVar(&cfg.TriggerGroup, "trigger-group", "", "trigger-event consumer group (default trade-dump-trig-{instance-id})")
 	flag.StringVar(&cfg.AssetTopic, "asset-topic", cfg.AssetTopic, "asset-journal topic name (empty disables; ADR-0057)")
 	flag.StringVar(&cfg.AssetGroup, "asset-group", "", "asset-journal consumer group (default trade-dump-asset-{instance-id})")
 	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", cfg.MySQLDSN, "MySQL DSN")
@@ -553,8 +553,8 @@ func parseFlags() Config {
 	if cfg.JournalGroup == "" {
 		cfg.JournalGroup = "trade-dump-journal-" + cfg.InstanceID
 	}
-	if cfg.ConditionalGroup == "" {
-		cfg.ConditionalGroup = "trade-dump-cond-" + cfg.InstanceID
+	if cfg.TriggerGroup == "" {
+		cfg.TriggerGroup = "trade-dump-trig-" + cfg.InstanceID
 	}
 	if cfg.AssetGroup == "" {
 		cfg.AssetGroup = "trade-dump-asset-" + cfg.InstanceID

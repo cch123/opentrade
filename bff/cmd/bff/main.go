@@ -62,9 +62,9 @@ type Config struct {
 	JWTSecret   string
 	APIKeysFile string
 
-	// Conditional service endpoint (ADR-0040). Empty disables the
-	// /v1/conditional endpoints with 503.
-	ConditionalAddr string
+	// Trigger service endpoint (ADR-0040). Empty disables the
+	// /v1/trigger endpoints with 503.
+	TriggerAddr string
 
 	// History service endpoint (ADR-0046). Empty disables the
 	// /v1/orders, /v1/trades, /v1/account-logs endpoints with 503.
@@ -130,9 +130,9 @@ func main() {
 		logger.Fatal("auth middleware", zap.Error(err))
 	}
 
-	condConn, condClient, err := maybeDialConditional(rootCtx, cfg.ConditionalAddr, logger)
+	condConn, condClient, err := maybeDialTrigger(rootCtx, cfg.TriggerAddr, logger)
 	if err != nil {
-		logger.Fatal("dial conditional", zap.Error(err))
+		logger.Fatal("dial trigger", zap.Error(err))
 	}
 	defer func() {
 		if condConn != nil {
@@ -221,20 +221,20 @@ func main() {
 	logger.Info("bff shutdown complete")
 }
 
-// maybeDialConditional dials the conditional service when addr is set.
+// maybeDialTrigger dials the trigger service when addr is set.
 // Returns (nil, nil, nil) when disabled so the REST layer falls back to
-// 503 on /v1/conditional endpoints. Errors are fatal so misconfigured
-// prod doesn't silently lose conditional-order traffic.
-func maybeDialConditional(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.Conditional, error) {
+// 503 on /v1/trigger endpoints. Errors are fatal so misconfigured
+// prod doesn't silently lose trigger-order traffic.
+func maybeDialTrigger(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.Trigger, error) {
 	if addr == "" {
-		logger.Info("conditional endpoint disabled (empty --conditional)")
+		logger.Info("trigger endpoint disabled (empty --trigger)")
 		return nil, nil, nil
 	}
-	conn, c, err := client.DialConditional(ctx, addr)
+	conn, c, err := client.DialTrigger(ctx, addr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("conditional dial %s: %w", addr, err)
+		return nil, nil, fmt.Errorf("trigger dial %s: %w", addr, err)
 	}
-	logger.Info("conditional endpoint configured", zap.String("addr", addr))
+	logger.Info("trigger endpoint configured", zap.String("addr", addr))
 	return conn, c, nil
 }
 
@@ -476,7 +476,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.AuthMode, "auth-mode", cfg.AuthMode, "auth mode: header | jwt | api-key | mixed (ADR-0039)")
 	flag.StringVar(&cfg.JWTSecret, "jwt-secret", "", "HS256 secret for --auth-mode=jwt|mixed (empty = jwt disabled in mixed mode)")
 	flag.StringVar(&cfg.APIKeysFile, "api-keys-file", "", "JSON file listing {key,secret,user_id} entries for --auth-mode=api-key|mixed")
-	flag.StringVar(&cfg.ConditionalAddr, "conditional", "", "Conditional service gRPC endpoint (empty disables /v1/conditional; ADR-0040)")
+	flag.StringVar(&cfg.TriggerAddr, "trigger", "", "Trigger service gRPC endpoint (empty disables /v1/trigger; ADR-0040)")
 	flag.StringVar(&cfg.HistoryAddr, "history", "", "History service gRPC endpoint (empty disables /v1/orders,/v1/trades,/v1/account-logs; ADR-0046)")
 	flag.StringVar(&cfg.AssetAddr, "asset", "", "Asset service gRPC endpoint (empty disables /v1/transfer,/v1/funding-balance; ADR-0057)")
 	flag.StringVar(&cfg.ClusteringMode, "clustering-mode", cfg.ClusteringMode, "counter routing mode: disabled (use --counter-shards) | enabled (watch etcd for ADR-0058 vshard routing)")

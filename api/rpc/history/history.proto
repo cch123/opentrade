@@ -3,7 +3,7 @@ syntax = "proto3";
 package opentrade.rpc.history;
 
 import "event/common.proto";
-import "rpc/conditional/conditional.proto";
+import "rpc/trigger/trigger.proto";
 
 option go_package = "github.com/xargin/opentrade/api/gen/rpc/history;historyrpc";
 
@@ -48,17 +48,17 @@ service HistoryService {
   // newest first by ts.
   rpc ListAccountLogs(ListAccountLogsRequest) returns (ListAccountLogsResponse);
 
-  // GetConditional returns one conditional by id from the long-term
-  // projection (ADR-0047). Use this for looking up a conditional after
-  // it has aged out of the conditional service's in-memory terminal
-  // buffer. The conditional service is still authoritative for active
+  // GetTrigger returns one trigger by id from the long-term
+  // projection (ADR-0047). Use this for looking up a trigger after
+  // it has aged out of the trigger service's in-memory terminal
+  // buffer. The trigger service is still authoritative for active
   // PENDING records.
-  rpc GetConditional(GetConditionalRequest) returns (GetConditionalResponse);
+  rpc GetTrigger(GetTriggerRequest) returns (GetTriggerResponse);
 
-  // ListConditionals pages a user's conditionals, newest first by
+  // ListTriggers pages a user's triggers, newest first by
   // created_at. Scope filter covers "active" (PENDING) and "terminal"
   // (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
-  rpc ListConditionals(ListConditionalsRequest) returns (ListConditionalsResponse);
+  rpc ListTriggers(ListTriggersRequest) returns (ListTriggersResponse);
 
   // GetTransfer returns one cross-biz_line saga row from the
   // `transfers` projection (ADR-0057). Non-terminal sagas live in
@@ -223,60 +223,60 @@ message ListAccountLogsResponse {
 }
 
 // -----------------------------------------------------------------------------
-// Conditionals (long-term history, ADR-0047)
+// Triggers (long-term history, ADR-0047)
 // -----------------------------------------------------------------------------
 
-message GetConditionalRequest {
+message GetTriggerRequest {
   string user_id = 1;
   uint64 id = 2;
 }
 
-message GetConditionalResponse {
-  Conditional conditional = 1;
+message GetTriggerResponse {
+  Trigger trigger = 1;
 }
 
-message ListConditionalsRequest {
+message ListTriggersRequest {
   string user_id = 1;
   string symbol = 2;                              // "" = any
   // Coarse category filter. ACTIVE folds PENDING, TERMINAL folds
   // TRIGGERED + CANCELED + REJECTED + EXPIRED, ALL disables the filter.
   // UNSPECIFIED is treated as ALL. Exclusive with `statuses`.
-  ConditionalScope scope = 3;
-  repeated opentrade.rpc.conditional.ConditionalStatus statuses = 4;
+  TriggerScope scope = 3;
+  repeated opentrade.rpc.trigger.TriggerStatus statuses = 4;
   int64 since_ms = 5;
   int64 until_ms = 6;
   string cursor = 7;
   int32 limit = 8;
 }
 
-message ListConditionalsResponse {
-  repeated Conditional conditionals = 1;
+message ListTriggersResponse {
+  repeated Trigger triggers = 1;
   string next_cursor = 2;
 }
 
-enum ConditionalScope {
-  CONDITIONAL_SCOPE_UNSPECIFIED = 0; // == ALL
-  CONDITIONAL_SCOPE_ACTIVE = 1;      // PENDING
-  CONDITIONAL_SCOPE_TERMINAL = 2;    // TRIGGERED + CANCELED + REJECTED + EXPIRED
-  CONDITIONAL_SCOPE_ALL = 3;
+enum TriggerScope {
+  TRIGGER_SCOPE_UNSPECIFIED = 0; // == ALL
+  TRIGGER_SCOPE_ACTIVE = 1;      // PENDING
+  TRIGGER_SCOPE_TERMINAL = 2;    // TRIGGERED + CANCELED + REJECTED + EXPIRED
+  TRIGGER_SCOPE_ALL = 3;
 }
 
-// Conditional is the long-term view served by history. Field layout
-// mirrors conditional.Conditional (rpc/conditional.proto) so clients that
+// Trigger is the long-term view served by history. Field layout
+// mirrors trigger.Trigger (rpc/trigger.proto) so clients that
 // already know that shape reuse it verbatim.
-message Conditional {
+message Trigger {
   uint64 id = 1;
-  string client_conditional_id = 2;
+  string client_trigger_id = 2;
   string user_id = 3;
   string symbol = 4;
   opentrade.event.Side side = 5;
-  opentrade.rpc.conditional.ConditionalType type = 6;
+  opentrade.rpc.trigger.TriggerType type = 6;
   string stop_price = 7;
   string limit_price = 8;
   string qty = 9;
   string quote_qty = 10;
   opentrade.event.TimeInForce tif = 11;
-  opentrade.rpc.conditional.ConditionalStatus status = 12;
+  opentrade.rpc.trigger.TriggerStatus status = 12;
   uint64 triggered_order_id = 13;
   string reject_reason = 14;
   int64 expires_at_unix_ms = 15;

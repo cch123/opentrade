@@ -204,7 +204,7 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := state.CreateReservation("u1", "USDT", "cond-42", dec.New("100")); err != nil {
+	if _, _, err := state.CreateReservation("u1", "USDT", "trig-42", dec.New("100")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -224,7 +224,7 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 	if err := Restore(0, state2, seq2, dt2, loaded); err != nil {
 		t.Fatal(err)
 	}
-	r := state2.LookupReservation("cond-42")
+	r := state2.LookupReservation("trig-42")
 	if r == nil || r.Amount.String() != "100" || r.Asset != "USDT" || r.UserID != "u1" {
 		t.Fatalf("reservation round-trip lost: %+v", r)
 	}

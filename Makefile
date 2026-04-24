@@ -3,7 +3,7 @@
 GO ?= go
 PROTOC ?= protoc
 
-MODULES := api pkg counter match bff push quote trade-dump conditional history admin-gateway asset
+MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset
 
 # ---------------------------------------------------------------------------
 # Proto generation

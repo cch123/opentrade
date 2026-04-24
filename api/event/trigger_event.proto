@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package opentrade.event;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/event;event";
+
+// -----------------------------------------------------------------------------
+// trigger-event topic — append-only audit stream of trigger-order
+// state transitions. See ADR-0047.
+//
+// Partition key: user_id (so trade-dump sees events for a given trigger
+// in commit order).
+//
+// Flow:
+//   trigger service         Kafka topic         trade-dump             MySQL
+//   --------------------         -------------      --------------         ------
+//   state change in engine ───▶  trigger-event ───▶ journal consumer ──▶ triggers table (upsert, seq-guarded)
+//
+// Each event carries the *post-change* full snapshot of the trigger so
+// trade-dump can idempotently upsert by id with last-write-wins on
+// trigger_seq_id. That keeps the projection robust against duplicate
+// emissions during HA handover — the consumer side dedups by
+// trigger_seq_id without needing producer transactions.
+//
+// Enums mirror the rpc/trigger.proto values 1:1. They are redeclared
+// here (with `EVENT_` prefix) to keep event/ from depending on rpc/; the
+// mapping is trivial and asserted by unit tests.
+// -----------------------------------------------------------------------------
+
+// TriggerEventType parallels rpc/trigger.TriggerType. Keep int
+// values in sync.
+enum TriggerEventType {
+  TRIGGER_EVENT_TYPE_UNSPECIFIED = 0;
+  TRIGGER_EVENT_TYPE_STOP_LOSS = 1;
+  TRIGGER_EVENT_TYPE_STOP_LOSS_LIMIT = 2;
+  TRIGGER_EVENT_TYPE_TAKE_PROFIT = 3;
+  TRIGGER_EVENT_TYPE_TAKE_PROFIT_LIMIT = 4;
+  TRIGGER_EVENT_TYPE_TRAILING_STOP_LOSS = 5;
+}
+
+// TriggerEventStatus parallels rpc/trigger.TriggerStatus.
+enum TriggerEventStatus {
+  TRIGGER_EVENT_STATUS_UNSPECIFIED = 0;
+  TRIGGER_EVENT_STATUS_PENDING = 1;
+  TRIGGER_EVENT_STATUS_TRIGGERED = 2;
+  TRIGGER_EVENT_STATUS_CANCELED = 3;
+  TRIGGER_EVENT_STATUS_REJECTED = 4;
+  TRIGGER_EVENT_STATUS_EXPIRED = 5;
+}
+
+// TriggerUpdate is the post-change full snapshot of one trigger.
+//
+// trigger_seq_id is a service-global monotonic id assigned by the
+// trigger service (sharded by trigger id space is not required;
+// the service runs as a single logical shard today). trade-dump uses it
+// as the upsert guard on the triggers table.
+message TriggerUpdate {
+  EventMeta meta = 1;
+
+  uint64 id = 2;
+  string client_trigger_id = 3;
+  string user_id = 4;
+  string symbol = 5;
+  Side side = 6;
+  TriggerEventType type = 7;
+
+  // Trigger threshold + order shape.
+  string stop_price = 8;
+  string limit_price = 9;
+  string qty = 10;
+  string quote_qty = 11;
+  TimeInForce tif = 12;
+
+  // Terminal / observable fields.
+  TriggerEventStatus status = 13;
+  int64 created_at_unix_ms = 14;
+  int64 triggered_at_unix_ms = 15;
+  uint64 placed_order_id = 16;     // populated after TRIGGERED
+  string reject_reason = 17;       // populated on REJECTED
+  int64 expires_at_unix_ms = 18;   // 0 = never expires
+
+  // OCO group id (empty = standalone).
+  string oco_group_id = 19;
+
+  // Trailing-stop observable state.
+  int32 trailing_delta_bps = 20;
+  string activation_price = 21;
+  string trailing_watermark = 22;
+  bool trailing_active = 23;
+
+  uint64 trigger_seq_id = 24;
+}

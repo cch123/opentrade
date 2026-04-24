@@ -165,7 +165,7 @@ type putSymbolBody struct {
 
 	// ADR-0054 order slot limits. Zero = use service default.
 	MaxOpenLimitOrders         uint32 `json:"max_open_limit_orders,omitempty"`
-	MaxActiveConditionalOrders uint32 `json:"max_active_conditional_orders,omitempty"`
+	MaxActiveTriggerOrders uint32 `json:"max_active_trigger_orders,omitempty"`
 }
 
 // maxOrderSlotUpper caps the two ADR-0054 slot fields. 10_000 is several
@@ -271,8 +271,8 @@ func (s *Server) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("max_open_limit_orders must be <= %d", maxOrderSlotUpper))
 		return
 	}
-	if body.MaxActiveConditionalOrders > maxOrderSlotUpper {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("max_active_conditional_orders must be <= %d", maxOrderSlotUpper))
+	if body.MaxActiveTriggerOrders > maxOrderSlotUpper {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("max_active_trigger_orders must be <= %d", maxOrderSlotUpper))
 		return
 	}
 
@@ -288,7 +288,7 @@ func (s *Server) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
 		Tiers:                      body.Tiers,
 		ScheduledChange:            body.ScheduledChange,
 		MaxOpenLimitOrders:         body.MaxOpenLimitOrders,
-		MaxActiveConditionalOrders: body.MaxActiveConditionalOrders,
+		MaxActiveTriggerOrders: body.MaxActiveTriggerOrders,
 	})
 	params := map[string]any{"shard": body.Shard, "trading": body.Trading}
 	if body.Version != "" {

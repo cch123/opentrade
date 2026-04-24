@@ -2,7 +2,7 @@ package mysqlstore
 
 import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/conditional"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 )
 
@@ -163,64 +163,64 @@ func InternalStatusesForFilters(external []historypb.OrderStatus) []int8 {
 }
 
 // ---------------------------------------------------------------------------
-// Conditional enum helpers (ADR-0047)
+// Trigger enum helpers (ADR-0047)
 // ---------------------------------------------------------------------------
 
-func conditionalTypeFromInt(n int8) condrpc.ConditionalType {
+func triggerTypeFromInt(n int8) condrpc.TriggerType {
 	switch n {
-	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS):
-		return condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS
-	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS_LIMIT):
-		return condrpc.ConditionalType_CONDITIONAL_TYPE_STOP_LOSS_LIMIT
-	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT):
-		return condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT
-	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT):
-		return condrpc.ConditionalType_CONDITIONAL_TYPE_TAKE_PROFIT_LIMIT
-	case int8(condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS):
-		return condrpc.ConditionalType_CONDITIONAL_TYPE_TRAILING_STOP_LOSS
+	case int8(condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS):
+		return condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS
+	case int8(condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT):
+		return condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT
+	case int8(condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT):
+		return condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT
+	case int8(condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT_LIMIT):
+		return condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT_LIMIT
+	case int8(condrpc.TriggerType_TRIGGER_TYPE_TRAILING_STOP_LOSS):
+		return condrpc.TriggerType_TRIGGER_TYPE_TRAILING_STOP_LOSS
 	}
-	return condrpc.ConditionalType_CONDITIONAL_TYPE_UNSPECIFIED
+	return condrpc.TriggerType_TRIGGER_TYPE_UNSPECIFIED
 }
 
-func conditionalStatusFromInt(n int8) condrpc.ConditionalStatus {
+func triggerStatusFromInt(n int8) condrpc.TriggerStatus {
 	switch n {
-	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING):
-		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING
-	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED):
-		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED
-	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED):
-		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED
-	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED):
-		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED
-	case int8(condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED):
-		return condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED
+	case int8(condrpc.TriggerStatus_TRIGGER_STATUS_PENDING):
+		return condrpc.TriggerStatus_TRIGGER_STATUS_PENDING
+	case int8(condrpc.TriggerStatus_TRIGGER_STATUS_TRIGGERED):
+		return condrpc.TriggerStatus_TRIGGER_STATUS_TRIGGERED
+	case int8(condrpc.TriggerStatus_TRIGGER_STATUS_CANCELED):
+		return condrpc.TriggerStatus_TRIGGER_STATUS_CANCELED
+	case int8(condrpc.TriggerStatus_TRIGGER_STATUS_REJECTED):
+		return condrpc.TriggerStatus_TRIGGER_STATUS_REJECTED
+	case int8(condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED):
+		return condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED
 	}
-	return condrpc.ConditionalStatus_CONDITIONAL_STATUS_UNSPECIFIED
+	return condrpc.TriggerStatus_TRIGGER_STATUS_UNSPECIFIED
 }
 
-// ConditionalStatusesForScope expands a ConditionalScope to the set of
+// TriggerStatusesForScope expands a TriggerScope to the set of
 // condrpc statuses it covers. Used by the server layer to fold
 // scope → statuses before calling the store.
-func ConditionalStatusesForScope(s historypb.ConditionalScope) []condrpc.ConditionalStatus {
+func TriggerStatusesForScope(s historypb.TriggerScope) []condrpc.TriggerStatus {
 	switch s {
-	case historypb.ConditionalScope_CONDITIONAL_SCOPE_ACTIVE:
-		return []condrpc.ConditionalStatus{
-			condrpc.ConditionalStatus_CONDITIONAL_STATUS_PENDING,
+	case historypb.TriggerScope_TRIGGER_SCOPE_ACTIVE:
+		return []condrpc.TriggerStatus{
+			condrpc.TriggerStatus_TRIGGER_STATUS_PENDING,
 		}
-	case historypb.ConditionalScope_CONDITIONAL_SCOPE_TERMINAL:
-		return []condrpc.ConditionalStatus{
-			condrpc.ConditionalStatus_CONDITIONAL_STATUS_TRIGGERED,
-			condrpc.ConditionalStatus_CONDITIONAL_STATUS_CANCELED,
-			condrpc.ConditionalStatus_CONDITIONAL_STATUS_REJECTED,
-			condrpc.ConditionalStatus_CONDITIONAL_STATUS_EXPIRED,
+	case historypb.TriggerScope_TRIGGER_SCOPE_TERMINAL:
+		return []condrpc.TriggerStatus{
+			condrpc.TriggerStatus_TRIGGER_STATUS_TRIGGERED,
+			condrpc.TriggerStatus_TRIGGER_STATUS_CANCELED,
+			condrpc.TriggerStatus_TRIGGER_STATUS_REJECTED,
+			condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED,
 		}
 	}
 	return nil
 }
 
-// InternalConditionalStatuses flattens a (possibly empty) slice of
+// InternalTriggerStatuses flattens a (possibly empty) slice of
 // condrpc statuses into the deduped int8 slice the store needs.
-func InternalConditionalStatuses(external []condrpc.ConditionalStatus) []int8 {
+func InternalTriggerStatuses(external []condrpc.TriggerStatus) []int8 {
 	if len(external) == 0 {
 		return nil
 	}

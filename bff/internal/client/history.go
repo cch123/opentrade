@@ -19,8 +19,8 @@ type History interface {
 	ListOrders(ctx context.Context, in *historypb.ListOrdersRequest, opts ...grpc.CallOption) (*historypb.ListOrdersResponse, error)
 	ListTrades(ctx context.Context, in *historypb.ListTradesRequest, opts ...grpc.CallOption) (*historypb.ListTradesResponse, error)
 	ListAccountLogs(ctx context.Context, in *historypb.ListAccountLogsRequest, opts ...grpc.CallOption) (*historypb.ListAccountLogsResponse, error)
-	GetConditional(ctx context.Context, in *historypb.GetConditionalRequest, opts ...grpc.CallOption) (*historypb.GetConditionalResponse, error)
-	ListConditionals(ctx context.Context, in *historypb.ListConditionalsRequest, opts ...grpc.CallOption) (*historypb.ListConditionalsResponse, error)
+	GetTrigger(ctx context.Context, in *historypb.GetTriggerRequest, opts ...grpc.CallOption) (*historypb.GetTriggerResponse, error)
+	ListTriggers(ctx context.Context, in *historypb.ListTriggersRequest, opts ...grpc.CallOption) (*historypb.ListTriggersResponse, error)
 	GetTransfer(ctx context.Context, in *historypb.GetTransferRequest, opts ...grpc.CallOption) (*historypb.GetTransferResponse, error)
 	ListTransfers(ctx context.Context, in *historypb.ListTransfersRequest, opts ...grpc.CallOption) (*historypb.ListTransfersResponse, error)
 }

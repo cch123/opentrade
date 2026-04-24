@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package opentrade.rpc.trigger;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/rpc/trigger;triggerrpc";
+
+// -----------------------------------------------------------------------------
+// Trigger service — stop-loss / take-profit triggers.
+//
+// The service subscribes to market-data (Quote's PublicTrade stream per
+// ADR-0040), keeps pending triggers in memory, and fires a real
+// PlaceOrder against Counter when the last trade price crosses the stop
+// threshold.
+//
+// Funds are NOT frozen on Place: if the user has spent the balance by the
+// time the trigger fires, Counter rejects the inner order and the
+// trigger ends in REJECTED. Proper fund reservation is a follow-up
+// (MVP-14b, ADR-0040 §Future Work).
+// -----------------------------------------------------------------------------
+
+service TriggerService {
+  // PlaceTrigger stores a new PENDING trigger. Idempotent via
+  // client_trigger_id: a duplicate returns the existing record with
+  // accepted=false.
+  rpc PlaceTrigger(PlaceTriggerRequest) returns (PlaceTriggerResponse);
+
+  // CancelTrigger transitions a PENDING trigger to CANCELED. If it
+  // already fired / was canceled we surface the current status without
+  // error (accepted=false).
+  rpc CancelTrigger(CancelTriggerRequest) returns (CancelTriggerResponse);
+
+  // QueryTrigger returns one record by id. NOT_FOUND if unknown, and
+  // PermissionDenied if the requester's user_id does not match.
+  rpc QueryTrigger(QueryTriggerRequest) returns (QueryTriggerResponse);
+
+  // ListTriggers returns all active (PENDING) records for the user by
+  // default. include_inactive=true also returns terminal statuses for
+  // recent history — service keeps the last TerminalHistoryLimit rounds.
+  rpc ListTriggers(ListTriggersRequest) returns (ListTriggersResponse);
+
+  // PlaceOCO places two or more linked trigger legs atomically: when
+  // any leg transitions to TRIGGERED / REJECTED / EXPIRED / CANCELED,
+  // all still-PENDING siblings in the same OCO group are auto-canceled
+  // (ADR-0044). Idempotent via client_oco_id.
+  rpc PlaceOCO(PlaceOCORequest) returns (PlaceOCOResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum TriggerType {
+  TRIGGER_TYPE_UNSPECIFIED = 0;
+  // STOP_LOSS fires a MARKET order when the stop price is crossed.
+  // For SELL: trigger when last_price <= stop_price (protective).
+  // For BUY:  trigger when last_price >= stop_price (break-in).
+  TRIGGER_TYPE_STOP_LOSS = 1;
+
+  // STOP_LOSS_LIMIT is STOP_LOSS with a LIMIT order (at limit_price, TIF).
+  TRIGGER_TYPE_STOP_LOSS_LIMIT = 2;
+
+  // TAKE_PROFIT fires a MARKET order when the target price is crossed.
+  // For SELL: trigger when last_price >= stop_price (lock in).
+  // For BUY:  trigger when last_price <= stop_price (mean-reversion).
+  TRIGGER_TYPE_TAKE_PROFIT = 3;
+
+  // TAKE_PROFIT_LIMIT is TAKE_PROFIT with a LIMIT order (at limit_price, TIF).
+  TRIGGER_TYPE_TAKE_PROFIT_LIMIT = 4;
+
+  // TRAILING_STOP_LOSS tracks a watermark (max on sell / min on buy) and
+  // fires a MARKET order when price retraces from the watermark by
+  // `trailing_delta_bps`. Optional `activation_price` gates watermark
+  // updates until the first favorable move (ADR-0045).
+  TRIGGER_TYPE_TRAILING_STOP_LOSS = 5;
+}
+
+enum TriggerStatus {
+  TRIGGER_STATUS_UNSPECIFIED = 0;
+  // PENDING: awaiting price trigger. Visible to List by default.
+  TRIGGER_STATUS_PENDING = 1;
+  // TRIGGERED: price crossed; Counter PlaceOrder succeeded. Terminal.
+  TRIGGER_STATUS_TRIGGERED = 2;
+  // CANCELED: user called CancelTrigger. Terminal.
+  TRIGGER_STATUS_CANCELED = 3;
+  // REJECTED: trigger fired but Counter rejected the inner order
+  // (balance, wrong shard, …). reject_reason carries the detail.
+  TRIGGER_STATUS_REJECTED = 4;
+  // EXPIRED: expires_at_unix_ms passed before any trigger (ADR-0043).
+  // Terminal; reservation (if any) was released by the expiry sweeper.
+  TRIGGER_STATUS_EXPIRED = 5;
+  // EXPIRED_IN_MATCH: trigger fired but Counter rejected the derived LIMIT
+  // order because the user's per-(user, symbol) MAX_OPEN_LIMIT_ORDERS slot
+  // is full (ADR-0054). Terminal; reservation (if any) was released. Named
+  // after Binance's equivalent spot-filter status.
+  TRIGGER_STATUS_EXPIRED_IN_MATCH = 6;
+}
+
+// -----------------------------------------------------------------------------
+// Place
+// -----------------------------------------------------------------------------
+
+message PlaceTriggerRequest {
+  string user_id = 1;
+  string client_trigger_id = 2;                 // idempotency key
+  string symbol = 3;
+  opentrade.event.Side side = 4;
+  TriggerType type = 5;
+  string stop_price = 6;                            // trigger threshold
+  string limit_price = 7;                           // required for LIMIT variants
+  string qty = 8;                                   // base qty; empty for market buy with quote_qty
+  string quote_qty = 9;                             // market buy budget (BN quoteOrderQty)
+  opentrade.event.TimeInForce tif = 10;             // used for LIMIT variants
+  // Optional absolute expiry (unix ms). 0 = never expires. A PENDING
+  // trigger that reaches this wall-clock instant without triggering
+  // is moved to EXPIRED by the service's sweeper (ADR-0043). Must be
+  // strictly in the future when non-zero.
+  int64 expires_at_unix_ms = 11;
+
+  // Trailing-stop parameters (ADR-0045). Required for
+  // TRIGGER_TYPE_TRAILING_STOP_LOSS, forbidden for all other types.
+  // trailing_delta_bps is the retracement threshold in basis points
+  // (e.g. 100 = 1%). activation_price is optional; empty means "start
+  // tracking from the first observed price".
+  int32 trailing_delta_bps = 12;
+  string activation_price = 13;
+}
+
+message PlaceTriggerResponse {
+  uint64 id = 1;
+  TriggerStatus status = 2;
+  // accepted=true for a fresh trigger; false if client_trigger_id
+  // already exists (returns the prior id/status).
+  bool accepted = 3;
+  int64 received_ts_unix_ms = 4;
+}
+
+// -----------------------------------------------------------------------------
+// Cancel / Query / List
+// -----------------------------------------------------------------------------
+
+message CancelTriggerRequest {
+  string user_id = 1;
+  uint64 id = 2;
+}
+
+message CancelTriggerResponse {
+  uint64 id = 1;
+  bool accepted = 2;
+  TriggerStatus status = 3;
+}
+
+message QueryTriggerRequest {
+  string user_id = 1;
+  uint64 id = 2;
+}
+
+message QueryTriggerResponse {
+  Trigger trigger = 1;
+}
+
+message ListTriggersRequest {
+  string user_id = 1;
+  // Default (false) returns only PENDING. True returns every stored
+  // record, trimmed to the service's retention window for terminals.
+  bool include_inactive = 2;
+}
+
+message ListTriggersResponse {
+  repeated Trigger triggers = 1;
+}
+
+message Trigger {
+  uint64 id = 1;
+  string client_trigger_id = 2;
+  string user_id = 3;
+  string symbol = 4;
+  opentrade.event.Side side = 5;
+  TriggerType type = 6;
+  string stop_price = 7;
+  string limit_price = 8;
+  string qty = 9;
+  string quote_qty = 10;
+  opentrade.event.TimeInForce tif = 11;
+  TriggerStatus status = 12;
+  int64 created_at_unix_ms = 13;
+  int64 triggered_at_unix_ms = 14;
+  uint64 placed_order_id = 15;                      // populated after TRIGGERED
+  string reject_reason = 16;                        // populated on REJECTED
+  int64 expires_at_unix_ms = 17;                    // 0 = never expires
+  // OCO group id (ADR-0044). Empty = standalone trigger. Non-empty
+  // siblings are auto-canceled when this leg hits any terminal status.
+  string oco_group_id = 18;
+  // Trailing-stop observable state (ADR-0045). 0 for non-trailing types.
+  int32 trailing_delta_bps = 19;
+  string activation_price = 20;       // 0 = start tracking immediately
+  string trailing_watermark = 21;     // current max (sell) / min (buy)
+  bool trailing_active = 22;          // true once activation_price crossed
+}
+
+// -----------------------------------------------------------------------------
+// OCO (One-Cancels-Other)
+// -----------------------------------------------------------------------------
+
+message PlaceOCORequest {
+  string user_id = 1;
+  string client_oco_id = 2;             // group-level idempotency key
+  // Two or more legs. All legs must share user / symbol / side; each leg
+  // re-uses PlaceTriggerRequest so the full MVP-14a/b/d feature set
+  // (LIMIT vs MARKET variants, expiry, reservations) applies unchanged.
+  repeated PlaceTriggerRequest legs = 3;
+}
+
+message PlaceOCOResponse {
+  string oco_group_id = 1;              // engine-assigned; stable across dedup
+  repeated PlaceTriggerResponse legs = 2;
+  // false when client_oco_id matched an existing group — legs then carry
+  // the prior group's leg ids / statuses verbatim (idempotent replay).
+  bool accepted = 3;
+  int64 received_ts_unix_ms = 4;
+}

@@ -19,7 +19,7 @@ func TestReserve_HappyPath(t *testing.T) {
 
 	res, err := svc.Reserve(context.Background(), ReserveRequest{
 		UserID:        "u1",
-		ReservationID: "cond-1",
+		ReservationID: "trig-1",
 		Symbol:        "BTC-USDT",
 		Side:          engine.SideBid,
 		OrderType:     engine.OrderTypeLimit,
@@ -38,7 +38,7 @@ func TestReserve_HappyPath(t *testing.T) {
 		t.Errorf("balance: %+v", b)
 	}
 	// Record exists.
-	if got := state.LookupReservation("cond-1"); got == nil || got.Amount.String() != "100" {
+	if got := state.LookupReservation("trig-1"); got == nil || got.Amount.String() != "100" {
 		t.Errorf("reservation: %+v", got)
 	}
 }
@@ -48,7 +48,7 @@ func TestReserve_IdempotentByRefID(t *testing.T) {
 	seedBalance(svc, "u1", "USDT", dec.New("1000"))
 	req := ReserveRequest{
 		UserID:        "u1",
-		ReservationID: "cond-1",
+		ReservationID: "trig-1",
 		Symbol:        "BTC-USDT",
 		Side:          engine.SideBid,
 		OrderType:     engine.OrderTypeLimit,
@@ -73,7 +73,7 @@ func TestReserve_InsufficientBalanceReturnsError(t *testing.T) {
 	seedBalance(svc, "u1", "USDT", dec.New("50"))
 	_, err := svc.Reserve(context.Background(), ReserveRequest{
 		UserID:        "u1",
-		ReservationID: "cond-1",
+		ReservationID: "trig-1",
 		Symbol:        "BTC-USDT",
 		Side:          engine.SideBid,
 		OrderType:     engine.OrderTypeLimit,
@@ -89,13 +89,13 @@ func TestReleaseReservation_HappyPath(t *testing.T) {
 	svc, state, _ := newFixture(t)
 	seedBalance(svc, "u1", "USDT", dec.New("1000"))
 	_, _ = svc.Reserve(context.Background(), ReserveRequest{
-		UserID: "u1", ReservationID: "cond-1",
+		UserID: "u1", ReservationID: "trig-1",
 		Symbol: "BTC-USDT", Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	res, err := svc.ReleaseReservation(context.Background(), ReleaseReservationRequest{
 		UserID:        "u1",
-		ReservationID: "cond-1",
+		ReservationID: "trig-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestReleaseReservation_HappyPath(t *testing.T) {
 	if b.Available.String() != "1000" || b.Frozen.String() != "0" {
 		t.Errorf("balance not restored: %+v", b)
 	}
-	if state.LookupReservation("cond-1") != nil {
+	if state.LookupReservation("trig-1") != nil {
 		t.Errorf("reservation record still present")
 	}
 }
@@ -131,7 +131,7 @@ func TestPlaceOrder_UsingReservation(t *testing.T) {
 	seedBalance(svc, "u1", "USDT", dec.New("1000"))
 	// Reserve 100 USDT for a limit buy.
 	if _, err := svc.Reserve(context.Background(), ReserveRequest{
-		UserID: "u1", ReservationID: "cond-1",
+		UserID: "u1", ReservationID: "trig-1",
 		Symbol: "BTC-USDT", Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	}); err != nil {
@@ -147,7 +147,7 @@ func TestPlaceOrder_UsingReservation(t *testing.T) {
 		TIF:           engine.TIFGTC,
 		Price:         dec.New("100"),
 		Qty:           dec.New("1"),
-		ReservationID: "cond-1",
+		ReservationID: "trig-1",
 	})
 	if err != nil || !res.Accepted {
 		t.Fatalf("place: res=%+v err=%v", res, err)
@@ -156,7 +156,7 @@ func TestPlaceOrder_UsingReservation(t *testing.T) {
 	if b.Available.String() != "900" || b.Frozen.String() != "100" {
 		t.Errorf("balance drifted: %+v", b)
 	}
-	if state.LookupReservation("cond-1") != nil {
+	if state.LookupReservation("trig-1") != nil {
 		t.Errorf("reservation should be consumed")
 	}
 	if len(txn.pairs) == 0 {
@@ -168,7 +168,7 @@ func TestPlaceOrder_ReservationMismatchRejected(t *testing.T) {
 	svc, _, _, _ := newOrderFixture(t)
 	seedBalance(svc, "u1", "USDT", dec.New("1000"))
 	_, _ = svc.Reserve(context.Background(), ReserveRequest{
-		UserID: "u1", ReservationID: "cond-1",
+		UserID: "u1", ReservationID: "trig-1",
 		Symbol: "BTC-USDT", Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -181,7 +181,7 @@ func TestPlaceOrder_ReservationMismatchRejected(t *testing.T) {
 		OrderType:     engine.OrderTypeLimit,
 		Price:         dec.New("100"),
 		Qty:           dec.New("2"),
-		ReservationID: "cond-1",
+		ReservationID: "trig-1",
 	})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)

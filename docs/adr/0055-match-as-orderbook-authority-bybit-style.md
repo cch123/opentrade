@@ -39,7 +39,7 @@
 **双份状态是天然的不一致风险源**：
 - Quote 消费顺序一旦有 gap（ADR-0048 的 output-flush barrier 只覆盖 output 方向，input 方向依赖 Kafka 保序 + offset seek），book 就会偏
 - `OrderAccepted` 扩展字段（ADR-0024）全靠 Match 正确填 —— Quote 能不能准确重建 book 依赖 trade-event 语义是否**完备**，任何撮合侧行为变更都可能让 Quote 侧逻辑滞后
-- 未来条件单触发、改单（ADR-0014）、self-trade prevention 等新语义如果没在 trade-event 里充分表达，Quote 侧就会对不上 —— "Quote 跟 Match 保持一致"变成一个**持续的回归风险**，而不是一次性做对
+- 未来触发单触发、改单（ADR-0014）、self-trade prevention 等新语义如果没在 trade-event 里充分表达，Quote 侧就会对不上 —— "Quote 跟 Match 保持一致"变成一个**持续的回归风险**，而不是一次性做对
 
 ### 行业对照：Bybit / Binance / OKX 三种行情架构
 
@@ -205,7 +205,7 @@ message OrderBook {
 - 优点：已经在跑，改动为零
 - 缺点：
   - Match 和 Quote 两份 orderbook 状态永远存在 drift 风险
-  - 撮合侧新语义（改单、SMP、条件单触发细节）要同步教 Quote，跨服务耦合
+  - 撮合侧新语义（改单、SMP、触发细节）要同步教 Quote，跨服务耦合
   - 没有权威真值的情况下，一旦 drift 发生，排查链路长、难复现
 - 结论：**短期继续（本 ADR 本身是"暂不立即实施"），长期拒**
 

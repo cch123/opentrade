@@ -8,12 +8,12 @@ import (
 )
 
 // Reservation is a pre-frozen balance held against a privileged caller's
-// ref_id (ADR-0041). Used by the conditional-order service so STOP /
+// ref_id (ADR-0041). Used by the trigger-order service so STOP /
 // TAKE_PROFIT can reserve funds at Place time and consume them atomically
 // at trigger time.
 type Reservation struct {
 	UserID      string
-	RefID       string // caller-supplied id (e.g. "cond-<id>")
+	RefID       string // caller-supplied id (e.g. "trig-<id>")
 	Asset       string
 	Amount      dec.Decimal
 	CreatedAtMs int64
@@ -117,7 +117,7 @@ var ErrReservationNotFound = errors.New("engine: reservation not found")
 // ErrReservationMismatch is returned when a PlaceOrder(reservation_id) is
 // made but the prior reservation's (asset, amount) does not match what
 // ComputeFreeze would produce for the new order shape — most often a
-// caller bug mixing up reservations across conditionals.
+// caller bug mixing up reservations across triggers.
 var ErrReservationMismatch = errors.New("engine: reservation shape mismatch")
 
 // ErrReservationUserMismatch: the reservation exists but belongs to a

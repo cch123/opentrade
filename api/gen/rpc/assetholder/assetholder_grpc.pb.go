@@ -38,9 +38,9 @@ type AssetHolderClient interface {
 	// Reverse a previously CONFIRMED TransferOut. Used when the second leg
 	// (to.TransferIn) fails and the saga must compensate. The compensator
 	// credits the same (user_id, asset, amount) back; it is semantically
-	// identical to a TransferIn but carries a distinct label in the journal
-	// so audit / reconciliation can distinguish a compensate from a normal
-	// credit.
+	// identical to a TransferIn but should be recorded as a distinct holder
+	// operation so audit / reconciliation can distinguish a compensate from
+	// a normal credit.
 	//
 	// The transfer_id used here MUST equal the transfer_id of the original
 	// TransferOut — holders key their idempotency table on it and MUST
@@ -101,9 +101,9 @@ type AssetHolderServer interface {
 	// Reverse a previously CONFIRMED TransferOut. Used when the second leg
 	// (to.TransferIn) fails and the saga must compensate. The compensator
 	// credits the same (user_id, asset, amount) back; it is semantically
-	// identical to a TransferIn but carries a distinct label in the journal
-	// so audit / reconciliation can distinguish a compensate from a normal
-	// credit.
+	// identical to a TransferIn but should be recorded as a distinct holder
+	// operation so audit / reconciliation can distinguish a compensate from
+	// a normal credit.
 	//
 	// The transfer_id used here MUST equal the transfer_id of the original
 	// TransferOut — holders key their idempotency table on it and MUST

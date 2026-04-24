@@ -39,7 +39,7 @@ type PlaceOrderRequest struct {
 	// matching reservation instead of freezing fresh funds: it verifies the
 	// reservation's (asset, amount) matches what ComputeFreeze would
 	// produce for this order, then deletes the reservation and places the
-	// order using the already-frozen balance. Only the conditional-order
+	// order using the already-frozen balance. Only the trigger-order
 	// service sets this today.
 	ReservationId string `protobuf:"bytes,10,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
 	// Reference price (ADR-0053 M3.b). Optional. BFF fills this with a
@@ -687,7 +687,7 @@ func (x *Balance) GetFrozen() string {
 type ReserveRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	// Caller-generated id; dedup key. Conditional service uses "cond-<id>".
+	// Caller-generated id; dedup key. Trigger service uses "trig-<id>".
 	ReservationId string `protobuf:"bytes,2,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
 	// Order shape — Counter runs its existing ComputeFreeze on this tuple to
 	// derive (asset, amount).

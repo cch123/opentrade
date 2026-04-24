@@ -64,7 +64,7 @@ ADR-0060 把 Counter 消费循环异步化了，但 Counter 自产 snapshot 的 
 │  │   td-journal       │  │   td-snapshot           │ │
 │  │   td-trade         │  │ 消费:                   │ │
 │  │   td-asset         │  │   counter-journal (256) │ │
-│  │   td-cond          │  │ 状态:                   │ │
+│  │   td-trigger          │  │ 状态:                   │ │
 │  │ sink: MySQL        │  │   shadow engine × 256   │ │
 │  │                    │  │ sink: S3/EFS (per vshard)│ │
 │  └────────────────────┘  └─────────────────────────┘ │

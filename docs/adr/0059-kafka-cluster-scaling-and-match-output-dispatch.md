@@ -28,7 +28,7 @@
 | `publication stream` | Aeron 的一对多广播通道，所有订阅者都能看到同一份消息流 | Kafka topic 广播语义类比 |
 | `per-shard snapshot` | 一个分片内所有 user 的账户状态打包成一份 snapshot 文件（OpenTrade ADR-0058 当前） | — |
 | `per-user snapshot` | 每个 user 独立一份 snapshot 文件，分片 ID 作为目录分桶 | Bybit `PerCoinUserTradingData` |
-| `active user / 活跃用户` | 在任一时刻有持仓 / 活动订单 / 待触发条件单的用户；启动时需要 preload | Bybit `PreLoadUserIds` |
+| `active user / 活跃用户` | 在任一时刻有持仓 / 活动订单 / 待触发触发单的用户；启动时需要 preload | Bybit `PreLoadUserIds` |
 | `lazy load / 懒加载` | 非活跃用户的 snapshot 在首次请求到达时才读取，避免冷启动加载全量用户 | — |
 | `thread amplification / thread 放大` | Go runtime 中 goroutine 读阻塞式 IO（如 NFS）时，runtime 为保证其他 goroutine 能跑会创建新 OS thread；大量并发时可能触发 `MaxThreads` 上限 | — |
 
@@ -416,7 +416,7 @@ for j := 0; j < 10; j++ {
 
 #### A.2.3 活跃 / 非活跃分层加载
 
-- **活跃用户**：启动时从 `PreLoadUserIds` 预加载（有持仓 / 活动单 / 条件单的用户，估计量级从千万用户里筛到几十万）
+- **活跃用户**：启动时从 `PreLoadUserIds` 预加载（有持仓 / 活动单 / 触发单的用户，估计量级从千万用户里筛到几十万）
 - **非活跃用户**：懒加载，首次请求到达时才 `LoadCoinStore(userId)`（[preworker/load_trading_dump.go:47](/Users/xargin/bybit-leaked/trading/trading_service/internal/dispatcher/tradingmod/preworker/load_trading_dump.go:47)）
 
 懒加载对"千万用户但 99% 非活跃"的 CEX 用户模型是**巨大的冷启动优化** —— 省掉 99% 的无用 IO。

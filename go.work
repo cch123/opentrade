@@ -9,7 +9,7 @@ use (
 	./push
 	./quote
 	./trade-dump
-	./conditional
+	./trigger
 	./history
 	./asset
 	./admin-gateway

@@ -6,7 +6,7 @@
 --
 --   counter_seq_id     - counter shard-scoped, assigned by counter UserSequencer
 --   match_seq_id       - per-symbol, assigned by match SymbolWorker
---   conditional_seq_id - conditional service global, used as upsert guard
+--   trigger_seq_id - trigger service global, used as upsert guard
 --
 -- All monetary values are stored as DECIMAL(36, 18) (string at the API boundary).
 
@@ -99,14 +99,14 @@ CREATE TABLE IF NOT EXISTS account_logs (
     KEY idx_user_ts (user_id, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- conditionals — last-state-wins projection of conditional-event (ADR-0047).
+-- triggers — last-state-wins projection of trigger-event (ADR-0047).
 -- trade-dump upserts by PK (id) and guards with last_update_ms (wall-clock
--- emit timestamp; conditional_seq_id is also carried on-wire, but the wall
+-- emit timestamp; trigger_seq_id is also carried on-wire, but the wall
 -- clock is the authoritative ordering for this projection — see below).
--- Type / status stored as TINYINT mirroring rpc/conditional enum values.
-CREATE TABLE IF NOT EXISTS conditionals (
+-- Type / status stored as TINYINT mirroring rpc/trigger enum values.
+CREATE TABLE IF NOT EXISTS triggers (
     id                    BIGINT UNSIGNED NOT NULL,
-    client_conditional_id VARCHAR(64)     NOT NULL DEFAULT '',
+    client_trigger_id     VARCHAR(64)     NOT NULL DEFAULT '',
     user_id               VARCHAR(64)     NOT NULL,
     symbol                VARCHAR(32)     NOT NULL,
     side                  TINYINT         NOT NULL,

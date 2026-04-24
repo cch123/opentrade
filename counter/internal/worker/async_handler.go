@@ -55,7 +55,7 @@ func newAsyncTradeHandler(svc asyncTradeService, pending *pendingList, advance c
 }
 
 // HandleTradeRecord implements the journal.TradeHandler interface from
-// the trade-event consumer. Returns nil unconditionally — fn-level
+// the trade-event consumer. Returns nil untriggerly — fn-level
 // failures surface via the async cb (logged; the Publish-5s-panic
 // upstream tears down the process on systemic failures). Returning
 // nil here tells the consumer to continue polling; the advancer is

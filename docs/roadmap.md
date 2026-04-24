@@ -24,14 +24,14 @@
 | [MVP-12](#mvp-12-ha) | Counter/Match HA | ✅ | etcd lease 选主 + cold standby |
 | MVP-12b | Match transactional producer (fencing) | ✅ | 消除 split-brain 写 trade-event 窗口 |
 | [MVP-13](#mvp-13-push-sharding) | Push 多实例 sticky | ✅ | user 过滤 + handshake 检查(partition 严格对齐留 MVP-13b) |
-| [MVP-14a](#mvp-14a-conditional) | 条件单（stop-loss / take-profit） | ✅ | 独立 `conditional` 服务订 market-data，触发时通过 Counter.PlaceOrder 下真实单；无资金预留，MVP-14b 补 |
-| [MVP-14b](#mvp-14b-reservations) | 条件单资金预留 | ✅ | Counter 新 `Reserve` / `ReleaseReservation` + `PlaceOrder(reservation_id)`；conditional 下发即锁资金，触发原子消费 |
-| [MVP-14c](#mvp-14c-conditional-ha) | 条件单 HA（cold standby） | ✅ | etcd 选主复刻 ADR-0031；`--ha-mode=auto` 双实例，primary crash 10~15s 内新 primary 接管 |
-| [MVP-14d](#mvp-14d-conditional-expiry) | 条件单过期（TTL） | ✅ | `expires_at_unix_ms` + `EXPIRED` 状态 + primary 侧 sweeper；到期自动释放 reservation |
-| [MVP-14e](#mvp-14e-conditional-oco) | 条件单 OCO（One-Cancels-Other） | ✅ | `PlaceOCO` 接 N 腿；任一腿到 terminal → 兄弟 CANCELED；client_oco_id 幂等 |
-| [MVP-14f](#mvp-14f-conditional-trailing) | 条件单 Trailing Stop | ✅ | `TRAILING_STOP_LOSS` + `trailing_delta_bps` + 可选 `activation_price`；引擎实时追 watermark |
+| [MVP-14a](#mvp-14a-trigger) | 触发单（stop-loss / take-profit） | ✅ | 独立 `trigger` 服务订 market-data，触发时通过 Counter.PlaceOrder 下真实单；无资金预留，MVP-14b 补 |
+| [MVP-14b](#mvp-14b-reservations) | 触发单资金预留 | ✅ | Counter 新 `Reserve` / `ReleaseReservation` + `PlaceOrder(reservation_id)`；trigger 下发即锁资金，触发原子消费 |
+| [MVP-14c](#mvp-14c-trigger-ha) | 触发单 HA（cold standby） | ✅ | etcd 选主复刻 ADR-0031；`--ha-mode=auto` 双实例，primary crash 10~15s 内新 primary 接管 |
+| [MVP-14d](#mvp-14d-trigger-expiry) | 触发单过期（TTL） | ✅ | `expires_at_unix_ms` + `EXPIRED` 状态 + primary 侧 sweeper；到期自动释放 reservation |
+| [MVP-14e](#mvp-14e-trigger-oco) | 触发单 OCO（One-Cancels-Other） | ✅ | `PlaceOCO` 接 N 腿；任一腿到 terminal → 兄弟 CANCELED；client_oco_id 幂等 |
+| [MVP-14f](#mvp-14f-trigger-trailing) | 触发单 Trailing Stop | ✅ | `TRAILING_STOP_LOSS` + `trailing_delta_bps` + 可选 `activation_price`；引擎实时追 watermark |
 | [MVP-15](#mvp-15-history) | history / query 服务 | ✅ | 独立只读服务读 trade-dump 的 MySQL 投影（orders / trades / account_logs），BFF 历史接口改走它 |
-| [MVP-16](#mvp-16-conditional-history) | 条件单长期历史 | ✅ | `conditional-event` topic + trade-dump 投影 `conditionals`；history 新增 `ListConditionals` / `GetConditional` |
+| [MVP-16](#mvp-16-trigger-history) | 触发单长期历史 | ✅ | `trigger-event` topic + trade-dump 投影 `triggers`；history 新增 `ListTriggers` / `GetTrigger` |
 | [MVP-17](#mvp-17-admin-console) | 管理台 / Admin console | ✅ | 独立 `admin-gateway` 服务（`:8090`，与 BFF 进程隔离）+ role-tagged API-Key + JSONL 审计；symbol CRUD 走 etcd；`AdminCancelOrders` RPC 做按 user / 按 symbol 批量撤单 |
 
 > 顺序原则：**最小依赖先行**。HA（12）晚于 sharding（8/11），因为 HA 实现依赖多实例拓扑成型。Sharding（8）早于 BFF WS（10），因为 BFF WS 本质上是"把 push 那套协议代理一遍"，在 push 协议稳定后做更省力。
@@ -43,7 +43,7 @@
 ### 待办
 
 - **Match / Counter 延迟 + 吞吐 benchmark** — 验证是否接近 20w TPS / 10ms P99（[architecture.md §18.3](./architecture.md)）
-- **【待调研】Counter 在线 re-shard / 用户分片热迁移** — 现状：[docs/counter-reshard.md](./counter-reshard.md) 是 **offline maintenance-window 工具**，要求停全部 counter → 收集旧 snapshot → `counter-reshard` 按新 `shard.Index(user, M)` 重写 → 启动新集群，期间客户端流量要 503 或全停。规模变化（1 shard → 10 shard，或 10 → 20）时用户体验 = 全站短停服。**待解决的三个问题**：(1) **新 shard 如何初始化目标用户状态**？余额 / orders / reservations / `LastMatchSeq` / per-user transfer_id ring 全部跟随 `user_id` 迁移，但 orders 还可能 live 在 match book 上（maker）、trade-event 还在回流路上，目标 shard 接管瞬间收到陈旧 matchSeq 的事件怎么处理；(2) **旧 shard 如何"交权 + 拒后续请求"** 且不丢 in-flight（已进 sequencer queue 未 commit 的、已 emit 到 Kafka 未 advance 的 counter_seq_id），以及和 Kafka 消费 offset 的原子切换（ADR-0048 约束：offset 权威在 snapshot，迁移瞬间必须 flush + 原子移交）；(3) **映射层放哪里** —— BFF 里维护 `user_id → shard` routing table（etcd 下发）？还是 counter 自己路由 + 转发？(B) 路径让 match → counter 的 trade-event 回流不需要知道目标 shard 迁移情况。**Redis Cluster 可参考的点**：(a) **固定 slot 数**作为稳定中间层（如 16384 slot，`user_id` → slot via hash，slot → shard via routing table），扩容时只迁"动的 slot 对应用户"而不是全员 rehash；(b) **MIGRATING / IMPORTING 中间态** + `MOVED` / `ASK` 重定向，源节点对"正在迁出的 slot"继续服务读，写落到目标节点；(c) **DUMP + RESTORE + DEL** 的单 key 迁移协议，客户端/BFF 两边都原子可见。**映射到 counter 可能的设计**：input topic 的 partition 和 slot 绑定（而非直接和 shard 绑定）—— partition 数固定（比如 128），slot→partition 固定映射，shard 只负责消费"自己拥有的 slot 对应的 partition 集合"；shard 数变化时仅改 `slot → shard` 映射（etcd 下发），partition 布局不动，Kafka 不用重分区。**细节难点**：(i) match 的 maker order 可能跨 shard 迁移时刻存活（cancel 回流到谁？）；(ii) reservation + 条件单的跨 shard 语义（ADR-0041 / ADR-0044）；(iii) HA (ADR-0031) cold standby 和迁移中态的交互；(iv) snapshot 持久化单位从 shard 改为 slot 或者仍按 shard 但带 `owned_slots` metadata。**不要做的**：不要为了"支持热迁移"把 counter 改成每 user 独立进程 / actor —— 只会让 HA / snapshot / sequencer 语义复杂度爆炸。**下一步**：可参考 [docs/private-push-merge-research.md](./private-push-merge-research.md) 的格式另开一篇 `docs/counter-online-reshard-research.md` 详细对比 Redis Cluster / Vitess resharding / CockroachDB range split / Kafka consumer-group rebalance 几种机制，评估成本/收益。
+- **【待调研】Counter 在线 re-shard / 用户分片热迁移** — 现状：[docs/counter-reshard.md](./counter-reshard.md) 是 **offline maintenance-window 工具**，要求停全部 counter → 收集旧 snapshot → `counter-reshard` 按新 `shard.Index(user, M)` 重写 → 启动新集群，期间客户端流量要 503 或全停。规模变化（1 shard → 10 shard，或 10 → 20）时用户体验 = 全站短停服。**待解决的三个问题**：(1) **新 shard 如何初始化目标用户状态**？余额 / orders / reservations / `LastMatchSeq` / per-user transfer_id ring 全部跟随 `user_id` 迁移，但 orders 还可能 live 在 match book 上（maker）、trade-event 还在回流路上，目标 shard 接管瞬间收到陈旧 matchSeq 的事件怎么处理；(2) **旧 shard 如何"交权 + 拒后续请求"** 且不丢 in-flight（已进 sequencer queue 未 commit 的、已 emit 到 Kafka 未 advance 的 counter_seq_id），以及和 Kafka 消费 offset 的原子切换（ADR-0048 约束：offset 权威在 snapshot，迁移瞬间必须 flush + 原子移交）；(3) **映射层放哪里** —— BFF 里维护 `user_id → shard` routing table（etcd 下发）？还是 counter 自己路由 + 转发？(B) 路径让 match → counter 的 trade-event 回流不需要知道目标 shard 迁移情况。**Redis Cluster 可参考的点**：(a) **固定 slot 数**作为稳定中间层（如 16384 slot，`user_id` → slot via hash，slot → shard via routing table），扩容时只迁"动的 slot 对应用户"而不是全员 rehash；(b) **MIGRATING / IMPORTING 中间态** + `MOVED` / `ASK` 重定向，源节点对"正在迁出的 slot"继续服务读，写落到目标节点；(c) **DUMP + RESTORE + DEL** 的单 key 迁移协议，客户端/BFF 两边都原子可见。**映射到 counter 可能的设计**：input topic 的 partition 和 slot 绑定（而非直接和 shard 绑定）—— partition 数固定（比如 128），slot→partition 固定映射，shard 只负责消费"自己拥有的 slot 对应的 partition 集合"；shard 数变化时仅改 `slot → shard` 映射（etcd 下发），partition 布局不动，Kafka 不用重分区。**细节难点**：(i) match 的 maker order 可能跨 shard 迁移时刻存活（cancel 回流到谁？）；(ii) reservation + 触发单的跨 shard 语义（ADR-0041 / ADR-0044）；(iii) HA (ADR-0031) cold standby 和迁移中态的交互；(iv) snapshot 持久化单位从 shard 改为 slot 或者仍按 shard 但带 `owned_slots` metadata。**不要做的**：不要为了"支持热迁移"把 counter 改成每 user 独立进程 / actor —— 只会让 HA / snapshot / sequencer 语义复杂度爆炸。**下一步**：可参考 [docs/private-push-merge-research.md](./private-push-merge-research.md) 的格式另开一篇 `docs/counter-online-reshard-research.md` 详细对比 Redis Cluster / Vitess resharding / CockroachDB range split / Kafka consumer-group rebalance 几种机制，评估成本/收益。
 - **【待调研】match→user 推送消息的合并策略** — 现状：一笔 Trade 在 counter 侧产出 **2 条** private journal（`OrderStatusEvent` + `SettlementEvent`），push 逐条 fanout → 一个 taker 吃 100 maker = **~200 条 WS 消息**。业内对比（2026-04 调研 9 家）：(1) **Binance / BingX** 字段合并成一条 executionReport（状态+本笔+累积+手续费），100 fill = ~100 条；(2) **OKX** `orders` channel 每笔一条 + 可选 `fills`（VIP5+）；(3) **Bybit** `data:[]` 数组 + 短窗口帧 batch（唯一在协议层做帧聚合，100 fill 实测可能 20-60 条）；(4) **MEXC** `orders.pb` + `deals.pb` 双通道（~200 条，和 OpenTrade 现状等价）；(5) **KuCoin** `/spotMarket/tradeOrdersV2` 里 type=match / filled 分开推（~100+1 条）；(6) **Gate.io** `spot.orders` + `spot.usertrades` 双通道、支持跨 pair 合并；(7) **Coinbase Advanced Trade** user channel **只推订单级快照**（`cumulative_quantity` / `number_of_fills` / `avg_price`，**无本笔字段**），明细必须走 REST `/fills`；(8) **Hyperliquid** `userFills` 支持 `aggregateByTime: bool`——**唯一协议层显式聚合开关**，true 时同一 crossing order 的 partial fills 合并成 1 条。**共同特征**：除 Coinbase / Hyperliquid(aggr=true) 外，**没有一家在撮合/订单级做强制合并**（`l/L` vs `z/Z`、`fillSz` vs `accFillSz`、`execQty` vs `cumExecQty`、`matchSize` vs `filledSize` 同时暴露），合并只发生在协议字段层、帧层、或客户端 opt-in 层。**候选路 A-E**：(A) 协议字段层合并——counter 合 `OrderStatus+Settlement` → 单条 `TradeUpdate`（对齐 BN / BingX / KuCoin-match），200→100，breaking journal schema；(B) 传输帧层 batch——push 侧 `(user_id, 5-20ms 窗口)` 聚合到 `data:[]`（对齐 Bybit），侵入最小但延迟 trade-off；(C) 分层频道——订单级 + 明细级分订阅（对齐 OKX / MEXC / Gate），需扩 BFF/push 协议；(D) **客户端声明式聚合**——订阅时带 `aggregate=bool`，服务端按 `taker_order_id` 在一个 match round 内合并（对齐 Hyperliquid aggregateByTime），对 taker 方向有效，代价是 push/counter 要双视图；(E) **WS-only-cumulative**——WS 只推订单累积态，每笔明细去 REST 查（对齐 Coinbase），最省带宽但 C 端友好、做市商不友好。**决策点**：A 收益确定 + breaking；B 侵入最小 + 语义/延迟打折；C 属于产品分层；D 最灵活但双视图复杂度高；E 激进、挑服务定位。**不动的部分**：match 按笔输出（审计 / 对账 / quote K 线依赖）、trade-dump 按笔落库。**决策依据待收集**：(1) 实测 burst 下 push 帧率 / 带宽；(2) 客户端（含做市 / 高频）对"一笔事件 = 一条消息"的期望；(3) OrderStatus vs Settlement 是否有消费方只要其中一种；(4) 若走 D/E，是否对外宣传类似"Hyperliquid 风格聚合"作为卖点。**详细调研（9 家协议对比表 + 字段对照 + 极端大单防御策略 + UI 层分析）见 [docs/private-push-merge-research.md](./private-push-merge-research.md)**
 
 ### 已完成（backlog 子项）
@@ -60,18 +60,18 @@
 - ~~**Counter re-shard 工具**~~ — ✅ `counter/cmd/counter-reshard`：读 N 份旧 snapshot，按新 hash 写 M 份新 snapshot；账户/订单按 `shard.Index(user, M)` 路由，dedup 丢弃，ShardSeq 取 max（runbook: [docs/counter-reshard.md](./counter-reshard.md)）
 - ~~**trade-event consumer 的显式 shard filter**~~ — ✅ Counter 每个 trade-event handler 在进 sequencer 之前 `OwnsUser` 判定，非 owned 走 debug 日志 skip（[ADR-0027 备选方案 D](./adr/0027-counter-sharding-rollout.md)）
 - ~~**BFF auth 升级到 JWT / API-Key**~~ — ✅ `--auth-mode=header|jwt|api-key|mixed`；HS256 JWT + BN 风格 HMAC-SHA256 API-Key，无外部依赖（[ADR-0039](./adr/0039-bff-auth-jwt-apikey.md)）
-- ~~**MVP-14b 条件单资金预留**~~ — ✅ Counter `Reserve` / `ReleaseReservation` RPC + `PlaceOrder(reservation_id)` 原子消费；snapshot 持久化；触发不再因余额不足 reject（[ADR-0041](./adr/0041-counter-reservations.md)）
-- ~~**MVP-14c 条件单 HA**~~ — ✅ `pkg/election` cold standby 复刻 ADR-0031；`--ha-mode=auto` + `--etcd` 双实例（[ADR-0042](./adr/0042-conditional-ha.md)）
-- ~~**MVP-14d 条件单过期**~~ — ✅ `expires_at_unix_ms` 字段 + EXPIRED 终态 + primary 侧 5s sweeper；到期释放 reservation（[ADR-0043](./adr/0043-conditional-expiry.md)）
-- ~~**MVP-14e OCO**~~ — ✅ `PlaceOCO` N 腿原子下单 + 级联取消；`client_oco_id` 幂等；任一腿 terminal 自动 CANCEL 兄弟（[ADR-0044](./adr/0044-conditional-oco.md)）
-- ~~**MVP-14f Trailing stop**~~ — ✅ `TRAILING_STOP_LOSS` 类型 + bps retracement + 可选 activation_price；引擎维护 watermark（[ADR-0045](./adr/0045-conditional-trailing-stop.md)）
+- ~~**MVP-14b 触发单资金预留**~~ — ✅ Counter `Reserve` / `ReleaseReservation` RPC + `PlaceOrder(reservation_id)` 原子消费；snapshot 持久化；触发不再因余额不足 reject（[ADR-0041](./adr/0041-counter-reservations.md)）
+- ~~**MVP-14c 触发单 HA**~~ — ✅ `pkg/election` cold standby 复刻 ADR-0031；`--ha-mode=auto` + `--etcd` 双实例（[ADR-0042](./adr/0042-trigger-ha.md)）
+- ~~**MVP-14d 触发单过期**~~ — ✅ `expires_at_unix_ms` 字段 + EXPIRED 终态 + primary 侧 5s sweeper；到期释放 reservation（[ADR-0043](./adr/0043-trigger-expiry.md)）
+- ~~**MVP-14e OCO**~~ — ✅ `PlaceOCO` N 腿原子下单 + 级联取消；`client_oco_id` 幂等；任一腿 terminal 自动 CANCEL 兄弟（[ADR-0044](./adr/0044-trigger-oco.md)）
+- ~~**MVP-14f Trailing stop**~~ — ✅ `TRAILING_STOP_LOSS` 类型 + bps retracement + 可选 activation_price；引擎维护 watermark（[ADR-0045](./adr/0045-trigger-trailing-stop.md)）
 - ~~**counter/match snapshot 绑 Kafka offset + output flush barrier**~~ — ✅ counter 快照 schema v2（加 `Offsets` 字段）；match worker 加 mu + offsets tracking；两者消费前用 `AdjustFetchOffsetsFn` 按 snapshot 位点 seek；snapshot tick 前先调 `Pump.FlushAndWait` / `TxnProducer.Flush`，消除"Kafka commit 超前 snapshot"的丢事件窗口 + "state 已推进但 output 未发"的 in-flight gap（[ADR-0048](./adr/0048-snapshot-offset-atomicity.md)）
 - ~~**Counter account/balance 双层 version（方案 B）**~~ — ✅ `engine.Account.version` (user 级，任一 asset 动 +1) + `engine.Balance.Version` (per-(user,asset)，该 asset 动才 +1)；`setBalance` 单一入口原子推进两层，`putBalanceForRestore` 保留原值供 snapshot 恢复。`CounterJournalEvent.account_version` + `BalanceSnapshot.version` proto 新字段；五个 Builder（Transfer/PlaceOrder/Cancel/Settlement/OrderStatus）都填充。trade-dump `accounts` 表加 `account_version` / `balance_version` 列，upsert 按 `counter_seq_id` guard 保持单调。新增 engine 侧 version 单测（Transfer / Settlement / Restore 不推进）+ snapshot round-trip 断言。所有模块 build/test/vet/race 全绿
 - ~~**Counter 对 trade-event 的业务层幂等（C1：user × symbol match_seq）**~~ — ✅ `engine.Account.matchSeq map[symbol]uint64` + `LastMatchSeq` / `AdvanceMatchSeq` API；`Service.HandleTradeEvent` 提取 `evt.MatchSeqId` 透传五个 sub-handler（Accepted / Rejected / Trade / Cancelled / Expired），sequencer fn 内 `matchSeqDuplicate` guard + 成功路径 Advance；zero-seq（legacy / 无 Meta 的 in-process 测试）bypass；snapshot schema `AccountSnapshot.LastMatchSeq` 随 account 序列化；Trade 双边 maker + taker 各自独立 guard。新增测试：重放 skip、跨 symbol 独立、zero-seq bypass、snapshot round-trip。race-clean
 - ~~**Match input topic per-symbol 化**~~ — ✅ [ADR-0050](./adr/0050-match-input-topic-per-symbol.md)。Topic 命名 `order-event-<symbol>`（例：`order-event-BTC-USDT`）；counter TxnProducer 新增 `OrderEventTopicPrefix`（默认 `"order-event"`）按 orderKey 拼 topic，老 `OrderEventTopic` 保留作 fallback；match OrderConsumer 支持 `TopicRegex`（默认 `^order-event-.+$`）+ `kgo.ConsumeRegex()`，`InitialOffsets` 升级到 `map[string]map[int32]int64`；`mergeRestoredOffsets` 按 (topic, partition) 分组，ADR-0048 §4 的跨 symbol min 退化为 no-op。依赖 Kafka `auto.create.topics.enable` 或运维预创建。硬切迁移（不双写）：老 `order-event` topic 保留作历史
 - ~~**Counter per-user transfer_id ring（替代全局 `dedup.Table`）**~~ — ✅ `engine.Account` 内置 256 位定长 ring（`TransferRingCapacity=256`）+ `TransferSeen` / `RememberTransfer` / `RecentTransferIDsSnapshot` / `RestoreRecentTransferIDs` API；`Service.Transfer` fast-path + sequencer 内双 check，命中后返回 `{DUPLICATED, balance=空, counter_seq_id=0}`（**breaking**；callers 要 balance 需 `QueryBalance`）。ring 内容随 `AccountSnapshot.RecentTransferIDs` 持久化，重启后恢复；老 `DedupEntrySnapshot` 字段保留兼容 pre-ring snapshot，`dedup.Table` 本身保留但 Service 不再写。新增 engine 侧单测：fill-below-cap / overflow-evicts-oldest / duplicate-remember-noop / snapshot-round-trip / per-user-independent。JSON snapshot 体积放大是下一步 proto 化的触发点
-- ~~**Snapshot 格式 protobuf 化（可选 debug JSON）**~~ — ✅ [ADR-0049](./adr/0049-snapshot-protobuf-with-json-debug.md)。默认 proto (`.pb`)、`--snapshot-format=json` 或 env `OPENTRADE_SNAPSHOT_FORMAT=json` 退回 JSON (`.json`)；Load 探测 `.pb` → `.json`。四服务（counter / match / conditional / quote）全部落地：各自 `api/snapshot/<svc>.proto` + `Save(basePath, snap, format)` / `Load(basePath)` + `--snapshot-format` flag + JSON-only 迁移路径测试；`counter-reshard` 同步升级。旧 `.json` 继续能 load 作为迁移窗口
-- ~~**事件单调序按 producer 命名**~~ — ✅ [ADR-0051](./adr/0051-typed-producer-sequence-naming.md)。删 `EventMeta.seq_id`（reserved 1），改为按事件类型携带 typed 字段：`CounterJournalEvent.counter_seq_id` / `OrderEvent.counter_seq_id` / `TradeEvent.match_seq_id` / `MarketDataEvent.quote_seq_id` / `ConditionalUpdate.conditional_seq_id`。MySQL 列同步带 producer 前缀：`accounts.counter_seq_id`、`account_logs.counter_seq_id`（PK 重定义）、`trades.match_seq_id`（UNIQUE KEY 重定义为 `uk_symbol_match_seq`）。Go 字段 + snapshot JSON tag 全模块对齐（counter `UserSequencer.CounterSeq`、match `SymbolWorker.MatchSeq`、quote `Snapshot.QuoteSeq`、history cursor `CounterSeqID`）。**breaking**：wire / MySQL schema / snapshot JSON 全部不兼容旧版本；MVP 期硬切重建。覆盖 50 文件 / 182 处引用，全模块 build/test/vet 全绿
+- ~~**Snapshot 格式 protobuf 化（可选 debug JSON）**~~ — ✅ [ADR-0049](./adr/0049-snapshot-protobuf-with-json-debug.md)。默认 proto (`.pb`)、`--snapshot-format=json` 或 env `OPENTRADE_SNAPSHOT_FORMAT=json` 退回 JSON (`.json`)；Load 探测 `.pb` → `.json`。四服务（counter / match / trigger / quote）全部落地：各自 `api/snapshot/<svc>.proto` + `Save(basePath, snap, format)` / `Load(basePath)` + `--snapshot-format` flag + JSON-only 迁移路径测试；`counter-reshard` 同步升级。旧 `.json` 继续能 load 作为迁移窗口
+- ~~**事件单调序按 producer 命名**~~ — ✅ [ADR-0051](./adr/0051-typed-producer-sequence-naming.md)。删 `EventMeta.seq_id`（reserved 1），改为按事件类型携带 typed 字段：`CounterJournalEvent.counter_seq_id` / `OrderEvent.counter_seq_id` / `TradeEvent.match_seq_id` / `MarketDataEvent.quote_seq_id` / `TriggerUpdate.trigger_seq_id`。MySQL 列同步带 producer 前缀：`accounts.counter_seq_id`、`account_logs.counter_seq_id`（PK 重定义）、`trades.match_seq_id`（UNIQUE KEY 重定义为 `uk_symbol_match_seq`）。Go 字段 + snapshot JSON tag 全模块对齐（counter `UserSequencer.CounterSeq`、match `SymbolWorker.MatchSeq`、quote `Snapshot.QuoteSeq`、history cursor `CounterSeqID`）。**breaking**：wire / MySQL schema / snapshot JSON 全部不兼容旧版本；MVP 期硬切重建。覆盖 50 文件 / 182 处引用，全模块 build/test/vet 全绿
 
 ## 已完成
 
@@ -183,56 +183,56 @@
 - WS handshake 非 owner 的 `X-User-Id` 返回 `403` + `X-Correct-Instance`；匿名连接 bypass
 - Counter 仍用默认 partitioner（全量消费 + user 过滤，MVP 接受 N 倍流量）；严格 partition 对齐留 **MVP-13b**
 
-### MVP-14a  条件单（stop-loss / take-profit）  {#mvp-14a-conditional}
+### MVP-14a  触发单（stop-loss / take-profit）  {#mvp-14a-trigger}
 
-- **commit** [`773569d`](../) · **ADR** [0040](./adr/0040-conditional-order-service.md)
-- 新 `conditional/` 模块 + `ConditionalService` gRPC（Place / Cancel / Query / List）
+- **commit** [`773569d`](../) · **ADR** [0040](./adr/0040-trigger-order-service.md)
+- 新 `trigger/` 模块 + `TriggerService` gRPC（Place / Cancel / Query / List）
 - 订 Quote `market-data`（PublicTrade）；触发按 side × type 矩阵 —— sell/buy × STOP_LOSS/TAKE_PROFIT（±_LIMIT）
-- 触发时调 Counter `PlaceOrder`（`client_order_id = "cond-<id>"` 天然 dedup + replay 幂等）
+- 触发时调 Counter `PlaceOrder`（`client_order_id = "trig-<id>"` 天然 dedup + replay 幂等）
 - 本地 JSON snapshot + per-partition offset（照搬 ADR-0036 模式）；单实例，HA 留 MVP-14c
 - **无资金预留**：触发瞬间 Counter 余额不足 → REJECTED + reject_reason；MVP-14b 补 Reserve/Release
 
-### MVP-14b  条件单资金预留  {#mvp-14b-reservations}
+### MVP-14b  触发单资金预留  {#mvp-14b-reservations}
 
 - **commit** [`c2c52e6`](../) · **ADR** [0041](./adr/0041-counter-reservations.md)
 - Counter 新 RPC：`Reserve` / `ReleaseReservation`；`PlaceOrderRequest` 加 `reservation_id` 字段
 - Counter engine：`reservations[ref_id] → {user, asset, amount}` 副表，Available/Frozen 移动通过 `CreateReservation` / `ReleaseReservationByRef` / `ConsumeReservationForOrder` 操作
 - Snapshot 持久化 reservations（graceful restart 恢复）；非 graceful crash 下 reservation + balance 一起回到 pre-Reserve 状态，语义一致
 - 不发 counter-journal 事件：trade-dump projection 在持有期间 stale，consume/release 时收敛，可接受
-- conditional 使用：Place → Reserve（失败不存储），Cancel / REJECTED → best-effort Release；Trigger PlaceOrder 带 `reservation_id` 原子消费
+- trigger 使用：Place → Reserve（失败不存储），Cancel / REJECTED → best-effort Release；Trigger PlaceOrder 带 `reservation_id` 原子消费
 - Reserve vs `Transfer(FREEZE)` 的边界（权限 / 原子消费 / journal / 副表）详见 ADR-0041
 
-### MVP-14c  条件单 HA（cold standby）  {#mvp-14c-conditional-ha}
+### MVP-14c  触发单 HA（cold standby）  {#mvp-14c-trigger-ha}
 
-- **commit** [`9ee1473`](../) · **ADR** [0042](./adr/0042-conditional-ha.md)
-- `conditional/cmd/conditional` 拆分 `runPrimary` + `runElectionLoop`，复刻 ADR-0031 Counter/Match 的 cold-standby 模型
-- `--ha-mode=auto` + `--etcd`：双实例共享 `/cex/conditional/leader` etcd key + `--snapshot-dir` 共享 mount
+- **commit** [`9ee1473`](../) · **ADR** [0042](./adr/0042-trigger-ha.md)
+- `trigger/cmd/trigger` 拆分 `runPrimary` + `runElectionLoop`，复刻 ADR-0031 Counter/Match 的 cold-standby 模型
+- `--ha-mode=auto` + `--etcd`：双实例共享 `/cex/trigger/leader` etcd key + `--snapshot-dir` 共享 mount
 - Split-brain 失败半径退化为"少量重复 PlaceOrder"：Counter 的 `reservation_id` / `client_order_id` dedup 吸收，无业务错误
 - `--ha-mode=disabled` 保留 MVP-14a/b 单机行为，CI / 本地开发零 etcd 依赖
 
-### MVP-14d  条件单过期（TTL）  {#mvp-14d-conditional-expiry}
+### MVP-14d  触发单过期（TTL）  {#mvp-14d-trigger-expiry}
 
-- **commit** [`7e6827a`](../) · **ADR** [0043](./adr/0043-conditional-expiry.md)
-- proto: `PlaceConditionalRequest.expires_at_unix_ms` + `Conditional.expires_at_unix_ms`，`ConditionalStatus.EXPIRED = 5`
+- **commit** [`7e6827a`](../) · **ADR** [0043](./adr/0043-trigger-expiry.md)
+- proto: `PlaceTriggerRequest.expires_at_unix_ms` + `Trigger.expires_at_unix_ms`，`TriggerStatus.EXPIRED = 5`
 - engine: `SweepExpired(ctx) int` 扫 pending 里到期的条目 → EXPIRED + best-effort Release reservation
 - main: `--expiry-sweep=5s` 起 sweeper goroutine（primary only，HA 切换后 backup 接管）
 - BFF REST: `expires_at_unix_ms` 透传；状态 label 增加 `"expired"`；`0 = never` 保持向后兼容
 
-### MVP-14e  条件单 OCO  {#mvp-14e-conditional-oco}
+### MVP-14e  触发单 OCO  {#mvp-14e-trigger-oco}
 
-- **commit** [`64ceec8`](../) · **ADR** [0044](./adr/0044-conditional-oco.md)
-- proto: 新 RPC `PlaceOCO(PlaceOCORequest)`；`Conditional.oco_group_id = 18`；N ≥ 2 腿共享 user/symbol/side
+- **commit** [`64ceec8`](../) · **ADR** [0044](./adr/0044-trigger-oco.md)
+- proto: 新 RPC `PlaceOCO(PlaceOCORequest)`；`Trigger.oco_group_id = 18`；N ≥ 2 腿共享 user/symbol/side
 - engine: `PlaceOCO` Reserve 每腿失败回滚；`cascadeOCOCancelLocked` 统一级联，在 Cancel / tryFire / SweepExpired 后触发
 - `ocoByClient map[string]string` 做 group-level 幂等；snapshot 持久化 + restore
-- BFF REST: `POST /v1/conditional/oco`；每腿 body 复用既有 `placeConditionalBody` 结构
+- BFF REST: `POST /v1/trigger/oco`；每腿 body 复用既有 `placeTriggerBody` 结构
 
-### MVP-14f  条件单 Trailing Stop  {#mvp-14f-conditional-trailing}
+### MVP-14f  触发单 Trailing Stop  {#mvp-14f-trigger-trailing}
 
-- **commit** [`fb7f6b6`](../) · **ADR** [0045](./adr/0045-conditional-trailing-stop.md)
-- proto: `CONDITIONAL_TYPE_TRAILING_STOP_LOSS = 5`；`trailing_delta_bps` + `activation_price` 入参；observable 字段 `trailing_watermark` / `trailing_active`
-- engine: `updateTrailingLocked(c, price)` 在 handleLocked 内分叉：activation gate → watermark 推进 → effective_stop 比较；mutating 写进 Conditional 由引擎锁保护，snapshot 捕获
+- **commit** [`fb7f6b6`](../) · **ADR** [0045](./adr/0045-trigger-trailing-stop.md)
+- proto: `TRIGGER_TYPE_TRAILING_STOP_LOSS = 5`；`trailing_delta_bps` + `activation_price` 入参；observable 字段 `trailing_watermark` / `trailing_active`
+- engine: `updateTrailingLocked(c, price)` 在 handleLocked 内分叉：activation gate → watermark 推进 → effective_stop 比较；mutating 写进 Trigger 由引擎锁保护，snapshot 捕获
 - Reservations 走既有 MARKET 逻辑（Reserve 按 qty/quote_qty 一次算好，不依赖触发价）
-- BFF REST: 类型字符串 `"trailing_stop_loss"`；conditionalToJSON 暴露 watermark + active
+- BFF REST: 类型字符串 `"trailing_stop_loss"`；triggerToJSON 暴露 watermark + active
 
 ### MVP-15  history / query 服务  {#mvp-15-history}
 
@@ -242,21 +242,21 @@
 - `history/internal/mysqlstore` 存储层；`ListOrders` 接收 `scope=OPEN|TERMINAL|ALL`（fallback，`statuses` 非空时后者胜），trades 表用 maker/taker 两 index UNION ALL 合流；limit 默认 100 / clamp 500
 - `history/cmd/history` main：`--grpc :8085` / `--mysql-dsn ...` / `--query-timeout 2s`；启动 pings MySQL，失败即退出
 - BFF：新增 `client.History` 接口 + `DialHistory`；`--history` flag 空时 `/v1/orders` / `/v1/trades` / `/v1/account-logs` 返回 503；`GET /v1/order/:id` 保持 Counter hot path 不变（单笔终态查询改走列表）
-- `orderToJSON` 加 `source=conditional|user` 标记（基于 `client_order_id` 是否以 `cond-` 开头，ADR-0040 条件单触发单识别）
+- `orderToJSON` 加 `source=trigger|user` 标记（基于 `client_order_id` 是否以 `trig-` 开头，ADR-0040 触发单识别）
 - 测试：cursor 编解码 + boundary、sqlmock 驱动的 GetOrder / ListOrders 分页 / NotFound / scope → statuses 展开 / invalid cursor 错误映射；BFF 既有测试全绿
 
-### MVP-16  条件单长期历史  {#mvp-16-conditional-history}
+### MVP-16  触发单长期历史  {#mvp-16-trigger-history}
 
-- **commit** [`e5133de`](../) · **ADR** [0047](./adr/0047-conditional-long-term-history.md)
-- 新 proto `api/event/conditional_event.proto` + `ConditionalUpdate`（post-change full snapshot + `meta.ts_unix_ms` 守卫），`ConditionalEventType` / `ConditionalEventStatus` 与 rpc/conditional 枚举同值
-- 新 Kafka topic `conditional-event`（默认），key=user_id；conditional 服务 `internal/journal/journal.go` 起非事务 producer + 4096 槽 buffer，drain goroutine async 落盘；队列满 WARN 丢弃
+- **commit** [`e5133de`](../) · **ADR** [0047](./adr/0047-trigger-long-term-history.md)
+- 新 proto `api/event/trigger_event.proto` + `TriggerUpdate`（post-change full snapshot + `meta.ts_unix_ms` 守卫），`TriggerEventType` / `TriggerEventStatus` 与 rpc/trigger 枚举同值
+- 新 Kafka topic `trigger-event`（默认），key=user_id；trigger 服务 `internal/journal/journal.go` 起非事务 producer + 4096 槽 buffer，drain goroutine async 落盘；队列满 WARN 丢弃
 - engine `JournalSink` 接口 + `SetJournal`；Place / PlaceOCO / Cancel / tryFire / SweepExpired / cascadeOCOCancelLocked 全部在锁里 capture snapshot，锁外 emit
-- `conditionals` MySQL 表（TINYINT side/type/status/tif, DECIMAL(36,18) prices/qty, BIGINT last_update_ms 守卫）+ idx_user_ctime / idx_user_symbol_ctime / idx_oco_group
-- trade-dump 新 consumer `conditional-event`（`--conditional-topic` 空禁用）+ `ApplyConditionalBatch`：每列 `IF(VALUES(last_update_ms) >= last_update_ms, ...)` 保证 last-write-wins
-- history 新 RPC `GetConditional` / `ListConditionals`（复用 cursor 模式，scope=ACTIVE/TERMINAL/ALL），proto 复用 condrpc ConditionalType/ConditionalStatus
-- BFF `GET /v1/conditional?scope=active|terminal|all`：active → conditional gRPC；terminal/all → history gRPC；`include_inactive=true` 保留 MVP-14 兼容（history 未部署时回落 conditional.IncludeInactive）
-- `GET /v1/conditional/:id`：Counter-first + history-fallback on NotFound
-- history JSON 响应打 `source="history"` 标记；字段名与 conditional 服务一致（`placed_order_id` 等）
+- `triggers` MySQL 表（TINYINT side/type/status/tif, DECIMAL(36,18) prices/qty, BIGINT last_update_ms 守卫）+ idx_user_ctime / idx_user_symbol_ctime / idx_oco_group
+- trade-dump 新 consumer `trigger-event`（`--trigger-topic` 空禁用）+ `ApplyTriggerBatch`：每列 `IF(VALUES(last_update_ms) >= last_update_ms, ...)` 保证 last-write-wins
+- history 新 RPC `GetTrigger` / `ListTriggers`（复用 cursor 模式，scope=ACTIVE/TERMINAL/ALL），proto 复用 condrpc TriggerType/TriggerStatus
+- BFF `GET /v1/trigger?scope=active|terminal|all`：active → trigger gRPC；terminal/all → history gRPC；`include_inactive=true` 保留 MVP-14 兼容（history 未部署时回落 trigger.IncludeInactive）
+- `GET /v1/trigger/:id`：Counter-first + history-fallback on NotFound
+- history JSON 响应打 `source="history"` 标记；字段名与 trigger 服务一致（`placed_order_id` 等）
 
 ### MVP-17  管理台 / Admin console  {#mvp-17-admin-console}
 

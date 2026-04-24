@@ -167,7 +167,7 @@ func casUpdateAssignment(
 	return fmt.Errorf("clustering: CAS for %s failed after %d attempts", key, maxAttempts)
 }
 
-// ForceReassign moves a vshard to newOwner unconditionally — used by
+// ForceReassign moves a vshard to newOwner untriggerly — used by
 // the coordinator's failover loop (ADR-0058 phase 7) when the current
 // owner's etcd lease has expired. Unlike the ACTIVE → MIGRATING →
 // HANDOFF_READY path, there is no flush / snapshot handoff here: the

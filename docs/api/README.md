@@ -18,11 +18,11 @@
 | `GET` | `/v1/account-logs` | 账户流水（cursor 分页） | `bff/internal/rest/history.go` |
 | `GET` | `/v1/depth/{symbol}` | 深度 snapshot（市场数据重连种子，[ADR-0038](../adr/0038-bff-reconnect-snapshot.md)） | `bff/internal/rest/market.go` |
 | `GET` | `/v1/klines/{symbol}` | 最近 N 根 K 线 | `bff/internal/rest/market.go` |
-| `POST` | `/v1/conditional` | 下条件单（止损 / 止盈 / trailing） | `bff/internal/rest/conditional.go` |
-| `POST` | `/v1/conditional/oco` | 下 OCO | `bff/internal/rest/conditional.go` |
-| `DELETE` | `/v1/conditional/{id}` | 撤条件单 | `bff/internal/rest/conditional.go` |
-| `GET` | `/v1/conditional/{id}` | 查条件单 | `bff/internal/rest/conditional.go` |
-| `GET` | `/v1/conditional` | 列活跃条件单 | `bff/internal/rest/conditional.go` |
+| `POST` | `/v1/trigger` | 下触发单（止损 / 止盈 / trailing） | `bff/internal/rest/trigger.go` |
+| `POST` | `/v1/trigger/oco` | 下 OCO | `bff/internal/rest/trigger.go` |
+| `DELETE` | `/v1/trigger/{id}` | 撤触发单 | `bff/internal/rest/trigger.go` |
+| `GET` | `/v1/trigger/{id}` | 查触发单 | `bff/internal/rest/trigger.go` |
+| `GET` | `/v1/trigger` | 列活跃触发单 | `bff/internal/rest/trigger.go` |
 | `GET` | `/healthz` | 健康检查 | - |
 
 **Auth**（[ADR-0039](../adr/0039-bff-auth-jwt-apikey.md)）：`--auth-mode=header|jwt|api-key|mixed`。
@@ -61,7 +61,7 @@
 不直接对外，客户端只走 REST + WS。内部服务间走 gRPC：
 
 - **Counter**（分 shard，每个 shard 独立监听）—— `PlaceOrder` / `CancelOrder` / `QueryOrder` / `Transfer` / `QueryBalance` / `Reserve` / `ReleaseReservation`。proto: `api/rpc/counter/`
-- **Conditional** —— `Place` / `Cancel` / `Query` / `List`。proto: `api/rpc/conditional/`
+- **Trigger** —— `Place` / `Cancel` / `Query` / `List`。proto: `api/rpc/trigger/`
 - **History** —— `ListOrders` / `ListTrades` / `ListAccountLogs`。proto: `api/rpc/history/`
 
 ## 增补协议层细节

@@ -179,7 +179,7 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 	// precision validation. Only relevant when a MARKET-sell or MARKET-buy-
 	// by-qty path reaches counter (i.e. not the LIMIT+IOC slippage-
 	// protected rewrite, which already carries a hard Price). We compute it
-	// unconditionally; counter ignores reference_price for LIMIT /
+	// untriggerly; counter ignores reference_price for LIMIT /
 	// MarketBuyByQuote anyway.
 	referencePrice := s.bestEffortMidPrice(body.Symbol)
 

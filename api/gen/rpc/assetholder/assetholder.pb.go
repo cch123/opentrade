@@ -148,8 +148,8 @@ type TransferOutRequest struct {
 	// with REJECT_REASON_AMOUNT_INVALID.
 	Amount string `protobuf:"bytes,4,opt,name=amount,proto3" json:"amount,omitempty"`
 	// Counterparty biz_line ("funding" / "spot" / ...). Informational only;
-	// recorded in the holder's journal for audit and reconciliation. The
-	// holder does NOT validate it.
+	// recorded by the holder for audit and reconciliation. The holder does
+	// NOT validate it.
 	PeerBiz string `protobuf:"bytes,5,opt,name=peer_biz,json=peerBiz,proto3" json:"peer_biz,omitempty"`
 	// Free-form user memo. Length capped at 256 bytes by the server.
 	Memo          string `protobuf:"bytes,6,opt,name=memo,proto3" json:"memo,omitempty"`
@@ -462,7 +462,7 @@ type CompensateTransferOutRequest struct {
 	// The biz_line whose TransferIn failed, triggering this compensate.
 	PeerBiz string `protobuf:"bytes,5,opt,name=peer_biz,json=peerBiz,proto3" json:"peer_biz,omitempty"`
 	// Short machine-readable cause (e.g. "peer_in_timeout",
-	// "peer_in_rejected"). Recorded in the journal.
+	// "peer_in_rejected"). Recorded by the holder.
 	CompensateCause string `protobuf:"bytes,6,opt,name=compensate_cause,json=compensateCause,proto3" json:"compensate_cause,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache

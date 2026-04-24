@@ -160,7 +160,7 @@ type OrderSnapshot struct {
 	UpdatedAt       int64  `json:"updated_at"`
 }
 
-// ReservationSnapshot captures a conditional-order reservation
+// ReservationSnapshot captures a trigger-order reservation
 // (ADR-0041). Reservations are not Kafka-journaled — they only persist
 // across graceful restarts via this snapshot. See ADR-0041 §Durability.
 type ReservationSnapshot struct {

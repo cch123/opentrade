@@ -321,7 +321,7 @@ func (RejectReason) EnumDescriptor() ([]byte, []int) {
 
 // Envelope metadata carried by every event. The producer-specific monotonic
 // sequence is NOT carried here — each event type embeds its own typed field
-// (counter_seq_id / match_seq_id / quote_seq_id / conditional_seq_id) so the
+// (counter_seq_id / match_seq_id / quote_seq_id / trigger_seq_id) so the
 // producer is unambiguous at the call site. Tag 1 is reserved to prevent
 // accidental reuse of the old seq_id field.
 type EventMeta struct {

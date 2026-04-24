@@ -37,7 +37,7 @@ service CounterService {
   rpc QueryBalance(QueryBalanceRequest) returns (QueryBalanceResponse);
 
   // Reserve moves Available → Frozen for a privileged caller (the
-  // conditional-order service, ADR-0041). The ref_id is the idempotency
+  // trigger-order service, ADR-0041). The ref_id is the idempotency
   // key; repeated Reserve for the same ref_id returns the prior
   // record with accepted=false. Freeze amount is derived from the order
   // shape via the same ComputeFreeze used by PlaceOrder, so Counter
@@ -92,7 +92,7 @@ message PlaceOrderRequest {
   // matching reservation instead of freezing fresh funds: it verifies the
   // reservation's (asset, amount) matches what ComputeFreeze would
   // produce for this order, then deletes the reservation and places the
-  // order using the already-frozen balance. Only the conditional-order
+  // order using the already-frozen balance. Only the trigger-order
   // service sets this today.
   string reservation_id = 10;
   // Reference price (ADR-0053 M3.b). Optional. BFF fills this with a
@@ -171,7 +171,7 @@ message Balance {
 
 message ReserveRequest {
   string user_id = 1;
-  // Caller-generated id; dedup key. Conditional service uses "cond-<id>".
+  // Caller-generated id; dedup key. Trigger service uses "trig-<id>".
   string reservation_id = 2;
   // Order shape — Counter runs its existing ComputeFreeze on this tuple to
   // derive (asset, amount).

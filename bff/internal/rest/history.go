@@ -258,13 +258,13 @@ func orderToJSON(o *historypb.Order) map[string]any {
 	}
 }
 
-// orderSource surfaces "conditional" for orders placed by the conditional
-// service (`client_order_id = "cond-<id>"`, per ADR-0040). Other orders
+// orderSource surfaces "trigger" for orders placed by the trigger
+// service (`client_order_id = "trig-<id>"`, per ADR-0040). Other orders
 // report "user". Cheap, derived, and matches the UI tab expectations
-// (MVP-15 §条件单触发后产生的真实订单).
+// (MVP-15 §触发后产生的真实订单).
 func orderSource(clientOrderID string) string {
-	if strings.HasPrefix(clientOrderID, "cond-") {
-		return "conditional"
+	if strings.HasPrefix(clientOrderID, "trig-") {
+		return "trigger"
 	}
 	return "user"
 }

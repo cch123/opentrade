@@ -19,14 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HistoryService_GetOrder_FullMethodName         = "/opentrade.rpc.history.HistoryService/GetOrder"
-	HistoryService_ListOrders_FullMethodName       = "/opentrade.rpc.history.HistoryService/ListOrders"
-	HistoryService_ListTrades_FullMethodName       = "/opentrade.rpc.history.HistoryService/ListTrades"
-	HistoryService_ListAccountLogs_FullMethodName  = "/opentrade.rpc.history.HistoryService/ListAccountLogs"
-	HistoryService_GetConditional_FullMethodName   = "/opentrade.rpc.history.HistoryService/GetConditional"
-	HistoryService_ListConditionals_FullMethodName = "/opentrade.rpc.history.HistoryService/ListConditionals"
-	HistoryService_GetTransfer_FullMethodName      = "/opentrade.rpc.history.HistoryService/GetTransfer"
-	HistoryService_ListTransfers_FullMethodName    = "/opentrade.rpc.history.HistoryService/ListTransfers"
+	HistoryService_GetOrder_FullMethodName        = "/opentrade.rpc.history.HistoryService/GetOrder"
+	HistoryService_ListOrders_FullMethodName      = "/opentrade.rpc.history.HistoryService/ListOrders"
+	HistoryService_ListTrades_FullMethodName      = "/opentrade.rpc.history.HistoryService/ListTrades"
+	HistoryService_ListAccountLogs_FullMethodName = "/opentrade.rpc.history.HistoryService/ListAccountLogs"
+	HistoryService_GetTrigger_FullMethodName      = "/opentrade.rpc.history.HistoryService/GetTrigger"
+	HistoryService_ListTriggers_FullMethodName    = "/opentrade.rpc.history.HistoryService/ListTriggers"
+	HistoryService_GetTransfer_FullMethodName     = "/opentrade.rpc.history.HistoryService/GetTransfer"
+	HistoryService_ListTransfers_FullMethodName   = "/opentrade.rpc.history.HistoryService/ListTransfers"
 )
 
 // HistoryServiceClient is the client API for HistoryService service.
@@ -45,16 +45,16 @@ type HistoryServiceClient interface {
 	// ListAccountLogs pages a user's funds-flow journal rows (`account_logs`),
 	// newest first by ts.
 	ListAccountLogs(ctx context.Context, in *ListAccountLogsRequest, opts ...grpc.CallOption) (*ListAccountLogsResponse, error)
-	// GetConditional returns one conditional by id from the long-term
-	// projection (ADR-0047). Use this for looking up a conditional after
-	// it has aged out of the conditional service's in-memory terminal
-	// buffer. The conditional service is still authoritative for active
+	// GetTrigger returns one trigger by id from the long-term
+	// projection (ADR-0047). Use this for looking up a trigger after
+	// it has aged out of the trigger service's in-memory terminal
+	// buffer. The trigger service is still authoritative for active
 	// PENDING records.
-	GetConditional(ctx context.Context, in *GetConditionalRequest, opts ...grpc.CallOption) (*GetConditionalResponse, error)
-	// ListConditionals pages a user's conditionals, newest first by
+	GetTrigger(ctx context.Context, in *GetTriggerRequest, opts ...grpc.CallOption) (*GetTriggerResponse, error)
+	// ListTriggers pages a user's triggers, newest first by
 	// created_at. Scope filter covers "active" (PENDING) and "terminal"
 	// (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
-	ListConditionals(ctx context.Context, in *ListConditionalsRequest, opts ...grpc.CallOption) (*ListConditionalsResponse, error)
+	ListTriggers(ctx context.Context, in *ListTriggersRequest, opts ...grpc.CallOption) (*ListTriggersResponse, error)
 	// GetTransfer returns one cross-biz_line saga row from the
 	// `transfers` projection (ADR-0057). Non-terminal sagas live in
 	// asset-service's transfer_ledger as the authority — clients that
@@ -114,20 +114,20 @@ func (c *historyServiceClient) ListAccountLogs(ctx context.Context, in *ListAcco
 	return out, nil
 }
 
-func (c *historyServiceClient) GetConditional(ctx context.Context, in *GetConditionalRequest, opts ...grpc.CallOption) (*GetConditionalResponse, error) {
+func (c *historyServiceClient) GetTrigger(ctx context.Context, in *GetTriggerRequest, opts ...grpc.CallOption) (*GetTriggerResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetConditionalResponse)
-	err := c.cc.Invoke(ctx, HistoryService_GetConditional_FullMethodName, in, out, cOpts...)
+	out := new(GetTriggerResponse)
+	err := c.cc.Invoke(ctx, HistoryService_GetTrigger_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *historyServiceClient) ListConditionals(ctx context.Context, in *ListConditionalsRequest, opts ...grpc.CallOption) (*ListConditionalsResponse, error) {
+func (c *historyServiceClient) ListTriggers(ctx context.Context, in *ListTriggersRequest, opts ...grpc.CallOption) (*ListTriggersResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListConditionalsResponse)
-	err := c.cc.Invoke(ctx, HistoryService_ListConditionals_FullMethodName, in, out, cOpts...)
+	out := new(ListTriggersResponse)
+	err := c.cc.Invoke(ctx, HistoryService_ListTriggers_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -170,16 +170,16 @@ type HistoryServiceServer interface {
 	// ListAccountLogs pages a user's funds-flow journal rows (`account_logs`),
 	// newest first by ts.
 	ListAccountLogs(context.Context, *ListAccountLogsRequest) (*ListAccountLogsResponse, error)
-	// GetConditional returns one conditional by id from the long-term
-	// projection (ADR-0047). Use this for looking up a conditional after
-	// it has aged out of the conditional service's in-memory terminal
-	// buffer. The conditional service is still authoritative for active
+	// GetTrigger returns one trigger by id from the long-term
+	// projection (ADR-0047). Use this for looking up a trigger after
+	// it has aged out of the trigger service's in-memory terminal
+	// buffer. The trigger service is still authoritative for active
 	// PENDING records.
-	GetConditional(context.Context, *GetConditionalRequest) (*GetConditionalResponse, error)
-	// ListConditionals pages a user's conditionals, newest first by
+	GetTrigger(context.Context, *GetTriggerRequest) (*GetTriggerResponse, error)
+	// ListTriggers pages a user's triggers, newest first by
 	// created_at. Scope filter covers "active" (PENDING) and "terminal"
 	// (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
-	ListConditionals(context.Context, *ListConditionalsRequest) (*ListConditionalsResponse, error)
+	ListTriggers(context.Context, *ListTriggersRequest) (*ListTriggersResponse, error)
 	// GetTransfer returns one cross-biz_line saga row from the
 	// `transfers` projection (ADR-0057). Non-terminal sagas live in
 	// asset-service's transfer_ledger as the authority — clients that
@@ -211,11 +211,11 @@ func (UnimplementedHistoryServiceServer) ListTrades(context.Context, *ListTrades
 func (UnimplementedHistoryServiceServer) ListAccountLogs(context.Context, *ListAccountLogsRequest) (*ListAccountLogsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAccountLogs not implemented")
 }
-func (UnimplementedHistoryServiceServer) GetConditional(context.Context, *GetConditionalRequest) (*GetConditionalResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetConditional not implemented")
+func (UnimplementedHistoryServiceServer) GetTrigger(context.Context, *GetTriggerRequest) (*GetTriggerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTrigger not implemented")
 }
-func (UnimplementedHistoryServiceServer) ListConditionals(context.Context, *ListConditionalsRequest) (*ListConditionalsResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListConditionals not implemented")
+func (UnimplementedHistoryServiceServer) ListTriggers(context.Context, *ListTriggersRequest) (*ListTriggersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTriggers not implemented")
 }
 func (UnimplementedHistoryServiceServer) GetTransfer(context.Context, *GetTransferRequest) (*GetTransferResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTransfer not implemented")
@@ -316,38 +316,38 @@ func _HistoryService_ListAccountLogs_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
-func _HistoryService_GetConditional_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetConditionalRequest)
+func _HistoryService_GetTrigger_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTriggerRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(HistoryServiceServer).GetConditional(ctx, in)
+		return srv.(HistoryServiceServer).GetTrigger(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: HistoryService_GetConditional_FullMethodName,
+		FullMethod: HistoryService_GetTrigger_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HistoryServiceServer).GetConditional(ctx, req.(*GetConditionalRequest))
+		return srv.(HistoryServiceServer).GetTrigger(ctx, req.(*GetTriggerRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _HistoryService_ListConditionals_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListConditionalsRequest)
+func _HistoryService_ListTriggers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTriggersRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(HistoryServiceServer).ListConditionals(ctx, in)
+		return srv.(HistoryServiceServer).ListTriggers(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: HistoryService_ListConditionals_FullMethodName,
+		FullMethod: HistoryService_ListTriggers_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HistoryServiceServer).ListConditionals(ctx, req.(*ListConditionalsRequest))
+		return srv.(HistoryServiceServer).ListTriggers(ctx, req.(*ListTriggersRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -412,12 +412,12 @@ var HistoryService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _HistoryService_ListAccountLogs_Handler,
 		},
 		{
-			MethodName: "GetConditional",
-			Handler:    _HistoryService_GetConditional_Handler,
+			MethodName: "GetTrigger",
+			Handler:    _HistoryService_GetTrigger_Handler,
 		},
 		{
-			MethodName: "ListConditionals",
-			Handler:    _HistoryService_ListConditionals_Handler,
+			MethodName: "ListTriggers",
+			Handler:    _HistoryService_ListTriggers_Handler,
 		},
 		{
 			MethodName: "GetTransfer",

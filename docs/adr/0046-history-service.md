@@ -15,9 +15,9 @@ MVP-4 ~ MVP-14 的演进里，历史查询散落在两处：
 2. **没有订单列表 / 成交明细 / 资金流水接口**。客户端要自己看 WS
    推送拼凑；想看"昨天的成交"做不到。
 
-再加上条件单（MVP-14a/b/c/d/e/f）登场后，`orders` 表里多了 client_order_id
-`cond-<id>` 前缀的"触发产生的真实订单"；产品侧明确表达了
-"挂单 / 已完结 / 条件单"三 tab 的 UI 模式。
+再加上触发单（MVP-14a/b/c/d/e/f）登场后，`orders` 表里多了 client_order_id
+`trig-<id>` 前缀的"触发产生的真实订单"；产品侧明确表达了
+"挂单 / 已完结 / 触发单"三 tab 的 UI 模式。
 
 可选路线：
 - **A. BFF 直接读 MySQL**：最短路径，但 BFF 要加 MySQL 驱动 + 连接池
@@ -26,8 +26,8 @@ MVP-4 ~ MVP-14 的演进里，历史查询散落在两处：
 - **B. 独立 history 服务**：BFF 保持薄网关，history 专司读投影。
   代价：多一个部署单元、多一跳 RPC。
 - **C. 复用已有服务**：例如 Counter 吃下历史查询 — 但 Counter 已经
-  按 user_id 分了 10 shard，跨 shard 聚合不是其职责；conditional
-  做条件单历史也要额外建 MySQL 投影。二者都是主写路径，历史查询
+  按 user_id 分了 10 shard，跨 shard 聚合不是其职责；trigger
+  做触发单历史也要额外建 MySQL 投影。二者都是主写路径，历史查询
   混进去会挤压热路径预算。
 
 ## 决策 (Decision)
@@ -45,7 +45,7 @@ MVP-4 ~ MVP-14 的演进里，历史查询散落在两处：
 | 单笔查询（活跃） | `GET /v1/order/:id` | Counter | Counter in-memory |
 | 成交明细 | `GET /v1/trades` | history | `trades` |
 | 资金流水 | `GET /v1/account-logs` | history | `account_logs` |
-| 条件单列表 | `GET /v1/conditional` | conditional gRPC | conditional in-memory + snapshot |
+| 触发单列表 | `GET /v1/trigger` | trigger gRPC | trigger in-memory + snapshot |
 
 ### 为什么 `GET /v1/order/:id` 不改走 history
 
@@ -55,19 +55,19 @@ MVP-4 ~ MVP-14 的演进里，历史查询散落在两处：
 加 "Counter NotFound → history 兜底" 的两跳模式，改动点集中在
 BFF 一个 handler。
 
-### 条件单不塞进 HistoryService
+### 触发单不塞进 HistoryService
 
-条件单有独立状态机（`stop_price` / `trailing_delta_bps` /
-`oco_group_id` 等）、自己的服务权威源（conditional，ADR-0040），且
-PENDING 条件单根本没落 MySQL，history 读 MySQL 也查不到。查询继续
-走 `ConditionalService.ListConditionals` / `QueryConditional`。
+触发单有独立状态机（`stop_price` / `trailing_delta_bps` /
+`oco_group_id` 等）、自己的服务权威源（trigger，ADR-0040），且
+PENDING 触发单根本没落 MySQL，history 读 MySQL 也查不到。查询继续
+走 `TriggerService.ListTriggers` / `QueryTrigger`。
 
-条件单触发后产生的真实订单 (`client_order_id="cond-<id>"`) 本来就
+触发后产生的真实订单 (`client_order_id="trig-<id>"`) 本来就
 落 `orders` 表，`ListOrders` 正常返回；BFF 基于前缀打
-`source="conditional"` 标记，产品可以筛出"来自条件单触发的订单"。
+`source="trigger"` 标记，产品可以筛出"来自触发单触发的订单"。
 
-条件单长期历史（重启后还能看到三个月前的 TRIGGERED / EXPIRED）是
-MVP-16 的工作，需要额外加 `conditional-event` topic + trade-dump
+触发单长期历史（重启后还能看到三个月前的 TRIGGERED / EXPIRED）是
+MVP-16 的工作，需要额外加 `trigger-event` topic + trade-dump
 projection，才能让 history 作为权威查询入口。
 
 ## 备选方案 (Alternatives Considered)
@@ -78,11 +78,11 @@ projection，才能让 history 作为权威查询入口。
 或 `trades` 要做冷热分层，BFF 要跟着改 — 而 BFF 同时承担 REST /
 WS 反代 / 限流 / 认证，发布节奏必须稳。拒绝。
 
-### 方案 C：Counter / conditional 自己吐历史
+### 方案 C：Counter / trigger 自己吐历史
 
 Counter 按 user_id 分 10 shard，跨 shard 做 list + 排序 + 分页要
 建一套扇出聚合；而且 Counter 是强主路径，历史查询进去会挤写路径的
-goroutine 预算。conditional 同理，且它自己都不持久化 PENDING 态
+goroutine 预算。trigger 同理，且它自己都不持久化 PENDING 态
 的长期历史。拒绝。
 
 ### 方案 D：把 history 放 trade-dump 进程内
@@ -98,7 +98,7 @@ trade-dump 已经连着同一套 MySQL，理论上可以多开一个 gRPC 端口
 - **schema 演进自由**：`orders` 未来切 ClickHouse / `trades` 切
   S3+parquet，改 history 读层即可，BFF 零感知。
 - **横向扩展便宜**：history 无状态，k8s replica + MySQL 只读副本
-  就能扩；而 Counter / conditional 扩容还要动 sharding / HA。
+  就能扩；而 Counter / trigger 扩容还要动 sharding / HA。
 - **和 ADR-0001 权威模型兼容**：Kafka 仍是事实源，trade-dump 仍是
   唯一投影入口，history 只读下游表，不反向回写。
 
@@ -136,12 +136,12 @@ trade-dump 已经连着同一套 MySQL，理论上可以多开一个 gRPC 端口
 - `--mysql-dsn` 建议指向 MySQL 只读副本；历史查询和主写完全隔离，
   MySQL lag 由 trade-dump 自己的 offset 守护（ADR-0023）。
 - BFF 的 `--history` flag 为空时三条 REST 返回 503，CI / 本地开发
-  可以零依赖运行（沿用 --conditional / --market-brokers 的惯例）。
+  可以零依赖运行（沿用 --trigger / --market-brokers 的惯例）。
 - Order.reject_reason 在 store 层从 int8 折成字符串 (`invalid_price_tick`
   / `fok_not_filled` 等)，复用 event.RejectReason 枚举；BFF 继续做
   status 字符串（`new` / `filled` / …）翻译，wire 上走 proto enum。
-- `GET /v1/orders` 对条件单触发单加 `source="conditional"` 标记，
-  判定规则 `client_order_id` 以 `cond-` 前缀开头（ADR-0040）。
+- `GET /v1/orders` 对触发单加 `source="trigger"` 标记，
+  判定规则 `client_order_id` 以 `trig-` 前缀开头（ADR-0040）。
 
 ## 参考 (References)
 
@@ -149,5 +149,5 @@ trade-dump 已经连着同一套 MySQL，理论上可以多开一个 gRPC 端口
 - [ADR-0008](0008-sidecar-persistence-trade-dump.md) — trade-dump 旁路持久化
 - [ADR-0023](0023-trade-dump-batching-and-commit-order.md) — trade-dump 提交顺序 / lag 语义
 - [ADR-0028](0028-trade-dump-journal-projection.md) — orders / accounts / account_logs 投影
-- [ADR-0040](0040-conditional-order-service.md) — 条件单服务（client_order_id `cond-` 前缀）
+- [ADR-0040](0040-trigger-order-service.md) — 触发单服务（client_order_id `trig-` 前缀）
 - [roadmap MVP-15 / MVP-16](../roadmap.md#mvp-15-history)

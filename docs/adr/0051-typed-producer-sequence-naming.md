@@ -1,4 +1,4 @@
-# ADR-0051: 事件单调序按 producer 命名（counter_seq_id / match_seq_id / quote_seq_id / conditional_seq_id）
+# ADR-0051: 事件单调序按 producer 命名（counter_seq_id / match_seq_id / quote_seq_id / trigger_seq_id）
 
 - 状态: Accepted
 - 日期: 2026-04-19
@@ -14,7 +14,7 @@
 | counter `UserSequencer` | per-counter-shard | counter-journal 事件的全局排序；trade-dump 写 `accounts` / `account_logs` 的行级 guard；match 拦 counter 重投递的 dedup key |
 | match `SymbolWorker` | per-symbol | trade-event 的全局排序；trade-dump 写 `trades` 的 UNIQUE；counter 拦 match 重投递（`Account.matchSeq`）|
 | quote `Engine` | quote 进程 global | market-data 事件的全局排序；BFF 重连补齐 snapshot 时的 sync 锚 |
-| conditional service | service global | conditional-event 事件的全局排序；trade-dump 写 `conditionals` 的乱序保护辅助 |
+| trigger service | service global | trigger-event 事件的全局排序；trade-dump 写 `triggers` 的乱序保护辅助 |
 
 但代码里所有 4 种都共享同一个 wire 字段 `EventMeta.seq_id`，对应：
 
@@ -44,7 +44,7 @@
 | `OrderEvent` | `counter_seq_id` | 同上（counter 发给 match 的事件，关联 counter shard）|
 | `TradeEvent` | `match_seq_id` | match per-symbol 单调，SymbolWorker 生成 |
 | `MarketDataEvent` | `quote_seq_id` | quote 进程 global，原子计数 |
-| `ConditionalUpdate` | `conditional_seq_id` | conditional 服务 global |
+| `TriggerUpdate` | `trigger_seq_id` | trigger 服务 global |
 
 字段名编码了 producer 是谁，任何裸引用都自带语义。
 
@@ -56,11 +56,11 @@
 | `account_logs` | `seq_id`（PK 一员） | `counter_seq_id`（PK 一员） |
 | `trades` | `symbol_seq_id` + `UNIQUE KEY uk_symbol_seq` | `match_seq_id` + `UNIQUE KEY uk_symbol_match_seq` |
 
-`conditionals` 表本来就用 `last_update_ms` 做 guard（ADR-0047），不动。
+`triggers` 表本来就用 `last_update_ms` 做 guard（ADR-0047），不动。
 
 ### 4. Go 字段 / snapshot JSON 对齐
 
-- Go 字段：`SeqID` → `CounterSeqID` / `MatchSeqID` / `QuoteSeqID` / `ConditionalSeqID`，按上下文前缀。变量 `seqID` → `counterSeq` / `matchSeq` 等
+- Go 字段：`SeqID` → `CounterSeqID` / `MatchSeqID` / `QuoteSeqID` / `TriggerSeqID`，按上下文前缀。变量 `seqID` → `counterSeq` / `matchSeq` 等
 - counter sequencer：`UserSequencer.shardSeq` / `ShardSeq()` / `SetShardSeq()` → `counterSeq` / `CounterSeq()` / `SetCounterSeq()`
 - match sequencer：`SymbolWorker.seqID` / `SeqID()` / `SetSeqID()` → `matchSeq` / `MatchSeq()` / `SetMatchSeq()`
 - counter snapshot JSON：`shard_seq` → `counter_seq`（Go field `ShardSeq` → `CounterSeq`）
@@ -118,7 +118,7 @@
 
 ### 正面
 
-- 任何 `counter_seq_id` / `match_seq_id` / `quote_seq_id` / `conditional_seq_id` 出现的地方，含义零歧义
+- 任何 `counter_seq_id` / `match_seq_id` / `quote_seq_id` / `trigger_seq_id` 出现的地方，含义零歧义
 - trade-dump SQL guard 自描述：`IF(VALUES(counter_seq_id) >= counter_seq_id, ...)` 一眼看清
 - counter 拦 match 重发的 guard 名字 `Account.matchSeq` + `evt.MatchSeqId` 完全对齐
 - snapshot 字段命名跨服务统一格式（`<producer>_seq` / `<producer>_seq_id`）
@@ -144,7 +144,7 @@
 - `event/counter_journal.proto`：`CounterJournalEvent` 加 `uint64 counter_seq_id = 3`
 - `event/order_event.proto`：`OrderEvent` 加 `uint64 counter_seq_id = 2`
 - `event/trade_event.proto`：`TradeEvent` 加 `uint64 match_seq_id = 2`
-- `event/conditional_event.proto`：`ConditionalUpdate` 加 `uint64 conditional_seq_id = 24`
+- `event/trigger_event.proto`：`TriggerUpdate` 加 `uint64 trigger_seq_id = 24`
 - `event/market_data.proto`：`MarketDataEvent` 加 `uint64 quote_seq_id = 3`
 - `snapshot/match.proto`：`MatchSymbolSnapshot.seq_id` → `match_seq_id`
 - `snapshot/counter.proto`：`CounterShardSnapshot.shard_seq` → `counter_seq`
@@ -178,7 +178,7 @@ MVP 期实操：`make dev-down -v && make dev-up`（清掉 MySQL volume 让 init
 - **history**: `AccountLogsCursor.SeqID` → `CounterSeqID`（JSON tag `q` 保持，cursor 是 opaque）；store.go 查询 SQL 替换列名
 - **bff**: `accountLogToJSON` 输出键 `seq_id` → `counter_seq_id`
 - **quote**: `Engine.stamp` 改写新字段；`snapshot.Snapshot.Seq` → `QuoteSeq`（JSON tag `quote_seq`）
-- **conditional**: `journal.convert` 改写新字段
+- **trigger**: `journal.convert` 改写新字段
 
 ### 不动的部分
 
@@ -200,7 +200,7 @@ MVP 期实操：`make dev-down -v && make dev-up`（清掉 MySQL volume 让 init
 - [ADR-0018](./0018-counter-sequencer-fifo.md) — Counter UserSequencer 生产 counter shard seq
 - [ADR-0019](./0019-match-sequencer-per-symbol-actor.md) — Match SymbolWorker 生产 match per-symbol seq
 - [ADR-0028](./0028-trade-dump-journal-projection.md) — trade-dump 投影 + seq guard
-- [ADR-0047](./0047-conditional-long-term-history.md) — conditional 投影用 `last_update_ms` 而非 seq guard
+- [ADR-0047](./0047-trigger-long-term-history.md) — trigger 投影用 `last_update_ms` 而非 seq guard
 - [ADR-0048](./0048-snapshot-offset-atomicity.md) — snapshot 与 Kafka offset 原子绑定
 - 实现:
   - [api/event/common.proto](../../api/event/common.proto)

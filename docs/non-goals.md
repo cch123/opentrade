@@ -15,7 +15,7 @@
 
 ## 架构层
 
-- **Counter 订阅市场数据** — Counter 是纯账户状态机（ADR-0001），不依赖 match / quote 的实时输出来决策下单。**Why not**：市价单的滑点保护、触发价比对等"看市场"的逻辑放到 BFF / conditional / 客户端去；Counter 只做账户真值，保持单一职责 + 可分 shard。**关联**：[ADR-0035](./adr/0035-market-orders-native-server-side.md)。
+- **Counter 订阅市场数据** — Counter 是纯账户状态机（ADR-0001），不依赖 match / quote 的实时输出来决策下单。**Why not**：市价单的滑点保护、触发价比对等"看市场"的逻辑放到 BFF / trigger / 客户端去；Counter 只做账户真值，保持单一职责 + 可分 shard。**关联**：[ADR-0035](./adr/0035-market-orders-native-server-side.md)。
 - **跨 shard 分布式事务** — 同一笔 trade 的 maker / taker 可能落在不同 Counter shard；两边通过 trade-event 独立结算，**不做**两阶段提交。**Why not**：成本 >> 收益；match 的 match_seq_id + counter 的 per-(user,symbol) `LastMatchSeq` 幂等足够保证最终一致；任何一边 crash 都能靠 snapshot + Kafka replay 追上。**关联**：ADR-0007 / [ADR-0048](./adr/0048-snapshot-offset-atomicity.md)。
 - **同步下单返回终态** — `POST /v1/order` 只返回 "received"，accepted / filled / rejected 走 WS private channel 异步推送。**Why not**：撮合是异步流水线（BFF → Counter → Kafka → Match → Kafka → Counter → Push），强行同步会把撮合吞吐拉垮 + 丢掉 WS 推送体系的价值。**关联**：ADR-0007。
 
@@ -28,7 +28,7 @@
 
 - **Order book 独立 WAL** — Match 不单独写 order book WAL；重启靠 snapshot + Kafka offset replay 重建。**Why not**：Kafka 已经是 durable log，再叠一层 WAL 是 double writes，增加失败面；snapshot 原子绑 offset 的设计让 replay 确定性可恢复。**关联**：[ADR-0048](./adr/0048-snapshot-offset-atomicity.md)。
 - **Kafka consumer group offset 作为权威** — Counter / Match 都废掉 `CommitUncommittedOffsets`；snapshot 里的 per-partition `Offsets` 是唯一恢复权威。**Why not**：consumer group commit 和 snapshot 落盘不原子，会产生"offset 已 commit 但 snapshot 还是旧的"窗口，导致漏事件。**关联**：[ADR-0048](./adr/0048-snapshot-offset-atomicity.md)。
-- **Reservation 事件进 counter-journal** — Reserve / ReleaseReservation 只随 snapshot 持久化，不进 journal。**Why not**：条件单触发前 reservation 变化频率低 + 调用方（conditional）有自己的 journal；双写会造成事件风暴 + 放大 journal 体积。**关联**：[ADR-0041](./adr/0041-counter-reservations.md)。
+- **Reservation 事件进 counter-journal** — Reserve / ReleaseReservation 只随 snapshot 持久化，不进 journal。**Why not**：触发前 reservation 变化频率低 + 调用方（trigger）有自己的 journal；双写会造成事件风暴 + 放大 journal 体积。**关联**：[ADR-0041](./adr/0041-counter-reservations.md)。
 
 ## Admin / Ops 层
 

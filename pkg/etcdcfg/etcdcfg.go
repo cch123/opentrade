@@ -71,13 +71,13 @@ type SymbolConfig struct {
 	// Industry equivalents: Binance MAX_NUM_ORDERS, OKX maxLimitOrders.
 	MaxOpenLimitOrders uint32 `json:"max_open_limit_orders,omitempty"`
 
-	// MaxActiveConditionalOrders caps the number of untriggered conditional
+	// MaxActiveTriggerOrders caps the number of untriggered trigger
 	// orders (STOP_LOSS / TAKE_PROFIT / TRAILING_STOP / OCO) a single user
-	// may hold on this symbol (ADR-0054). Zero = use Conditional service's
-	// DefaultMaxActiveConditionalOrders (10). MARKET orders and conditional
+	// may hold on this symbol (ADR-0054). Zero = use Trigger service's
+	// DefaultMaxActiveTriggerOrders (10). MARKET orders and trigger
 	// orders already graduated to Counter LIMIT do not count.
 	// Industry equivalents: Binance MAX_NUM_ALGO_ORDERS, OKX maxTriggerOrders.
-	MaxActiveConditionalOrders uint32 `json:"max_active_conditional_orders,omitempty"`
+	MaxActiveTriggerOrders uint32 `json:"max_active_trigger_orders,omitempty"`
 }
 
 // Owned reports whether this symbol should run on shardID right now.

@@ -43,7 +43,7 @@
 | [0007](0007-async-matching-result.md) | 下单 API 返回"已受理"，撮合结果通过 WS 异步推送 | Accepted |
 | [0008](0008-sidecar-persistence-trade-dump.md) | Counter/Match 不直接写 MySQL，通过 trade-dump 旁路持久化 | Accepted |
 | [0024](0024-trade-event-order-accepted-extension.md) | 扩展 trade-event.OrderAccepted 以支持行情重建 | Accepted |
-| [0051](0051-typed-producer-sequence-naming.md) | 事件单调序按 producer 命名（counter_seq_id / match_seq_id / quote_seq_id / conditional_seq_id） | Accepted |
+| [0051](0051-typed-producer-sequence-naming.md) | 事件单调序按 producer 命名（counter_seq_id / match_seq_id / quote_seq_id / trigger_seq_id） | Accepted |
 
 ### 分片与路由
 
@@ -96,7 +96,7 @@
 | [0034](0034-market-orders-client-side-translation.md) | MARKET 单由客户端翻译为 LIMIT+IOC，后端不承载 | Superseded by 0035 |
 | [0035](0035-market-orders-native-server-side.md) | MARKET 单服务端原生支持 + 可选 BFF 滑点保护翻译 | Accepted |
 | [0053](0053-symbol-precision-and-tiered-evolution.md) | Symbol 精度治理 + 分层精度演进（tick / lot / min-quote-amount） | Accepted |
-| [0054](0054-per-symbol-order-slots.md) | 单用户 per-symbol 挂单数上限（Limit / Conditional 双槽位） | Accepted |
+| [0054](0054-per-symbol-order-slots.md) | 单用户 per-symbol 挂单数上限（Limit / Trigger 双槽位） | Accepted |
 
 ### 行情与推送
 
@@ -121,16 +121,16 @@
 | [0046](0046-history-service.md) | History 服务 — 只读查询聚合 | Accepted |
 | [0052](0052-admin-console.md) | 管理台 / Admin console — 独立 `admin-gateway` 服务 + role-tagged API-Key + JSONL 审计 | Accepted |
 
-### 条件单
+### 触发单
 
 | 编号 | 标题 | 状态 |
 |---|---|---|
-| [0040](0040-conditional-order-service.md) | 条件单独立服务（stop-loss / take-profit） | Accepted |
-| [0042](0042-conditional-ha.md) | 条件单服务 HA（cold standby） | Accepted |
-| [0043](0043-conditional-expiry.md) | 条件单过期（TTL） | Accepted |
-| [0044](0044-conditional-oco.md) | 条件单 OCO（One-Cancels-Other） | Accepted |
-| [0045](0045-conditional-trailing-stop.md) | 条件单 Trailing Stop | Accepted |
-| [0047](0047-conditional-long-term-history.md) | 条件单长期历史（conditional-event + 投影） | Accepted |
+| [0040](0040-trigger-order-service.md) | 触发单独立服务（stop-loss / take-profit） | Accepted |
+| [0042](0042-trigger-ha.md) | 触发单服务 HA（cold standby） | Accepted |
+| [0043](0043-trigger-expiry.md) | 触发单过期（TTL） | Accepted |
+| [0044](0044-trigger-oco.md) | 触发单 OCO（One-Cancels-Other） | Accepted |
+| [0045](0045-trigger-trailing-stop.md) | 触发单 Trailing Stop | Accepted |
+| [0047](0047-trigger-long-term-history.md) | 触发单长期历史（trigger-event + 投影） | Accepted |
 
 ### 工程与基础设施
 

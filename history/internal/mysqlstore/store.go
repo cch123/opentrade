@@ -439,18 +439,18 @@ func (s *Store) ListAccountLogs(ctx context.Context, f AccountLogsFilter, rawCur
 }
 
 // ---------------------------------------------------------------------------
-// GetConditional
+// GetTrigger
 // ---------------------------------------------------------------------------
 
-// GetConditional fetches a single conditional by id, scoped to userID.
+// GetTrigger fetches a single trigger by id, scoped to userID.
 // Returns ErrNotFound when the row does not exist or belongs to another
 // user — same policy as GetOrder.
-func (s *Store) GetConditional(ctx context.Context, userID string, id uint64) (*historypb.Conditional, error) {
+func (s *Store) GetTrigger(ctx context.Context, userID string, id uint64) (*historypb.Trigger, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 
 	const q = `
-		SELECT id, client_conditional_id, user_id, symbol, side, type,
+		SELECT id, client_trigger_id, user_id, symbol, side, type,
 		       CAST(stop_price AS CHAR), CAST(limit_price AS CHAR),
 		       CAST(qty AS CHAR), CAST(quote_qty AS CHAR),
 		       tif, status, triggered_order_id, reject_reason,
@@ -458,10 +458,10 @@ func (s *Store) GetConditional(ctx context.Context, userID string, id uint64) (*
 		       trailing_delta_bps, CAST(activation_price AS CHAR),
 		       CAST(trailing_watermark AS CHAR), trailing_active,
 		       created_at_unix_ms, triggered_at_unix_ms
-		FROM conditionals WHERE id = ? AND user_id = ? LIMIT 1`
+		FROM triggers WHERE id = ? AND user_id = ? LIMIT 1`
 
 	row := s.db.QueryRowContext(ctx, q, id, userID)
-	c, err := scanConditional(row)
+	c, err := scanTrigger(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -472,11 +472,11 @@ func (s *Store) GetConditional(ctx context.Context, userID string, id uint64) (*
 }
 
 // ---------------------------------------------------------------------------
-// ListConditionals
+// ListTriggers
 // ---------------------------------------------------------------------------
 
-// ConditionalsFilter is the decoded ListConditionalsRequest for the store.
-type ConditionalsFilter struct {
+// TriggersFilter is the decoded ListTriggersRequest for the store.
+type TriggersFilter struct {
 	UserID   string
 	Symbol   string
 	Statuses []int8
@@ -484,16 +484,16 @@ type ConditionalsFilter struct {
 	UntilMs  int64
 }
 
-// ListConditionals pages a user's conditionals newest-first by
+// ListTriggers pages a user's triggers newest-first by
 // created_at_unix_ms. Follows the same over-fetch-by-one-to-detect-next
 // convention as ListOrders.
-func (s *Store) ListConditionals(ctx context.Context, f ConditionalsFilter, rawCursor string, limit int) ([]*historypb.Conditional, string, error) {
+func (s *Store) ListTriggers(ctx context.Context, f TriggersFilter, rawCursor string, limit int) ([]*historypb.Trigger, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 
 	limit = clampLimit(limit)
 
-	var cur cursor.ConditionalsCursor
+	var cur cursor.TriggersCursor
 	if err := cursor.Decode(rawCursor, &cur); err != nil {
 		return nil, "", err
 	}
@@ -527,7 +527,7 @@ func (s *Store) ListConditionals(ctx context.Context, f ConditionalsFilter, rawC
 	}
 
 	q := `
-		SELECT id, client_conditional_id, user_id, symbol, side, type,
+		SELECT id, client_trigger_id, user_id, symbol, side, type,
 		       CAST(stop_price AS CHAR), CAST(limit_price AS CHAR),
 		       CAST(qty AS CHAR), CAST(quote_qty AS CHAR),
 		       tif, status, triggered_order_id, reject_reason,
@@ -535,7 +535,7 @@ func (s *Store) ListConditionals(ctx context.Context, f ConditionalsFilter, rawC
 		       trailing_delta_bps, CAST(activation_price AS CHAR),
 		       CAST(trailing_watermark AS CHAR), trailing_active,
 		       created_at_unix_ms, triggered_at_unix_ms
-		FROM conditionals
+		FROM triggers
 		WHERE ` + strings.Join(conds, " AND ") + `
 		ORDER BY created_at_unix_ms DESC, id DESC
 		LIMIT ?`
@@ -547,9 +547,9 @@ func (s *Store) ListConditionals(ctx context.Context, f ConditionalsFilter, rawC
 	}
 	defer rows.Close()
 
-	var out []*historypb.Conditional
+	var out []*historypb.Trigger
 	for rows.Next() {
-		c, err := scanConditional(rows)
+		c, err := scanTrigger(rows)
 		if err != nil {
 			return nil, "", err
 		}
@@ -563,7 +563,7 @@ func (s *Store) ListConditionals(ctx context.Context, f ConditionalsFilter, rawC
 	if len(out) > limit {
 		last := out[limit-1]
 		out = out[:limit]
-		c, err := cursor.Encode(cursor.ConditionalsCursor{
+		c, err := cursor.Encode(cursor.TriggersCursor{
 			CreatedAt: last.CreatedAtUnixMs,
 			ID:        last.Id,
 		})
@@ -622,7 +622,7 @@ type TransfersFilter struct {
 
 // ListTransfers pages a user's saga rows newest-first by created_at_ms.
 // Follows the same over-fetch-by-one-to-detect-next convention as
-// ListOrders / ListConditionals.
+// ListOrders / ListTriggers.
 func (s *Store) ListTransfers(ctx context.Context, f TransfersFilter, rawCursor string, limit int) ([]*historypb.Transfer, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
@@ -766,9 +766,9 @@ func scanTrade(r rowScanner) (*historypb.Trade, error) {
 	return &t, nil
 }
 
-func scanConditional(r rowScanner) (*historypb.Conditional, error) {
+func scanTrigger(r rowScanner) (*historypb.Trigger, error) {
 	var (
-		c         historypb.Conditional
+		c         historypb.Trigger
 		side      int8
 		typ       int8
 		tif       int8
@@ -776,7 +776,7 @@ func scanConditional(r rowScanner) (*historypb.Conditional, error) {
 		trailing  int8
 	)
 	if err := r.Scan(
-		&c.Id, &c.ClientConditionalId, &c.UserId, &c.Symbol,
+		&c.Id, &c.ClientTriggerId, &c.UserId, &c.Symbol,
 		&side, &typ,
 		&c.StopPrice, &c.LimitPrice, &c.Qty, &c.QuoteQty,
 		&tif, &status, &c.TriggeredOrderId, &c.RejectReason,
@@ -788,9 +788,9 @@ func scanConditional(r rowScanner) (*historypb.Conditional, error) {
 		return nil, err
 	}
 	c.Side = sideFromInt(side)
-	c.Type = conditionalTypeFromInt(typ)
+	c.Type = triggerTypeFromInt(typ)
 	c.Tif = tifFromInt(tif)
-	c.Status = conditionalStatusFromInt(status)
+	c.Status = triggerStatusFromInt(status)
 	c.TrailingActive = trailing != 0
 	return &c, nil
 }

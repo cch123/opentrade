@@ -48,7 +48,7 @@ type CounterServiceClient interface {
 	// Query balances for a user.
 	QueryBalance(ctx context.Context, in *QueryBalanceRequest, opts ...grpc.CallOption) (*QueryBalanceResponse, error)
 	// Reserve moves Available → Frozen for a privileged caller (the
-	// conditional-order service, ADR-0041). The ref_id is the idempotency
+	// trigger-order service, ADR-0041). The ref_id is the idempotency
 	// key; repeated Reserve for the same ref_id returns the prior
 	// record with accepted=false. Freeze amount is derived from the order
 	// shape via the same ComputeFreeze used by PlaceOrder, so Counter
@@ -187,7 +187,7 @@ type CounterServiceServer interface {
 	// Query balances for a user.
 	QueryBalance(context.Context, *QueryBalanceRequest) (*QueryBalanceResponse, error)
 	// Reserve moves Available → Frozen for a privileged caller (the
-	// conditional-order service, ADR-0041). The ref_id is the idempotency
+	// trigger-order service, ADR-0041). The ref_id is the idempotency
 	// key; repeated Reserve for the same ref_id returns the prior
 	// record with accepted=false. Freeze amount is derived from the order
 	// shape via the same ComputeFreeze used by PlaceOrder, so Counter

@@ -36,7 +36,7 @@ type Server struct {
 	cfg         Config
 	counter     client.Counter
 	asset       client.Asset
-	conditional client.Conditional
+	trigger client.Trigger
 	history     client.History
 	market      *marketcache.Cache
 	logger      *zap.Logger
@@ -46,15 +46,15 @@ type Server struct {
 }
 
 // NewServer wires handlers. counter may be nil during tests that substitute
-// a fake via a dedicated helper. market, conditional, history and asset
+// a fake via a dedicated helper. market, trigger, history and asset
 // are optional: nil disables their endpoints with 503 (ADR-0038 /
 // ADR-0040 / ADR-0046 / ADR-0057).
-func NewServer(cfg Config, counter client.Counter, asset client.Asset, market *marketcache.Cache, conditional client.Conditional, history client.History, logger *zap.Logger) *Server {
+func NewServer(cfg Config, counter client.Counter, asset client.Asset, market *marketcache.Cache, trigger client.Trigger, history client.History, logger *zap.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		counter:     counter,
 		asset:       asset,
-		conditional: conditional,
+		trigger: trigger,
 		history:     history,
 		market:      market,
 		logger:      logger,
@@ -76,11 +76,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/account", s.handleQueryBalance)
 	mux.HandleFunc("GET /v1/depth/{symbol}", s.handleDepthSnapshot)
 	mux.HandleFunc("GET /v1/klines/{symbol}", s.handleKlinesRecent)
-	mux.HandleFunc("POST /v1/conditional", s.handlePlaceConditional)
-	mux.HandleFunc("POST /v1/conditional/oco", s.handlePlaceOCO)
-	mux.HandleFunc("DELETE /v1/conditional/{id}", s.handleCancelConditional)
-	mux.HandleFunc("GET /v1/conditional/{id}", s.handleQueryConditional)
-	mux.HandleFunc("GET /v1/conditional", s.handleListConditionals)
+	mux.HandleFunc("POST /v1/trigger", s.handlePlaceTrigger)
+	mux.HandleFunc("POST /v1/trigger/oco", s.handlePlaceOCO)
+	mux.HandleFunc("DELETE /v1/trigger/{id}", s.handleCancelTrigger)
+	mux.HandleFunc("GET /v1/trigger/{id}", s.handleQueryTrigger)
+	mux.HandleFunc("GET /v1/trigger", s.handleListTriggers)
 	mux.HandleFunc("GET /v1/orders", s.handleListOrders)
 	mux.HandleFunc("GET /v1/trades", s.handleListTrades)
 	mux.HandleFunc("GET /v1/account-logs", s.handleListAccountLogs)

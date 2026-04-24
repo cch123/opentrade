@@ -93,38 +93,38 @@ func (s *Server) ListTrades(ctx context.Context, req *historypb.ListTradesReques
 	return &historypb.ListTradesResponse{Trades: rows, NextCursor: next}, nil
 }
 
-// GetConditional fetches one conditional by id scoped to user_id.
-func (s *Server) GetConditional(ctx context.Context, req *historypb.GetConditionalRequest) (*historypb.GetConditionalResponse, error) {
+// GetTrigger fetches one trigger by id scoped to user_id.
+func (s *Server) GetTrigger(ctx context.Context, req *historypb.GetTriggerRequest) (*historypb.GetTriggerResponse, error) {
 	if req.GetUserId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id required")
 	}
 	if req.GetId() == 0 {
 		return nil, status.Error(codes.InvalidArgument, "id required")
 	}
-	c, err := s.store.GetConditional(ctx, req.UserId, req.Id)
+	c, err := s.store.GetTrigger(ctx, req.UserId, req.Id)
 	if err != nil {
 		if errors.Is(err, mysqlstore.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "conditional not found")
+			return nil, status.Error(codes.NotFound, "trigger not found")
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &historypb.GetConditionalResponse{Conditional: c}, nil
+	return &historypb.GetTriggerResponse{Trigger: c}, nil
 }
 
-// ListConditionals folds scope → statuses, then delegates to the store.
-func (s *Server) ListConditionals(ctx context.Context, req *historypb.ListConditionalsRequest) (*historypb.ListConditionalsResponse, error) {
+// ListTriggers folds scope → statuses, then delegates to the store.
+func (s *Server) ListTriggers(ctx context.Context, req *historypb.ListTriggersRequest) (*historypb.ListTriggersResponse, error) {
 	if req.GetUserId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id required")
 	}
 	var external = req.GetStatuses()
 	if len(external) == 0 {
-		external = mysqlstore.ConditionalStatusesForScope(req.GetScope())
+		external = mysqlstore.TriggerStatusesForScope(req.GetScope())
 	}
-	rows, next, err := s.store.ListConditionals(ctx,
-		mysqlstore.ConditionalsFilter{
+	rows, next, err := s.store.ListTriggers(ctx,
+		mysqlstore.TriggersFilter{
 			UserID:   req.UserId,
 			Symbol:   req.Symbol,
-			Statuses: mysqlstore.InternalConditionalStatuses(external),
+			Statuses: mysqlstore.InternalTriggerStatuses(external),
 			SinceMs:  req.SinceMs,
 			UntilMs:  req.UntilMs,
 		},
@@ -132,7 +132,7 @@ func (s *Server) ListConditionals(ctx context.Context, req *historypb.ListCondit
 	if err != nil {
 		return nil, translateErr(err)
 	}
-	return &historypb.ListConditionalsResponse{Conditionals: rows, NextCursor: next}, nil
+	return &historypb.ListTriggersResponse{Triggers: rows, NextCursor: next}, nil
 }
 
 // GetTransfer fetches one saga row by transfer_id scoped to user_id.
