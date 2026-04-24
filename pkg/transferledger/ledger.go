@@ -3,13 +3,15 @@
 // funding wallet balances are owned separately by ADR-0065's MySQL store.
 //
 // The package owns one table, transfer_ledger (schema.sql), and exposes
-// four operations the saga driver needs:
+// the operations the saga driver and asset-service gRPC need:
 //
 //   - Create         — insert a new saga in INIT state (with idempotent
 //     read-back on duplicate transfer_id).
 //   - Get            — point lookup by transfer_id.
 //   - UpdateState    — optimistic-lock transition (WHERE state = from).
 //   - ListPending    — recover in-flight sagas on service startup.
+//   - List           — user-scoped paged history (BFF ListTransfers, post
+//     ADR-0065 this replaced the trade-dump `transfers` projection).
 //
 // pkg/transferledger intentionally does NOT import a MySQL driver. The
 // binary linking this package must register one (e.g.
@@ -19,6 +21,8 @@ package transferledger
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -367,6 +371,174 @@ var AllStates = []State{
 	StateCompensating,
 	StateCompensated,
 	StateCompensateStuck,
+}
+
+// InFlightStates are the non-terminal saga states — what "in flight"
+// folds to for ListFilter.States when the caller passes ScopeInFlight.
+var InFlightStates = []State{
+	StateInit, StateDebited, StateCompensating,
+}
+
+// TerminalStates are the terminal saga states.
+var TerminalStates = []State{
+	StateCompleted, StateFailed, StateCompensated, StateCompensateStuck,
+}
+
+// ---------------------------------------------------------------------------
+// List (paged user history)
+// ---------------------------------------------------------------------------
+
+// ListFilter is the decoded ListTransfersRequest for the store. Empty
+// string filters skip the corresponding WHERE clause; zero timestamps
+// skip the since/until bounds. States takes raw State values — the
+// scope→states fold lives in asset-service's server.
+type ListFilter struct {
+	UserID  string
+	FromBiz string
+	ToBiz   string
+	Asset   string
+	States  []State
+	SinceMs int64
+	UntilMs int64
+}
+
+// Cursor captures the last-seen row for (created_at_ms DESC,
+// transfer_id DESC) pagination. transfer_id is the client-supplied
+// idempotency key and is globally unique, so the pair is strictly
+// monotone.
+type Cursor struct {
+	CreatedAt  int64  `json:"c"`
+	TransferID string `json:"t"`
+}
+
+var cursorEnc = base64.RawURLEncoding
+
+// EncodeCursor marshals a Cursor for on-wire use.
+func EncodeCursor(c Cursor) (string, error) {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	return cursorEnc.EncodeToString(raw), nil
+}
+
+// DecodeCursor parses a Cursor from the on-wire form. Empty string is
+// valid and returns the zero Cursor.
+func DecodeCursor(s string) (Cursor, error) {
+	if s == "" {
+		return Cursor{}, nil
+	}
+	raw, err := cursorEnc.DecodeString(s)
+	if err != nil {
+		return Cursor{}, ErrInvalidCursor
+	}
+	var c Cursor
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return Cursor{}, ErrInvalidCursor
+	}
+	return c, nil
+}
+
+// ErrInvalidCursor is returned by DecodeCursor / List when the cursor
+// string cannot be parsed.
+var ErrInvalidCursor = errors.New("transferledger: invalid cursor")
+
+// DefaultListLimit caps page size when the caller passes <= 0.
+const DefaultListLimit = 50
+
+// MaxListLimit is the hard cap per page.
+const MaxListLimit = 200
+
+// List returns up to `limit` rows for a user, ordered newest-first by
+// (created_at_ms DESC, transfer_id DESC). It over-fetches one row to
+// tell the caller whether a next page exists.
+//
+// When there is a next page, the returned Cursor captures the LAST row
+// of the returned slice so the caller can pass it straight back in.
+// When exhausted, Cursor is the zero value.
+func (l *Ledger) List(ctx context.Context, f ListFilter, raw string, limit int) ([]Entry, Cursor, error) {
+	if f.UserID == "" {
+		return nil, Cursor{}, fmt.Errorf("transferledger: user_id required")
+	}
+	if limit <= 0 {
+		limit = DefaultListLimit
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
+	}
+	cur, err := DecodeCursor(raw)
+	if err != nil {
+		return nil, Cursor{}, err
+	}
+
+	conds := []string{"user_id = ?"}
+	args := []any{f.UserID}
+	if f.FromBiz != "" {
+		conds = append(conds, "from_biz = ?")
+		args = append(args, f.FromBiz)
+	}
+	if f.ToBiz != "" {
+		conds = append(conds, "to_biz = ?")
+		args = append(args, f.ToBiz)
+	}
+	if f.Asset != "" {
+		conds = append(conds, "asset = ?")
+		args = append(args, f.Asset)
+	}
+	if len(f.States) > 0 {
+		placeholders := make([]string, len(f.States))
+		for i, st := range f.States {
+			placeholders[i] = "?"
+			args = append(args, string(st))
+		}
+		conds = append(conds, "state IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if f.SinceMs > 0 {
+		conds = append(conds, "created_at_ms >= ?")
+		args = append(args, f.SinceMs)
+	}
+	if f.UntilMs > 0 {
+		conds = append(conds, "created_at_ms < ?")
+		args = append(args, f.UntilMs)
+	}
+	if raw != "" {
+		conds = append(conds,
+			"(created_at_ms < ? OR (created_at_ms = ? AND transfer_id < ?))")
+		args = append(args, cur.CreatedAt, cur.CreatedAt, cur.TransferID)
+	}
+
+	q := `SELECT transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms
+		FROM transfer_ledger
+		WHERE ` + strings.Join(conds, " AND ") + `
+		ORDER BY created_at_ms DESC, transfer_id DESC
+		LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := l.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, Cursor{}, err
+	}
+	defer rows.Close()
+
+	out := make([]Entry, 0, limit+1)
+	for rows.Next() {
+		e, err := scanEntry(rows)
+		if err != nil {
+			return nil, Cursor{}, err
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, Cursor{}, err
+	}
+
+	var next Cursor
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = Cursor{CreatedAt: last.CreatedAtMs, TransferID: last.TransferID}
+	}
+	return out, next, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -60,16 +60,8 @@ service HistoryService {
   // (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
   rpc ListTriggers(ListTriggersRequest) returns (ListTriggersResponse);
 
-  // GetTransfer returns one cross-biz_line saga row from the
-  // `transfers` projection (ADR-0057). Non-terminal sagas live in
-  // asset-service's transfer_ledger as the authority — clients that
-  // need polling during a still-in-flight saga should prefer
-  // asset-service.QueryTransfer (via BFF `GET /v1/transfer/{id}`).
-  rpc GetTransfer(GetTransferRequest) returns (GetTransferResponse);
-
-  // ListTransfers pages a user's cross-biz_line transfers, newest
-  // first by created_at.
-  rpc ListTransfers(ListTransfersRequest) returns (ListTransfersResponse);
+  // Transfer history moved to asset-service (ADR-0065). See
+  // AssetService.ListTransfers / QueryTransfer.
 }
 
 // -----------------------------------------------------------------------------
@@ -287,77 +279,6 @@ message Trigger {
   bool trailing_active = 20;
   int64 created_at_unix_ms = 21;
   int64 triggered_at_unix_ms = 22;
-}
-
-// -----------------------------------------------------------------------------
-// Transfers (ADR-0057 M5 projection)
-//
-// The `transfers` table is trade-dump's projection of asset-journal's
-// SagaStateChange events keyed by transfer_id with last-write-wins on
-// asset_seq_id. Each row is the most recent observed saga state, not the
-// transition history.
-// -----------------------------------------------------------------------------
-
-message GetTransferRequest {
-  string user_id = 1;
-  string transfer_id = 2;
-}
-
-message GetTransferResponse {
-  Transfer transfer = 1;
-}
-
-message ListTransfersRequest {
-  string user_id = 1;
-  // Filter by the "from" biz_line ("funding" / "spot" / ...). "" = any.
-  string from_biz = 2;
-  // Filter by the "to" biz_line. "" = any.
-  string to_biz = 3;
-  // Filter by asset symbol. "" = any.
-  string asset = 4;
-  // Coarse category filter folding saga states:
-  //   IN_FLIGHT → INIT + DEBITED + COMPENSATING
-  //   TERMINAL  → COMPLETED + FAILED + COMPENSATED + COMPENSATE_STUCK
-  //   ALL       → no state filter
-  TransferScope scope = 5;
-  // Fine-grained state filter. Values match transferledger.State
-  // strings ("INIT" / "DEBITED" / "COMPLETED" / "FAILED" /
-  // "COMPENSATING" / "COMPENSATED" / "COMPENSATE_STUCK"). Empty = rely
-  // on `scope`.
-  repeated string states = 6;
-  int64 since_ms = 7;
-  int64 until_ms = 8;
-  string cursor = 9;
-  int32 limit = 10;
-}
-
-enum TransferScope {
-  TRANSFER_SCOPE_UNSPECIFIED = 0; // == ALL
-  TRANSFER_SCOPE_IN_FLIGHT = 1;
-  TRANSFER_SCOPE_TERMINAL = 2;
-  TRANSFER_SCOPE_ALL = 3;
-}
-
-message ListTransfersResponse {
-  repeated Transfer transfers = 1;
-  string next_cursor = 2;
-}
-
-// Transfer mirrors the `transfers` projection row. `state` is the raw
-// transferledger.State string so BFF / clients can parse the same
-// alphabet the saga driver writes — avoids enum drift between
-// asset-service and history.
-message Transfer {
-  string transfer_id = 1;
-  string user_id = 2;
-  string from_biz = 3;
-  string to_biz = 4;
-  string asset = 5;
-  string amount = 6;
-  string state = 7;
-  string reject_reason = 8;
-  int64 created_at_unix_ms = 9;
-  int64 updated_at_unix_ms = 10;
 }
 
 // AccountLog mirrors the `account_logs` projection row.

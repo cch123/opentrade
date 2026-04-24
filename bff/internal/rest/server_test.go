@@ -67,6 +67,7 @@ func (f *fakeCounter) CancelMyOrders(_ context.Context, req *counterrpc.CancelMy
 type fakeAsset struct {
 	transferFn      func(*assetrpc.TransferRequest) (*assetrpc.TransferResponse, error)
 	queryTransferFn func(*assetrpc.QueryTransferRequest) (*assetrpc.QueryTransferResponse, error)
+	listTransfersFn func(*assetrpc.ListTransfersRequest) (*assetrpc.ListTransfersResponse, error)
 	fundingBalFn    func(*assetrpc.QueryFundingBalanceRequest) (*assetrpc.QueryFundingBalanceResponse, error)
 }
 
@@ -81,6 +82,12 @@ func (f *fakeAsset) QueryTransfer(_ context.Context, req *assetrpc.QueryTransfer
 		return &assetrpc.QueryTransferResponse{TransferId: req.TransferId}, nil
 	}
 	return f.queryTransferFn(req)
+}
+func (f *fakeAsset) ListTransfers(_ context.Context, req *assetrpc.ListTransfersRequest, _ ...grpc.CallOption) (*assetrpc.ListTransfersResponse, error) {
+	if f.listTransfersFn == nil {
+		return &assetrpc.ListTransfersResponse{}, nil
+	}
+	return f.listTransfersFn(req)
 }
 func (f *fakeAsset) QueryFundingBalance(_ context.Context, req *assetrpc.QueryFundingBalanceRequest, _ ...grpc.CallOption) (*assetrpc.QueryFundingBalanceResponse, error) {
 	if f.fundingBalFn == nil {

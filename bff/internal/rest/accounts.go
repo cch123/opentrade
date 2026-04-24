@@ -2,6 +2,7 @@ package rest
 
 import (
 	"net/http"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -66,11 +67,15 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleQueryTransfer exposes asset-service's QueryTransfer as the
-// realtime polling endpoint (reads transfer_ledger directly). For
-// long-term history browsing use GET /v1/transfers which reads the
-// trade-dump MySQL projection via history-service (ADR-0057 M5).
+// user-facing read endpoint. Serves both in-flight polling (saga still
+// driving) and terminal history lookup (saga reached a terminal state)
+// — transfer_ledger rows stay forever, so one handler covers both
+// phases. The user_id guard on asset-service returns NOT_FOUND for
+// cross-user lookups so clients can't enumerate other users' saga
+// ids.
 func (s *Server) handleQueryTransfer(w http.ResponseWriter, r *http.Request) {
-	if _, err := auth.UserID(r.Context()); err != nil {
+	userID, err := auth.UserID(r.Context())
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -83,7 +88,10 @@ func (s *Server) handleQueryTransfer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "transfer_id required")
 		return
 	}
-	resp, err := s.asset.QueryTransfer(r.Context(), &assetrpc.QueryTransferRequest{TransferId: id})
+	resp, err := s.asset.QueryTransfer(r.Context(), &assetrpc.QueryTransferRequest{
+		TransferId: id,
+		UserId:     userID,
+	})
 	if err != nil {
 		if se, ok := status.FromError(err); ok && se.Code() == codes.NotFound {
 			writeError(w, http.StatusNotFound, se.Message())
@@ -92,7 +100,85 @@ func (s *Server) handleQueryTransfer(w http.ResponseWriter, r *http.Request) {
 		writeGRPCError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, transferResponseToJSON(resp))
+}
+
+// handleListTransfers pages a user's saga rows via asset-service. Post
+// ADR-0065 asset-service owns transfer_ledger directly, so this
+// replaces the old history-backed projection.
+func (s *Server) handleListTransfers(w http.ResponseWriter, r *http.Request) {
+	userID, err := auth.UserID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if s.asset == nil {
+		writeError(w, http.StatusServiceUnavailable, "asset service unavailable")
+		return
+	}
+	q := r.URL.Query()
+	scope, err := parseTransferScope(q.Get("scope"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req := &assetrpc.ListTransfersRequest{
+		UserId:  userID,
+		FromBiz: q.Get("from_biz"),
+		ToBiz:   q.Get("to_biz"),
+		Asset:   q.Get("asset"),
+		Scope:   scope,
+		States:  splitCSVParam(q.Get("state")),
+		SinceMs: parseInt64Query(q.Get("since_ms")),
+		UntilMs: parseInt64Query(q.Get("until_ms")),
+		Cursor:  q.Get("cursor"),
+		Limit:   parseInt32Query(q.Get("limit")),
+	}
+	resp, err := s.asset.ListTransfers(r.Context(), req)
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(resp.Transfers))
+	for _, t := range resp.Transfers {
+		out = append(out, transferToJSON(t))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"transfers":   out,
+		"next_cursor": resp.NextCursor,
+	})
+}
+
+func parseTransferScope(s string) (assetrpc.TransferScope, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "all":
+		return assetrpc.TransferScope_TRANSFER_SCOPE_ALL, nil
+	case "in_flight", "in-flight", "inflight", "pending":
+		return assetrpc.TransferScope_TRANSFER_SCOPE_IN_FLIGHT, nil
+	case "terminal", "done", "final":
+		return assetrpc.TransferScope_TRANSFER_SCOPE_TERMINAL, nil
+	}
+	return assetrpc.TransferScope_TRANSFER_SCOPE_UNSPECIFIED, badRequest("scope", s)
+}
+
+func splitCSVParam(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func transferResponseToJSON(resp *assetrpc.QueryTransferResponse) map[string]any {
+	return map[string]any{
 		"transfer_id":        resp.TransferId,
 		"user_id":            resp.UserId,
 		"from_biz":           resp.FromBiz,
@@ -103,7 +189,22 @@ func (s *Server) handleQueryTransfer(w http.ResponseWriter, r *http.Request) {
 		"reject_reason":      resp.RejectReason,
 		"created_at_unix_ms": resp.CreatedAtUnixMs,
 		"updated_at_unix_ms": resp.UpdatedAtUnixMs,
-	})
+	}
+}
+
+func transferToJSON(t *assetrpc.Transfer) map[string]any {
+	return map[string]any{
+		"transfer_id":        t.TransferId,
+		"user_id":            t.UserId,
+		"from_biz":           t.FromBiz,
+		"to_biz":             t.ToBiz,
+		"asset":              t.Asset,
+		"amount":             t.Amount,
+		"state":              t.State,
+		"reject_reason":      t.RejectReason,
+		"created_at_unix_ms": t.CreatedAtUnixMs,
+		"updated_at_unix_ms": t.UpdatedAtUnixMs,
+	}
 }
 
 // handleQueryFundingBalance proxies asset-service's QueryFundingBalance

@@ -87,6 +87,63 @@ func (SagaState) EnumDescriptor() ([]byte, []int) {
 	return file_rpc_asset_asset_proto_rawDescGZIP(), []int{0}
 }
 
+// TransferScope is the coarse category filter folding saga states:
+//
+//	IN_FLIGHT → INIT + DEBITED + COMPENSATING
+//	TERMINAL  → COMPLETED + FAILED + COMPENSATED + COMPENSATE_STUCK
+//	ALL       → no state filter
+type TransferScope int32
+
+const (
+	TransferScope_TRANSFER_SCOPE_UNSPECIFIED TransferScope = 0 // == ALL
+	TransferScope_TRANSFER_SCOPE_IN_FLIGHT   TransferScope = 1
+	TransferScope_TRANSFER_SCOPE_TERMINAL    TransferScope = 2
+	TransferScope_TRANSFER_SCOPE_ALL         TransferScope = 3
+)
+
+// Enum value maps for TransferScope.
+var (
+	TransferScope_name = map[int32]string{
+		0: "TRANSFER_SCOPE_UNSPECIFIED",
+		1: "TRANSFER_SCOPE_IN_FLIGHT",
+		2: "TRANSFER_SCOPE_TERMINAL",
+		3: "TRANSFER_SCOPE_ALL",
+	}
+	TransferScope_value = map[string]int32{
+		"TRANSFER_SCOPE_UNSPECIFIED": 0,
+		"TRANSFER_SCOPE_IN_FLIGHT":   1,
+		"TRANSFER_SCOPE_TERMINAL":    2,
+		"TRANSFER_SCOPE_ALL":         3,
+	}
+)
+
+func (x TransferScope) Enum() *TransferScope {
+	p := new(TransferScope)
+	*p = x
+	return p
+}
+
+func (x TransferScope) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TransferScope) Descriptor() protoreflect.EnumDescriptor {
+	return file_rpc_asset_asset_proto_enumTypes[1].Descriptor()
+}
+
+func (TransferScope) Type() protoreflect.EnumType {
+	return &file_rpc_asset_asset_proto_enumTypes[1]
+}
+
+func (x TransferScope) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TransferScope.Descriptor instead.
+func (TransferScope) EnumDescriptor() ([]byte, []int) {
+	return file_rpc_asset_asset_proto_rawDescGZIP(), []int{1}
+}
+
 type TransferRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -427,8 +484,12 @@ func (x *FundingBalance) GetVersion() uint64 {
 }
 
 type QueryTransferRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TransferId    string                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	TransferId string                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	// Optional. When set, the server returns NOT_FOUND for rows that belong
+	// to a different user. BFF must pass the authenticated user_id;
+	// internal callers (reconciler / saga driver) may leave empty.
+	UserId        string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -466,6 +527,13 @@ func (*QueryTransferRequest) Descriptor() ([]byte, []int) {
 func (x *QueryTransferRequest) GetTransferId() string {
 	if x != nil {
 		return x.TransferId
+	}
+	return ""
+}
+
+func (x *QueryTransferRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
 	}
 	return ""
 }
@@ -586,6 +654,302 @@ func (x *QueryTransferResponse) GetUpdatedAtUnixMs() int64 {
 	return 0
 }
 
+type ListTransfersRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. Server scopes results to this user_id.
+	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Filter by the "from" biz_line ("funding" / "spot" / ...). "" = any.
+	FromBiz string `protobuf:"bytes,2,opt,name=from_biz,json=fromBiz,proto3" json:"from_biz,omitempty"`
+	// Filter by the "to" biz_line. "" = any.
+	ToBiz string `protobuf:"bytes,3,opt,name=to_biz,json=toBiz,proto3" json:"to_biz,omitempty"`
+	// Filter by asset symbol. "" = any.
+	Asset string `protobuf:"bytes,4,opt,name=asset,proto3" json:"asset,omitempty"`
+	// Coarse category filter folding saga states (see TransferScope above).
+	Scope TransferScope `protobuf:"varint,5,opt,name=scope,proto3,enum=opentrade.rpc.asset.TransferScope" json:"scope,omitempty"`
+	// Fine-grained state filter. Values match transferledger.State
+	// strings ("INIT" / "DEBITED" / "COMPLETED" / "FAILED" /
+	// "COMPENSATING" / "COMPENSATED" / "COMPENSATE_STUCK"). Empty = rely
+	// on `scope`.
+	States        []string `protobuf:"bytes,6,rep,name=states,proto3" json:"states,omitempty"`
+	SinceMs       int64    `protobuf:"varint,7,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
+	UntilMs       int64    `protobuf:"varint,8,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
+	Cursor        string   `protobuf:"bytes,9,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         int32    `protobuf:"varint,10,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTransfersRequest) Reset() {
+	*x = ListTransfersRequest{}
+	mi := &file_rpc_asset_asset_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTransfersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTransfersRequest) ProtoMessage() {}
+
+func (x *ListTransfersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_asset_asset_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTransfersRequest.ProtoReflect.Descriptor instead.
+func (*ListTransfersRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_asset_asset_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ListTransfersRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *ListTransfersRequest) GetFromBiz() string {
+	if x != nil {
+		return x.FromBiz
+	}
+	return ""
+}
+
+func (x *ListTransfersRequest) GetToBiz() string {
+	if x != nil {
+		return x.ToBiz
+	}
+	return ""
+}
+
+func (x *ListTransfersRequest) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *ListTransfersRequest) GetScope() TransferScope {
+	if x != nil {
+		return x.Scope
+	}
+	return TransferScope_TRANSFER_SCOPE_UNSPECIFIED
+}
+
+func (x *ListTransfersRequest) GetStates() []string {
+	if x != nil {
+		return x.States
+	}
+	return nil
+}
+
+func (x *ListTransfersRequest) GetSinceMs() int64 {
+	if x != nil {
+		return x.SinceMs
+	}
+	return 0
+}
+
+func (x *ListTransfersRequest) GetUntilMs() int64 {
+	if x != nil {
+		return x.UntilMs
+	}
+	return 0
+}
+
+func (x *ListTransfersRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListTransfersRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListTransfersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Transfers     []*Transfer            `protobuf:"bytes,1,rep,name=transfers,proto3" json:"transfers,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTransfersResponse) Reset() {
+	*x = ListTransfersResponse{}
+	mi := &file_rpc_asset_asset_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTransfersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTransfersResponse) ProtoMessage() {}
+
+func (x *ListTransfersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_asset_asset_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTransfersResponse.ProtoReflect.Descriptor instead.
+func (*ListTransfersResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_asset_asset_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListTransfersResponse) GetTransfers() []*Transfer {
+	if x != nil {
+		return x.Transfers
+	}
+	return nil
+}
+
+func (x *ListTransfersResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+// Transfer mirrors one transfer_ledger row. `state` is the raw
+// transferledger.State string so BFF / clients can parse the same
+// alphabet the saga driver writes.
+type Transfer struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	TransferId      string                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	UserId          string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	FromBiz         string                 `protobuf:"bytes,3,opt,name=from_biz,json=fromBiz,proto3" json:"from_biz,omitempty"`
+	ToBiz           string                 `protobuf:"bytes,4,opt,name=to_biz,json=toBiz,proto3" json:"to_biz,omitempty"`
+	Asset           string                 `protobuf:"bytes,5,opt,name=asset,proto3" json:"asset,omitempty"`
+	Amount          string                 `protobuf:"bytes,6,opt,name=amount,proto3" json:"amount,omitempty"`
+	State           string                 `protobuf:"bytes,7,opt,name=state,proto3" json:"state,omitempty"`
+	RejectReason    string                 `protobuf:"bytes,8,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
+	CreatedAtUnixMs int64                  `protobuf:"varint,9,opt,name=created_at_unix_ms,json=createdAtUnixMs,proto3" json:"created_at_unix_ms,omitempty"`
+	UpdatedAtUnixMs int64                  `protobuf:"varint,10,opt,name=updated_at_unix_ms,json=updatedAtUnixMs,proto3" json:"updated_at_unix_ms,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *Transfer) Reset() {
+	*x = Transfer{}
+	mi := &file_rpc_asset_asset_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Transfer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Transfer) ProtoMessage() {}
+
+func (x *Transfer) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_asset_asset_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Transfer.ProtoReflect.Descriptor instead.
+func (*Transfer) Descriptor() ([]byte, []int) {
+	return file_rpc_asset_asset_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *Transfer) GetTransferId() string {
+	if x != nil {
+		return x.TransferId
+	}
+	return ""
+}
+
+func (x *Transfer) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *Transfer) GetFromBiz() string {
+	if x != nil {
+		return x.FromBiz
+	}
+	return ""
+}
+
+func (x *Transfer) GetToBiz() string {
+	if x != nil {
+		return x.ToBiz
+	}
+	return ""
+}
+
+func (x *Transfer) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *Transfer) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *Transfer) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *Transfer) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *Transfer) GetCreatedAtUnixMs() int64 {
+	if x != nil {
+		return x.CreatedAtUnixMs
+	}
+	return 0
+}
+
+func (x *Transfer) GetUpdatedAtUnixMs() int64 {
+	if x != nil {
+		return x.UpdatedAtUnixMs
+	}
+	return 0
+}
+
 var File_rpc_asset_asset_proto protoreflect.FileDescriptor
 
 const file_rpc_asset_asset_proto_rawDesc = "" +
@@ -615,10 +979,11 @@ const file_rpc_asset_asset_proto_rawDesc = "" +
 	"\x05asset\x18\x01 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x02 \x01(\tR\tavailable\x12\x16\n" +
 	"\x06frozen\x18\x03 \x01(\tR\x06frozen\x12\x18\n" +
-	"\aversion\x18\x04 \x01(\x04R\aversion\"7\n" +
+	"\aversion\x18\x04 \x01(\x04R\aversion\"P\n" +
 	"\x14QueryTransferRequest\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
-	"transferId\"\xe6\x02\n" +
+	"transferId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\"\xe6\x02\n" +
 	"\x15QueryTransferResponse\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
 	"transferId\x12\x17\n" +
@@ -631,6 +996,35 @@ const file_rpc_asset_asset_proto_rawDesc = "" +
 	"\rreject_reason\x18\b \x01(\tR\frejectReason\x12+\n" +
 	"\x12created_at_unix_ms\x18\t \x01(\x03R\x0fcreatedAtUnixMs\x12+\n" +
 	"\x12updated_at_unix_ms\x18\n" +
+	" \x01(\x03R\x0fupdatedAtUnixMs\"\xad\x02\n" +
+	"\x14ListTransfersRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
+	"\bfrom_biz\x18\x02 \x01(\tR\afromBiz\x12\x15\n" +
+	"\x06to_biz\x18\x03 \x01(\tR\x05toBiz\x12\x14\n" +
+	"\x05asset\x18\x04 \x01(\tR\x05asset\x128\n" +
+	"\x05scope\x18\x05 \x01(\x0e2\".opentrade.rpc.asset.TransferScopeR\x05scope\x12\x16\n" +
+	"\x06states\x18\x06 \x03(\tR\x06states\x12\x19\n" +
+	"\bsince_ms\x18\a \x01(\x03R\asinceMs\x12\x19\n" +
+	"\buntil_ms\x18\b \x01(\x03R\auntilMs\x12\x16\n" +
+	"\x06cursor\x18\t \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\n" +
+	" \x01(\x05R\x05limit\"u\n" +
+	"\x15ListTransfersResponse\x12;\n" +
+	"\ttransfers\x18\x01 \x03(\v2\x1d.opentrade.rpc.asset.TransferR\ttransfers\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"\xb9\x02\n" +
+	"\bTransfer\x12\x1f\n" +
+	"\vtransfer_id\x18\x01 \x01(\tR\n" +
+	"transferId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x19\n" +
+	"\bfrom_biz\x18\x03 \x01(\tR\afromBiz\x12\x15\n" +
+	"\x06to_biz\x18\x04 \x01(\tR\x05toBiz\x12\x14\n" +
+	"\x05asset\x18\x05 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06amount\x18\x06 \x01(\tR\x06amount\x12\x14\n" +
+	"\x05state\x18\a \x01(\tR\x05state\x12#\n" +
+	"\rreject_reason\x18\b \x01(\tR\frejectReason\x12+\n" +
+	"\x12created_at_unix_ms\x18\t \x01(\x03R\x0fcreatedAtUnixMs\x12+\n" +
+	"\x12updated_at_unix_ms\x18\n" +
 	" \x01(\x03R\x0fupdatedAtUnixMs*\xdf\x01\n" +
 	"\tSagaState\x12\x1a\n" +
 	"\x16SAGA_STATE_UNSPECIFIED\x10\x00\x12\x13\n" +
@@ -640,11 +1034,17 @@ const file_rpc_asset_asset_proto_rawDesc = "" +
 	"\x11SAGA_STATE_FAILED\x10\x04\x12\x1b\n" +
 	"\x17SAGA_STATE_COMPENSATING\x10\x05\x12\x1a\n" +
 	"\x16SAGA_STATE_COMPENSATED\x10\x06\x12\x1f\n" +
-	"\x1bSAGA_STATE_COMPENSATE_STUCK\x10\a2\xc9\x02\n" +
+	"\x1bSAGA_STATE_COMPENSATE_STUCK\x10\a*\x82\x01\n" +
+	"\rTransferScope\x12\x1e\n" +
+	"\x1aTRANSFER_SCOPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18TRANSFER_SCOPE_IN_FLIGHT\x10\x01\x12\x1b\n" +
+	"\x17TRANSFER_SCOPE_TERMINAL\x10\x02\x12\x16\n" +
+	"\x12TRANSFER_SCOPE_ALL\x10\x032\xb1\x03\n" +
 	"\fAssetService\x12W\n" +
 	"\bTransfer\x12$.opentrade.rpc.asset.TransferRequest\x1a%.opentrade.rpc.asset.TransferResponse\x12x\n" +
 	"\x13QueryFundingBalance\x12/.opentrade.rpc.asset.QueryFundingBalanceRequest\x1a0.opentrade.rpc.asset.QueryFundingBalanceResponse\x12f\n" +
-	"\rQueryTransfer\x12).opentrade.rpc.asset.QueryTransferRequest\x1a*.opentrade.rpc.asset.QueryTransferResponseB8Z6github.com/xargin/opentrade/api/gen/rpc/asset;assetrpcb\x06proto3"
+	"\rQueryTransfer\x12).opentrade.rpc.asset.QueryTransferRequest\x1a*.opentrade.rpc.asset.QueryTransferResponse\x12f\n" +
+	"\rListTransfers\x12).opentrade.rpc.asset.ListTransfersRequest\x1a*.opentrade.rpc.asset.ListTransfersResponseB8Z6github.com/xargin/opentrade/api/gen/rpc/asset;assetrpcb\x06proto3"
 
 var (
 	file_rpc_asset_asset_proto_rawDescOnce sync.Once
@@ -658,33 +1058,41 @@ func file_rpc_asset_asset_proto_rawDescGZIP() []byte {
 	return file_rpc_asset_asset_proto_rawDescData
 }
 
-var file_rpc_asset_asset_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_rpc_asset_asset_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_rpc_asset_asset_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_rpc_asset_asset_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_rpc_asset_asset_proto_goTypes = []any{
 	(SagaState)(0),                      // 0: opentrade.rpc.asset.SagaState
-	(*TransferRequest)(nil),             // 1: opentrade.rpc.asset.TransferRequest
-	(*TransferResponse)(nil),            // 2: opentrade.rpc.asset.TransferResponse
-	(*QueryFundingBalanceRequest)(nil),  // 3: opentrade.rpc.asset.QueryFundingBalanceRequest
-	(*QueryFundingBalanceResponse)(nil), // 4: opentrade.rpc.asset.QueryFundingBalanceResponse
-	(*FundingBalance)(nil),              // 5: opentrade.rpc.asset.FundingBalance
-	(*QueryTransferRequest)(nil),        // 6: opentrade.rpc.asset.QueryTransferRequest
-	(*QueryTransferResponse)(nil),       // 7: opentrade.rpc.asset.QueryTransferResponse
+	(TransferScope)(0),                  // 1: opentrade.rpc.asset.TransferScope
+	(*TransferRequest)(nil),             // 2: opentrade.rpc.asset.TransferRequest
+	(*TransferResponse)(nil),            // 3: opentrade.rpc.asset.TransferResponse
+	(*QueryFundingBalanceRequest)(nil),  // 4: opentrade.rpc.asset.QueryFundingBalanceRequest
+	(*QueryFundingBalanceResponse)(nil), // 5: opentrade.rpc.asset.QueryFundingBalanceResponse
+	(*FundingBalance)(nil),              // 6: opentrade.rpc.asset.FundingBalance
+	(*QueryTransferRequest)(nil),        // 7: opentrade.rpc.asset.QueryTransferRequest
+	(*QueryTransferResponse)(nil),       // 8: opentrade.rpc.asset.QueryTransferResponse
+	(*ListTransfersRequest)(nil),        // 9: opentrade.rpc.asset.ListTransfersRequest
+	(*ListTransfersResponse)(nil),       // 10: opentrade.rpc.asset.ListTransfersResponse
+	(*Transfer)(nil),                    // 11: opentrade.rpc.asset.Transfer
 }
 var file_rpc_asset_asset_proto_depIdxs = []int32{
-	0, // 0: opentrade.rpc.asset.TransferResponse.state:type_name -> opentrade.rpc.asset.SagaState
-	5, // 1: opentrade.rpc.asset.QueryFundingBalanceResponse.balances:type_name -> opentrade.rpc.asset.FundingBalance
-	0, // 2: opentrade.rpc.asset.QueryTransferResponse.state:type_name -> opentrade.rpc.asset.SagaState
-	1, // 3: opentrade.rpc.asset.AssetService.Transfer:input_type -> opentrade.rpc.asset.TransferRequest
-	3, // 4: opentrade.rpc.asset.AssetService.QueryFundingBalance:input_type -> opentrade.rpc.asset.QueryFundingBalanceRequest
-	6, // 5: opentrade.rpc.asset.AssetService.QueryTransfer:input_type -> opentrade.rpc.asset.QueryTransferRequest
-	2, // 6: opentrade.rpc.asset.AssetService.Transfer:output_type -> opentrade.rpc.asset.TransferResponse
-	4, // 7: opentrade.rpc.asset.AssetService.QueryFundingBalance:output_type -> opentrade.rpc.asset.QueryFundingBalanceResponse
-	7, // 8: opentrade.rpc.asset.AssetService.QueryTransfer:output_type -> opentrade.rpc.asset.QueryTransferResponse
-	6, // [6:9] is the sub-list for method output_type
-	3, // [3:6] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0,  // 0: opentrade.rpc.asset.TransferResponse.state:type_name -> opentrade.rpc.asset.SagaState
+	6,  // 1: opentrade.rpc.asset.QueryFundingBalanceResponse.balances:type_name -> opentrade.rpc.asset.FundingBalance
+	0,  // 2: opentrade.rpc.asset.QueryTransferResponse.state:type_name -> opentrade.rpc.asset.SagaState
+	1,  // 3: opentrade.rpc.asset.ListTransfersRequest.scope:type_name -> opentrade.rpc.asset.TransferScope
+	11, // 4: opentrade.rpc.asset.ListTransfersResponse.transfers:type_name -> opentrade.rpc.asset.Transfer
+	2,  // 5: opentrade.rpc.asset.AssetService.Transfer:input_type -> opentrade.rpc.asset.TransferRequest
+	4,  // 6: opentrade.rpc.asset.AssetService.QueryFundingBalance:input_type -> opentrade.rpc.asset.QueryFundingBalanceRequest
+	7,  // 7: opentrade.rpc.asset.AssetService.QueryTransfer:input_type -> opentrade.rpc.asset.QueryTransferRequest
+	9,  // 8: opentrade.rpc.asset.AssetService.ListTransfers:input_type -> opentrade.rpc.asset.ListTransfersRequest
+	3,  // 9: opentrade.rpc.asset.AssetService.Transfer:output_type -> opentrade.rpc.asset.TransferResponse
+	5,  // 10: opentrade.rpc.asset.AssetService.QueryFundingBalance:output_type -> opentrade.rpc.asset.QueryFundingBalanceResponse
+	8,  // 11: opentrade.rpc.asset.AssetService.QueryTransfer:output_type -> opentrade.rpc.asset.QueryTransferResponse
+	10, // 12: opentrade.rpc.asset.AssetService.ListTransfers:output_type -> opentrade.rpc.asset.ListTransfersResponse
+	9,  // [9:13] is the sub-list for method output_type
+	5,  // [5:9] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_rpc_asset_asset_proto_init() }
@@ -697,8 +1105,8 @@ func file_rpc_asset_asset_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_asset_asset_proto_rawDesc), len(file_rpc_asset_asset_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   7,
+			NumEnums:      2,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

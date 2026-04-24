@@ -85,7 +85,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/trades", s.handleListTrades)
 	mux.HandleFunc("GET /v1/account-logs", s.handleListAccountLogs)
 	mux.HandleFunc("GET /v1/transfers", s.handleListTransfers)
-	mux.HandleFunc("GET /v1/transfers/{transfer_id}", s.handleGetHistoryTransfer)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

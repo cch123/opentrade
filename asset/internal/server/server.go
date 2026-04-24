@@ -158,7 +158,10 @@ func (s *AssetServer) Transfer(ctx context.Context, req *assetrpc.TransferReques
 }
 
 // QueryTransfer returns the current state of a saga. Used by BFF
-// polling after a Transfer RPC returned terminal=false.
+// polling after a Transfer RPC returned terminal=false, and by
+// reconciliation jobs. When req.UserId is non-empty, the result is
+// guarded against cross-user access — a row belonging to a different
+// user returns NOT_FOUND.
 func (s *AssetServer) QueryTransfer(ctx context.Context, req *assetrpc.QueryTransferRequest) (*assetrpc.QueryTransferResponse, error) {
 	if req == nil || req.TransferId == "" {
 		return nil, status.Error(codes.InvalidArgument, "transfer_id required")
@@ -173,6 +176,9 @@ func (s *AssetServer) QueryTransfer(ctx context.Context, req *assetrpc.QueryTran
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	if req.UserId != "" && e.UserID != req.UserId {
+		return nil, status.Error(codes.NotFound, "unknown transfer_id")
+	}
 	return &assetrpc.QueryTransferResponse{
 		TransferId:      e.TransferID,
 		UserId:          e.UserID,
@@ -185,6 +191,98 @@ func (s *AssetServer) QueryTransfer(ctx context.Context, req *assetrpc.QueryTran
 		CreatedAtUnixMs: e.CreatedAtMs,
 		UpdatedAtUnixMs: e.UpdatedAtMs,
 	}, nil
+}
+
+// ListTransfers pages a user's saga rows newest-first by created_at_ms.
+// Replaced the trade-dump `transfers` projection post ADR-0065.
+func (s *AssetServer) ListTransfers(ctx context.Context, req *assetrpc.ListTransfersRequest) (*assetrpc.ListTransfersResponse, error) {
+	if req == nil || req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	if s.orch == nil {
+		return nil, status.Error(codes.FailedPrecondition, "saga orchestrator not configured")
+	}
+	states, err := buildListStates(req)
+	if err != nil {
+		return nil, err
+	}
+	filter := transferledger.ListFilter{
+		UserID:  req.UserId,
+		FromBiz: req.FromBiz,
+		ToBiz:   req.ToBiz,
+		Asset:   req.Asset,
+		States:  states,
+		SinceMs: req.SinceMs,
+		UntilMs: req.UntilMs,
+	}
+	entries, next, err := s.orch.ListTransfers(ctx, filter, req.Cursor, int(req.Limit))
+	if err != nil {
+		if errors.Is(err, transferledger.ErrInvalidCursor) {
+			return nil, status.Error(codes.InvalidArgument, "invalid cursor")
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &assetrpc.ListTransfersResponse{
+		Transfers: make([]*assetrpc.Transfer, 0, len(entries)),
+	}
+	for _, e := range entries {
+		out.Transfers = append(out.Transfers, entryToProtoTransfer(e))
+	}
+	if next != (transferledger.Cursor{}) {
+		cur, err := transferledger.EncodeCursor(next)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		out.NextCursor = cur
+	}
+	return out, nil
+}
+
+// buildListStates folds the scope enum to concrete states and merges
+// any explicit states filter. Explicit states take precedence; scope
+// folding only applies when states is empty.
+func buildListStates(req *assetrpc.ListTransfersRequest) ([]transferledger.State, error) {
+	if len(req.States) > 0 {
+		out := make([]transferledger.State, 0, len(req.States))
+		for _, s := range req.States {
+			if !isKnownState(s) {
+				return nil, status.Errorf(codes.InvalidArgument, "unknown state %q", s)
+			}
+			out = append(out, transferledger.State(s))
+		}
+		return out, nil
+	}
+	switch req.Scope {
+	case assetrpc.TransferScope_TRANSFER_SCOPE_IN_FLIGHT:
+		return append([]transferledger.State(nil), transferledger.InFlightStates...), nil
+	case assetrpc.TransferScope_TRANSFER_SCOPE_TERMINAL:
+		return append([]transferledger.State(nil), transferledger.TerminalStates...), nil
+	}
+	return nil, nil
+}
+
+func isKnownState(s string) bool {
+	for _, v := range transferledger.AllStates {
+		if string(v) == s {
+			return true
+		}
+	}
+	return false
+}
+
+func entryToProtoTransfer(e transferledger.Entry) *assetrpc.Transfer {
+	return &assetrpc.Transfer{
+		TransferId:      e.TransferID,
+		UserId:          e.UserID,
+		FromBiz:         e.FromBiz,
+		ToBiz:           e.ToBiz,
+		Asset:           e.Asset,
+		Amount:          e.Amount,
+		State:           string(e.State),
+		RejectReason:    e.RejectReason,
+		CreatedAtUnixMs: e.CreatedAtMs,
+		UpdatedAtUnixMs: e.UpdatedAtMs,
+	}
 }
 
 // QueryFundingBalance returns funding balances for the user. asset ==

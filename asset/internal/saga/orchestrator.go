@@ -142,6 +142,13 @@ func (o *Orchestrator) QueryEntry(ctx context.Context, transferID string) (trans
 	return o.ledger.Get(ctx, transferID)
 }
 
+// ListTransfers returns a user-scoped page of ledger rows ordered
+// newest-first. It's the read surface that replaced the trade-dump
+// `transfers` projection (post ADR-0065).
+func (o *Orchestrator) ListTransfers(ctx context.Context, f transferledger.ListFilter, cursor string, limit int) ([]transferledger.Entry, transferledger.Cursor, error) {
+	return o.ledger.List(ctx, f, cursor, limit)
+}
+
 // Recover loads all non-terminal ledger rows and drives each to
 // completion using a bounded goroutine pool. It returns after all
 // recovered sagas finish (or ctx is done). Intended to be called once

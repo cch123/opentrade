@@ -25,8 +25,6 @@ const (
 	HistoryService_ListAccountLogs_FullMethodName = "/opentrade.rpc.history.HistoryService/ListAccountLogs"
 	HistoryService_GetTrigger_FullMethodName      = "/opentrade.rpc.history.HistoryService/GetTrigger"
 	HistoryService_ListTriggers_FullMethodName    = "/opentrade.rpc.history.HistoryService/ListTriggers"
-	HistoryService_GetTransfer_FullMethodName     = "/opentrade.rpc.history.HistoryService/GetTransfer"
-	HistoryService_ListTransfers_FullMethodName   = "/opentrade.rpc.history.HistoryService/ListTransfers"
 )
 
 // HistoryServiceClient is the client API for HistoryService service.
@@ -55,15 +53,6 @@ type HistoryServiceClient interface {
 	// created_at. Scope filter covers "active" (PENDING) and "terminal"
 	// (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
 	ListTriggers(ctx context.Context, in *ListTriggersRequest, opts ...grpc.CallOption) (*ListTriggersResponse, error)
-	// GetTransfer returns one cross-biz_line saga row from the
-	// `transfers` projection (ADR-0057). Non-terminal sagas live in
-	// asset-service's transfer_ledger as the authority — clients that
-	// need polling during a still-in-flight saga should prefer
-	// asset-service.QueryTransfer (via BFF `GET /v1/transfer/{id}`).
-	GetTransfer(ctx context.Context, in *GetTransferRequest, opts ...grpc.CallOption) (*GetTransferResponse, error)
-	// ListTransfers pages a user's cross-biz_line transfers, newest
-	// first by created_at.
-	ListTransfers(ctx context.Context, in *ListTransfersRequest, opts ...grpc.CallOption) (*ListTransfersResponse, error)
 }
 
 type historyServiceClient struct {
@@ -134,26 +123,6 @@ func (c *historyServiceClient) ListTriggers(ctx context.Context, in *ListTrigger
 	return out, nil
 }
 
-func (c *historyServiceClient) GetTransfer(ctx context.Context, in *GetTransferRequest, opts ...grpc.CallOption) (*GetTransferResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetTransferResponse)
-	err := c.cc.Invoke(ctx, HistoryService_GetTransfer_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *historyServiceClient) ListTransfers(ctx context.Context, in *ListTransfersRequest, opts ...grpc.CallOption) (*ListTransfersResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListTransfersResponse)
-	err := c.cc.Invoke(ctx, HistoryService_ListTransfers_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // HistoryServiceServer is the server API for HistoryService service.
 // All implementations must embed UnimplementedHistoryServiceServer
 // for forward compatibility.
@@ -180,15 +149,6 @@ type HistoryServiceServer interface {
 	// created_at. Scope filter covers "active" (PENDING) and "terminal"
 	// (TRIGGERED / CANCELED / REJECTED / EXPIRED) buckets plus ALL.
 	ListTriggers(context.Context, *ListTriggersRequest) (*ListTriggersResponse, error)
-	// GetTransfer returns one cross-biz_line saga row from the
-	// `transfers` projection (ADR-0057). Non-terminal sagas live in
-	// asset-service's transfer_ledger as the authority — clients that
-	// need polling during a still-in-flight saga should prefer
-	// asset-service.QueryTransfer (via BFF `GET /v1/transfer/{id}`).
-	GetTransfer(context.Context, *GetTransferRequest) (*GetTransferResponse, error)
-	// ListTransfers pages a user's cross-biz_line transfers, newest
-	// first by created_at.
-	ListTransfers(context.Context, *ListTransfersRequest) (*ListTransfersResponse, error)
 	mustEmbedUnimplementedHistoryServiceServer()
 }
 
@@ -216,12 +176,6 @@ func (UnimplementedHistoryServiceServer) GetTrigger(context.Context, *GetTrigger
 }
 func (UnimplementedHistoryServiceServer) ListTriggers(context.Context, *ListTriggersRequest) (*ListTriggersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTriggers not implemented")
-}
-func (UnimplementedHistoryServiceServer) GetTransfer(context.Context, *GetTransferRequest) (*GetTransferResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetTransfer not implemented")
-}
-func (UnimplementedHistoryServiceServer) ListTransfers(context.Context, *ListTransfersRequest) (*ListTransfersResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListTransfers not implemented")
 }
 func (UnimplementedHistoryServiceServer) mustEmbedUnimplementedHistoryServiceServer() {}
 func (UnimplementedHistoryServiceServer) testEmbeddedByValue()                        {}
@@ -352,42 +306,6 @@ func _HistoryService_ListTriggers_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _HistoryService_GetTransfer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetTransferRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(HistoryServiceServer).GetTransfer(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: HistoryService_GetTransfer_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HistoryServiceServer).GetTransfer(ctx, req.(*GetTransferRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _HistoryService_ListTransfers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListTransfersRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(HistoryServiceServer).ListTransfers(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: HistoryService_ListTransfers_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HistoryServiceServer).ListTransfers(ctx, req.(*ListTransfersRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // HistoryService_ServiceDesc is the grpc.ServiceDesc for HistoryService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -418,14 +336,6 @@ var HistoryService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListTriggers",
 			Handler:    _HistoryService_ListTriggers_Handler,
-		},
-		{
-			MethodName: "GetTransfer",
-			Handler:    _HistoryService_GetTransfer_Handler,
-		},
-		{
-			MethodName: "ListTransfers",
-			Handler:    _HistoryService_ListTransfers_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -22,6 +22,7 @@ const (
 	AssetService_Transfer_FullMethodName            = "/opentrade.rpc.asset.AssetService/Transfer"
 	AssetService_QueryFundingBalance_FullMethodName = "/opentrade.rpc.asset.AssetService/QueryFundingBalance"
 	AssetService_QueryTransfer_FullMethodName       = "/opentrade.rpc.asset.AssetService/QueryTransfer"
+	AssetService_ListTransfers_FullMethodName       = "/opentrade.rpc.asset.AssetService/ListTransfers"
 )
 
 // AssetServiceClient is the client API for AssetService service.
@@ -47,8 +48,14 @@ type AssetServiceClient interface {
 	// read path for biz_line=funding (no CQRS projection at this stage).
 	QueryFundingBalance(ctx context.Context, in *QueryFundingBalanceRequest, opts ...grpc.CallOption) (*QueryFundingBalanceResponse, error)
 	// Query a saga by transfer_id. Used by BFF polling and by reconciliation
-	// jobs.
+	// jobs. When user_id is set, the server guards the result against that
+	// user — a cross-user transfer_id lookup returns NOT_FOUND. Internal
+	// callers (reconciler, saga driver) may leave user_id empty.
 	QueryTransfer(ctx context.Context, in *QueryTransferRequest, opts ...grpc.CallOption) (*QueryTransferResponse, error)
+	// ListTransfers pages a user's saga rows, newest first by
+	// created_at_ms. Replaces the old trade-dump `transfers` projection
+	// (ADR-0065 — funding wallet authority moved to asset-service MySQL).
+	ListTransfers(ctx context.Context, in *ListTransfersRequest, opts ...grpc.CallOption) (*ListTransfersResponse, error)
 }
 
 type assetServiceClient struct {
@@ -89,6 +96,16 @@ func (c *assetServiceClient) QueryTransfer(ctx context.Context, in *QueryTransfe
 	return out, nil
 }
 
+func (c *assetServiceClient) ListTransfers(ctx context.Context, in *ListTransfersRequest, opts ...grpc.CallOption) (*ListTransfersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTransfersResponse)
+	err := c.cc.Invoke(ctx, AssetService_ListTransfers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AssetServiceServer is the server API for AssetService service.
 // All implementations must embed UnimplementedAssetServiceServer
 // for forward compatibility.
@@ -112,8 +129,14 @@ type AssetServiceServer interface {
 	// read path for biz_line=funding (no CQRS projection at this stage).
 	QueryFundingBalance(context.Context, *QueryFundingBalanceRequest) (*QueryFundingBalanceResponse, error)
 	// Query a saga by transfer_id. Used by BFF polling and by reconciliation
-	// jobs.
+	// jobs. When user_id is set, the server guards the result against that
+	// user — a cross-user transfer_id lookup returns NOT_FOUND. Internal
+	// callers (reconciler, saga driver) may leave user_id empty.
 	QueryTransfer(context.Context, *QueryTransferRequest) (*QueryTransferResponse, error)
+	// ListTransfers pages a user's saga rows, newest first by
+	// created_at_ms. Replaces the old trade-dump `transfers` projection
+	// (ADR-0065 — funding wallet authority moved to asset-service MySQL).
+	ListTransfers(context.Context, *ListTransfersRequest) (*ListTransfersResponse, error)
 	mustEmbedUnimplementedAssetServiceServer()
 }
 
@@ -132,6 +155,9 @@ func (UnimplementedAssetServiceServer) QueryFundingBalance(context.Context, *Que
 }
 func (UnimplementedAssetServiceServer) QueryTransfer(context.Context, *QueryTransferRequest) (*QueryTransferResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryTransfer not implemented")
+}
+func (UnimplementedAssetServiceServer) ListTransfers(context.Context, *ListTransfersRequest) (*ListTransfersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTransfers not implemented")
 }
 func (UnimplementedAssetServiceServer) mustEmbedUnimplementedAssetServiceServer() {}
 func (UnimplementedAssetServiceServer) testEmbeddedByValue()                      {}
@@ -208,6 +234,24 @@ func _AssetService_QueryTransfer_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AssetService_ListTransfers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTransfersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AssetServiceServer).ListTransfers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AssetService_ListTransfers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AssetServiceServer).ListTransfers(ctx, req.(*ListTransfersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AssetService_ServiceDesc is the grpc.ServiceDesc for AssetService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -226,6 +270,10 @@ var AssetService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryTransfer",
 			Handler:    _AssetService_QueryTransfer_Handler,
+		},
+		{
+			MethodName: "ListTransfers",
+			Handler:    _AssetService_ListTransfers_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

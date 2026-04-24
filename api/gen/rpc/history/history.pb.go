@@ -242,58 +242,6 @@ func (TriggerScope) EnumDescriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{3}
 }
 
-type TransferScope int32
-
-const (
-	TransferScope_TRANSFER_SCOPE_UNSPECIFIED TransferScope = 0 // == ALL
-	TransferScope_TRANSFER_SCOPE_IN_FLIGHT   TransferScope = 1
-	TransferScope_TRANSFER_SCOPE_TERMINAL    TransferScope = 2
-	TransferScope_TRANSFER_SCOPE_ALL         TransferScope = 3
-)
-
-// Enum value maps for TransferScope.
-var (
-	TransferScope_name = map[int32]string{
-		0: "TRANSFER_SCOPE_UNSPECIFIED",
-		1: "TRANSFER_SCOPE_IN_FLIGHT",
-		2: "TRANSFER_SCOPE_TERMINAL",
-		3: "TRANSFER_SCOPE_ALL",
-	}
-	TransferScope_value = map[string]int32{
-		"TRANSFER_SCOPE_UNSPECIFIED": 0,
-		"TRANSFER_SCOPE_IN_FLIGHT":   1,
-		"TRANSFER_SCOPE_TERMINAL":    2,
-		"TRANSFER_SCOPE_ALL":         3,
-	}
-)
-
-func (x TransferScope) Enum() *TransferScope {
-	p := new(TransferScope)
-	*p = x
-	return p
-}
-
-func (x TransferScope) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (TransferScope) Descriptor() protoreflect.EnumDescriptor {
-	return file_rpc_history_history_proto_enumTypes[4].Descriptor()
-}
-
-func (TransferScope) Type() protoreflect.EnumType {
-	return &file_rpc_history_history_proto_enumTypes[4]
-}
-
-func (x TransferScope) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use TransferScope.Descriptor instead.
-func (TransferScope) EnumDescriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{4}
-}
-
 type GetOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -1562,402 +1510,6 @@ func (x *Trigger) GetTriggeredAtUnixMs() int64 {
 	return 0
 }
 
-type GetTransferRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	TransferId    string                 `protobuf:"bytes,2,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetTransferRequest) Reset() {
-	*x = GetTransferRequest{}
-	mi := &file_rpc_history_history_proto_msgTypes[15]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetTransferRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetTransferRequest) ProtoMessage() {}
-
-func (x *GetTransferRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[15]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetTransferRequest.ProtoReflect.Descriptor instead.
-func (*GetTransferRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{15}
-}
-
-func (x *GetTransferRequest) GetUserId() string {
-	if x != nil {
-		return x.UserId
-	}
-	return ""
-}
-
-func (x *GetTransferRequest) GetTransferId() string {
-	if x != nil {
-		return x.TransferId
-	}
-	return ""
-}
-
-type GetTransferResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Transfer      *Transfer              `protobuf:"bytes,1,opt,name=transfer,proto3" json:"transfer,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetTransferResponse) Reset() {
-	*x = GetTransferResponse{}
-	mi := &file_rpc_history_history_proto_msgTypes[16]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetTransferResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetTransferResponse) ProtoMessage() {}
-
-func (x *GetTransferResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[16]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetTransferResponse.ProtoReflect.Descriptor instead.
-func (*GetTransferResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{16}
-}
-
-func (x *GetTransferResponse) GetTransfer() *Transfer {
-	if x != nil {
-		return x.Transfer
-	}
-	return nil
-}
-
-type ListTransfersRequest struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	// Filter by the "from" biz_line ("funding" / "spot" / ...). "" = any.
-	FromBiz string `protobuf:"bytes,2,opt,name=from_biz,json=fromBiz,proto3" json:"from_biz,omitempty"`
-	// Filter by the "to" biz_line. "" = any.
-	ToBiz string `protobuf:"bytes,3,opt,name=to_biz,json=toBiz,proto3" json:"to_biz,omitempty"`
-	// Filter by asset symbol. "" = any.
-	Asset string `protobuf:"bytes,4,opt,name=asset,proto3" json:"asset,omitempty"`
-	// Coarse category filter folding saga states:
-	//
-	//	IN_FLIGHT → INIT + DEBITED + COMPENSATING
-	//	TERMINAL  → COMPLETED + FAILED + COMPENSATED + COMPENSATE_STUCK
-	//	ALL       → no state filter
-	Scope TransferScope `protobuf:"varint,5,opt,name=scope,proto3,enum=opentrade.rpc.history.TransferScope" json:"scope,omitempty"`
-	// Fine-grained state filter. Values match transferledger.State
-	// strings ("INIT" / "DEBITED" / "COMPLETED" / "FAILED" /
-	// "COMPENSATING" / "COMPENSATED" / "COMPENSATE_STUCK"). Empty = rely
-	// on `scope`.
-	States        []string `protobuf:"bytes,6,rep,name=states,proto3" json:"states,omitempty"`
-	SinceMs       int64    `protobuf:"varint,7,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
-	UntilMs       int64    `protobuf:"varint,8,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
-	Cursor        string   `protobuf:"bytes,9,opt,name=cursor,proto3" json:"cursor,omitempty"`
-	Limit         int32    `protobuf:"varint,10,opt,name=limit,proto3" json:"limit,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListTransfersRequest) Reset() {
-	*x = ListTransfersRequest{}
-	mi := &file_rpc_history_history_proto_msgTypes[17]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListTransfersRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListTransfersRequest) ProtoMessage() {}
-
-func (x *ListTransfersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[17]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListTransfersRequest.ProtoReflect.Descriptor instead.
-func (*ListTransfersRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{17}
-}
-
-func (x *ListTransfersRequest) GetUserId() string {
-	if x != nil {
-		return x.UserId
-	}
-	return ""
-}
-
-func (x *ListTransfersRequest) GetFromBiz() string {
-	if x != nil {
-		return x.FromBiz
-	}
-	return ""
-}
-
-func (x *ListTransfersRequest) GetToBiz() string {
-	if x != nil {
-		return x.ToBiz
-	}
-	return ""
-}
-
-func (x *ListTransfersRequest) GetAsset() string {
-	if x != nil {
-		return x.Asset
-	}
-	return ""
-}
-
-func (x *ListTransfersRequest) GetScope() TransferScope {
-	if x != nil {
-		return x.Scope
-	}
-	return TransferScope_TRANSFER_SCOPE_UNSPECIFIED
-}
-
-func (x *ListTransfersRequest) GetStates() []string {
-	if x != nil {
-		return x.States
-	}
-	return nil
-}
-
-func (x *ListTransfersRequest) GetSinceMs() int64 {
-	if x != nil {
-		return x.SinceMs
-	}
-	return 0
-}
-
-func (x *ListTransfersRequest) GetUntilMs() int64 {
-	if x != nil {
-		return x.UntilMs
-	}
-	return 0
-}
-
-func (x *ListTransfersRequest) GetCursor() string {
-	if x != nil {
-		return x.Cursor
-	}
-	return ""
-}
-
-func (x *ListTransfersRequest) GetLimit() int32 {
-	if x != nil {
-		return x.Limit
-	}
-	return 0
-}
-
-type ListTransfersResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Transfers     []*Transfer            `protobuf:"bytes,1,rep,name=transfers,proto3" json:"transfers,omitempty"`
-	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListTransfersResponse) Reset() {
-	*x = ListTransfersResponse{}
-	mi := &file_rpc_history_history_proto_msgTypes[18]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListTransfersResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListTransfersResponse) ProtoMessage() {}
-
-func (x *ListTransfersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[18]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListTransfersResponse.ProtoReflect.Descriptor instead.
-func (*ListTransfersResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{18}
-}
-
-func (x *ListTransfersResponse) GetTransfers() []*Transfer {
-	if x != nil {
-		return x.Transfers
-	}
-	return nil
-}
-
-func (x *ListTransfersResponse) GetNextCursor() string {
-	if x != nil {
-		return x.NextCursor
-	}
-	return ""
-}
-
-// Transfer mirrors the `transfers` projection row. `state` is the raw
-// transferledger.State string so BFF / clients can parse the same
-// alphabet the saga driver writes — avoids enum drift between
-// asset-service and history.
-type Transfer struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	TransferId      string                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
-	UserId          string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	FromBiz         string                 `protobuf:"bytes,3,opt,name=from_biz,json=fromBiz,proto3" json:"from_biz,omitempty"`
-	ToBiz           string                 `protobuf:"bytes,4,opt,name=to_biz,json=toBiz,proto3" json:"to_biz,omitempty"`
-	Asset           string                 `protobuf:"bytes,5,opt,name=asset,proto3" json:"asset,omitempty"`
-	Amount          string                 `protobuf:"bytes,6,opt,name=amount,proto3" json:"amount,omitempty"`
-	State           string                 `protobuf:"bytes,7,opt,name=state,proto3" json:"state,omitempty"`
-	RejectReason    string                 `protobuf:"bytes,8,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
-	CreatedAtUnixMs int64                  `protobuf:"varint,9,opt,name=created_at_unix_ms,json=createdAtUnixMs,proto3" json:"created_at_unix_ms,omitempty"`
-	UpdatedAtUnixMs int64                  `protobuf:"varint,10,opt,name=updated_at_unix_ms,json=updatedAtUnixMs,proto3" json:"updated_at_unix_ms,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *Transfer) Reset() {
-	*x = Transfer{}
-	mi := &file_rpc_history_history_proto_msgTypes[19]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Transfer) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Transfer) ProtoMessage() {}
-
-func (x *Transfer) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[19]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Transfer.ProtoReflect.Descriptor instead.
-func (*Transfer) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{19}
-}
-
-func (x *Transfer) GetTransferId() string {
-	if x != nil {
-		return x.TransferId
-	}
-	return ""
-}
-
-func (x *Transfer) GetUserId() string {
-	if x != nil {
-		return x.UserId
-	}
-	return ""
-}
-
-func (x *Transfer) GetFromBiz() string {
-	if x != nil {
-		return x.FromBiz
-	}
-	return ""
-}
-
-func (x *Transfer) GetToBiz() string {
-	if x != nil {
-		return x.ToBiz
-	}
-	return ""
-}
-
-func (x *Transfer) GetAsset() string {
-	if x != nil {
-		return x.Asset
-	}
-	return ""
-}
-
-func (x *Transfer) GetAmount() string {
-	if x != nil {
-		return x.Amount
-	}
-	return ""
-}
-
-func (x *Transfer) GetState() string {
-	if x != nil {
-		return x.State
-	}
-	return ""
-}
-
-func (x *Transfer) GetRejectReason() string {
-	if x != nil {
-		return x.RejectReason
-	}
-	return ""
-}
-
-func (x *Transfer) GetCreatedAtUnixMs() int64 {
-	if x != nil {
-		return x.CreatedAtUnixMs
-	}
-	return 0
-}
-
-func (x *Transfer) GetUpdatedAtUnixMs() int64 {
-	if x != nil {
-		return x.UpdatedAtUnixMs
-	}
-	return 0
-}
-
 // AccountLog mirrors the `account_logs` projection row.
 type AccountLog struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1978,7 +1530,7 @@ type AccountLog struct {
 
 func (x *AccountLog) Reset() {
 	*x = AccountLog{}
-	mi := &file_rpc_history_history_proto_msgTypes[20]
+	mi := &file_rpc_history_history_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1990,7 +1542,7 @@ func (x *AccountLog) String() string {
 func (*AccountLog) ProtoMessage() {}
 
 func (x *AccountLog) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[20]
+	mi := &file_rpc_history_history_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2003,7 +1555,7 @@ func (x *AccountLog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountLog.ProtoReflect.Descriptor instead.
 func (*AccountLog) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{20}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AccountLog) GetShardId() int32 {
@@ -2203,42 +1755,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x12trailing_watermark\x18\x13 \x01(\tR\x11trailingWatermark\x12'\n" +
 	"\x0ftrailing_active\x18\x14 \x01(\bR\x0etrailingActive\x12+\n" +
 	"\x12created_at_unix_ms\x18\x15 \x01(\x03R\x0fcreatedAtUnixMs\x12/\n" +
-	"\x14triggered_at_unix_ms\x18\x16 \x01(\x03R\x11triggeredAtUnixMs\"N\n" +
-	"\x12GetTransferRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1f\n" +
-	"\vtransfer_id\x18\x02 \x01(\tR\n" +
-	"transferId\"R\n" +
-	"\x13GetTransferResponse\x12;\n" +
-	"\btransfer\x18\x01 \x01(\v2\x1f.opentrade.rpc.history.TransferR\btransfer\"\xaf\x02\n" +
-	"\x14ListTransfersRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
-	"\bfrom_biz\x18\x02 \x01(\tR\afromBiz\x12\x15\n" +
-	"\x06to_biz\x18\x03 \x01(\tR\x05toBiz\x12\x14\n" +
-	"\x05asset\x18\x04 \x01(\tR\x05asset\x12:\n" +
-	"\x05scope\x18\x05 \x01(\x0e2$.opentrade.rpc.history.TransferScopeR\x05scope\x12\x16\n" +
-	"\x06states\x18\x06 \x03(\tR\x06states\x12\x19\n" +
-	"\bsince_ms\x18\a \x01(\x03R\asinceMs\x12\x19\n" +
-	"\buntil_ms\x18\b \x01(\x03R\auntilMs\x12\x16\n" +
-	"\x06cursor\x18\t \x01(\tR\x06cursor\x12\x14\n" +
-	"\x05limit\x18\n" +
-	" \x01(\x05R\x05limit\"w\n" +
-	"\x15ListTransfersResponse\x12=\n" +
-	"\ttransfers\x18\x01 \x03(\v2\x1f.opentrade.rpc.history.TransferR\ttransfers\x12\x1f\n" +
-	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor\"\xb9\x02\n" +
-	"\bTransfer\x12\x1f\n" +
-	"\vtransfer_id\x18\x01 \x01(\tR\n" +
-	"transferId\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x19\n" +
-	"\bfrom_biz\x18\x03 \x01(\tR\afromBiz\x12\x15\n" +
-	"\x06to_biz\x18\x04 \x01(\tR\x05toBiz\x12\x14\n" +
-	"\x05asset\x18\x05 \x01(\tR\x05asset\x12\x16\n" +
-	"\x06amount\x18\x06 \x01(\tR\x06amount\x12\x14\n" +
-	"\x05state\x18\a \x01(\tR\x05state\x12#\n" +
-	"\rreject_reason\x18\b \x01(\tR\frejectReason\x12+\n" +
-	"\x12created_at_unix_ms\x18\t \x01(\x03R\x0fcreatedAtUnixMs\x12+\n" +
-	"\x12updated_at_unix_ms\x18\n" +
-	" \x01(\x03R\x0fupdatedAtUnixMs\"\xdb\x02\n" +
+	"\x14triggered_at_unix_ms\x18\x16 \x01(\x03R\x11triggeredAtUnixMs\"\xdb\x02\n" +
 	"\n" +
 	"AccountLog\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12$\n" +
@@ -2279,12 +1796,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x19TRIGGER_SCOPE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14TRIGGER_SCOPE_ACTIVE\x10\x01\x12\x1a\n" +
 	"\x16TRIGGER_SCOPE_TERMINAL\x10\x02\x12\x15\n" +
-	"\x11TRIGGER_SCOPE_ALL\x10\x03*\x82\x01\n" +
-	"\rTransferScope\x12\x1e\n" +
-	"\x1aTRANSFER_SCOPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
-	"\x18TRANSFER_SCOPE_IN_FLIGHT\x10\x01\x12\x1b\n" +
-	"\x17TRANSFER_SCOPE_TERMINAL\x10\x02\x12\x16\n" +
-	"\x12TRANSFER_SCOPE_ALL\x10\x032\xc3\x06\n" +
+	"\x11TRIGGER_SCOPE_ALL\x10\x032\xf1\x04\n" +
 	"\x0eHistoryService\x12[\n" +
 	"\bGetOrder\x12&.opentrade.rpc.history.GetOrderRequest\x1a'.opentrade.rpc.history.GetOrderResponse\x12a\n" +
 	"\n" +
@@ -2294,9 +1806,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x0fListAccountLogs\x12-.opentrade.rpc.history.ListAccountLogsRequest\x1a..opentrade.rpc.history.ListAccountLogsResponse\x12a\n" +
 	"\n" +
 	"GetTrigger\x12(.opentrade.rpc.history.GetTriggerRequest\x1a).opentrade.rpc.history.GetTriggerResponse\x12g\n" +
-	"\fListTriggers\x12*.opentrade.rpc.history.ListTriggersRequest\x1a+.opentrade.rpc.history.ListTriggersResponse\x12d\n" +
-	"\vGetTransfer\x12).opentrade.rpc.history.GetTransferRequest\x1a*.opentrade.rpc.history.GetTransferResponse\x12j\n" +
-	"\rListTransfers\x12+.opentrade.rpc.history.ListTransfersRequest\x1a,.opentrade.rpc.history.ListTransfersResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/history;historyrpcb\x06proto3"
+	"\fListTriggers\x12*.opentrade.rpc.history.ListTriggersRequest\x1a+.opentrade.rpc.history.ListTriggersResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/history;historyrpcb\x06proto3"
 
 var (
 	file_rpc_history_history_proto_rawDescOnce sync.Once
@@ -2310,86 +1820,73 @@ func file_rpc_history_history_proto_rawDescGZIP() []byte {
 	return file_rpc_history_history_proto_rawDescData
 }
 
-var file_rpc_history_history_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_rpc_history_history_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_rpc_history_history_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_rpc_history_history_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_rpc_history_history_proto_goTypes = []any{
 	(OrderScope)(0),                 // 0: opentrade.rpc.history.OrderScope
 	(OrderStatus)(0),                // 1: opentrade.rpc.history.OrderStatus
 	(TradeRole)(0),                  // 2: opentrade.rpc.history.TradeRole
 	(TriggerScope)(0),               // 3: opentrade.rpc.history.TriggerScope
-	(TransferScope)(0),              // 4: opentrade.rpc.history.TransferScope
-	(*GetOrderRequest)(nil),         // 5: opentrade.rpc.history.GetOrderRequest
-	(*GetOrderResponse)(nil),        // 6: opentrade.rpc.history.GetOrderResponse
-	(*ListOrdersRequest)(nil),       // 7: opentrade.rpc.history.ListOrdersRequest
-	(*ListOrdersResponse)(nil),      // 8: opentrade.rpc.history.ListOrdersResponse
-	(*Order)(nil),                   // 9: opentrade.rpc.history.Order
-	(*ListTradesRequest)(nil),       // 10: opentrade.rpc.history.ListTradesRequest
-	(*ListTradesResponse)(nil),      // 11: opentrade.rpc.history.ListTradesResponse
-	(*Trade)(nil),                   // 12: opentrade.rpc.history.Trade
-	(*ListAccountLogsRequest)(nil),  // 13: opentrade.rpc.history.ListAccountLogsRequest
-	(*ListAccountLogsResponse)(nil), // 14: opentrade.rpc.history.ListAccountLogsResponse
-	(*GetTriggerRequest)(nil),       // 15: opentrade.rpc.history.GetTriggerRequest
-	(*GetTriggerResponse)(nil),      // 16: opentrade.rpc.history.GetTriggerResponse
-	(*ListTriggersRequest)(nil),     // 17: opentrade.rpc.history.ListTriggersRequest
-	(*ListTriggersResponse)(nil),    // 18: opentrade.rpc.history.ListTriggersResponse
-	(*Trigger)(nil),                 // 19: opentrade.rpc.history.Trigger
-	(*GetTransferRequest)(nil),      // 20: opentrade.rpc.history.GetTransferRequest
-	(*GetTransferResponse)(nil),     // 21: opentrade.rpc.history.GetTransferResponse
-	(*ListTransfersRequest)(nil),    // 22: opentrade.rpc.history.ListTransfersRequest
-	(*ListTransfersResponse)(nil),   // 23: opentrade.rpc.history.ListTransfersResponse
-	(*Transfer)(nil),                // 24: opentrade.rpc.history.Transfer
-	(*AccountLog)(nil),              // 25: opentrade.rpc.history.AccountLog
-	(event.Side)(0),                 // 26: opentrade.event.Side
-	(event.OrderType)(0),            // 27: opentrade.event.OrderType
-	(event.TimeInForce)(0),          // 28: opentrade.event.TimeInForce
-	(trigger.TriggerStatus)(0),      // 29: opentrade.rpc.trigger.TriggerStatus
-	(trigger.TriggerType)(0),        // 30: opentrade.rpc.trigger.TriggerType
+	(*GetOrderRequest)(nil),         // 4: opentrade.rpc.history.GetOrderRequest
+	(*GetOrderResponse)(nil),        // 5: opentrade.rpc.history.GetOrderResponse
+	(*ListOrdersRequest)(nil),       // 6: opentrade.rpc.history.ListOrdersRequest
+	(*ListOrdersResponse)(nil),      // 7: opentrade.rpc.history.ListOrdersResponse
+	(*Order)(nil),                   // 8: opentrade.rpc.history.Order
+	(*ListTradesRequest)(nil),       // 9: opentrade.rpc.history.ListTradesRequest
+	(*ListTradesResponse)(nil),      // 10: opentrade.rpc.history.ListTradesResponse
+	(*Trade)(nil),                   // 11: opentrade.rpc.history.Trade
+	(*ListAccountLogsRequest)(nil),  // 12: opentrade.rpc.history.ListAccountLogsRequest
+	(*ListAccountLogsResponse)(nil), // 13: opentrade.rpc.history.ListAccountLogsResponse
+	(*GetTriggerRequest)(nil),       // 14: opentrade.rpc.history.GetTriggerRequest
+	(*GetTriggerResponse)(nil),      // 15: opentrade.rpc.history.GetTriggerResponse
+	(*ListTriggersRequest)(nil),     // 16: opentrade.rpc.history.ListTriggersRequest
+	(*ListTriggersResponse)(nil),    // 17: opentrade.rpc.history.ListTriggersResponse
+	(*Trigger)(nil),                 // 18: opentrade.rpc.history.Trigger
+	(*AccountLog)(nil),              // 19: opentrade.rpc.history.AccountLog
+	(event.Side)(0),                 // 20: opentrade.event.Side
+	(event.OrderType)(0),            // 21: opentrade.event.OrderType
+	(event.TimeInForce)(0),          // 22: opentrade.event.TimeInForce
+	(trigger.TriggerStatus)(0),      // 23: opentrade.rpc.trigger.TriggerStatus
+	(trigger.TriggerType)(0),        // 24: opentrade.rpc.trigger.TriggerType
 }
 var file_rpc_history_history_proto_depIdxs = []int32{
-	9,  // 0: opentrade.rpc.history.GetOrderResponse.order:type_name -> opentrade.rpc.history.Order
+	8,  // 0: opentrade.rpc.history.GetOrderResponse.order:type_name -> opentrade.rpc.history.Order
 	0,  // 1: opentrade.rpc.history.ListOrdersRequest.scope:type_name -> opentrade.rpc.history.OrderScope
 	1,  // 2: opentrade.rpc.history.ListOrdersRequest.statuses:type_name -> opentrade.rpc.history.OrderStatus
-	9,  // 3: opentrade.rpc.history.ListOrdersResponse.orders:type_name -> opentrade.rpc.history.Order
-	26, // 4: opentrade.rpc.history.Order.side:type_name -> opentrade.event.Side
-	27, // 5: opentrade.rpc.history.Order.order_type:type_name -> opentrade.event.OrderType
-	28, // 6: opentrade.rpc.history.Order.tif:type_name -> opentrade.event.TimeInForce
+	8,  // 3: opentrade.rpc.history.ListOrdersResponse.orders:type_name -> opentrade.rpc.history.Order
+	20, // 4: opentrade.rpc.history.Order.side:type_name -> opentrade.event.Side
+	21, // 5: opentrade.rpc.history.Order.order_type:type_name -> opentrade.event.OrderType
+	22, // 6: opentrade.rpc.history.Order.tif:type_name -> opentrade.event.TimeInForce
 	1,  // 7: opentrade.rpc.history.Order.status:type_name -> opentrade.rpc.history.OrderStatus
-	12, // 8: opentrade.rpc.history.ListTradesResponse.trades:type_name -> opentrade.rpc.history.Trade
+	11, // 8: opentrade.rpc.history.ListTradesResponse.trades:type_name -> opentrade.rpc.history.Trade
 	2,  // 9: opentrade.rpc.history.Trade.role:type_name -> opentrade.rpc.history.TradeRole
-	26, // 10: opentrade.rpc.history.Trade.side:type_name -> opentrade.event.Side
-	25, // 11: opentrade.rpc.history.ListAccountLogsResponse.logs:type_name -> opentrade.rpc.history.AccountLog
-	19, // 12: opentrade.rpc.history.GetTriggerResponse.trigger:type_name -> opentrade.rpc.history.Trigger
+	20, // 10: opentrade.rpc.history.Trade.side:type_name -> opentrade.event.Side
+	19, // 11: opentrade.rpc.history.ListAccountLogsResponse.logs:type_name -> opentrade.rpc.history.AccountLog
+	18, // 12: opentrade.rpc.history.GetTriggerResponse.trigger:type_name -> opentrade.rpc.history.Trigger
 	3,  // 13: opentrade.rpc.history.ListTriggersRequest.scope:type_name -> opentrade.rpc.history.TriggerScope
-	29, // 14: opentrade.rpc.history.ListTriggersRequest.statuses:type_name -> opentrade.rpc.trigger.TriggerStatus
-	19, // 15: opentrade.rpc.history.ListTriggersResponse.triggers:type_name -> opentrade.rpc.history.Trigger
-	26, // 16: opentrade.rpc.history.Trigger.side:type_name -> opentrade.event.Side
-	30, // 17: opentrade.rpc.history.Trigger.type:type_name -> opentrade.rpc.trigger.TriggerType
-	28, // 18: opentrade.rpc.history.Trigger.tif:type_name -> opentrade.event.TimeInForce
-	29, // 19: opentrade.rpc.history.Trigger.status:type_name -> opentrade.rpc.trigger.TriggerStatus
-	24, // 20: opentrade.rpc.history.GetTransferResponse.transfer:type_name -> opentrade.rpc.history.Transfer
-	4,  // 21: opentrade.rpc.history.ListTransfersRequest.scope:type_name -> opentrade.rpc.history.TransferScope
-	24, // 22: opentrade.rpc.history.ListTransfersResponse.transfers:type_name -> opentrade.rpc.history.Transfer
-	5,  // 23: opentrade.rpc.history.HistoryService.GetOrder:input_type -> opentrade.rpc.history.GetOrderRequest
-	7,  // 24: opentrade.rpc.history.HistoryService.ListOrders:input_type -> opentrade.rpc.history.ListOrdersRequest
-	10, // 25: opentrade.rpc.history.HistoryService.ListTrades:input_type -> opentrade.rpc.history.ListTradesRequest
-	13, // 26: opentrade.rpc.history.HistoryService.ListAccountLogs:input_type -> opentrade.rpc.history.ListAccountLogsRequest
-	15, // 27: opentrade.rpc.history.HistoryService.GetTrigger:input_type -> opentrade.rpc.history.GetTriggerRequest
-	17, // 28: opentrade.rpc.history.HistoryService.ListTriggers:input_type -> opentrade.rpc.history.ListTriggersRequest
-	20, // 29: opentrade.rpc.history.HistoryService.GetTransfer:input_type -> opentrade.rpc.history.GetTransferRequest
-	22, // 30: opentrade.rpc.history.HistoryService.ListTransfers:input_type -> opentrade.rpc.history.ListTransfersRequest
-	6,  // 31: opentrade.rpc.history.HistoryService.GetOrder:output_type -> opentrade.rpc.history.GetOrderResponse
-	8,  // 32: opentrade.rpc.history.HistoryService.ListOrders:output_type -> opentrade.rpc.history.ListOrdersResponse
-	11, // 33: opentrade.rpc.history.HistoryService.ListTrades:output_type -> opentrade.rpc.history.ListTradesResponse
-	14, // 34: opentrade.rpc.history.HistoryService.ListAccountLogs:output_type -> opentrade.rpc.history.ListAccountLogsResponse
-	16, // 35: opentrade.rpc.history.HistoryService.GetTrigger:output_type -> opentrade.rpc.history.GetTriggerResponse
-	18, // 36: opentrade.rpc.history.HistoryService.ListTriggers:output_type -> opentrade.rpc.history.ListTriggersResponse
-	21, // 37: opentrade.rpc.history.HistoryService.GetTransfer:output_type -> opentrade.rpc.history.GetTransferResponse
-	23, // 38: opentrade.rpc.history.HistoryService.ListTransfers:output_type -> opentrade.rpc.history.ListTransfersResponse
-	31, // [31:39] is the sub-list for method output_type
-	23, // [23:31] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	23, // 14: opentrade.rpc.history.ListTriggersRequest.statuses:type_name -> opentrade.rpc.trigger.TriggerStatus
+	18, // 15: opentrade.rpc.history.ListTriggersResponse.triggers:type_name -> opentrade.rpc.history.Trigger
+	20, // 16: opentrade.rpc.history.Trigger.side:type_name -> opentrade.event.Side
+	24, // 17: opentrade.rpc.history.Trigger.type:type_name -> opentrade.rpc.trigger.TriggerType
+	22, // 18: opentrade.rpc.history.Trigger.tif:type_name -> opentrade.event.TimeInForce
+	23, // 19: opentrade.rpc.history.Trigger.status:type_name -> opentrade.rpc.trigger.TriggerStatus
+	4,  // 20: opentrade.rpc.history.HistoryService.GetOrder:input_type -> opentrade.rpc.history.GetOrderRequest
+	6,  // 21: opentrade.rpc.history.HistoryService.ListOrders:input_type -> opentrade.rpc.history.ListOrdersRequest
+	9,  // 22: opentrade.rpc.history.HistoryService.ListTrades:input_type -> opentrade.rpc.history.ListTradesRequest
+	12, // 23: opentrade.rpc.history.HistoryService.ListAccountLogs:input_type -> opentrade.rpc.history.ListAccountLogsRequest
+	14, // 24: opentrade.rpc.history.HistoryService.GetTrigger:input_type -> opentrade.rpc.history.GetTriggerRequest
+	16, // 25: opentrade.rpc.history.HistoryService.ListTriggers:input_type -> opentrade.rpc.history.ListTriggersRequest
+	5,  // 26: opentrade.rpc.history.HistoryService.GetOrder:output_type -> opentrade.rpc.history.GetOrderResponse
+	7,  // 27: opentrade.rpc.history.HistoryService.ListOrders:output_type -> opentrade.rpc.history.ListOrdersResponse
+	10, // 28: opentrade.rpc.history.HistoryService.ListTrades:output_type -> opentrade.rpc.history.ListTradesResponse
+	13, // 29: opentrade.rpc.history.HistoryService.ListAccountLogs:output_type -> opentrade.rpc.history.ListAccountLogsResponse
+	15, // 30: opentrade.rpc.history.HistoryService.GetTrigger:output_type -> opentrade.rpc.history.GetTriggerResponse
+	17, // 31: opentrade.rpc.history.HistoryService.ListTriggers:output_type -> opentrade.rpc.history.ListTriggersResponse
+	26, // [26:32] is the sub-list for method output_type
+	20, // [20:26] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_rpc_history_history_proto_init() }
@@ -2402,8 +1899,8 @@ func file_rpc_history_history_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_history_history_proto_rawDesc), len(file_rpc_history_history_proto_rawDesc)),
-			NumEnums:      5,
-			NumMessages:   21,
+			NumEnums:      4,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

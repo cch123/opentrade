@@ -21,8 +21,6 @@ type History interface {
 	ListAccountLogs(ctx context.Context, in *historypb.ListAccountLogsRequest, opts ...grpc.CallOption) (*historypb.ListAccountLogsResponse, error)
 	GetTrigger(ctx context.Context, in *historypb.GetTriggerRequest, opts ...grpc.CallOption) (*historypb.GetTriggerResponse, error)
 	ListTriggers(ctx context.Context, in *historypb.ListTriggersRequest, opts ...grpc.CallOption) (*historypb.ListTriggersResponse, error)
-	GetTransfer(ctx context.Context, in *historypb.GetTransferRequest, opts ...grpc.CallOption) (*historypb.GetTransferResponse, error)
-	ListTransfers(ctx context.Context, in *historypb.ListTransfersRequest, opts ...grpc.CallOption) (*historypb.ListTransfersResponse, error)
 }
 
 // DialHistory opens a plaintext gRPC connection to the history service.

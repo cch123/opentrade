@@ -2,9 +2,10 @@
 //
 // Two pipelines, selectable via --pipelines:
 //
-//   - sql   (ADR-0008 / 0023 / 0028 / 0047 / 0057): consume
-//     trade-event + counter-journal + trigger-event +
-//     asset-journal and idempotently project onto MySQL.
+//   - sql   (ADR-0008 / 0023 / 0028 / 0047): consume trade-event +
+//     counter-journal + trigger-event and idempotently project onto
+//     MySQL. asset-service owns funding-wallet history directly
+//     (ADR-0065) so trade-dump no longer consumes asset-journal.
 //   - snap  (ADR-0061): consume counter-journal per vshard,
 //     maintain a ShadowEngine, and write per-vshard snapshots to
 //     a blob store (fs / s3). Counter recovery seeks to the
@@ -51,15 +52,13 @@ type Config struct {
 	// members: "sql", "snap". Empty slice errors in validate().
 	Pipelines []string
 
-	// -- SQL pipeline (ADR-0023 / 0028 / 0047 / 0057) --
-	TradeTopic       string
-	TradeGroup       string
-	JournalTopic     string
-	JournalGroup     string
+	// -- SQL pipeline (ADR-0023 / 0028 / 0047) --
+	TradeTopic   string
+	TradeGroup   string
+	JournalTopic string
+	JournalGroup string
 	TriggerTopic string
 	TriggerGroup string
-	AssetTopic       string
-	AssetGroup       string
 
 	MySQLDSN            string
 	MySQLMaxOpenConns   int
@@ -150,7 +149,6 @@ func main() {
 		tradeCons   *consumer.TradeConsumer
 		journalCons *consumer.JournalConsumer
 		condCons    *consumer.TriggerConsumer
-		assetCons   *consumer.AssetConsumer
 	)
 	if wantSQL {
 		mysqlWriter, err = writer.NewMySQL(writer.MySQLConfig{
@@ -202,22 +200,6 @@ func main() {
 				zap.String("topic", cfg.TriggerTopic),
 				zap.String("group", cfg.TriggerGroup))
 		}
-		if cfg.AssetTopic != "" {
-			assetCons, err = consumer.NewAsset(consumer.AssetConfig{
-				Brokers:  cfg.Brokers,
-				ClientID: cfg.InstanceID + "-asset",
-				GroupID:  cfg.AssetGroup,
-				Topic:    cfg.AssetTopic,
-			}, mysqlWriter, logger)
-			if err != nil {
-				logger.Fatal("asset consumer init", zap.Error(err))
-			}
-			defer assetCons.Close()
-			logger.Info("asset consumer enabled",
-				zap.String("topic", cfg.AssetTopic),
-				zap.String("group", cfg.AssetGroup))
-		}
-
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
@@ -239,16 +221,6 @@ func main() {
 				defer wg.Done()
 				if err := condCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
 					logger.Error("trigger consumer exited", zap.Error(err))
-					stop()
-				}
-			}()
-		}
-		if assetCons != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := assetCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
-					logger.Error("asset consumer exited", zap.Error(err))
 					stop()
 				}
 			}()
@@ -444,9 +416,6 @@ func main() {
 	if condCons != nil {
 		condCons.Close()
 	}
-	if assetCons != nil {
-		assetCons.Close()
-	}
 	if snapPipe != nil {
 		snapPipe.Close()
 	}
@@ -465,12 +434,11 @@ func hasPipeline(set []string, want string) bool {
 
 func parseFlags() Config {
 	cfg := Config{
-		InstanceID:        "trade-dump-0",
-		TradeTopic:        "trade-event",
-		JournalTopic:      "counter-journal",
-		TriggerTopic:  "trigger-event",
-		AssetTopic:        "asset-journal",
-		MySQLDSN:          "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
+		InstanceID:   "trade-dump-0",
+		TradeTopic:   "trade-event",
+		JournalTopic: "counter-journal",
+		TriggerTopic: "trigger-event",
+		MySQLDSN:     "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
 		MySQLMaxOpenConns: 16,
 		MySQLMaxIdleConns: 4,
 		MySQLConnMaxLife:  30 * time.Minute,
@@ -508,8 +476,6 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.JournalGroup, "journal-group", "", "counter-journal consumer group for sql pipeline (default trade-dump-journal-{instance-id})")
 	flag.StringVar(&cfg.TriggerTopic, "trigger-topic", cfg.TriggerTopic, "trigger-event topic name (empty disables; ADR-0047)")
 	flag.StringVar(&cfg.TriggerGroup, "trigger-group", "", "trigger-event consumer group (default trade-dump-trig-{instance-id})")
-	flag.StringVar(&cfg.AssetTopic, "asset-topic", cfg.AssetTopic, "asset-journal topic name (empty disables; ADR-0057)")
-	flag.StringVar(&cfg.AssetGroup, "asset-group", "", "asset-journal consumer group (default trade-dump-asset-{instance-id})")
 	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", cfg.MySQLDSN, "MySQL DSN")
 	flag.IntVar(&cfg.MySQLMaxOpenConns, "mysql-max-open", cfg.MySQLMaxOpenConns, "MySQL max open connections")
 	flag.IntVar(&cfg.MySQLMaxIdleConns, "mysql-max-idle", cfg.MySQLMaxIdleConns, "MySQL max idle connections")
@@ -555,9 +521,6 @@ func parseFlags() Config {
 	}
 	if cfg.TriggerGroup == "" {
 		cfg.TriggerGroup = "trade-dump-trig-" + cfg.InstanceID
-	}
-	if cfg.AssetGroup == "" {
-		cfg.AssetGroup = "trade-dump-asset-" + cfg.InstanceID
 	}
 	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
 		snapFmtStr = envFmt

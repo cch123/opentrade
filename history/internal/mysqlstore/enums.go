@@ -237,20 +237,6 @@ func InternalTriggerStatuses(external []condrpc.TriggerStatus) []int8 {
 	return out
 }
 
-// StatesForTransferScope expands a TransferScope to the set of
-// transferledger.State strings it covers. Used by the server layer to
-// fold scope → states before calling the store.
-func StatesForTransferScope(s historypb.TransferScope) []string {
-	switch s {
-	case historypb.TransferScope_TRANSFER_SCOPE_IN_FLIGHT:
-		return []string{"INIT", "DEBITED", "COMPENSATING"}
-	case historypb.TransferScope_TRANSFER_SCOPE_TERMINAL:
-		return []string{"COMPLETED", "FAILED", "COMPENSATED", "COMPENSATE_STUCK"}
-	}
-	// UNSPECIFIED and ALL both mean "no filter".
-	return nil
-}
-
 func rejectReasonToString(n int8) string {
 	switch eventpb.RejectReason(n) {
 	case eventpb.RejectReason_REJECT_REASON_UNSPECIFIED:

@@ -116,7 +116,7 @@
   │  counter-journal  (vshard 分区 ×256)│    │                        │
   │  order-event      (symbol 分区)     │    │                        │
   │  trade-event      (vshard 分区 ×256)│    │                        │
-  │  asset-journal    (user 分区)       │    │                        │
+  │  trigger-event    (user 分区)       │    │                        │
   │  market-data      (symbol 分区)     │    │                        │
   └─────┬──────────────────────────┬────┘    │                        │
         │ (per-symbol partition)   │         │                        │
@@ -714,8 +714,8 @@ opentrade/
 │   ├── go.mod
 │   ├── cmd/trade-dump/main.go        # --pipelines=sql,snap (默认同时跑)
 │   └── internal/
-│       ├── consumer/                 # sql pipeline: trade/journal/trigger/asset
-│       ├── writer/                   # MySQL 幂等写入 (ADR-0023/0028/0047/0057)
+│       ├── consumer/                 # sql pipeline: trade/journal/trigger
+│       ├── writer/                   # MySQL 幂等写入 (ADR-0023/0028/0047)
 │       └── snapshot/                 # snap pipeline (ADR-0061)
 │           ├── shadow/               # per-vshard ShadowEngine (单线程 Apply)
 │           └── pipeline/             # consumer + 触发 + async save

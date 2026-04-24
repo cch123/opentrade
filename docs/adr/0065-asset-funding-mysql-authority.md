@@ -276,8 +276,9 @@ asset-service 启动顺序：
 
 - 删除 asset-service 启动时 replay funding state 的生产路径。
 - 删除 asset-journal publisher 对 funding holder 的硬依赖。
+- 清理 trade-dump 对 `asset-journal` 的消费与投影表（`funding_accounts` / `funding_account_logs` / `transfers`）；transfer history 读路径改为 BFF 直连 `AssetService.ListTransfers` / `QueryTransfer`，`GET /v1/transfers` / `GET /v1/transfer/{id}` 改走 asset-service。
 - `asset/cmd/asset` 不再要求 Kafka brokers 才能启动 funding holder。
-- 已有 `asset-journal` proto / trade-dump projection 若无其他用途，可后续清理；本 ADR 不要求保留。
+- 已有 `asset-journal` proto / trade-dump projection 已清理（`api/event/asset_journal.proto`、`trade-dump/internal/consumer/asset*`、`writer/{mysql,projection}_asset*`、旧 `opentrade` schema 下的 `funding_accounts` / `funding_account_logs` / `transfers` 三张表）。
 
 ### M4: 查询与历史
 

@@ -17,6 +17,7 @@ type Asset interface {
 	Transfer(ctx context.Context, in *assetrpc.TransferRequest, opts ...grpc.CallOption) (*assetrpc.TransferResponse, error)
 	QueryFundingBalance(ctx context.Context, in *assetrpc.QueryFundingBalanceRequest, opts ...grpc.CallOption) (*assetrpc.QueryFundingBalanceResponse, error)
 	QueryTransfer(ctx context.Context, in *assetrpc.QueryTransferRequest, opts ...grpc.CallOption) (*assetrpc.QueryTransferResponse, error)
+	ListTransfers(ctx context.Context, in *assetrpc.ListTransfersRequest, opts ...grpc.CallOption) (*assetrpc.ListTransfersResponse, error)
 }
 
 // DialAsset opens a plaintext gRPC connection to asset-service. mTLS /

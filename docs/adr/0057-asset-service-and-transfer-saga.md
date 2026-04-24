@@ -1,9 +1,19 @@
 # ADR-0057: 资产服务（funding wallet）+ 跨子系统划转 Saga 协议
 
-- 状态: Accepted（M1-M6 全部落地，commits 20fd0c3 / c19af21 / faaab7a / b30f7d3 / ab343ef / 1f5dd8f / 4e58fc1）
+- 状态: **M5 被 [ADR-0065](./0065-asset-funding-mysql-authority.md) 替代**；其它里程碑仍 Accepted（M1-M4 / M6 落地 commits 20fd0c3 / c19af21 / faaab7a / b30f7d3 / ab343ef / 1f5dd8f / 4e58fc1）
 - 日期: 2026-04-20
 - 决策者: xargin, Claude
-- 相关 ADR: 0001（Kafka 作为事件权威源）、0004（counter-journal）、0005（Kafka 事务双写）、0011（Counter 统一 Transfer 接口）、0015（客户端幂等）、0018（Counter UserSequencer）、0028（trade-dump 投影）、0046（History 只读网关）、0048（双层 version）、0049（snapshot protobuf）
+- 相关 ADR: 0001（Kafka 作为事件权威源）、0004（counter-journal）、0005（Kafka 事务双写）、0011（Counter 统一 Transfer 接口）、0015（客户端幂等）、0018（Counter UserSequencer）、0028（trade-dump 投影）、0046（History 只读网关）、0048（双层 version）、0049（snapshot protobuf）、0065（funding wallet 以 MySQL 为权威源）
+
+## 更新说明（ADR-0065 替代 §M5）
+
+本 ADR 原定的 M5（asset-journal Kafka topic + trade-dump 投影 `funding_accounts` / `funding_account_logs` / `transfers` + history `ListTransfers` / `GetTransfer`）已被 [ADR-0065](./0065-asset-funding-mysql-authority.md) 整体推翻：
+
+- funding balance 权威源从"内存 + asset-journal replay"改为 MySQL（`opentrade_asset.funding_accounts` / `funding_mutations`）
+- asset-service **不再生产** `asset-journal`；相关 proto / consumer / writer / 投影表（旧 `opentrade.funding_accounts` / `funding_account_logs` / `transfers`）均已删除
+- transfer history 读路径改为 BFF 直连 asset-service：`GET /v1/transfers` → `AssetService.ListTransfers`（读 `transfer_ledger`），`GET /v1/transfer/{id}` → `QueryTransfer`（带 user_id guard）
+
+下文 M5 相关章节（"6. asset-journal Kafka topic" / "§Projection" / "§M5" 等）保留作为**历史决策记录**，读代码请以 ADR-0065 为准。
 
 ## 术语 (Glossary)
 
