@@ -107,17 +107,9 @@ func TestAdvancer_PublishesCheckpointAndAdvancesOffset(t *testing.T) {
 		}
 	}
 
-	// Wait until offset catches up to 103 (= last_offset+1).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if w.svc.Offsets()[42] == 103 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if got := w.svc.Offsets()[42]; got != 103 {
-		t.Fatalf("offset[42] = %d, want 103", got)
-	}
+	// Wait until the last enqueued TE's offset has been published.
+	waitForLastOffset(t, pub, 42, 102, 2*time.Second)
+
 	events := pub.Events()
 	if len(events) == 0 {
 		t.Fatal("no checkpoints emitted")
@@ -160,18 +152,10 @@ func TestAdvancer_CoalescesMultipleInflights(t *testing.T) {
 	}
 	signal <- struct{}{}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if w.svc.Offsets()[7] == 1005 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if got := w.svc.Offsets()[7]; got != 1005 {
-		t.Fatalf("offset[7] = %d, want 1005", got)
-	}
-	// Exactly 1 checkpoint expected: single signal drained all 5
-	// entries via one PopConsecutiveDone call (coalesce).
+	// Single signal must coalesce all five into one checkpoint at
+	// the last enqueued offset.
+	waitForLastOffset(t, pub, 7, 1004, 2*time.Second)
+
 	events := pub.Events()
 	if len(events) != 1 {
 		t.Fatalf("got %d checkpoints, want 1 (coalesced)", len(events))
@@ -181,12 +165,13 @@ func TestAdvancer_CoalescesMultipleInflights(t *testing.T) {
 	}
 }
 
-// TestAdvancer_PublishFailSkipsOffsetAdvance verifies that a Publish
-// error prevents offset advancement — the next PopConsecutiveDone is
-// already consumed (entry was removed), so retry happens when the
-// next signal arrives with a new completed TE. Here we verify the
-// single-failure case: offset does NOT advance for the failed TE.
-func TestAdvancer_PublishFailSkipsOffsetAdvance(t *testing.T) {
+// TestAdvancer_PublishFailSkipsCheckpoint verifies that a Publish
+// error prevents the failed TE from being checkpointed — the next
+// PopConsecutiveDone is already consumed (entry was removed), so
+// retry happens when the next signal arrives with a new completed TE.
+// Here we verify the single-failure case: the failed offset is not
+// republished even after the next TE succeeds.
+func TestAdvancer_PublishFailSkipsCheckpoint(t *testing.T) {
 	w := newAdvancerTestWorker(t, clustering.VShardID(3))
 	pending := newPendingList()
 	signal := make(chan struct{}, 4)
@@ -217,6 +202,8 @@ func TestAdvancer_PublishFailSkipsOffsetAdvance(t *testing.T) {
 
 	waitForCallCount(t, pub, 2, time.Second)
 	// Only the second publish succeeded (first was injected-fail).
+	// The failed offset 500 is not republished — operators notice via
+	// the logged error + monitor.
 	events := pub.Events()
 	if len(events) != 1 {
 		t.Fatalf("got %d successful events, want 1", len(events))
@@ -224,12 +211,26 @@ func TestAdvancer_PublishFailSkipsOffsetAdvance(t *testing.T) {
 	if events[0].TeOffset != 501 {
 		t.Fatalf("successful event offset = %d, want 501", events[0].TeOffset)
 	}
-	// Offset map reflects 502 (= 501+1). 500 was skipped due to publish
-	// failure; operators notice via the logged error + monitor.
-	offs := w.svc.Offsets()
-	if offs[3] != 502 {
-		t.Fatalf("offset[3] = %d, want 502", offs[3])
+}
+
+// waitForLastOffset polls the mock publisher's events until the most
+// recent one carries (partition, offset), or fails the test on
+// timeout. Avoids flake from advancer goroutine scheduling.
+func waitForLastOffset(t *testing.T, pub *mockCheckpointPub, partition int32, offset int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		events := pub.Events()
+		if len(events) > 0 {
+			last := events[len(events)-1]
+			if last.TePartition == partition && last.TeOffset == offset {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
+	events := pub.Events()
+	t.Fatalf("never observed (partition=%d, offset=%d) within %v; events=%+v", partition, offset, timeout, events)
 }
 
 // waitForCallCount polls the mock publisher's callNum until it reaches

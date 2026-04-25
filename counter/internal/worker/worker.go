@@ -400,7 +400,6 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	if w.cfg.SymbolLookup != nil {
 		svc.SetSymbolLookup(w.cfg.SymbolLookup)
 	}
-	svc.SetOffsets(offsets)
 
 	// Publish the live components BEFORE opening the consumer — Ready
 	// signals "Service is safe to call" so a dispatcher may start
@@ -507,27 +506,19 @@ type checkpointPublisher interface {
 }
 
 // runAdvancer consumes pendingList signals, pops the consecutive-done
-// prefix, publishes a TECheckpointEvent for the new watermark to
-// counter-journal, and advances the local offset map via
-// Service.AdvanceOffset so the next snapshot picks up the up-to-date
-// te_watermark.
+// prefix, and publishes a TECheckpointEvent for the new watermark to
+// counter-journal so trade-dump's shadow pipeline (the sole snapshot
+// producer post ADR-0061) records it.
 //
-// ADR-0060 §1.4: this is the single goroutine responsible for offset
-// advancement on the async path. The TECheckpointEvent publish fires
-// BEFORE AdvanceOffset so trade-dump's shadow pipeline observes the
-// checkpoint in counter-journal partition order (after every business
-// event whose offset ≤ watermark) — the TxnProducer.mu lock
-// serialises the publish against per-user drain goroutines' publishes.
+// ADR-0060 §1.4: this is the single goroutine responsible for the
+// watermark on the async path. The TxnProducer.mu lock serialises the
+// publish against per-user drain goroutines' publishes so the shadow
+// pipeline observes the checkpoint in counter-journal partition order
+// (after every business event whose offset ≤ watermark).
 //
-// Publish failures log + skip AdvanceOffset for this round: next
-// ticker we retry from the same pendingList head (entries are
-// idempotent, PopConsecutiveDone isn't called again until the next
-// signal).
-//
-// The synchronous HandleTradeRecord path (legacy / tests) still
-// advances via Service.HandleTradeRecord directly and does not
-// publish checkpoints (only the async path does — pre-ADR-0060
-// consumers never expected them).
+// Publish failures log + skip for this round: next ticker we retry
+// from the same pendingList head (entries are idempotent;
+// PopConsecutiveDone isn't called again until the next signal).
 func (w *VShardWorker) runAdvancer(ctx context.Context, pending *pendingList, signal <-chan struct{}) {
 	w.runAdvancerWithPublisher(ctx, pending, signal, w.producer)
 }
@@ -558,8 +549,7 @@ func (w *VShardWorker) runAdvancerWithPublisher(
 }
 
 // emitCheckpoint publishes a TECheckpointEvent for (partition,
-// maxOffset) and, on success, advances the local offset map. On
-// publish failure we log and return without advancing — the next
+// maxOffset). On publish failure we log and return — the next
 // pendingList pop will retry (pendingList entries are already
 // removed; retry happens on new signal for the same or next offset).
 func (w *VShardWorker) emitCheckpoint(
@@ -587,8 +577,7 @@ func (w *VShardWorker) emitCheckpoint(
 		return
 	}
 	w.cfg.Metrics.RecordCheckpointPublish(int32(w.cfg.VShardID), true)
-	w.svc.AdvanceOffset(partition, maxOffset+1)
-	// Refresh pendingList gauge on each successful advance — the
+	// Refresh pendingList gauge on each successful publish — the
 	// gauge's denominator is the same list this advancer just
 	// shortened, so post-pop is the natural sampling point. Using
 	// the injected pending reference keeps test harnesses that

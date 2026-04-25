@@ -12,7 +12,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"go.uber.org/zap"
 
@@ -90,13 +89,6 @@ type Service struct {
 	// (no filter applied). Wired by main via SetSymbolLookup after the
 	// etcd symbol-config watcher starts.
 	symbolLookup SymbolLookup
-
-	// offsets records the trade-event topic's next-to-consume offset per
-	// partition (ADR-0048). Advanced from HandleTradeRecord after the
-	// handler has mutated state, read by snapshot.Capture; guarded by
-	// offsetsMu so snapshot reads don't tear against a concurrent consumer.
-	offsetsMu sync.Mutex
-	offsets   map[int32]int64
 }
 
 // New wires a Service. All dependencies must be non-nil. txn / idgen may be
@@ -127,80 +119,25 @@ func (s *Service) SetSymbolLookup(fn SymbolLookup) {
 	s.symbolLookup = fn
 }
 
-// Offsets returns a copy of the per-partition trade-event offsets. Safe to
-// call concurrently with the consumer.
-func (s *Service) Offsets() map[int32]int64 {
-	s.offsetsMu.Lock()
-	defer s.offsetsMu.Unlock()
-	if len(s.offsets) == 0 {
-		return nil
-	}
-	out := make(map[int32]int64, len(s.offsets))
-	for p, o := range s.offsets {
-		out[p] = o
-	}
-	return out
-}
-
-// SetOffsets replaces the per-partition trade-event offsets. Called from
-// main after snapshot.Restore; must not run concurrently with the consumer.
-func (s *Service) SetOffsets(m map[int32]int64) {
-	s.offsetsMu.Lock()
-	defer s.offsetsMu.Unlock()
-	if len(m) == 0 {
-		s.offsets = nil
-		return
-	}
-	s.offsets = make(map[int32]int64, len(m))
-	for p, o := range m {
-		s.offsets[p] = o
-	}
-}
-
-// AdvanceOffset bumps partition p to next (= Kafka record offset + 1).
-// Monotonic: earlier records that arrive out-of-order (shouldn't happen for
-// a single consumer per partition, but guard anyway) do not rewind.
+// HandleTradeRecord is the Kafka-aware sibling of HandleTradeEvent.
+// Implements journal.TradeHandler for the synchronous consumer path
+// used by tests and the pre-ADR-0060 loop; production runs the async
+// path through HandleTradeRecordAsync.
 //
-// Public (ADR-0060): the VShardWorker ordered advancer calls this after
-// PopConsecutiveDone pops a watermark-ready TE so the next snapshot
-// picks up the correct offset. The synchronous HandleTradeRecord path
-// also calls this directly on success.
-func (s *Service) AdvanceOffset(p int32, next int64) {
-	s.offsetsMu.Lock()
-	defer s.offsetsMu.Unlock()
-	if s.offsets == nil {
-		s.offsets = make(map[int32]int64)
-	}
-	if next > s.offsets[p] {
-		s.offsets[p] = next
-	}
-}
-
-// HandleTradeRecord is the Kafka-aware sibling of HandleTradeEvent. On
-// handler success the record's offset is recorded so the next snapshot will
-// persist it (ADR-0048). Failures do NOT advance the offset — the consumer
-// will re-poll the same record on restart.
-//
-// Legacy synchronous path: HandleTradeEvent blocks on per-user
-// Execute. Used by tests and the pre-ADR-0060 consumer loop.
-// Production code on ADR-0060 uses HandleTradeRecordAsync instead and
-// advances the offset from the ordered advancer, not here.
-func (s *Service) HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent, partition int32, offset int64) error {
-	if err := s.HandleTradeEvent(ctx, evt); err != nil {
-		return err
-	}
-	s.AdvanceOffset(partition, offset+1)
-	return nil
+// partition / offset are accepted to satisfy the interface; offset
+// tracking now lives entirely in trade-dump's shadow engine
+// (ADR-0061), which is the sole snapshot producer.
+func (s *Service) HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent, _ int32, _ int64) error {
+	return s.HandleTradeEvent(ctx, evt)
 }
 
 // HandleTradeRecordAsync is the ADR-0060 fire-and-forget entry point
 // for the VShardWorker consumer loop. Delegates to HandleTradeEventAsync
 // — the callback contract is defined there.
 //
-// The Kafka offset is NOT stamped by this method. The advancer is the
-// offset authority on the async path: it reads pendingList's watermark
-// and both publishes TECheckpointEvent AND advances the local offset
-// map via Service.advanceOffset.
+// The Kafka offset is NOT stamped by this method. The advancer
+// publishes TECheckpointEvent so trade-dump's shadow pipeline (the
+// sole snapshot producer post ADR-0061) records the watermark.
 func (s *Service) HandleTradeRecordAsync(ctx context.Context, evt *eventpb.TradeEvent, onCount func(int32), cb func(err error)) {
 	s.HandleTradeEventAsync(ctx, evt, onCount, cb)
 }
