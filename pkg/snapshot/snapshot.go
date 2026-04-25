@@ -48,8 +48,8 @@ func (f Format) String() string {
 	}
 }
 
-// ext returns the file extension (including the leading dot).
-func (f Format) ext() string {
+// Ext returns the file extension (including the leading dot).
+func (f Format) Ext() string {
 	switch f {
 	case FormatProto:
 		return ".pb"
@@ -433,7 +433,7 @@ func OffsetsSliceToMap(s []KafkaOffset) map[int32]int64 {
 // BlobStore I/O (ADR-0058)
 // -----------------------------------------------------------------------------
 
-// Save encodes snap and hands the blob to store under `baseKey + format.ext()`.
+// Save encodes snap and hands the blob to store under `baseKey + format.Ext()`.
 // baseKey is the filename stem without extension (e.g. "shard-0"); the
 // format's extension is appended here so the store layer stays unaware of
 // encoding.
@@ -442,8 +442,8 @@ func Save(ctx context.Context, store BlobStore, baseKey string, snap *ShardSnaps
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", format, err)
 	}
-	if err := store.Put(ctx, baseKey+format.ext(), data); err != nil {
-		return fmt.Errorf("put %s: %w", baseKey+format.ext(), err)
+	if err := store.Put(ctx, baseKey+format.Ext(), data); err != nil {
+		return fmt.Errorf("put %s: %w", baseKey+format.Ext(), err)
 	}
 	return nil
 }
@@ -454,7 +454,7 @@ func Save(ctx context.Context, store BlobStore, baseKey string, snap *ShardSnaps
 func Load(ctx context.Context, store BlobStore, baseKey string) (*ShardSnapshot, error) {
 	// Probe in fallback order (ADR-0049): proto → json.
 	for _, format := range []Format{FormatProto, FormatJSON} {
-		key := baseKey + format.ext()
+		key := baseKey + format.Ext()
 		data, err := store.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
