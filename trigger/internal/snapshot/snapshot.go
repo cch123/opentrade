@@ -20,62 +20,21 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
-	"github.com/xargin/opentrade/trigger/internal/engine"
 	"github.com/xargin/opentrade/pkg/dec"
+	pkgsnapshot "github.com/xargin/opentrade/pkg/snapshot"
+	"github.com/xargin/opentrade/trigger/internal/engine"
 )
-
-// Format names the on-disk encoding (ADR-0049).
-type Format int
-
-const (
-	FormatProto Format = iota
-	FormatJSON
-)
-
-func (f Format) String() string {
-	switch f {
-	case FormatProto:
-		return "proto"
-	case FormatJSON:
-		return "json"
-	default:
-		return "unknown"
-	}
-}
-
-func (f Format) ext() string {
-	switch f {
-	case FormatProto:
-		return ".pb"
-	case FormatJSON:
-		return ".json"
-	default:
-		return ""
-	}
-}
-
-// ParseFormat maps a CLI token to Format.
-func ParseFormat(s string) (Format, error) {
-	switch s {
-	case "proto", "pb", "protobuf":
-		return FormatProto, nil
-	case "json":
-		return FormatJSON, nil
-	default:
-		return 0, fmt.Errorf("snapshot: unknown format %q (want proto|json)", s)
-	}
-}
 
 // Version of the on-disk format.
 const Version = 1
 
 // Snapshot is the root on-disk document.
 type Snapshot struct {
-	Version   int               `json:"version"`
-	TakenAtMs int64             `json:"taken_at_ms"`
-	Offsets   map[int32]int64   `json:"offsets,omitempty"`
-	Pending   []TriggerSnap `json:"pending,omitempty"`
-	Terminals []TriggerSnap `json:"terminals,omitempty"`
+	Version   int             `json:"version"`
+	TakenAtMs int64           `json:"taken_at_ms"`
+	Offsets   map[int32]int64 `json:"offsets,omitempty"`
+	Pending   []TriggerSnap   `json:"pending,omitempty"`
+	Terminals []TriggerSnap   `json:"terminals,omitempty"`
 	// OCOByClient maps client-supplied OCO idempotency keys to their
 	// engine-assigned group ids. Restored alongside pending/terminals so
 	// PlaceOCO dedup survives restart (ADR-0044).
@@ -85,24 +44,24 @@ type Snapshot struct {
 // TriggerSnap is the persisted shape of one trigger record. Stored
 // as strings so a manual `jq` inspection is legible.
 type TriggerSnap struct {
-	ID            uint64 `json:"id"`
-	ClientTriggerID  string `json:"client_trigger_id,omitempty"`
-	UserID        string `json:"user_id"`
-	Symbol        string `json:"symbol"`
-	Side          uint8  `json:"side"`
-	Type          uint8  `json:"type"`
-	StopPrice     string `json:"stop_price"`
-	LimitPrice    string `json:"limit_price,omitempty"`
-	Qty           string `json:"qty,omitempty"`
-	QuoteQty      string `json:"quote_qty,omitempty"`
-	TIF           uint8  `json:"tif,omitempty"`
-	Status        uint8  `json:"status"`
-	CreatedAtMs   int64  `json:"created_at_ms"`
-	TriggeredAtMs int64  `json:"triggered_at_ms,omitempty"`
-	PlacedOrderID uint64 `json:"placed_order_id,omitempty"`
-	RejectReason  string `json:"reject_reason,omitempty"`
-	ExpiresAtMs   int64  `json:"expires_at_ms,omitempty"` // ADR-0043
-	OCOGroupID    string `json:"oco_group_id,omitempty"`  // ADR-0044
+	ID              uint64 `json:"id"`
+	ClientTriggerID string `json:"client_trigger_id,omitempty"`
+	UserID          string `json:"user_id"`
+	Symbol          string `json:"symbol"`
+	Side            uint8  `json:"side"`
+	Type            uint8  `json:"type"`
+	StopPrice       string `json:"stop_price"`
+	LimitPrice      string `json:"limit_price,omitempty"`
+	Qty             string `json:"qty,omitempty"`
+	QuoteQty        string `json:"quote_qty,omitempty"`
+	TIF             uint8  `json:"tif,omitempty"`
+	Status          uint8  `json:"status"`
+	CreatedAtMs     int64  `json:"created_at_ms"`
+	TriggeredAtMs   int64  `json:"triggered_at_ms,omitempty"`
+	PlacedOrderID   uint64 `json:"placed_order_id,omitempty"`
+	RejectReason    string `json:"reject_reason,omitempty"`
+	ExpiresAtMs     int64  `json:"expires_at_ms,omitempty"` // ADR-0043
+	OCOGroupID      string `json:"oco_group_id,omitempty"`  // ADR-0044
 	// Trailing-stop state (ADR-0045).
 	TrailingDeltaBps  int32  `json:"trailing_delta_bps,omitempty"`
 	ActivationPrice   string `json:"activation_price,omitempty"`
@@ -149,7 +108,7 @@ func Restore(eng *engine.Engine, snap *Snapshot) error {
 
 // Save writes snap to disk atomically (ADR-0049). basePath has no extension;
 // Save appends `.pb` / `.json` per format.
-func Save(basePath string, snap *Snapshot, format Format) error {
+func Save(basePath string, snap *Snapshot, format pkgsnapshot.Format) error {
 	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
@@ -157,7 +116,7 @@ func Save(basePath string, snap *Snapshot, format Format) error {
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", format, err)
 	}
-	path := basePath + format.ext()
+	path := basePath + format.Ext()
 	tmp := path + ".tmp"
 	return writeAtomic(tmp, path, data)
 }
@@ -165,8 +124,8 @@ func Save(basePath string, snap *Snapshot, format Format) error {
 // Load reads a snapshot from disk. Probes .pb first, then .json. Missing
 // both files → (nil, nil) so callers can treat absence as cold start.
 func Load(basePath string) (*Snapshot, error) {
-	for _, format := range []Format{FormatProto, FormatJSON} {
-		path := basePath + format.ext()
+	for _, format := range []pkgsnapshot.Format{pkgsnapshot.FormatProto, pkgsnapshot.FormatJSON} {
+		path := basePath + format.Ext()
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -212,26 +171,26 @@ func writeAtomic(tmp, path string, data []byte) error {
 	return nil
 }
 
-func encode(snap *Snapshot, format Format) ([]byte, error) {
+func encode(snap *Snapshot, format pkgsnapshot.Format) ([]byte, error) {
 	switch format {
-	case FormatProto:
+	case pkgsnapshot.FormatProto:
 		return proto.Marshal(toProto(snap))
-	case FormatJSON:
+	case pkgsnapshot.FormatJSON:
 		return json.MarshalIndent(snap, "", "  ")
 	default:
 		return nil, fmt.Errorf("snapshot: unknown format %d", format)
 	}
 }
 
-func decode(data []byte, format Format) (*Snapshot, error) {
+func decode(data []byte, format pkgsnapshot.Format) (*Snapshot, error) {
 	switch format {
-	case FormatProto:
+	case pkgsnapshot.FormatProto:
 		var pb snapshotpb.TriggerSnapshot
 		if err := proto.Unmarshal(data, &pb); err != nil {
 			return nil, err
 		}
 		return fromProto(&pb), nil
-	case FormatJSON:
+	case pkgsnapshot.FormatJSON:
 		var snap Snapshot
 		if err := json.Unmarshal(data, &snap); err != nil {
 			return nil, err
@@ -274,7 +233,7 @@ func toProto(s *Snapshot) *snapshotpb.TriggerSnapshot {
 func recordToProto(c *TriggerSnap) *snapshotpb.TriggerRecord {
 	return &snapshotpb.TriggerRecord{
 		Id:                c.ID,
-		ClientTriggerId:      c.ClientTriggerID,
+		ClientTriggerId:   c.ClientTriggerID,
 		UserId:            c.UserID,
 		Symbol:            c.Symbol,
 		Side:              uint32(c.Side),
@@ -326,7 +285,7 @@ func fromProto(pb *snapshotpb.TriggerSnapshot) *Snapshot {
 func recordFromProto(r *snapshotpb.TriggerRecord) TriggerSnap {
 	return TriggerSnap{
 		ID:                r.Id,
-		ClientTriggerID:      r.ClientTriggerId,
+		ClientTriggerID:   r.ClientTriggerId,
 		UserID:            r.UserId,
 		Symbol:            r.Symbol,
 		Side:              uint8(r.Side),
@@ -362,7 +321,7 @@ func toSnapSlice(in []*engine.Trigger) []TriggerSnap {
 	for i, c := range in {
 		out[i] = TriggerSnap{
 			ID:                c.ID,
-			ClientTriggerID:      c.ClientTriggerID,
+			ClientTriggerID:   c.ClientTriggerID,
 			UserID:            c.UserID,
 			Symbol:            c.Symbol,
 			Side:              uint8(c.Side),
@@ -420,7 +379,7 @@ func fromSnapSlice(in []TriggerSnap) ([]*engine.Trigger, error) {
 		}
 		out = append(out, &engine.Trigger{
 			ID:                s.ID,
-			ClientTriggerID:      s.ClientTriggerID,
+			ClientTriggerID:   s.ClientTriggerID,
 			UserID:            s.UserID,
 			Symbol:            s.Symbol,
 			Side:              eventpb.Side(s.Side),

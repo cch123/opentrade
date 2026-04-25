@@ -10,8 +10,9 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
+	pkgsnapshot "github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/trigger/internal/engine"
 )
 
@@ -33,14 +34,14 @@ func newEngine() *engine.Engine {
 }
 
 func TestSaveLoad_RoundTrip_Proto(t *testing.T) {
-	testSaveLoadRoundTrip(t, FormatProto)
+	testSaveLoadRoundTrip(t, pkgsnapshot.FormatProto)
 }
 
 func TestSaveLoad_RoundTrip_JSON(t *testing.T) {
-	testSaveLoadRoundTrip(t, FormatJSON)
+	testSaveLoadRoundTrip(t, pkgsnapshot.FormatJSON)
 }
 
-func testSaveLoadRoundTrip(t *testing.T, format Format) {
+func testSaveLoadRoundTrip(t *testing.T, format pkgsnapshot.Format) {
 	src := newEngine()
 	id1, _, _, _ := src.Place(context.Background(), &condrpc.PlaceTriggerRequest{
 		UserId:    "u1",
@@ -107,7 +108,7 @@ func TestLoad_MissingFileReturnsNil(t *testing.T) {
 
 func TestLoad_VersionMismatch(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "trigger")
-	if err := Save(base, &Snapshot{Version: Version + 1}, FormatProto); err != nil {
+	if err := Save(base, &Snapshot{Version: Version + 1}, pkgsnapshot.FormatProto); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(base); err == nil {
@@ -117,7 +118,7 @@ func TestLoad_VersionMismatch(t *testing.T) {
 
 func TestSave_AtomicRename(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "trigger")
-	if err := Save(base, &Snapshot{Version: Version}, FormatProto); err != nil {
+	if err := Save(base, &Snapshot{Version: Version}, pkgsnapshot.FormatProto); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(base + ".pb.tmp"); !os.IsNotExist(err) {
@@ -129,7 +130,7 @@ func TestSave_AtomicRename(t *testing.T) {
 // disk, Load still returns it (ADR-0049 probe order .pb → .json).
 func TestLoad_JSONOnlyMigration(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "trigger")
-	if err := Save(base, &Snapshot{Version: Version, TakenAtMs: 7}, FormatJSON); err != nil {
+	if err := Save(base, &Snapshot{Version: Version, TakenAtMs: 7}, pkgsnapshot.FormatJSON); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := Load(base)

@@ -30,8 +30,12 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
+	"github.com/xargin/opentrade/pkg/election"
+	"github.com/xargin/opentrade/pkg/idgen"
+	"github.com/xargin/opentrade/pkg/logx"
+	pkgsnapshot "github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/trigger/internal/consumer"
 	"github.com/xargin/opentrade/trigger/internal/counterclient"
 	"github.com/xargin/opentrade/trigger/internal/engine"
@@ -39,9 +43,6 @@ import (
 	"github.com/xargin/opentrade/trigger/internal/server"
 	"github.com/xargin/opentrade/trigger/internal/service"
 	"github.com/xargin/opentrade/trigger/internal/snapshot"
-	"github.com/xargin/opentrade/pkg/election"
-	"github.com/xargin/opentrade/pkg/idgen"
-	"github.com/xargin/opentrade/pkg/logx"
 )
 
 type Config struct {
@@ -53,7 +54,7 @@ type Config struct {
 	CounterShards        []string
 	SnapshotDir          string
 	SnapshotInterval     time.Duration
-	SnapshotFormat       snapshot.Format // ADR-0049
+	SnapshotFormat       pkgsnapshot.Format // ADR-0049
 	TerminalHistoryLimit int
 	// ExpirySweepInterval tunes how often the primary scans pending
 	// triggers for expired ones (ADR-0043). 0 disables.
@@ -220,7 +221,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 
 	eng := engine.New(engine.Config{
-		TerminalHistoryLimit:              cfg.TerminalHistoryLimit,
+		TerminalHistoryLimit:          cfg.TerminalHistoryLimit,
 		DefaultMaxActiveTriggerOrders: cfg.DefaultMaxActiveTriggerOrders,
 		// SymbolLookup left nil for MVP — only the default cap applies.
 		// Per-symbol override via etcd SymbolConfig is backlog (see
@@ -437,22 +438,22 @@ func dialCounterShards(ctx context.Context, endpoints []string) ([]*grpc.ClientC
 
 func parseFlags() Config {
 	cfg := Config{
-		InstanceID:           "trigger-0",
-		GRPCAddr:             ":8082",
-		MarketTopic:          "market-data",
-		SnapshotDir:          "./data/trigger",
-		SnapshotInterval:     30 * time.Second,
-		SnapshotFormat:       snapshot.FormatProto, // ADR-0049
-		TerminalHistoryLimit:              1000,
-		ExpirySweepInterval:               5 * time.Second,
-		IDGenShard:                        900, // deliberately out of counter's 0..99 range
-		HAMode:                            "disabled",
-		LeaseTTL:                          10,
-		CampaignBackoff:                   2 * time.Second,
+		InstanceID:                    "trigger-0",
+		GRPCAddr:                      ":8082",
+		MarketTopic:                   "market-data",
+		SnapshotDir:                   "./data/trigger",
+		SnapshotInterval:              30 * time.Second,
+		SnapshotFormat:                pkgsnapshot.FormatProto, // ADR-0049
+		TerminalHistoryLimit:          1000,
+		ExpirySweepInterval:           5 * time.Second,
+		IDGenShard:                    900, // deliberately out of counter's 0..99 range
+		HAMode:                        "disabled",
+		LeaseTTL:                      10,
+		CampaignBackoff:               2 * time.Second,
 		DefaultMaxActiveTriggerOrders: 10, // ADR-0054
-		EtcdSymbolPrefix:                  "",
-		Env:                               "dev",
-		LogLevel:                          "info",
+		EtcdSymbolPrefix:              "",
+		Env:                           "dev",
+		LogLevel:                      "info",
 	}
 	var brokersStr, shardsStr, etcdStr, snapshotFormatStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (grpc client id / default group suffix)")
@@ -490,7 +491,7 @@ func parseFlags() Config {
 		snapshotFormatStr = envFmt
 	}
 	if snapshotFormatStr != "" {
-		f, err := snapshot.ParseFormat(snapshotFormatStr)
+		f, err := pkgsnapshot.ParseFormat(snapshotFormatStr)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
