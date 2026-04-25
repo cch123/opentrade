@@ -133,56 +133,102 @@ return rankedPositions[length - 1];
 
 发现 quorum 跨过新位置就 commit、广播 commitPosition、扫积压请求回 client。**没有 wait/notify、没有 callback、没有 future**——这些机制本身的延迟（µs 级线程唤醒）在 µs 级目标下都太贵。
 
-### 4.4 数据流时序图（Aeron Cluster）
+### 4.4 完整数据流时序图（含 mmap / driver / archive 落点）
+
+下面这张图把 Leader 视角的完整 round-trip 全画出来，包括跨进程 mmap、UDP 传输、Archive 录制、follower 端两路并行 poll：
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant L as Leader<br/>(单线程 busy-spin)
-    participant LA as Leader Archive
-    participant T as Aeron Log<br/>Publication
-    participant F as Follower<br/>(单线程 busy-spin)
-    participant FA as Follower Archive
+    participant LC as Leader<br/>Cluster JVM
+    participant LMM as Leader mmap<br/>log-pub &<br/>consensus-img
+    participant LD as Leader<br/>Aeron Driver<br/>(独立进程)
+    participant N as UDP<br/>(网线/光纤)
+    participant FD as Follower<br/>Aeron Driver<br/>(独立进程)
+    participant FMM as Follower mmap<br/>log-img &<br/>consensus-pub
+    participant FAR as Follower<br/>Archive Recorder
+    participant FA as Follower Archive<br/>(recording + counter)
+    participant FC as Follower<br/>Cluster JVM
 
-    Note over L: ─── duty cycle iter N ───
-    C->>L: order request
-    L->>LA: append entry (offset=10000)
-    L->>T: publish entry
-    Note over L: ⚠ 不等 ACK，继续下一轮
+    Note over LC: ━━━ leader duty cycle iter N ━━━
+    LC->>LMM: ① 写 frame 到 log-pub<br/>(CAS tail)，~100ns
+    Note over LC: ⚠ 不等 ACK，进入下一轮 duty cycle
 
-    par 异步，互不阻塞
-        T->>F: deliver entry
-        F->>FA: append (offset=10000)
-        Note over F: ─── duty cycle iter M ───
-        F->>F: appendPosition.get() = 10000
-        F->>L: AppendPosition(pos=10000)
-    and
-        Note over L: ─── duty cycle iter N+1 ───
-        L->>L: updateLeaderPosition()<br/>算 quorum: 单成员，still 0
-        Note over L: 没动，继续下一轮
-        Note over L: ─── duty cycle iter N+2 ───
-        L->>L: 同上
+    rect rgba(200,230,255,0.25)
+        Note over LMM,FMM: 数据下行：log entry → UDP → 落到 follower mmap
+        LD->>LMM: ② driver poll log-pub<br/>(共享 mmap 直接读)
+        LD->>N: ③ UDP send (kernel bypass)
+        N->>FD: ④ UDP recv
+        FD->>FMM: ⑤ 写 frame 到 log-img<br/>(CAS tail)
     end
 
-    Note over L: ─── duty cycle iter N+k ───
-    L->>L: consensusAdapter.poll()<br/>收到 AppendPosition(10000)
-    L->>L: member[F].logPosition = 10000<br/>(纯字段赋值)
-    L->>L: updateLeaderPosition()<br/>quorumPosition() 排序 [10000, 10000, 0]<br/>取第 2 高 = 10000
-    L->>L: 10000 > prevCommit → commit!
-    L->>T: publishCommitPosition(10000)
-    L->>L: sweepUncommittedEntriesTo(10000)<br/>→ ClusteredService.onMessage()<br/>→ 撮合逻辑
-    L->>C: order response
+    rect rgba(220,255,220,0.25)
+        Note over FMM,FC: follower 上两个 poller 并行消费同一块 mmap
+        par 持久化路径
+            FAR->>FMM: ⑥a recorder poll
+            FAR->>FA: ⑦a 写 recording 文件
+            FAR->>FA: ⑧a 推进 RecordingPos counter
+        and 共识/业务路径
+            Note over FC: ━━━ follower duty cycle iter M ━━━
+            FC->>FMM: ⑥b logAdapter.poll()<br/>(读同一块 mmap)
+            FC->>FC: ⑦b 累积位置 / 待 commit 后 apply
+        end
+    end
 
-    Note over L: ─── duty cycle iter N+k+1 ───
-    L->>L: 继续 poll，等下一个请求...
+    Note over FC: 同一 duty cycle 末尾
+    FC->>FA: ⑨ appendPosition.get()<br/>读 RecordingPos counter
+    FC->>FMM: ⑩ 写 AppendPosition msg<br/>到 consensus-pub mmap
+
+    rect rgba(255,230,200,0.25)
+        Note over LMM,FMM: 控制面上行：AppendPosition → UDP → 回到 leader mmap
+        FD->>FMM: ⑪ driver poll consensus-pub
+        FD->>N: ⑫ UDP send
+        N->>LD: ⑬ UDP recv
+        LD->>LMM: ⑭ 写 AppendPosition<br/>到 consensus-img
+    end
+
+    Note over LC: ━━━ leader duty cycle iter N+k ━━━
+    LC->>LMM: ⑮ consensusAdapter.poll()<br/>读到 AppendPosition
+    LC->>LC: ⑯ member[F].logPosition = X<br/>(纯字段赋值，~10ns)
+    LC->>LC: ⑰ updateLeaderPosition()<br/>quorumPosition() 排序<br/>quorum 前进 → commit!
+    LC->>LMM: ⑱ publishCommitPosition<br/>(再走一次下行通知 follower)
+    LC->>LC: ⑲ sweepUncommittedEntriesTo()<br/>→ ClusteredService.onMessage()<br/>→ 回 client
 ```
 
-要点：
+### 4.4.1 数据落点说明
 
-- **step 4 "不等 ACK"** 是和传统实现最大的区别。leader 把 entry 推到 publication 后**直接进入下一轮 duty cycle**。
-- **par 块**表达"两个流程并行各自轮询"——transport 异步投递 + follower 自己 duty cycle 报位置回来；leader 在这段时间里一直在转 duty cycle，每轮都算 quorum，只是 quorum 没动。
-- **step 11-15** commit 触发是"轮询发现"，不是"事件唤醒"——leader 不是被 follower 的消息唤醒的，是它**正常进入下一轮 duty cycle**，在 `consensusAdapter.poll()` 这一步主动读到了。
+| 位置 | 介质 | 何时进入 | 谁能读 |
+|---|---|---|---|
+| NIC ring buffer | NIC DMA 区 | UDP 包到达 | driver |
+| **mmap LogBuffer** | `/dev/shm/aeron-<user>/...`（tmpfs，物理 RAM） | Driver 写入 | driver、cluster、archive recorder（同机所有进程） |
+| Archive recording | 磁盘文件（segment 切片） | Recorder 异步写入 | archive client、catchup、replay |
+| `RecordingPos` counter | mmap 共享 counters file | Recorder 推进 | follower cluster 通过 `appendPosition.get()` 读 |
+| ClusteredService 状态 | JVM 堆 / off-heap | logAdapter 触发 apply | 业务代码 |
+
+**关键工程事实**：UDP 数据**不进 JVM 堆**，落到一块 cluster 进程和 driver 进程**共享的 mmap 文件**上。三个 poller（driver、archive recorder、cluster logAdapter）各自维护 read position，从同一块 mmap 上独立 poll，互不阻塞。
+
+### 4.4.2 19 个步骤的时间成本
+
+| 步骤 | 干什么 | 典型耗时 |
+|---|---|---|
+| ① | leader cluster 写 mmap log-pub | ~100 ns（memcpy + CAS）|
+| ②③④⑤ | leader driver poll → UDP → follower driver → 写 follower mmap | **3-5 µs**（kernel bypass）|
+| ⑥a-⑧a | follower archive recorder 读 mmap、写 recording 文件、推进 counter | ~1 µs（OS page cache，不 fsync） |
+| ⑥b-⑦b | follower cluster logAdapter.poll | ~100 ns |
+| ⑨⑩ | follower 读 RecordingPos counter、写 consensus-pub | ~200 ns |
+| ⑪⑫⑬⑭ | follower driver poll → UDP → leader driver → 写 leader mmap | **3-5 µs**（与下行对称） |
+| ⑮⑯⑰ | leader poll 到 AppendPosition、改字段、算 quorum、commit | ~500 ns |
+| ⑱⑲ | publishCommitPosition + apply + 回 client | ~5 µs |
+| **合计** | | **~12-15 µs**（kernel bypass）<br/>**~80-150 µs**（普通内核 UDP）|
+
+### 4.4.3 关键观察
+
+- **步骤 ① 后 leader 立即返回 duty cycle**，不等 ACK——这是和传统 Raft 实现最大的区别。
+- **跨进程通信全靠 mmap 共享内存**：Leader Cluster JVM 和 Aeron Driver 是两个进程，但共享同一块 `.logbuffer` 文件。一边写完通过 release semantics 立即对另一边可见，**零 IPC syscall、零拷贝**。
+- **UDP 是这条链路上唯一的"真网络"成本**（步骤 ③④⑫⑬）。其他全是同机内存读写。所以延迟下限基本就是 **2 × 单向 UDP RTT**——同机房 kernel bypass 下 ~6 µs。
+- **Archive recording 在旁路**（⑥a-⑧a），不在延迟路径上，但 follower 必须等 recorder 推进 RecordingPos 才会 ACK——所以"ACK 含义 = 已写到本机 archive recording"，比"已收到"更强。
+- **一条 entry 全程只 3 次内存拷贝**（leader mmap → UDP → follower mmap → recording 文件），且都是 memcpy 不经过对象序列化。对比 etcd 类：网卡 → 内核 socket → JVM byte[] → protobuf 反序列化对象 → BoltDB 写入 → fsync，拷贝和序列化次数显著更多。
+- **Leader 的"等待"全在步骤 ⑮ 之前的 N+k 轮 duty cycle 里**——leader 没有挂起线程等响应，只是不停转 duty cycle 处理别的事，每轮看一眼内存计数器（L1 cache hit ~ns 级），等待被摊平到无数次轻量轮询里。
 
 ### 4.5 对比时序图（传统 Raft，etcd 类）
 
