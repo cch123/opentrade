@@ -1,19 +1,23 @@
 // Package snapshot serializes the trigger engine's pending /
-// terminal records and per-partition offsets to local disk, so a restart
+// terminal records and per-partition offsets to a BlobStore, so a restart
 // resumes where the last primary stopped instead of losing every in-
 // flight stop order (ADR-0040 §Persistence).
 //
 // ADR-0049: default on-disk format is protobuf (.pb); JSON (.json) stays
 // available as a debug fallback via --snapshot-format=json. Load probes
 // .pb first, then .json.
+//
+// ADR-0058: I/O goes through pkg/snapshot.BlobStore so trigger can later
+// share storage with Counter / trade-dump (FS today, S3 backlog) without
+// touching this package.
 package snapshot
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"google.golang.org/protobuf/proto"
 
@@ -103,39 +107,40 @@ func Restore(eng *engine.Engine, snap *Snapshot) error {
 }
 
 // -----------------------------------------------------------------------------
-// Disk I/O
+// BlobStore I/O
 // -----------------------------------------------------------------------------
 
-// Save writes snap to disk atomically (ADR-0049). basePath has no extension;
-// Save appends `.pb` / `.json` per format.
-func Save(basePath string, snap *Snapshot, format pkgsnapshot.Format) error {
-	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
-		return fmt.Errorf("mkdir: %w", err)
-	}
+// Save encodes snap and writes it under `baseKey + format.Ext()`. The
+// BlobStore is responsible for atomicity (FSBlobStore stages through
+// .tmp + fsync + rename).
+func Save(ctx context.Context, store pkgsnapshot.BlobStore, baseKey string, snap *Snapshot, format pkgsnapshot.Format) error {
 	data, err := encode(snap, format)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", format, err)
 	}
-	path := basePath + format.Ext()
-	tmp := path + ".tmp"
-	return writeAtomic(tmp, path, data)
+	key := baseKey + format.Ext()
+	if err := store.Put(ctx, key, data); err != nil {
+		return fmt.Errorf("put %s: %w", key, err)
+	}
+	return nil
 }
 
-// Load reads a snapshot from disk. Probes .pb first, then .json. Missing
-// both files → (nil, nil) so callers can treat absence as cold start.
-func Load(basePath string) (*Snapshot, error) {
+// Load fetches a snapshot by probing proto then json under baseKey
+// (ADR-0049). Missing both → (nil, nil) so callers can treat absence as
+// cold start.
+func Load(ctx context.Context, store pkgsnapshot.BlobStore, baseKey string) (*Snapshot, error) {
 	for _, format := range []pkgsnapshot.Format{pkgsnapshot.FormatProto, pkgsnapshot.FormatJSON} {
-		path := basePath + format.Ext()
-		data, err := os.ReadFile(path)
+		key := baseKey + format.Ext()
+		data, err := store.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return nil, fmt.Errorf("read %s: %w", path, err)
+			return nil, fmt.Errorf("get %s: %w", key, err)
 		}
 		snap, err := decode(data, format)
 		if err != nil {
-			return nil, fmt.Errorf("decode %s: %w", path, err)
+			return nil, fmt.Errorf("decode %s: %w", key, err)
 		}
 		if snap.Version != Version {
 			return nil, fmt.Errorf("trigger snapshot version mismatch: got %d want %d", snap.Version, Version)
@@ -143,32 +148,6 @@ func Load(basePath string) (*Snapshot, error) {
 		return snap, nil
 	}
 	return nil, nil
-}
-
-func writeAtomic(tmp, path string, data []byte) error {
-	f, err := os.Create(tmp)
-	if err != nil {
-		return fmt.Errorf("create tmp: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("write: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("sync: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("close: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
 }
 
 func encode(snap *Snapshot, format pkgsnapshot.Format) ([]byte, error) {

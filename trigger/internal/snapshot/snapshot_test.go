@@ -65,12 +65,12 @@ func testSaveLoadRoundTrip(t *testing.T, format pkgsnapshot.Format) {
 	captured := Capture(src)
 	captured.TakenAtMs = 42
 
-	dir := t.TempDir()
-	base := filepath.Join(dir, "trigger")
-	if err := Save(base, captured, format); err != nil {
+	ctx := context.Background()
+	store := pkgsnapshot.NewFSBlobStore(t.TempDir())
+	if err := Save(ctx, store, "trigger", captured, format); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(base)
+	loaded, err := Load(ctx, store, "trigger")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,8 @@ func testSaveLoadRoundTrip(t *testing.T, format pkgsnapshot.Format) {
 }
 
 func TestLoad_MissingFileReturnsNil(t *testing.T) {
-	snap, err := Load(filepath.Join(t.TempDir(), "nope"))
+	store := pkgsnapshot.NewFSBlobStore(t.TempDir())
+	snap, err := Load(context.Background(), store, "nope")
 	if err != nil {
 		t.Fatalf("missing file should yield nil,nil: %v", err)
 	}
@@ -107,21 +108,23 @@ func TestLoad_MissingFileReturnsNil(t *testing.T) {
 }
 
 func TestLoad_VersionMismatch(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "trigger")
-	if err := Save(base, &Snapshot{Version: Version + 1}, pkgsnapshot.FormatProto); err != nil {
+	ctx := context.Background()
+	store := pkgsnapshot.NewFSBlobStore(t.TempDir())
+	if err := Save(ctx, store, "trigger", &Snapshot{Version: Version + 1}, pkgsnapshot.FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(base); err == nil {
+	if _, err := Load(ctx, store, "trigger"); err == nil {
 		t.Fatal("expected version mismatch error")
 	}
 }
 
 func TestSave_AtomicRename(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "trigger")
-	if err := Save(base, &Snapshot{Version: Version}, pkgsnapshot.FormatProto); err != nil {
+	dir := t.TempDir()
+	store := pkgsnapshot.NewFSBlobStore(dir)
+	if err := Save(context.Background(), store, "trigger", &Snapshot{Version: Version}, pkgsnapshot.FormatProto); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(base + ".pb.tmp"); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "trigger.pb.tmp")); !os.IsNotExist(err) {
 		t.Errorf("tmp lingered: %v", err)
 	}
 }
@@ -129,11 +132,12 @@ func TestSave_AtomicRename(t *testing.T) {
 // TestLoad_JSONOnlyMigration covers the upgrade window: only .json on
 // disk, Load still returns it (ADR-0049 probe order .pb → .json).
 func TestLoad_JSONOnlyMigration(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "trigger")
-	if err := Save(base, &Snapshot{Version: Version, TakenAtMs: 7}, pkgsnapshot.FormatJSON); err != nil {
+	ctx := context.Background()
+	store := pkgsnapshot.NewFSBlobStore(t.TempDir())
+	if err := Save(ctx, store, "trigger", &Snapshot{Version: Version, TakenAtMs: 7}, pkgsnapshot.FormatJSON); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := Load(base)
+	snap, err := Load(ctx, store, "trigger")
 	if err != nil {
 		t.Fatal(err)
 	}

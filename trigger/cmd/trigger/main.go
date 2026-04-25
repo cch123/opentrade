@@ -247,7 +247,12 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		logger.Info("trigger journal disabled (empty --journal-topic)")
 	}
 
-	initialOffsets, err := tryRestoreSnapshot(cfg, eng, logger)
+	var snapStore pkgsnapshot.BlobStore
+	if cfg.SnapshotDir != "" {
+		snapStore = pkgsnapshot.NewFSBlobStore(cfg.SnapshotDir)
+	}
+
+	initialOffsets, err := tryRestoreSnapshot(ctx, snapStore, cfg, eng, logger)
 	if err != nil {
 		logger.Error("snapshot restore", zap.Error(err))
 		return
@@ -280,7 +285,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		runSnapshotTicker(snapCtx, cfg, eng, logger)
+		runSnapshotTicker(snapCtx, snapStore, cfg, eng, logger)
 	}()
 	wg.Add(1)
 	go func() {
@@ -312,11 +317,13 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	mdCons.Close()
 	cancelSnap()
 	wg.Wait()
-	if err := writeSnapshot(cfg, eng); err != nil {
+	finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := writeSnapshot(finalCtx, snapStore, cfg, eng); err != nil {
 		logger.Error("final snapshot", zap.Error(err))
-	} else if cfg.SnapshotDir != "" {
+	} else if snapStore != nil {
 		logger.Info("final snapshot written", zap.String("path", snapshotPath(cfg)))
 	}
+	finalCancel()
 	if jProducer != nil {
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = jProducer.Close(drainCtx)
@@ -329,20 +336,25 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 // Snapshot helpers
 // ---------------------------------------------------------------------------
 
-// snapshotPath returns the base path WITHOUT extension (ADR-0049).
-// snapshot.Save appends `.pb` / `.json` per cfg.SnapshotFormat; Load
-// probes both.
+// snapshotKey is the BlobStore key stem (no format extension); Save
+// appends `.pb` / `.json` per cfg.SnapshotFormat (ADR-0049). Used as the
+// log path too — combined with cfg.SnapshotDir it locates the file on
+// disk for ops.
+func snapshotKey(cfg Config) string { return cfg.InstanceID }
+
+// snapshotPath returns the human-readable on-disk path for log lines.
 func snapshotPath(cfg Config) string {
-	return filepath.Join(cfg.SnapshotDir, cfg.InstanceID)
+	return filepath.Join(cfg.SnapshotDir, snapshotKey(cfg))
 }
 
-func tryRestoreSnapshot(cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
-	if cfg.SnapshotDir == "" {
+func tryRestoreSnapshot(ctx context.Context, store pkgsnapshot.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
+	if store == nil {
 		logger.Info("snapshot disabled (empty --snapshot-dir); cold start")
 		return nil, nil
 	}
+	key := snapshotKey(cfg)
 	path := snapshotPath(cfg)
-	snap, err := snapshot.Load(path)
+	snap, err := snapshot.Load(ctx, store, key)
 	if err != nil {
 		return nil, fmt.Errorf("load %s: %w", path, err)
 	}
@@ -362,13 +374,13 @@ func tryRestoreSnapshot(cfg Config, eng *engine.Engine, logger *zap.Logger) (map
 	return snap.Offsets, nil
 }
 
-func writeSnapshot(cfg Config, eng *engine.Engine) error {
-	if cfg.SnapshotDir == "" {
+func writeSnapshot(ctx context.Context, store pkgsnapshot.BlobStore, cfg Config, eng *engine.Engine) error {
+	if store == nil {
 		return nil
 	}
 	snap := snapshot.Capture(eng)
 	snap.TakenAtMs = time.Now().UnixMilli()
-	return snapshot.Save(snapshotPath(cfg), snap, cfg.SnapshotFormat)
+	return snapshot.Save(ctx, store, snapshotKey(cfg), snap, cfg.SnapshotFormat)
 }
 
 // runExpirySweeper sweeps PENDING triggers whose ExpiresAtMs has
@@ -393,8 +405,8 @@ func runExpirySweeper(ctx context.Context, cfg Config, eng *engine.Engine, logge
 	}
 }
 
-func runSnapshotTicker(ctx context.Context, cfg Config, eng *engine.Engine, logger *zap.Logger) {
-	if cfg.SnapshotDir == "" || cfg.SnapshotInterval <= 0 {
+func runSnapshotTicker(ctx context.Context, store pkgsnapshot.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) {
+	if store == nil || cfg.SnapshotInterval <= 0 {
 		return
 	}
 	ticker := time.NewTicker(cfg.SnapshotInterval)
@@ -404,7 +416,7 @@ func runSnapshotTicker(ctx context.Context, cfg Config, eng *engine.Engine, logg
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := writeSnapshot(cfg, eng); err != nil {
+			if err := writeSnapshot(ctx, store, cfg, eng); err != nil {
 				logger.Error("snapshot", zap.Error(err))
 			}
 		}
