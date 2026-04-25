@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	snapshotpkg "github.com/xargin/opentrade/counter/snapshot"
+	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 )
 
 // Housekeeper periodically scans the blob store for on-demand

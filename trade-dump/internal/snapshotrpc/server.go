@@ -30,7 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
-	snapshotpkg "github.com/xargin/opentrade/counter/snapshot"
+	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
 )
 

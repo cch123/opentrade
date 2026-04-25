@@ -15,7 +15,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
-	"github.com/xargin/opentrade/counter/snapshot"
+	"github.com/xargin/opentrade/pkg/snapshot"
 )
 
 // loadOnDemand executes the ADR-0064 §3 Phase 1 on-demand recovery

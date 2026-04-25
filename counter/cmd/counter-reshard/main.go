@@ -34,7 +34,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/xargin/opentrade/counter/snapshot"
+	"github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/pkg/shard"
 )
 

@@ -37,7 +37,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
-	"github.com/xargin/opentrade/counter/snapshot"
+	"github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/pkg/idgen"
 )
 

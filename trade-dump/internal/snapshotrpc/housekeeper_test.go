@@ -10,7 +10,7 @@ import (
 
 	"go.uber.org/zap"
 
-	snapshotpkg "github.com/xargin/opentrade/counter/snapshot"
+	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 )
 
 // stubLister is an in-memory BlobLister with tunable behaviour for

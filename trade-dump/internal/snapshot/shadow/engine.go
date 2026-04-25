@@ -27,7 +27,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/engine"
-	snapshotpkg "github.com/xargin/opentrade/counter/snapshot"
+	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 )
 
 // Engine is the per-vshard shadow state. Exported only for type
