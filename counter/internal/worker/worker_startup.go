@@ -128,10 +128,11 @@ func (w *VShardWorker) loadOnDemand(
 	freshState := engine.NewShardState(int(w.cfg.VShardID))
 	freshSeq := sequencer.New()
 	freshDt := dedup.New(w.cfg.DedupTTL)
-	if err := snapshot.Restore(int(w.cfg.VShardID), freshState, freshSeq, freshDt, snap); err != nil {
+	if err := snapshot.RestoreState(int(w.cfg.VShardID), freshState, snap); err != nil {
 		return nil, nil, nil, nil, 0, fmt.Errorf("%w: restore: %v",
 			tradedumpclient.ErrFallback, err)
 	}
+	freshSeq.SetCounterSeq(snap.CounterSeq)
 
 	offsets := snapshot.OffsetsSliceToMap(snap.Offsets)
 	journalOffset := snap.JournalOffset
@@ -167,9 +168,10 @@ func (w *VShardWorker) loadLegacy(
 	snap, err := snapshot.Load(ctx, w.cfg.Store, key)
 	switch {
 	case err == nil:
-		if err := snapshot.Restore(int(w.cfg.VShardID), state, seq, dt, snap); err != nil {
+		if err := snapshot.RestoreState(int(w.cfg.VShardID), state, snap); err != nil {
 			return nil, nil, nil, nil, 0, fmt.Errorf("snapshot restore: %w", err)
 		}
+		seq.SetCounterSeq(snap.CounterSeq)
 		offsets := snapshot.OffsetsSliceToMap(snap.Offsets)
 		journalOffset := snap.JournalOffset
 		logger.Info("legacy path: restored from periodic snapshot",

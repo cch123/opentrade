@@ -7,11 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/engine"
-	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -100,8 +97,6 @@ func TestLoad_JSONOnlyMigration(t *testing.T) {
 
 func TestCaptureRestore(t *testing.T) {
 	state := engine.NewShardState(3)
-	seq := sequencer.New()
-	dt := dedup.New(time.Hour)
 
 	// Seed state through normal Transfer API.
 	for _, req := range []engine.TransferRequest{
@@ -113,15 +108,13 @@ func TestCaptureRestore(t *testing.T) {
 			t.Fatalf("seed transfer: %v", err)
 		}
 	}
-	seq.SetCounterSeq(42)
-	dt.Set("tx-1", "cached-response")
 
 	// Prime LastMatchSeq on two symbols for u1 (ADR-0048 backlog item 2).
 	state.Account("u1").AdvanceMatchSeq("BTC-USDT", 101)
 	state.Account("u1").AdvanceMatchSeq("ETH-USDT", 7)
 
 	offsets := map[int32]int64{0: 100, 2: 55}
-	snap := Capture(3, state, seq, dt, offsets, 1234, 0)
+	snap := CaptureFromState(3, state, 42, offsets, 1234, 0)
 
 	// Persist and reload (default proto format, ADR-0049).
 	ctx := context.Background()
@@ -134,25 +127,20 @@ func TestCaptureRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Restore into fresh components.
+	// Restore into a fresh state.
 	state2 := engine.NewShardState(3)
-	seq2 := sequencer.New()
-	dt2 := dedup.New(time.Hour)
-	if err := Restore(3, state2, seq2, dt2, loaded); err != nil {
-		t.Fatalf("Restore: %v", err)
+	if err := RestoreState(3, state2, loaded); err != nil {
+		t.Fatalf("RestoreState: %v", err)
 	}
 
-	if seq2.CounterSeq() != 42 {
-		t.Fatalf("counter seq = %d, want 42", seq2.CounterSeq())
+	if loaded.CounterSeq != 42 {
+		t.Fatalf("counter seq = %d, want 42", loaded.CounterSeq)
 	}
 	if bal := state2.Balance("u1", "USDT"); bal.Available.String() != "60" || bal.Frozen.String() != "40" {
 		t.Fatalf("restored u1 USDT = %+v", bal)
 	}
 	if bal := state2.Balance("u2", "BTC"); bal.Available.String() != "0.5" {
 		t.Fatalf("restored u2 BTC = %+v", bal)
-	}
-	if _, ok := dt2.Get("tx-1"); !ok {
-		t.Fatal("dedup key lost across restore")
 	}
 	// Offsets round-trip (ADR-0048).
 	got := OffsetsSliceToMap(loaded.Offsets)
@@ -195,8 +183,6 @@ func TestCaptureRestore(t *testing.T) {
 // round-trips — the only durability story for them (ADR-0041 §Durability).
 func TestCaptureRestore_Reservations(t *testing.T) {
 	state := engine.NewShardState(0)
-	seq := sequencer.New()
-	dt := dedup.New(time.Hour)
 
 	// Seed balance and reserve against it.
 	if _, err := state.ApplyTransfer(engine.TransferRequest{
@@ -210,7 +196,7 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 
 	ctx := context.Background()
 	store := newFSStore(t)
-	if err := Save(ctx, store, "shard-0", Capture(0, state, seq, dt, nil, 0, 0), FormatProto); err != nil {
+	if err := Save(ctx, store, "shard-0", CaptureFromState(0, state, 0, nil, 0, 0), FormatProto); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := Load(ctx, store, "shard-0")
@@ -219,9 +205,7 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 	}
 
 	state2 := engine.NewShardState(0)
-	seq2 := sequencer.New()
-	dt2 := dedup.New(time.Hour)
-	if err := Restore(0, state2, seq2, dt2, loaded); err != nil {
+	if err := RestoreState(0, state2, loaded); err != nil {
 		t.Fatal(err)
 	}
 	r := state2.LookupReservation("trig-42")
@@ -233,23 +217,18 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 	}
 }
 
-
 func TestRestoreRejectsVersionMismatch(t *testing.T) {
 	state := engine.NewShardState(0)
-	seq := sequencer.New()
-	dt := dedup.New(time.Hour)
 	snap := &ShardSnapshot{Version: 99, ShardID: 0}
-	if err := Restore(0, state, seq, dt, snap); err == nil {
+	if err := RestoreState(0, state, snap); err == nil {
 		t.Fatal("expected version mismatch error")
 	}
 }
 
 func TestRestoreRejectsShardMismatch(t *testing.T) {
 	state := engine.NewShardState(1)
-	seq := sequencer.New()
-	dt := dedup.New(time.Hour)
 	snap := &ShardSnapshot{Version: Version, ShardID: 2}
-	if err := Restore(1, state, seq, dt, snap); err == nil {
+	if err := RestoreState(1, state, snap); err == nil {
 		t.Fatal("expected shard mismatch error")
 	}
 }

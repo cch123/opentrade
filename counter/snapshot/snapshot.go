@@ -1,6 +1,6 @@
-// Package snapshot serializes Counter's ShardState + Dedup + UserSequencer
-// counter-shard-scoped seq to a BlobStore (local filesystem or shared
-// object storage) and restores it on startup.
+// Package snapshot serializes shard state snapshots used by Counter for
+// recovery and produced by trade-dump's shadow engine pipeline. Snapshots
+// persist to a BlobStore (local filesystem or shared object storage).
 //
 // ADR-0049: default on-disk format is protobuf (.pb); JSON (.json) stays
 // available as a debug fallback selected by --snapshot-format=json. Load
@@ -18,14 +18,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
-	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/engine"
-	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -200,50 +197,22 @@ type ShardSnapshot struct {
 // Capture / Restore
 // -----------------------------------------------------------------------------
 
-// Capture builds a snapshot from the current state. Callers are responsible
-// for ensuring no writes are in-flight while Capture runs (MVP-2 performs
-// Capture during graceful shutdown only; live snapshots from a backup node
-// arrive in MVP-8).
+// CaptureFromState builds a snapshot from the current shard state.
 //
-// offsets records the trade-event consumer's next-to-consume position per
-// partition (ADR-0048). Pass nil (or empty) on cold paths; the callers in
-// MVP code read it from service.Service.Offsets() after having flushed the
-// Kafka transactional producer (output flush barrier).
+// counterSeq is the producer's running counter-seq at the moment of
+// capture; trade-dump's shadow engine tracks this engine-locally from
+// apply-side event metadata.
+//
+// offsets records the trade-event consumer's next-to-consume position
+// per partition (ADR-0048). Pass nil on cold paths.
 //
 // journalOffset is the next-to-consume position on this vshard's
-// counter-journal partition at the moment Capture runs (ADR-0060 §4.1).
-// Callers MUST Flush the TxnProducer before reading it and pass the
-// result here; zero is acceptable for pre-0060 callers / cold start
-// paths — catch-up on Restore becomes a no-op.
-func Capture(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, offsets map[int32]int64, journalOffset int64, tsMS int64) *ShardSnapshot {
-	snap := CaptureFromState(shardID, state, seq.CounterSeq(), offsets, journalOffset, tsMS)
-	// Legacy dedup.Table is no longer the source of truth for Transfer
-	// idempotency (ADR-0048 backlog item 4 方案 A moved to per-user ring
-	// stored in AccountSnapshot). We still drain whatever entries happen
-	// to be in dt — Service.Transfer no longer writes to it, so on steady
-	// state this slice is empty, but older snapshots / tests may seed it.
-	// Writing is kept so operators can mix pre-/post-ring builds without
-	// losing audit entries mid-migration.
-	for _, e := range dt.Snapshot() {
-		snap.Dedup = append(snap.Dedup, DedupEntrySnapshot{
-			Key:         e.Key,
-			ExpiresUnix: e.ExpiresAt.UnixMilli(),
-		})
-	}
-	return snap
-}
-
-// CaptureFromState is the shadow-engine-friendly variant of Capture
-// (ADR-0061 M2). It takes counterSeq as a plain uint64 — shadow
-// engine tracks this itself from apply-side event metadata — and
-// skips the legacy dedup.Table entirely, which shadow engine never
-// populates. Counter-side callers keep using Capture which is a
-// thin wrapper around this function.
+// counter-journal partition at capture time (ADR-0060 §4.1). Callers
+// MUST Flush the TxnProducer before reading it; zero is acceptable on
+// cold start paths — catch-up on Restore becomes a no-op.
 //
-// Same contract as Capture on the state + offsets + journalOffset
-// front: caller owns concurrency (ShadowEngine drives single-
-// threaded so there is no concurrent apply during Capture; Counter
-// holds SnapshotMu for the duration of its Capture wrap).
+// Caller owns concurrency: the shadow engine pipeline drives this
+// single-threaded so no concurrent apply runs during Capture.
 func CaptureFromState(
 	shardID int,
 	state *engine.ShardState,
@@ -313,44 +282,17 @@ func CaptureFromState(
 	return snap
 }
 
-// Restore loads state / seq id / dedup keys from snap. Caller MUST pass fresh
-// (empty) state + sequencer + dedup table; Restore panics on misuse.
+// RestoreState rebuilds ShardState bit-for-bit from snap. The caller
+// applies snap.CounterSeq to its sequencer separately — this function
+// does not touch sequence state.
 //
-// Accepts v1 files (no offsets) as a one-time migration bridge: business
-// state restores normally, snap.Offsets stays nil, main is expected to
-// start the trade consumer at AtStart which equates to one full rescan
-// guarded by existing dedup / shard_seq idempotency.
-func Restore(shardID int, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, snap *ShardSnapshot) error {
-	if err := RestoreState(shardID, state, snap); err != nil {
-		return err
-	}
-	seq.SetCounterSeq(snap.CounterSeq)
-	// Restore the legacy dedup.Table only so pre-ring snapshots still load
-	// without losing their entries in case operators re-export. Service is
-	// no longer reading from dt for Transfer idempotency (ADR-0048 backlog
-	// item 4 方案 A).
-	if len(snap.Dedup) > 0 {
-		entries := make([]dedup.Entry, 0, len(snap.Dedup))
-		for _, e := range snap.Dedup {
-			entries = append(entries, dedup.Entry{
-				Key:       e.Key,
-				Value:     nil, // tombstone
-				ExpiresAt: time.UnixMilli(e.ExpiresUnix),
-			})
-		}
-		dt.Restore(entries)
-	}
-	return nil
-}
-
-// RestoreState is the shadow-engine-friendly variant of Restore
-// (ADR-0061 M3). It drops the legacy dedup.Table + sequencer handling
-// — shadow engine tracks counter_seq engine-locally and never
-// populates the legacy dedup table — but otherwise rebuilds
-// ShardState bit-for-bit from snap.
-//
-// state MUST be empty; caller owns concurrency (pipeline calls
+// state MUST be empty; caller owns concurrency (callers invoke this
 // before any Apply goroutine starts).
+//
+// Accepts v1 files (no offsets) as a one-time migration bridge:
+// business state restores normally, snap.Offsets stays nil, callers are
+// expected to start their trade consumer at AtStart which equates to
+// one full rescan guarded by existing idempotency.
 func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) error {
 	if snap == nil {
 		return fmt.Errorf("snapshot is nil")
