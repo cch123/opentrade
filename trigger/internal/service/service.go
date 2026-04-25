@@ -8,7 +8,7 @@ import (
 	"errors"
 
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
-	"github.com/xargin/opentrade/trigger/internal/engine"
+	"github.com/xargin/opentrade/trigger/engine"
 )
 
 // Service wraps the engine with gRPC-facing helpers.

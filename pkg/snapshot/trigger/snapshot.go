@@ -1,16 +1,16 @@
-// Package snapshot serializes the trigger engine's pending /
-// terminal records and per-partition offsets to a BlobStore, so a restart
-// resumes where the last primary stopped instead of losing every in-
-// flight stop order (ADR-0040 §Persistence).
+// Package trigger serializes the trigger engine's pending / terminal
+// records and per-partition offsets to a BlobStore, so a restart resumes
+// where the last primary stopped instead of losing every in-flight stop
+// order (ADR-0040 §Persistence).
 //
 // ADR-0049: default on-disk format is protobuf (.pb); JSON (.json) stays
 // available as a debug fallback via --snapshot-format=json. Load probes
 // .pb first, then .json.
 //
-// ADR-0058: I/O goes through pkg/snapshot.BlobStore so trigger can later
-// share storage with Counter / trade-dump (FS today, S3 backlog) without
-// touching this package.
-package snapshot
+// ADR-0058: I/O goes through pkg/snapshot.BlobStore so trigger shares
+// storage with Counter / trade-dump (FS today, S3 backlog) without
+// duplicating the storage layer.
+package trigger
 
 import (
 	"context"
@@ -25,8 +25,8 @@ import (
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	"github.com/xargin/opentrade/pkg/dec"
-	pkgsnapshot "github.com/xargin/opentrade/pkg/snapshot"
-	"github.com/xargin/opentrade/trigger/internal/engine"
+	"github.com/xargin/opentrade/pkg/snapshot"
+	"github.com/xargin/opentrade/trigger/engine"
 )
 
 // Version of the on-disk format.
@@ -113,7 +113,7 @@ func Restore(eng *engine.Engine, snap *Snapshot) error {
 // Save encodes snap and writes it under `baseKey + format.Ext()`. The
 // BlobStore is responsible for atomicity (FSBlobStore stages through
 // .tmp + fsync + rename).
-func Save(ctx context.Context, store pkgsnapshot.BlobStore, baseKey string, snap *Snapshot, format pkgsnapshot.Format) error {
+func Save(ctx context.Context, store snapshot.BlobStore, baseKey string, snap *Snapshot, format snapshot.Format) error {
 	data, err := encode(snap, format)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", format, err)
@@ -128,8 +128,8 @@ func Save(ctx context.Context, store pkgsnapshot.BlobStore, baseKey string, snap
 // Load fetches a snapshot by probing proto then json under baseKey
 // (ADR-0049). Missing both → (nil, nil) so callers can treat absence as
 // cold start.
-func Load(ctx context.Context, store pkgsnapshot.BlobStore, baseKey string) (*Snapshot, error) {
-	for _, format := range []pkgsnapshot.Format{pkgsnapshot.FormatProto, pkgsnapshot.FormatJSON} {
+func Load(ctx context.Context, store snapshot.BlobStore, baseKey string) (*Snapshot, error) {
+	for _, format := range []snapshot.Format{snapshot.FormatProto, snapshot.FormatJSON} {
 		key := baseKey + format.Ext()
 		data, err := store.Get(ctx, key)
 		if err != nil {
@@ -150,26 +150,26 @@ func Load(ctx context.Context, store pkgsnapshot.BlobStore, baseKey string) (*Sn
 	return nil, nil
 }
 
-func encode(snap *Snapshot, format pkgsnapshot.Format) ([]byte, error) {
+func encode(snap *Snapshot, format snapshot.Format) ([]byte, error) {
 	switch format {
-	case pkgsnapshot.FormatProto:
+	case snapshot.FormatProto:
 		return proto.Marshal(toProto(snap))
-	case pkgsnapshot.FormatJSON:
+	case snapshot.FormatJSON:
 		return json.MarshalIndent(snap, "", "  ")
 	default:
 		return nil, fmt.Errorf("snapshot: unknown format %d", format)
 	}
 }
 
-func decode(data []byte, format pkgsnapshot.Format) (*Snapshot, error) {
+func decode(data []byte, format snapshot.Format) (*Snapshot, error) {
 	switch format {
-	case pkgsnapshot.FormatProto:
+	case snapshot.FormatProto:
 		var pb snapshotpb.TriggerSnapshot
 		if err := proto.Unmarshal(data, &pb); err != nil {
 			return nil, err
 		}
 		return fromProto(&pb), nil
-	case pkgsnapshot.FormatJSON:
+	case snapshot.FormatJSON:
 		var snap Snapshot
 		if err := json.Unmarshal(data, &snap); err != nil {
 			return nil, err

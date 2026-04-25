@@ -1,4 +1,4 @@
-package snapshot
+package trigger
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
-	pkgsnapshot "github.com/xargin/opentrade/pkg/snapshot"
-	"github.com/xargin/opentrade/trigger/internal/engine"
+	"github.com/xargin/opentrade/pkg/snapshot"
+	"github.com/xargin/opentrade/trigger/engine"
 )
 
 type counterSeq struct{ i uint64 }
@@ -34,14 +34,14 @@ func newEngine() *engine.Engine {
 }
 
 func TestSaveLoad_RoundTrip_Proto(t *testing.T) {
-	testSaveLoadRoundTrip(t, pkgsnapshot.FormatProto)
+	testSaveLoadRoundTrip(t, snapshot.FormatProto)
 }
 
 func TestSaveLoad_RoundTrip_JSON(t *testing.T) {
-	testSaveLoadRoundTrip(t, pkgsnapshot.FormatJSON)
+	testSaveLoadRoundTrip(t, snapshot.FormatJSON)
 }
 
-func testSaveLoadRoundTrip(t *testing.T, format pkgsnapshot.Format) {
+func testSaveLoadRoundTrip(t *testing.T, format snapshot.Format) {
 	src := newEngine()
 	id1, _, _, _ := src.Place(context.Background(), &condrpc.PlaceTriggerRequest{
 		UserId:    "u1",
@@ -66,7 +66,7 @@ func testSaveLoadRoundTrip(t *testing.T, format pkgsnapshot.Format) {
 	captured.TakenAtMs = 42
 
 	ctx := context.Background()
-	store := pkgsnapshot.NewFSBlobStore(t.TempDir())
+	store := snapshot.NewFSBlobStore(t.TempDir())
 	if err := Save(ctx, store, "trigger", captured, format); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func testSaveLoadRoundTrip(t *testing.T, format pkgsnapshot.Format) {
 }
 
 func TestLoad_MissingFileReturnsNil(t *testing.T) {
-	store := pkgsnapshot.NewFSBlobStore(t.TempDir())
+	store := snapshot.NewFSBlobStore(t.TempDir())
 	snap, err := Load(context.Background(), store, "nope")
 	if err != nil {
 		t.Fatalf("missing file should yield nil,nil: %v", err)
@@ -109,8 +109,8 @@ func TestLoad_MissingFileReturnsNil(t *testing.T) {
 
 func TestLoad_VersionMismatch(t *testing.T) {
 	ctx := context.Background()
-	store := pkgsnapshot.NewFSBlobStore(t.TempDir())
-	if err := Save(ctx, store, "trigger", &Snapshot{Version: Version + 1}, pkgsnapshot.FormatProto); err != nil {
+	store := snapshot.NewFSBlobStore(t.TempDir())
+	if err := Save(ctx, store, "trigger", &Snapshot{Version: Version + 1}, snapshot.FormatProto); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(ctx, store, "trigger"); err == nil {
@@ -120,8 +120,8 @@ func TestLoad_VersionMismatch(t *testing.T) {
 
 func TestSave_AtomicRename(t *testing.T) {
 	dir := t.TempDir()
-	store := pkgsnapshot.NewFSBlobStore(dir)
-	if err := Save(context.Background(), store, "trigger", &Snapshot{Version: Version}, pkgsnapshot.FormatProto); err != nil {
+	store := snapshot.NewFSBlobStore(dir)
+	if err := Save(context.Background(), store, "trigger", &Snapshot{Version: Version}, snapshot.FormatProto); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "trigger.pb.tmp")); !os.IsNotExist(err) {
@@ -133,8 +133,8 @@ func TestSave_AtomicRename(t *testing.T) {
 // disk, Load still returns it (ADR-0049 probe order .pb → .json).
 func TestLoad_JSONOnlyMigration(t *testing.T) {
 	ctx := context.Background()
-	store := pkgsnapshot.NewFSBlobStore(t.TempDir())
-	if err := Save(ctx, store, "trigger", &Snapshot{Version: Version, TakenAtMs: 7}, pkgsnapshot.FormatJSON); err != nil {
+	store := snapshot.NewFSBlobStore(t.TempDir())
+	if err := Save(ctx, store, "trigger", &Snapshot{Version: Version, TakenAtMs: 7}, snapshot.FormatJSON); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := Load(ctx, store, "trigger")
