@@ -15,7 +15,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
-	"github.com/xargin/opentrade/pkg/snapshot"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 )
 
 // loadOnDemand executes the ADR-0064 §3 Phase 1 on-demand recovery
@@ -39,13 +39,13 @@ import (
 //
 // Phase 1 step-by-step:
 //
-//  ③ ProduceFenceSentinel — forces franz-go InitProducerID,
-//    fencing the prior owner and writing abort markers for their
-//    pending txns so trade-dump's shadow consumer sees a stable
-//    LEO.
-//  ④ TakeSnapshot RPC — gets (key, LEO, counter_seq) from
-//    trade-dump.
-//  ⑤ Download + decode + Restore into fresh state.
+//	③ ProduceFenceSentinel — forces franz-go InitProducerID,
+//	  fencing the prior owner and writing abort markers for their
+//	  pending txns so trade-dump's shadow consumer sees a stable
+//	  LEO.
+//	④ TakeSnapshot RPC — gets (key, LEO, counter_seq) from
+//	  trade-dump.
+//	⑤ Download + decode + Restore into fresh state.
 func (w *VShardWorker) loadOnDemand(
 	ctx context.Context,
 	producer *journal.TxnProducer,
@@ -115,7 +115,7 @@ func (w *VShardWorker) loadOnDemand(
 	// LoadPath(key+".pb") matches the trade-dump upload convention
 	// (snapshotpkg.Save appends the extension). Uses onDemandCtx
 	// so a slow blob backend can't outrun the budget.
-	snap, err := snapshot.LoadPath(onDemandCtx, w.cfg.Store, resp.SnapshotKey+".pb")
+	snap, err := countersnap.LoadPath(onDemandCtx, w.cfg.Store, resp.SnapshotKey+".pb")
 	if err != nil {
 		return nil, nil, nil, nil, 0, fmt.Errorf("%w: download %s: %v",
 			tradedumpclient.ErrFallback, resp.SnapshotKey, err)
@@ -128,13 +128,13 @@ func (w *VShardWorker) loadOnDemand(
 	freshState := engine.NewShardState(int(w.cfg.VShardID))
 	freshSeq := sequencer.New()
 	freshDt := dedup.New(w.cfg.DedupTTL)
-	if err := snapshot.RestoreState(int(w.cfg.VShardID), freshState, snap); err != nil {
+	if err := countersnap.RestoreState(int(w.cfg.VShardID), freshState, snap); err != nil {
 		return nil, nil, nil, nil, 0, fmt.Errorf("%w: restore: %v",
 			tradedumpclient.ErrFallback, err)
 	}
 	freshSeq.SetCounterSeq(snap.CounterSeq)
 
-	offsets := snapshot.OffsetsSliceToMap(snap.Offsets)
+	offsets := countersnap.OffsetsSliceToMap(snap.Offsets)
 	journalOffset := snap.JournalOffset
 	logger.Info("on-demand snapshot restored",
 		zap.String("snapshot_key", resp.SnapshotKey),
@@ -165,14 +165,14 @@ func (w *VShardWorker) loadLegacy(
 	dt := dedup.New(w.cfg.DedupTTL)
 
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
-	snap, err := snapshot.Load(ctx, w.cfg.Store, key)
+	snap, err := countersnap.Load(ctx, w.cfg.Store, key)
 	switch {
 	case err == nil:
-		if err := snapshot.RestoreState(int(w.cfg.VShardID), state, snap); err != nil {
+		if err := countersnap.RestoreState(int(w.cfg.VShardID), state, snap); err != nil {
 			return nil, nil, nil, nil, 0, fmt.Errorf("snapshot restore: %w", err)
 		}
 		seq.SetCounterSeq(snap.CounterSeq)
-		offsets := snapshot.OffsetsSliceToMap(snap.Offsets)
+		offsets := countersnap.OffsetsSliceToMap(snap.Offsets)
 		journalOffset := snap.JournalOffset
 		logger.Info("legacy path: restored from periodic snapshot",
 			zap.Int("version", snap.Version),

@@ -27,7 +27,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/engine"
-	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 )
 
 // Engine is the per-vshard shadow state. Exported only for type
@@ -129,11 +129,11 @@ func New(vshardID int) *Engine {
 // the largest offset in snap.Offsets (falls back to zero if
 // absent), counterSeq is snap.CounterSeq. The pipeline seeks its
 // Kafka consumer to NextJournalOffset to resume.
-func (e *Engine) RestoreFromSnapshot(snap *snapshotpkg.ShardSnapshot) error {
+func (e *Engine) RestoreFromSnapshot(snap *countersnap.ShardSnapshot) error {
 	if snap == nil {
 		return fmt.Errorf("shadow: RestoreFromSnapshot: nil snap")
 	}
-	if err := snapshotpkg.RestoreState(e.vshardID, e.state, snap); err != nil {
+	if err := countersnap.RestoreState(e.vshardID, e.state, snap); err != nil {
 		return fmt.Errorf("shadow: RestoreState: %w", err)
 	}
 	e.counterSeq = snap.CounterSeq
@@ -342,14 +342,14 @@ func (e *Engine) WaitAppliedTo(ctx context.Context, target int64) error {
 // legacy dedup.Table (ADR-0048 backlog #4 migrated Transfer
 // idempotency to per-account rings, which are in AccountSnapshot
 // already).
-func (e *Engine) Capture(tsMS int64) *snapshotpkg.ShardSnapshot {
+func (e *Engine) Capture(tsMS int64) *countersnap.ShardSnapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var offsets map[int32]int64
 	if e.teWatermark > 0 {
 		offsets = map[int32]int64{e.teWatermarkPartition: e.teWatermark}
 	}
-	return snapshotpkg.CaptureFromState(
+	return countersnap.CaptureFromState(
 		e.vshardID,
 		e.state,
 		e.counterSeq,

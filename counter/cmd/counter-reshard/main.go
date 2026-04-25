@@ -34,8 +34,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/pkg/shard"
+	"github.com/xargin/opentrade/pkg/snapshot"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 )
 
 type config struct {
@@ -118,7 +119,7 @@ func main() {
 	outStore := snapshot.NewFSBlobStore(cfg.outDir)
 	for _, o := range outputs {
 		key := fmt.Sprintf("shard-%d", o.ShardID)
-		if err := snapshot.Save(ctx, outStore, key, o, cfg.outputFormat); err != nil {
+		if err := countersnap.Save(ctx, outStore, key, o, cfg.outputFormat); err != nil {
 			die(fmt.Errorf("save %s: %w", key, err))
 		}
 	}
@@ -138,11 +139,11 @@ type Report struct {
 
 // reshard takes inputs (one per OLD shard) and produces `toM` outputs routed
 // by the new topology's hash function. Dedup entries are dropped. Deterministic.
-func reshard(inputs []*snapshot.ShardSnapshot, toM int, nowMs int64) ([]*snapshot.ShardSnapshot, Report) {
-	outputs := make([]*snapshot.ShardSnapshot, toM)
+func reshard(inputs []*countersnap.ShardSnapshot, toM int, nowMs int64) ([]*countersnap.ShardSnapshot, Report) {
+	outputs := make([]*countersnap.ShardSnapshot, toM)
 	for i := 0; i < toM; i++ {
-		outputs[i] = &snapshot.ShardSnapshot{
-			Version:     snapshot.Version,
+		outputs[i] = &countersnap.ShardSnapshot{
+			Version:     countersnap.Version,
 			ShardID:     i,
 			TimestampMS: nowMs,
 		}
@@ -181,11 +182,11 @@ func reshard(inputs []*snapshot.ShardSnapshot, toM int, nowMs int64) ([]*snapsho
 // Probes the .pb form first, then .json (ADR-0049 migration window).
 // Missing files are treated as empty shards — we still produce outputs,
 // just without contributions from the missing input.
-func loadInputs(ctx context.Context, store snapshot.BlobStore, n int) ([]*snapshot.ShardSnapshot, error) {
-	out := make([]*snapshot.ShardSnapshot, n)
+func loadInputs(ctx context.Context, store snapshot.BlobStore, n int) ([]*countersnap.ShardSnapshot, error) {
+	out := make([]*countersnap.ShardSnapshot, n)
 	for i := 0; i < n; i++ {
 		key := fmt.Sprintf("shard-%d", i)
-		snap, err := snapshot.Load(ctx, store, key)
+		snap, err := countersnap.Load(ctx, store, key)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				fmt.Fprintf(os.Stderr, "warning: %s(.pb|.json) missing, treating as empty\n", key)

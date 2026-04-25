@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/pkg/shard"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 )
 
 // TestReshard_RoutesUsersToNewShard constructs a fake 2-shard layout, asks
@@ -12,27 +12,27 @@ import (
 // dictated by pkg/shard.Index.
 func TestReshard_RoutesUsersToNewShard(t *testing.T) {
 	users := []string{"alice", "bob", "carol", "dave", "eve", "frank", "gwen"}
-	inputs := []*snapshot.ShardSnapshot{
+	inputs := []*countersnap.ShardSnapshot{
 		{
-			Version: snapshot.Version, ShardID: 0, CounterSeq: 100,
-			Accounts: []snapshot.AccountSnapshot{
-				{UserID: users[0], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "1"}}},
-				{UserID: users[2], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "2"}}},
-				{UserID: users[4], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "3"}}},
+			Version: countersnap.Version, ShardID: 0, CounterSeq: 100,
+			Accounts: []countersnap.AccountSnapshot{
+				{UserID: users[0], Balances: []countersnap.BalanceSnapshot{{Asset: "USDT", Available: "1"}}},
+				{UserID: users[2], Balances: []countersnap.BalanceSnapshot{{Asset: "USDT", Available: "2"}}},
+				{UserID: users[4], Balances: []countersnap.BalanceSnapshot{{Asset: "USDT", Available: "3"}}},
 			},
-			Orders: []snapshot.OrderSnapshot{
+			Orders: []countersnap.OrderSnapshot{
 				{ID: 1, UserID: users[0], Symbol: "BTC-USDT"},
 				{ID: 2, UserID: users[2], Symbol: "BTC-USDT"},
 			},
-			Dedup: []snapshot.DedupEntrySnapshot{{Key: "tx-1", ExpiresUnix: 1}},
+			Dedup: []countersnap.DedupEntrySnapshot{{Key: "tx-1", ExpiresUnix: 1}},
 		},
 		{
-			Version: snapshot.Version, ShardID: 1, CounterSeq: 90,
-			Accounts: []snapshot.AccountSnapshot{
-				{UserID: users[1], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "10"}}},
-				{UserID: users[3], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "20"}}},
-				{UserID: users[5], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "30"}}},
-				{UserID: users[6], Balances: []snapshot.BalanceSnapshot{{Asset: "USDT", Available: "40"}}},
+			Version: countersnap.Version, ShardID: 1, CounterSeq: 90,
+			Accounts: []countersnap.AccountSnapshot{
+				{UserID: users[1], Balances: []countersnap.BalanceSnapshot{{Asset: "USDT", Available: "10"}}},
+				{UserID: users[3], Balances: []countersnap.BalanceSnapshot{{Asset: "USDT", Available: "20"}}},
+				{UserID: users[5], Balances: []countersnap.BalanceSnapshot{{Asset: "USDT", Available: "30"}}},
+				{UserID: users[6], Balances: []countersnap.BalanceSnapshot{{Asset: "USDT", Available: "40"}}},
 			},
 		},
 	}
@@ -98,10 +98,10 @@ func TestReshard_RoutesUsersToNewShard(t *testing.T) {
 // reruns.
 func TestReshard_IdempotentFromSameTotal(t *testing.T) {
 	// Two input shards for fromN=2, same hashing for toM=2.
-	mk := func(shardID int, users ...string) *snapshot.ShardSnapshot {
-		s := &snapshot.ShardSnapshot{Version: snapshot.Version, ShardID: shardID, CounterSeq: uint64(shardID * 10)}
+	mk := func(shardID int, users ...string) *countersnap.ShardSnapshot {
+		s := &countersnap.ShardSnapshot{Version: countersnap.Version, ShardID: shardID, CounterSeq: uint64(shardID * 10)}
 		for _, u := range users {
-			s.Accounts = append(s.Accounts, snapshot.AccountSnapshot{UserID: u})
+			s.Accounts = append(s.Accounts, countersnap.AccountSnapshot{UserID: u})
 		}
 		return s
 	}
@@ -116,7 +116,7 @@ func TestReshard_IdempotentFromSameTotal(t *testing.T) {
 			s1 = append(s1, u)
 		}
 	}
-	inputs := []*snapshot.ShardSnapshot{mk(0, s0...), mk(1, s1...)}
+	inputs := []*countersnap.ShardSnapshot{mk(0, s0...), mk(1, s1...)}
 	outputs, rep := reshard(inputs, 2, 0)
 
 	if rep.Users != 20 {
@@ -134,9 +134,9 @@ func TestReshard_IdempotentFromSameTotal(t *testing.T) {
 // TestReshard_NilInputsIgnored lets the operator provide a sparse input
 // dir when some shards were already empty.
 func TestReshard_NilInputsIgnored(t *testing.T) {
-	inputs := []*snapshot.ShardSnapshot{
+	inputs := []*countersnap.ShardSnapshot{
 		nil,
-		{Version: snapshot.Version, ShardID: 1, Accounts: []snapshot.AccountSnapshot{{UserID: "x"}}},
+		{Version: countersnap.Version, ShardID: 1, Accounts: []countersnap.AccountSnapshot{{UserID: "x"}}},
 	}
 	outputs, rep := reshard(inputs, 3, 0)
 	if rep.Users != 1 {

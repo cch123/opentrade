@@ -15,6 +15,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
 )
 
@@ -145,7 +146,7 @@ func TestPrimeFromStore_ColdStart(t *testing.T) {
 // fresh.
 func TestPrimeFromStore_ExistingSnapshot(t *testing.T) {
 	store := snapshotpkg.NewFSBlobStore(t.TempDir())
-	snap := &snapshotpkg.ShardSnapshot{
+	snap := &countersnap.ShardSnapshot{
 		Version:       2,
 		ShardID:       1,
 		CounterSeq:    100,
@@ -153,7 +154,7 @@ func TestPrimeFromStore_ExistingSnapshot(t *testing.T) {
 		TimestampMS:   1,
 	}
 	key := fmt.Sprintf("vshard-%03d", 1)
-	if err := snapshotpkg.Save(context.Background(), store, key, snap, snapshotpkg.FormatProto); err != nil {
+	if err := countersnap.Save(context.Background(), store, key, snap, snapshotpkg.FormatProto); err != nil {
 		t.Fatalf("seed snapshot: %v", err)
 	}
 
@@ -262,7 +263,7 @@ func TestMaybeCapture_EventCountTrigger(t *testing.T) {
 	}
 	p.saveWG.Wait()
 
-	snap, err := snapshotpkg.Load(context.Background(), store, "vshard-000")
+	snap, err := countersnap.Load(context.Background(), store, "vshard-000")
 	if err != nil {
 		t.Fatalf("load saved snapshot: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestMaybeCapture_TimeTrigger(t *testing.T) {
 	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt("u1", "tx-2", "1", 2), 0, 1))
 	p.saveWG.Wait()
 
-	if _, err := snapshotpkg.Load(context.Background(), store, "vshard-000"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := countersnap.Load(context.Background(), store, "vshard-000"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected no snapshot yet, got err=%v", err)
 	}
 
@@ -306,7 +307,7 @@ func TestMaybeCapture_TimeTrigger(t *testing.T) {
 	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt("u1", "tx-3", "1", 3), 0, 2))
 	p.saveWG.Wait()
 
-	snap, err := snapshotpkg.Load(context.Background(), store, "vshard-000")
+	snap, err := countersnap.Load(context.Background(), store, "vshard-000")
 	if err != nil {
 		t.Fatalf("load after time trigger: %v", err)
 	}
@@ -423,7 +424,7 @@ func (p *Pipeline) primeEnginesFromStore(ctx context.Context) error {
 		eng := shadow.New(v)
 		p.engines[part] = eng
 		key := fmt.Sprintf(p.cfg.SnapshotKeyFormat, v)
-		snap, err := snapshotpkg.Load(ctx, p.cfg.Store, key)
+		snap, err := countersnap.Load(ctx, p.cfg.Store, key)
 		switch {
 		case err == nil:
 			if err := eng.RestoreFromSnapshot(snap); err != nil {

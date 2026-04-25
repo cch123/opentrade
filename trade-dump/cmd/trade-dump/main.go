@@ -36,8 +36,8 @@ import (
 	"google.golang.org/grpc"
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
-	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/pkg/logx"
+	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/trade-dump/internal/consumer"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/pipeline"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshotrpc"
@@ -434,11 +434,11 @@ func hasPipeline(set []string, want string) bool {
 
 func parseFlags() Config {
 	cfg := Config{
-		InstanceID:   "trade-dump-0",
-		TradeTopic:   "trade-event",
-		JournalTopic: "counter-journal",
-		TriggerTopic: "trigger-event",
-		MySQLDSN:     "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
+		InstanceID:        "trade-dump-0",
+		TradeTopic:        "trade-event",
+		JournalTopic:      "counter-journal",
+		TriggerTopic:      "trigger-event",
+		MySQLDSN:          "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
 		MySQLMaxOpenConns: 16,
 		MySQLMaxIdleConns: 4,
 		MySQLConnMaxLife:  30 * time.Minute,

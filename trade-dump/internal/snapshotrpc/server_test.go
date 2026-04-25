@@ -19,7 +19,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
-	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
 )
 
@@ -856,9 +856,9 @@ func TestServer_TakeSnapshot_SnapshotContentValid(t *testing.T) {
 	}
 
 	// Decode uploaded blob and assert matching content via the
-	// snapshotpkg.LoadPath path (same code Counter uses to read
+	// countersnap.LoadPath path (same code Counter uses to read
 	// an on-demand snapshot, so we exercise the real round-trip).
-	snap, err := snapshotpkg.LoadPath(context.Background(), blob, resp.SnapshotKey+".pb")
+	snap, err := countersnap.LoadPath(context.Background(), blob, resp.SnapshotKey+".pb")
 	if err != nil {
 		t.Fatalf("LoadPath uploaded blob: %v", err)
 	}

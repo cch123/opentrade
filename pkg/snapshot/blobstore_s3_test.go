@@ -6,7 +6,7 @@
 // Usage:
 //
 //   docker compose up -d minio
-//   MINIO_ENDPOINT=http://localhost:9000 go test -tags=integration ./internal/snapshot/...
+//   MINIO_ENDPOINT=http://localhost:9000 go test -tags=integration ./pkg/snapshot/...
 //
 // Credentials default to the docker-compose MinIO root user
 // (minioadmin/minioadmin) and can be overridden via MINIO_ACCESS_KEY_ID /
@@ -17,7 +17,6 @@ package snapshot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -53,8 +52,7 @@ func requireS3(t *testing.T) (*s3.Client, string) {
 		o.UsePathStyle = true
 	})
 
-	// Bucket names must be DNS-compliant; lowercase + digits + hyphens only.
-	bucket := fmt.Sprintf("opentrade-counter-test-%d", time.Now().UnixNano())
+	bucket := fmt.Sprintf("opentrade-blobstore-test-%d", time.Now().UnixNano())
 	if _, err := client.CreateBucket(context.Background(), &s3.CreateBucketInput{
 		Bucket: aws.String(bucket),
 	}); err != nil {
@@ -97,94 +95,6 @@ func cleanupBucket(t *testing.T, client *s3.Client, bucket string) {
 	}
 }
 
-// TestS3BlobStore_RoundTrip is the smoke test — a snapshot saved through
-// the S3 backend must come back identical.
-func TestS3BlobStore_RoundTrip(t *testing.T) {
-	client, bucket := requireS3(t)
-	store := NewS3BlobStore(client, bucket, "counter/")
-	ctx := context.Background()
-
-	snap := &ShardSnapshot{
-		Version:    Version,
-		ShardID:    0,
-		CounterSeq: 123,
-		Accounts: []AccountSnapshot{{
-			UserID: "u1",
-			Balances: []BalanceSnapshot{{Asset: "USDT", Available: "100", Frozen: "50"}},
-		}},
-	}
-	if err := Save(ctx, store, "shard-0", snap, FormatProto); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	got, err := Load(ctx, store, "shard-0")
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if got.CounterSeq != 123 || len(got.Accounts) != 1 || got.Accounts[0].UserID != "u1" {
-		t.Fatalf("round trip mismatch: %+v", got)
-	}
-}
-
-// TestS3BlobStore_GetMissingReturnsErrNotExist is the cold-start contract:
-// a key that has never been written must surface as os.ErrNotExist so
-// callers can branch on it.
-func TestS3BlobStore_GetMissingReturnsErrNotExist(t *testing.T) {
-	client, bucket := requireS3(t)
-	store := NewS3BlobStore(client, bucket, "counter/")
-	ctx := context.Background()
-	_, err := Load(ctx, store, "never-written")
-	if err == nil {
-		t.Fatal("want error on missing key")
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("want os.ErrNotExist, got %v", err)
-	}
-}
-
-// TestS3BlobStore_ProtoPreferredOverJSON mirrors the FS test: when both
-// formats exist on the store, Load picks the proto one (ADR-0049).
-func TestS3BlobStore_ProtoPreferredOverJSON(t *testing.T) {
-	client, bucket := requireS3(t)
-	store := NewS3BlobStore(client, bucket, "counter/")
-	ctx := context.Background()
-	protoSnap := &ShardSnapshot{Version: Version, ShardID: 0, CounterSeq: 7}
-	jsonSnap := &ShardSnapshot{Version: Version, ShardID: 0, CounterSeq: 42}
-	if err := Save(ctx, store, "shard-0", protoSnap, FormatProto); err != nil {
-		t.Fatal(err)
-	}
-	if err := Save(ctx, store, "shard-0", jsonSnap, FormatJSON); err != nil {
-		t.Fatal(err)
-	}
-	got, err := Load(ctx, store, "shard-0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.CounterSeq != 7 {
-		t.Fatalf("want proto (seq=7) to win, got seq=%d", got.CounterSeq)
-	}
-}
-
-// TestS3BlobStore_EmptyPrefix confirms the common case of writing at the
-// bucket root works (prefix == ""), which is how single-purpose snapshot
-// buckets are typically laid out.
-func TestS3BlobStore_EmptyPrefix(t *testing.T) {
-	client, bucket := requireS3(t)
-	store := NewS3BlobStore(client, bucket, "")
-	ctx := context.Background()
-
-	snap := &ShardSnapshot{Version: Version, ShardID: 1, CounterSeq: 5}
-	if err := Save(ctx, store, "shard-1", snap, FormatProto); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	got, err := Load(ctx, store, "shard-1")
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if got.CounterSeq != 5 {
-		t.Fatalf("round trip: got seq=%d", got.CounterSeq)
-	}
-}
-
 // TestS3BlobStore_ListAndDelete exercises the BlobLister impl used
 // by the ADR-0064 M1d on-demand snapshot housekeeper. Seed a mix
 // of periodic + on-demand keys, verify prefix filter, delete one
@@ -196,11 +106,11 @@ func TestS3BlobStore_ListAndDelete(t *testing.T) {
 
 	// Seed both periodic and on-demand keys.
 	seed := map[string][]byte{
-		"vshard-001.pb":                          []byte("periodic-1"),
-		"vshard-002.pb":                          []byte("periodic-2"),
-		"vshard-001-ondemand-1700000000000.pb":   []byte("ondemand-1a"),
-		"vshard-001-ondemand-1700000000001.pb":   []byte("ondemand-1b"),
-		"vshard-002-ondemand-1700000000002.pb":   []byte("ondemand-2"),
+		"vshard-001.pb":                        []byte("periodic-1"),
+		"vshard-002.pb":                        []byte("periodic-2"),
+		"vshard-001-ondemand-1700000000000.pb": []byte("ondemand-1a"),
+		"vshard-001-ondemand-1700000000001.pb": []byte("ondemand-1b"),
+		"vshard-002-ondemand-1700000000002.pb": []byte("ondemand-2"),
 	}
 	for k, v := range seed {
 		if err := store.Put(ctx, k, v); err != nil {

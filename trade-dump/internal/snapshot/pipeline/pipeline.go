@@ -41,6 +41,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
 )
 
@@ -233,7 +234,7 @@ func (p *Pipeline) Start(ctx context.Context) error {
 		p.engines[part] = eng
 
 		key := fmt.Sprintf(p.cfg.SnapshotKeyFormat, v)
-		snap, err := snapshotpkg.Load(ctx, p.cfg.Store, key)
+		snap, err := countersnap.Load(ctx, p.cfg.Store, key)
 		switch {
 		case err == nil:
 			if err := eng.RestoreFromSnapshot(snap); err != nil {
@@ -380,12 +381,12 @@ func (p *Pipeline) maybeCapture(ctx context.Context, part int32, eng *shadow.Eng
 // saveSnapshot runs on a background goroutine. Failures log +
 // drop; the next trigger re-captures and retries (idempotent —
 // snapshots are key-overwrite).
-func (p *Pipeline) saveSnapshot(parent context.Context, part int32, snap *snapshotpkg.ShardSnapshot) {
+func (p *Pipeline) saveSnapshot(parent context.Context, part int32, snap *countersnap.ShardSnapshot) {
 	key := fmt.Sprintf(p.cfg.SnapshotKeyFormat, part)
 	ctx, cancel := context.WithTimeout(parent, p.cfg.SaveTimeout)
 	defer cancel()
 	start := time.Now()
-	if err := snapshotpkg.Save(ctx, p.cfg.Store, key, snap, p.cfg.SnapshotFormat); err != nil {
+	if err := countersnap.Save(ctx, p.cfg.Store, key, snap, p.cfg.SnapshotFormat); err != nil {
 		p.logger.Error("snapshot save failed",
 			zap.Int32("vshard", part),
 			zap.Int64("journal_offset", snap.JournalOffset),

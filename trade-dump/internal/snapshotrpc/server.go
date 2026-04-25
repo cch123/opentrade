@@ -31,6 +31,7 @@ import (
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
 )
 
@@ -176,7 +177,7 @@ type Config struct {
 	WorkTimeout time.Duration
 
 	// SnapshotFormat controls the encoding passed to
-	// snapshotpkg.Save. Default snapshotpkg.FormatProto (same as
+	// countersnap.Save. Default snapshotpkg.FormatProto (same as
 	// pipeline).
 	SnapshotFormat snapshotpkg.Format
 
@@ -427,7 +428,7 @@ func (s *Server) takeSnapshotOnce(
 	key := fmt.Sprintf("%svshard-%03d-ondemand-%d",
 		s.cfg.KeyPrefix, partition, now.UnixMilli())
 
-	if err := snapshotpkg.Save(ctx, s.cfg.BlobStore, key, snap, s.cfg.SnapshotFormat); err != nil {
+	if err := countersnap.Save(ctx, s.cfg.BlobStore, key, snap, s.cfg.SnapshotFormat); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, status.Errorf(codes.DeadlineExceeded,
 				"snapshot_upload_timeout: %v", err)

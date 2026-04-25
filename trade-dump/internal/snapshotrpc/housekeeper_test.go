@@ -81,11 +81,11 @@ func TestHousekeeper_Sweep_DeletesStaleOnDemandOnly(t *testing.T) {
 
 	// Mix: periodic (never delete), stale on-demand (delete),
 	// fresh on-demand (keep).
-	lister.put("vshard-001.pb", now.Add(-2*time.Hour))                        // periodic, stale timestamp
-	lister.put("vshard-002.pb", now.Add(-2*time.Hour))                        // periodic, stale timestamp
-	lister.put("vshard-001-ondemand-1000.pb", now.Add(-90*time.Minute))       // on-demand, 90min > 1h TTL → delete
-	lister.put("vshard-002-ondemand-1200.pb", now.Add(-5*time.Minute))        // on-demand, recent → keep
-	lister.put("vshard-003-ondemand-1300.pb", now.Add(-2*time.Hour))          // on-demand, stale → delete
+	lister.put("vshard-001.pb", now.Add(-2*time.Hour))                  // periodic, stale timestamp
+	lister.put("vshard-002.pb", now.Add(-2*time.Hour))                  // periodic, stale timestamp
+	lister.put("vshard-001-ondemand-1000.pb", now.Add(-90*time.Minute)) // on-demand, 90min > 1h TTL → delete
+	lister.put("vshard-002-ondemand-1200.pb", now.Add(-5*time.Minute))  // on-demand, recent → keep
+	lister.put("vshard-003-ondemand-1300.pb", now.Add(-2*time.Hour))    // on-demand, stale → delete
 
 	hk := NewHousekeeper(Housekeeper{
 		Lister:       lister,
@@ -98,9 +98,9 @@ func TestHousekeeper_Sweep_DeletesStaleOnDemandOnly(t *testing.T) {
 
 	remaining := lister.keys()
 	wantPresent := map[string]bool{
-		"vshard-001.pb":                   true, // periodic always kept
-		"vshard-002.pb":                   true,
-		"vshard-002-ondemand-1200.pb":     true, // fresh on-demand kept
+		"vshard-001.pb":               true, // periodic always kept
+		"vshard-002.pb":               true,
+		"vshard-002-ondemand-1200.pb": true, // fresh on-demand kept
 	}
 	wantAbsent := []string{
 		"vshard-001-ondemand-1000.pb",
@@ -238,7 +238,7 @@ func TestHousekeeper_Sweep_RespectsOnDemandGlob(t *testing.T) {
 	// Two glob families. Only the "vshard-" family has on-demand
 	// markers; the other should be completely ignored by our glob.
 	lister.put("vshard-001-ondemand-1.pb", now.Add(-2*time.Hour)) // stale
-	lister.put("other-001-ondemand-1.pb", now.Add(-2*time.Hour)) // stale but wrong glob
+	lister.put("other-001-ondemand-1.pb", now.Add(-2*time.Hour))  // stale but wrong glob
 
 	hk := NewHousekeeper(Housekeeper{
 		Lister:       lister,
