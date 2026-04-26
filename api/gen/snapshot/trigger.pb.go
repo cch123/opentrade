@@ -25,14 +25,25 @@ type TriggerSnapshot struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Version   uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
 	TakenAtMs int64                  `protobuf:"varint,2,opt,name=taken_at_ms,json=takenAtMs,proto3" json:"taken_at_ms,omitempty"`
-	Offsets   map[int32]int64        `protobuf:"bytes,3,rep,name=offsets,proto3" json:"offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	Pending   []*TriggerRecord       `protobuf:"bytes,4,rep,name=pending,proto3" json:"pending,omitempty"`
-	Terminals []*TriggerRecord       `protobuf:"bytes,5,rep,name=terminals,proto3" json:"terminals,omitempty"`
+	// offsets are the trigger primary's market-data consumer offsets,
+	// partition → next-to-consume. Populated either by the primary itself
+	// (legacy path) or by trade-dump shadow from
+	// TriggerMarketCheckpointEvent (ADR-0067).
+	Offsets   map[int32]int64  `protobuf:"bytes,3,rep,name=offsets,proto3" json:"offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Pending   []*TriggerRecord `protobuf:"bytes,4,rep,name=pending,proto3" json:"pending,omitempty"`
+	Terminals []*TriggerRecord `protobuf:"bytes,5,rep,name=terminals,proto3" json:"terminals,omitempty"`
 	// OCOByClient: client-supplied idempotency key → engine-assigned group id
 	// (ADR-0044).
-	OcoByClient   map[string]string `protobuf:"bytes,6,rep,name=oco_by_client,json=ocoByClient,proto3" json:"oco_by_client,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	OcoByClient map[string]string `protobuf:"bytes,6,rep,name=oco_by_client,json=ocoByClient,proto3" json:"oco_by_client,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// trigger_event_offset is the next-to-consume position on the
+	// trigger-event topic (ADR-0067). When trade-dump produces the
+	// snapshot, this is the shadow's apply cursor; trigger startup uses
+	// it to seek the catch-up consumer. Zero on legacy snapshots
+	// (trigger self-produced) — caller falls back to AtStart for
+	// catch-up.
+	TriggerEventOffset int64 `protobuf:"varint,7,opt,name=trigger_event_offset,json=triggerEventOffset,proto3" json:"trigger_event_offset,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *TriggerSnapshot) Reset() {
@@ -105,6 +116,13 @@ func (x *TriggerSnapshot) GetOcoByClient() map[string]string {
 		return x.OcoByClient
 	}
 	return nil
+}
+
+func (x *TriggerSnapshot) GetTriggerEventOffset() int64 {
+	if x != nil {
+		return x.TriggerEventOffset
+	}
+	return 0
 }
 
 type TriggerRecord struct {
@@ -324,14 +342,15 @@ var File_snapshot_trigger_proto protoreflect.FileDescriptor
 
 const file_snapshot_trigger_proto_rawDesc = "" +
 	"\n" +
-	"\x16snapshot/trigger.proto\x12\x12opentrade.snapshot\"\xeb\x03\n" +
+	"\x16snapshot/trigger.proto\x12\x12opentrade.snapshot\"\x9d\x04\n" +
 	"\x0fTriggerSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x1e\n" +
 	"\vtaken_at_ms\x18\x02 \x01(\x03R\ttakenAtMs\x12J\n" +
 	"\aoffsets\x18\x03 \x03(\v20.opentrade.snapshot.TriggerSnapshot.OffsetsEntryR\aoffsets\x12;\n" +
 	"\apending\x18\x04 \x03(\v2!.opentrade.snapshot.TriggerRecordR\apending\x12?\n" +
 	"\tterminals\x18\x05 \x03(\v2!.opentrade.snapshot.TriggerRecordR\tterminals\x12X\n" +
-	"\roco_by_client\x18\x06 \x03(\v24.opentrade.snapshot.TriggerSnapshot.OcoByClientEntryR\vocoByClient\x1a:\n" +
+	"\roco_by_client\x18\x06 \x03(\v24.opentrade.snapshot.TriggerSnapshot.OcoByClientEntryR\vocoByClient\x120\n" +
+	"\x14trigger_event_offset\x18\a \x01(\x03R\x12triggerEventOffset\x1a:\n" +
 	"\fOffsetsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a>\n" +

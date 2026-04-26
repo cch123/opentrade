@@ -378,6 +378,71 @@ func (x *TriggerUpdate) GetTriggerSeqId() uint64 {
 	return 0
 }
 
+// TriggerMarketCheckpointEvent advances trade-dump's view of the trigger
+// service's market-data consumer position (ADR-0067). Trigger primary
+// produces one of these periodically; trade-dump's trigger shadow keeps
+// the latest map and stamps it onto the snapshot so a restored trigger
+// resumes its market-data consumer at the right partition offsets
+// (ADR-0048: snapshot + offset must travel together).
+//
+// Apply has no business effect on trigger state — it only advances the
+// `market_offsets` field the shadow holds locally.
+//
+// Mirrors ADR-0060 TECheckpointEvent for counter-journal.
+type TriggerMarketCheckpointEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// market_offsets is partition → next-to-consume offset on the
+	// market-data topic the trigger primary subscribes to.
+	MarketOffsets map[int32]int64 `protobuf:"bytes,1,rep,name=market_offsets,json=marketOffsets,proto3" json:"market_offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	TsUnixMs      int64           `protobuf:"varint,2,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TriggerMarketCheckpointEvent) Reset() {
+	*x = TriggerMarketCheckpointEvent{}
+	mi := &file_event_trigger_event_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TriggerMarketCheckpointEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TriggerMarketCheckpointEvent) ProtoMessage() {}
+
+func (x *TriggerMarketCheckpointEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_event_trigger_event_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TriggerMarketCheckpointEvent.ProtoReflect.Descriptor instead.
+func (*TriggerMarketCheckpointEvent) Descriptor() ([]byte, []int) {
+	return file_event_trigger_event_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TriggerMarketCheckpointEvent) GetMarketOffsets() map[int32]int64 {
+	if x != nil {
+		return x.MarketOffsets
+	}
+	return nil
+}
+
+func (x *TriggerMarketCheckpointEvent) GetTsUnixMs() int64 {
+	if x != nil {
+		return x.TsUnixMs
+	}
+	return 0
+}
+
 var File_event_trigger_event_proto protoreflect.FileDescriptor
 
 const file_event_trigger_event_proto_rawDesc = "" +
@@ -411,7 +476,14 @@ const file_event_trigger_event_proto_rawDesc = "" +
 	"\x10activation_price\x18\x15 \x01(\tR\x0factivationPrice\x12-\n" +
 	"\x12trailing_watermark\x18\x16 \x01(\tR\x11trailingWatermark\x12'\n" +
 	"\x0ftrailing_active\x18\x17 \x01(\bR\x0etrailingActive\x12$\n" +
-	"\x0etrigger_seq_id\x18\x18 \x01(\x04R\ftriggerSeqId*\xf9\x01\n" +
+	"\x0etrigger_seq_id\x18\x18 \x01(\x04R\ftriggerSeqId\"\xe7\x01\n" +
+	"\x1cTriggerMarketCheckpointEvent\x12g\n" +
+	"\x0emarket_offsets\x18\x01 \x03(\v2@.opentrade.event.TriggerMarketCheckpointEvent.MarketOffsetsEntryR\rmarketOffsets\x12\x1c\n" +
+	"\n" +
+	"ts_unix_ms\x18\x02 \x01(\x03R\btsUnixMs\x1a@\n" +
+	"\x12MarketOffsetsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01*\xf9\x01\n" +
 	"\x10TriggerEventType\x12\"\n" +
 	"\x1eTRIGGER_EVENT_TYPE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cTRIGGER_EVENT_TYPE_STOP_LOSS\x10\x01\x12&\n" +
@@ -440,26 +512,29 @@ func file_event_trigger_event_proto_rawDescGZIP() []byte {
 }
 
 var file_event_trigger_event_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_event_trigger_event_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_event_trigger_event_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_event_trigger_event_proto_goTypes = []any{
-	(TriggerEventType)(0),   // 0: opentrade.event.TriggerEventType
-	(TriggerEventStatus)(0), // 1: opentrade.event.TriggerEventStatus
-	(*TriggerUpdate)(nil),   // 2: opentrade.event.TriggerUpdate
-	(*EventMeta)(nil),       // 3: opentrade.event.EventMeta
-	(Side)(0),               // 4: opentrade.event.Side
-	(TimeInForce)(0),        // 5: opentrade.event.TimeInForce
+	(TriggerEventType)(0),                // 0: opentrade.event.TriggerEventType
+	(TriggerEventStatus)(0),              // 1: opentrade.event.TriggerEventStatus
+	(*TriggerUpdate)(nil),                // 2: opentrade.event.TriggerUpdate
+	(*TriggerMarketCheckpointEvent)(nil), // 3: opentrade.event.TriggerMarketCheckpointEvent
+	nil,                                  // 4: opentrade.event.TriggerMarketCheckpointEvent.MarketOffsetsEntry
+	(*EventMeta)(nil),                    // 5: opentrade.event.EventMeta
+	(Side)(0),                            // 6: opentrade.event.Side
+	(TimeInForce)(0),                     // 7: opentrade.event.TimeInForce
 }
 var file_event_trigger_event_proto_depIdxs = []int32{
-	3, // 0: opentrade.event.TriggerUpdate.meta:type_name -> opentrade.event.EventMeta
-	4, // 1: opentrade.event.TriggerUpdate.side:type_name -> opentrade.event.Side
+	5, // 0: opentrade.event.TriggerUpdate.meta:type_name -> opentrade.event.EventMeta
+	6, // 1: opentrade.event.TriggerUpdate.side:type_name -> opentrade.event.Side
 	0, // 2: opentrade.event.TriggerUpdate.type:type_name -> opentrade.event.TriggerEventType
-	5, // 3: opentrade.event.TriggerUpdate.tif:type_name -> opentrade.event.TimeInForce
+	7, // 3: opentrade.event.TriggerUpdate.tif:type_name -> opentrade.event.TimeInForce
 	1, // 4: opentrade.event.TriggerUpdate.status:type_name -> opentrade.event.TriggerEventStatus
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	4, // 5: opentrade.event.TriggerMarketCheckpointEvent.market_offsets:type_name -> opentrade.event.TriggerMarketCheckpointEvent.MarketOffsetsEntry
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_event_trigger_event_proto_init() }
@@ -474,7 +549,7 @@ func file_event_trigger_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_trigger_event_proto_rawDesc), len(file_event_trigger_event_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   1,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

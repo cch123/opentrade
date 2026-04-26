@@ -92,3 +92,21 @@ message TriggerUpdate {
 
   uint64 trigger_seq_id = 24;
 }
+
+// TriggerMarketCheckpointEvent advances trade-dump's view of the trigger
+// service's market-data consumer position (ADR-0067). Trigger primary
+// produces one of these periodically; trade-dump's trigger shadow keeps
+// the latest map and stamps it onto the snapshot so a restored trigger
+// resumes its market-data consumer at the right partition offsets
+// (ADR-0048: snapshot + offset must travel together).
+//
+// Apply has no business effect on trigger state — it only advances the
+// `market_offsets` field the shadow holds locally.
+//
+// Mirrors ADR-0060 TECheckpointEvent for counter-journal.
+message TriggerMarketCheckpointEvent {
+  // market_offsets is partition → next-to-consume offset on the
+  // market-data topic the trigger primary subscribes to.
+  map<int32, int64> market_offsets = 1;
+  int64 ts_unix_ms = 2;
+}

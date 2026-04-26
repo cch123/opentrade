@@ -15,12 +15,23 @@ option go_package = "github.com/xargin/opentrade/api/gen/snapshot;snapshot";
 message TriggerSnapshot {
   uint32 version = 1;
   int64  taken_at_ms = 2;
+  // offsets are the trigger primary's market-data consumer offsets,
+  // partition → next-to-consume. Populated either by the primary itself
+  // (legacy path) or by trade-dump shadow from
+  // TriggerMarketCheckpointEvent (ADR-0067).
   map<int32, int64> offsets = 3;
   repeated TriggerRecord pending = 4;
   repeated TriggerRecord terminals = 5;
   // OCOByClient: client-supplied idempotency key → engine-assigned group id
   // (ADR-0044).
   map<string, string> oco_by_client = 6;
+  // trigger_event_offset is the next-to-consume position on the
+  // trigger-event topic (ADR-0067). When trade-dump produces the
+  // snapshot, this is the shadow's apply cursor; trigger startup uses
+  // it to seek the catch-up consumer. Zero on legacy snapshots
+  // (trigger self-produced) — caller falls back to AtStart for
+  // catch-up.
+  int64 trigger_event_offset = 7;
 }
 
 message TriggerRecord {
