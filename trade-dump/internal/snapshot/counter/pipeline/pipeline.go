@@ -42,7 +42,7 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
-	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
+	"github.com/xargin/opentrade/trade-dump/internal/snapshot/counter/shadow"
 )
 
 // Config wires every knob the pipeline needs. Zero values fall

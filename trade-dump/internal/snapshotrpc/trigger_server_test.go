@@ -13,7 +13,7 @@ import (
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	triggersnap "github.com/xargin/opentrade/pkg/snapshot/trigger"
-	"github.com/xargin/opentrade/trade-dump/internal/snapshot/triggershadow"
+	triggershadow "github.com/xargin/opentrade/trade-dump/internal/snapshot/trigger/shadow"
 )
 
 // triggerHandlerEnv wires a Server with a populated TriggerBackend

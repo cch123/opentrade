@@ -1,7 +1,6 @@
-// Package triggerpipeline is trade-dump's ADR-0067 trigger snapshot
-// pipeline. One Pipeline instance owns the trigger-event Kafka
-// consumer + a single triggershadow.Engine + a single fixed-key
-// snapshot in the BlobStore.
+// Package pipeline is trade-dump's ADR-0067 trigger snapshot pipeline.
+// One Pipeline instance owns the trigger-event Kafka consumer + a
+// single shadow.Engine + a single fixed-key snapshot in the BlobStore.
 //
 // Mirror of the counter pipeline (ADR-0061), simplified:
 //
@@ -14,14 +13,10 @@
 //     partition set so Kafka offset commits never override the
 //     snapshot's cursor (ADR-0048).
 //
-// M2 wires only ApplyTriggerUpdate. ApplyMarketCheckpoint dispatch
-// arrives in M3 once trigger primary starts producing the checkpoint
-// event.
-//
 // Threading: a single Run goroutine drives Apply + Capture serially,
 // matching ADR-0061 §4.2. Save runs on a background goroutine; the
 // in-flight flag prevents two Saves from racing the BlobStore key.
-package triggerpipeline
+package pipeline
 
 import (
 	"context"
@@ -40,7 +35,7 @@ import (
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	triggersnap "github.com/xargin/opentrade/pkg/snapshot/trigger"
-	"github.com/xargin/opentrade/trade-dump/internal/snapshot/triggershadow"
+	triggershadow "github.com/xargin/opentrade/trade-dump/internal/snapshot/trigger/shadow"
 )
 
 // DefaultSnapshotKey is the BlobStore key stem the pipeline writes to.

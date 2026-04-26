@@ -31,8 +31,8 @@ import (
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
-	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
 	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
+	countershadow "github.com/xargin/opentrade/trade-dump/internal/snapshot/counter/shadow"
 )
 
 // defaultSemAcquireTimeout bounds the wait for the global in-flight
@@ -56,7 +56,7 @@ const defaultSemAcquireTimeout = 1 * time.Second
 //
 // Interface so tests can stub without importing the pipeline.
 type ShadowAccessor interface {
-	ShadowEngine(vshard int32) (*shadow.Engine, bool)
+	ShadowEngine(vshard int32) (*countershadow.Engine, bool)
 }
 
 // KafkaAdmin abstracts the one Kafka admin call the handler makes —
@@ -360,7 +360,7 @@ func (s *Server) TakeSnapshot(
 func (s *Server) takeSnapshotOnce(
 	ctx context.Context,
 	partition int32,
-	eng *shadow.Engine,
+	eng *countershadow.Engine,
 ) (*tradedumprpc.TakeSnapshotResponse, error) {
 	// Concurrency cap — protects the 256-vshard whole-host restart
 	// scenario from saturating Capture+S3 in parallel. The

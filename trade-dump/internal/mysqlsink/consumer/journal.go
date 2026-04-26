@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/trade-dump/internal/writer"
+	"github.com/xargin/opentrade/trade-dump/internal/mysqlsink/writer"
 )
 
 // JournalWriter is the narrow view the consumer needs against MySQL. Real

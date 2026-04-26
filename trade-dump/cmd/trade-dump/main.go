@@ -42,11 +42,11 @@ import (
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	"github.com/xargin/opentrade/pkg/logx"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
-	"github.com/xargin/opentrade/trade-dump/internal/consumer"
-	"github.com/xargin/opentrade/trade-dump/internal/snapshot/pipeline"
-	"github.com/xargin/opentrade/trade-dump/internal/snapshot/triggerpipeline"
+	"github.com/xargin/opentrade/trade-dump/internal/mysqlsink/consumer"
+	"github.com/xargin/opentrade/trade-dump/internal/mysqlsink/writer"
+	counterpipeline "github.com/xargin/opentrade/trade-dump/internal/snapshot/counter/pipeline"
+	triggerpipeline "github.com/xargin/opentrade/trade-dump/internal/snapshot/trigger/pipeline"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshotrpc"
-	"github.com/xargin/opentrade/trade-dump/internal/writer"
 )
 
 type Config struct {
@@ -246,13 +246,13 @@ func main() {
 	}
 
 	// ---------------- Snapshot pipeline ----------------
-	var snapPipe *pipeline.Pipeline
+	var snapPipe *counterpipeline.Pipeline
 	if wantSnap {
 		store, err := newSnapshotStore(rootCtx, cfg, logger)
 		if err != nil {
 			logger.Fatal("snapshot store init", zap.Error(err))
 		}
-		snapPipe, err = pipeline.New(pipeline.Config{
+		snapPipe, err = counterpipeline.New(counterpipeline.Config{
 			Brokers:            cfg.Brokers,
 			ClientID:           cfg.InstanceID + "-snap",
 			JournalTopic:       cfg.JournalTopic,

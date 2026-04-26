@@ -19,8 +19,8 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
-	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
 	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
+	countershadow "github.com/xargin/opentrade/trade-dump/internal/snapshot/counter/shadow"
 )
 
 // -----------------------------------------------------------------------------
@@ -28,20 +28,20 @@ import (
 // -----------------------------------------------------------------------------
 
 // stubShadow implements ShadowAccessor against an in-memory map of
-// shadow.Engine instances. Populated via addEngine per test.
+// countershadow.Engine instances. Populated via addEngine per test.
 type stubShadow struct {
-	engines map[int32]*shadow.Engine
+	engines map[int32]*countershadow.Engine
 }
 
-func newStubShadow() *stubShadow { return &stubShadow{engines: map[int32]*shadow.Engine{}} }
+func newStubShadow() *stubShadow { return &stubShadow{engines: map[int32]*countershadow.Engine{}} }
 
-func (s *stubShadow) ShadowEngine(v int32) (*shadow.Engine, bool) {
+func (s *stubShadow) ShadowEngine(v int32) (*countershadow.Engine, bool) {
 	e, ok := s.engines[v]
 	return e, ok
 }
 
-func (s *stubShadow) addEngine(v int32) *shadow.Engine {
-	e := shadow.New(int(v))
+func (s *stubShadow) addEngine(v int32) *countershadow.Engine {
+	e := countershadow.New(int(v))
 	s.engines[v] = e
 	return e
 }
@@ -145,7 +145,7 @@ func (b *stubBlob) hasKey(key string) bool {
 // helper: drive a single Apply into an engine at kafkaOffset so
 // PublishedOffset() jumps to kafkaOffset+1. Cheapest no-state-impact
 // event: TECheckpoint.
-func seedApply(t *testing.T, eng *shadow.Engine, seq uint64, kafkaOffset int64) {
+func seedApply(t *testing.T, eng *countershadow.Engine, seq uint64, kafkaOffset int64) {
 	t.Helper()
 	evt := &eventpb.CounterJournalEvent{
 		CounterSeqId: seq,

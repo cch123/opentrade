@@ -1,4 +1,4 @@
-package triggerpipeline
+package pipeline
 
 import (
 	"context"

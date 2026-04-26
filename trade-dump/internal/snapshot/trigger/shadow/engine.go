@@ -1,8 +1,8 @@
-// Package triggershadow is trade-dump's in-memory mirror of the
-// trigger service (ADR-0067 M1). It applies trigger-event records into
-// a small state set (pending + terminal trigger records, market-data
-// offset checkpoint) and produces snapshots that trigger startup
-// restores from — mirror of counter shadow under ADR-0061.
+// Package shadow is trade-dump's in-memory mirror of the trigger
+// service (ADR-0067 M1). It applies trigger-event records into a small
+// state set (pending + terminal trigger records, market-data offset
+// checkpoint) and produces snapshots that trigger startup restores
+// from — mirror of counter shadow under ADR-0061.
 //
 // Differences from counter shadow:
 //
@@ -20,10 +20,10 @@
 // per-trigger LWW guard — same simplification counter shadow uses.
 //
 // Concurrency: single-threaded driver per ADR-0061 §4.2 model. The
-// pipeline goroutine (added in M2) owns Apply + Capture serially. The
-// mutex below exists so on-demand Capture (TakeTriggerSnapshot RPC,
-// added in M4) can run from the gRPC handler without racing.
-package triggershadow
+// pipeline goroutine owns Apply + Capture serially. The mutex below
+// exists so on-demand Capture (TakeTriggerSnapshot RPC, ADR-0067 M4)
+// can run from the gRPC handler without racing.
+package shadow
 
 import (
 	"context"

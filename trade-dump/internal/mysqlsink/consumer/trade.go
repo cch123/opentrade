@@ -22,7 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/trade-dump/internal/writer"
+	"github.com/xargin/opentrade/trade-dump/internal/mysqlsink/writer"
 )
 
 // Config configures the trade-event consumer.

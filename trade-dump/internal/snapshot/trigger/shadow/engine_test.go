@@ -1,4 +1,4 @@
-package triggershadow
+package shadow
 
 import (
 	"testing"
