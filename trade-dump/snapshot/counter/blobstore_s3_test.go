@@ -7,7 +7,7 @@
 // Usage:
 //
 //   docker compose up -d minio
-//   MINIO_ENDPOINT=http://localhost:9000 go test -tags=integration ./pkg/snapshot/counter/...
+//   MINIO_ENDPOINT=http://localhost:9000 go test -tags=integration ./trade-dump/snapshot/counter/...
 
 package counter
 

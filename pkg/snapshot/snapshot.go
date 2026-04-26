@@ -1,5 +1,5 @@
-// Package snapshot is the shared infrastructure consumers use to persist
-// service-specific snapshots. It contributes two pieces:
+// Package snapshot is the shared snapshot infrastructure. Per ADR-0066 §4
+// it contributes only the genuinely service-agnostic pieces:
 //
 //   - Format: the on-disk encoding token (proto / json) and its file
 //     extension (ADR-0049).
@@ -7,15 +7,11 @@
 //     plus FSBlobStore (local fs, atomic tmp+rename) and S3BlobStore
 //     (ADR-0058).
 //
-// Service-specific snapshot types live alongside their owners:
-//
-//   - pkg/snapshot/counter — Counter ShardSnapshot (also produced by
-//     trade-dump's shadow engine via ADR-0061).
-//   - pkg/snapshot/trigger — trigger engine Snapshot.
-//
-// Each subpackage owns its own Save/Load shape and proto mapping; this
-// top-level package stays type-neutral so new consumers don't need to
-// reach into another service's snapshot module.
+// Service-specific snapshot types and the state ↔ snapshot conversion
+// live with their producer (trade-dump, the projection platform per
+// ADR-0066) — see trade-dump/snapshot/counter and, after ADR-0067,
+// trade-dump/snapshot/trigger. Consumers (counter, trigger) keep a
+// thin loadSnapshot wrapper inside the service.
 package snapshot
 
 import "fmt"

@@ -36,7 +36,7 @@ import (
 
 	"github.com/xargin/opentrade/pkg/shard"
 	"github.com/xargin/opentrade/pkg/snapshot"
-	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
+	countersnap "github.com/xargin/opentrade/trade-dump/snapshot/counter"
 )
 
 type config struct {

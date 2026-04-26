@@ -14,8 +14,8 @@ import (
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/counter/internal/snapshot"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
-	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 )
 
 // loadOnDemand executes the ADR-0064 §3 Phase 1 on-demand recovery
@@ -45,7 +45,8 @@ import (
 //	  LEO.
 //	④ TakeSnapshot RPC — gets (key, LEO, counter_seq) from
 //	  trade-dump.
-//	⑤ Download + decode + Restore into fresh state.
+//	⑤ Download + decode + Restore into fresh state via
+//	  counter/internal/snapshot.Load.
 func (w *VShardWorker) loadOnDemand(
 	ctx context.Context,
 	producer *journal.TxnProducer,
@@ -110,41 +111,27 @@ func (w *VShardWorker) loadOnDemand(
 		return nil, nil, nil, nil, 0, err
 	}
 
-	// Step ⑤: download. snapshotpkg.LoadPath expects the full
-	// object path including extension. Our server writes .pb so
-	// LoadPath(key+".pb") matches the trade-dump upload convention
-	// (snapshotpkg.Save appends the extension). Uses onDemandCtx
-	// so a slow blob backend can't outrun the budget.
-	snap, err := countersnap.LoadPath(onDemandCtx, w.cfg.Store, resp.SnapshotKey+".pb")
+	// Step ⑤: download + decode + Restore via the consumer-side
+	// adapter. trade-dump writes the on-demand snapshot under
+	// resp.SnapshotKey with format-extension appended; pass the full
+	// path so probe is skipped. Failure becomes ErrFallback because
+	// the worker's installed state is still pristine.
+	r, err := snapshot.Load(onDemandCtx, w.cfg.Store, resp.SnapshotKey+".pb", int(w.cfg.VShardID))
 	if err != nil {
 		return nil, nil, nil, nil, 0, fmt.Errorf("%w: download %s: %v",
 			tradedumpclient.ErrFallback, resp.SnapshotKey, err)
 	}
-
-	// Step ⑤ (continued): Restore into fresh state. Fresh is
-	// LOCAL to this call — on failure we discard and let the
-	// fallback path build its own state from scratch, so
-	// Restore failure remains recoverable at the worker level.
-	freshState := engine.NewShardState(int(w.cfg.VShardID))
-	freshSeq := sequencer.New()
 	freshDt := dedup.New(w.cfg.DedupTTL)
-	if err := countersnap.RestoreState(int(w.cfg.VShardID), freshState, snap); err != nil {
-		return nil, nil, nil, nil, 0, fmt.Errorf("%w: restore: %v",
-			tradedumpclient.ErrFallback, err)
-	}
-	freshSeq.SetCounterSeq(snap.CounterSeq)
 
-	offsets := countersnap.OffsetsSliceToMap(snap.Offsets)
-	journalOffset := snap.JournalOffset
 	logger.Info("on-demand snapshot restored",
 		zap.String("snapshot_key", resp.SnapshotKey),
 		zap.Int64("leo", resp.LEO),
 		zap.Uint64("counter_seq", resp.CounterSeq),
-		zap.Int("accounts", len(snap.Accounts)),
-		zap.Int("orders", len(snap.Orders)),
-		zap.Int64("journal_offset", journalOffset),
-		zap.Int("partitions", len(offsets)))
-	return freshState, freshSeq, freshDt, offsets, journalOffset, nil
+		zap.Int("accounts", r.AccountCount),
+		zap.Int("orders", r.OrderCount),
+		zap.Int64("journal_offset", r.JournalOffset),
+		zap.Int("partitions", len(r.Offsets)))
+	return r.State, r.Seq, freshDt, r.Offsets, r.JournalOffset, nil
 }
 
 // loadLegacy is the ADR-0060 §4.2 classic recovery path: Load the
@@ -160,31 +147,22 @@ func (w *VShardWorker) loadLegacy(
 	ctx context.Context,
 	logger *zap.Logger,
 ) (*engine.ShardState, *sequencer.UserSequencer, *dedup.Table, map[int32]int64, int64, error) {
-	state := engine.NewShardState(int(w.cfg.VShardID))
-	seq := sequencer.New()
 	dt := dedup.New(w.cfg.DedupTTL)
-
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
-	snap, err := countersnap.Load(ctx, w.cfg.Store, key)
+	r, err := snapshot.Load(ctx, w.cfg.Store, key, int(w.cfg.VShardID))
 	switch {
 	case err == nil:
-		if err := countersnap.RestoreState(int(w.cfg.VShardID), state, snap); err != nil {
-			return nil, nil, nil, nil, 0, fmt.Errorf("snapshot restore: %w", err)
-		}
-		seq.SetCounterSeq(snap.CounterSeq)
-		offsets := countersnap.OffsetsSliceToMap(snap.Offsets)
-		journalOffset := snap.JournalOffset
 		logger.Info("legacy path: restored from periodic snapshot",
-			zap.Int("version", snap.Version),
-			zap.Uint64("counter_seq", snap.CounterSeq),
-			zap.Int("accounts", len(snap.Accounts)),
-			zap.Int("orders", len(snap.Orders)),
-			zap.Int("partitions", len(offsets)),
-			zap.Int64("journal_offset", journalOffset))
-		return state, seq, dt, offsets, journalOffset, nil
+			zap.Int("version", r.Version),
+			zap.Uint64("counter_seq", r.CounterSeq),
+			zap.Int("accounts", r.AccountCount),
+			zap.Int("orders", r.OrderCount),
+			zap.Int("partitions", len(r.Offsets)),
+			zap.Int64("journal_offset", r.JournalOffset))
+		return r.State, r.Seq, dt, r.Offsets, r.JournalOffset, nil
 	case errors.Is(err, os.ErrNotExist):
 		logger.Info("legacy path: no snapshot found, starting fresh")
-		return state, seq, dt, nil, 0, nil
+		return engine.NewShardState(int(w.cfg.VShardID)), sequencer.New(), dt, nil, 0, nil
 	default:
 		return nil, nil, nil, nil, 0, fmt.Errorf("snapshot load: %w", err)
 	}

@@ -12,6 +12,7 @@ require (
 	github.com/twmb/franz-go v1.18.0
 	github.com/xargin/opentrade/api v0.0.0-00010101000000-000000000000
 	github.com/xargin/opentrade/pkg v0.0.0-00010101000000-000000000000
+	github.com/xargin/opentrade/trade-dump v0.0.0-00010101000000-000000000000
 	go.etcd.io/etcd/client/v3 v3.6.10
 	go.uber.org/zap v1.27.0
 	google.golang.org/grpc v1.79.3
@@ -61,4 +62,5 @@ require (
 replace (
 	github.com/xargin/opentrade/api => ../api
 	github.com/xargin/opentrade/pkg => ../pkg
+	github.com/xargin/opentrade/trade-dump => ../trade-dump
 )

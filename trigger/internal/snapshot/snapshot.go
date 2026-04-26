@@ -1,4 +1,4 @@
-// Package trigger serializes the trigger engine's pending / terminal
+// Package snapshot serializes the trigger engine's pending / terminal
 // records and per-partition offsets to a BlobStore, so a restart resumes
 // where the last primary stopped instead of losing every in-flight stop
 // order (ADR-0040 §Persistence).
@@ -10,7 +10,13 @@
 // ADR-0058: I/O goes through pkg/snapshot.BlobStore so trigger shares
 // storage with Counter / trade-dump (FS today, S3 backlog) without
 // duplicating the storage layer.
-package trigger
+//
+// Transitional: per ADR-0066 the long-term plan (ADR-0067) is for
+// trade-dump to take over Capture/Save here, mirroring the Counter
+// arrangement under ADR-0061. Until that lands trigger remains its own
+// snapshot producer; this package therefore still exposes Capture / Save
+// alongside Restore / Load.
+package snapshot
 
 import (
 	"context"

@@ -35,14 +35,14 @@ import (
 	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
-	"github.com/xargin/opentrade/pkg/snapshot"
-	triggersnap "github.com/xargin/opentrade/pkg/snapshot/trigger"
+	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/trigger/engine"
 	"github.com/xargin/opentrade/trigger/internal/consumer"
 	"github.com/xargin/opentrade/trigger/internal/counterclient"
 	"github.com/xargin/opentrade/trigger/internal/journal"
 	"github.com/xargin/opentrade/trigger/internal/server"
 	"github.com/xargin/opentrade/trigger/internal/service"
+	"github.com/xargin/opentrade/trigger/internal/snapshot"
 )
 
 type Config struct {
@@ -54,7 +54,7 @@ type Config struct {
 	CounterShards        []string
 	SnapshotDir          string
 	SnapshotInterval     time.Duration
-	SnapshotFormat       snapshot.Format // ADR-0049
+	SnapshotFormat       snapshotpkg.Format // ADR-0049
 	TerminalHistoryLimit int
 	// ExpirySweepInterval tunes how often the primary scans pending
 	// triggers for expired ones (ADR-0043). 0 disables.
@@ -247,9 +247,9 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		logger.Info("trigger journal disabled (empty --journal-topic)")
 	}
 
-	var snapStore snapshot.BlobStore
+	var snapStore snapshotpkg.BlobStore
 	if cfg.SnapshotDir != "" {
-		snapStore = snapshot.NewFSBlobStore(cfg.SnapshotDir)
+		snapStore = snapshotpkg.NewFSBlobStore(cfg.SnapshotDir)
 	}
 
 	initialOffsets, err := tryRestoreSnapshot(ctx, snapStore, cfg, eng, logger)
@@ -347,14 +347,14 @@ func snapshotPath(cfg Config) string {
 	return filepath.Join(cfg.SnapshotDir, snapshotKey(cfg))
 }
 
-func tryRestoreSnapshot(ctx context.Context, store snapshot.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
+func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
 	if store == nil {
 		logger.Info("snapshot disabled (empty --snapshot-dir); cold start")
 		return nil, nil
 	}
 	key := snapshotKey(cfg)
 	path := snapshotPath(cfg)
-	snap, err := triggersnap.Load(ctx, store, key)
+	snap, err := snapshot.Load(ctx, store, key)
 	if err != nil {
 		return nil, fmt.Errorf("load %s: %w", path, err)
 	}
@@ -362,7 +362,7 @@ func tryRestoreSnapshot(ctx context.Context, store snapshot.BlobStore, cfg Confi
 		logger.Info("no snapshot found; cold start", zap.String("path", path))
 		return nil, nil
 	}
-	if err := triggersnap.Restore(eng, snap); err != nil {
+	if err := snapshot.Restore(eng, snap); err != nil {
 		return nil, fmt.Errorf("engine restore: %w", err)
 	}
 	logger.Info("trigger state restored",
@@ -374,13 +374,13 @@ func tryRestoreSnapshot(ctx context.Context, store snapshot.BlobStore, cfg Confi
 	return snap.Offsets, nil
 }
 
-func writeSnapshot(ctx context.Context, store snapshot.BlobStore, cfg Config, eng *engine.Engine) error {
+func writeSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine) error {
 	if store == nil {
 		return nil
 	}
-	snap := triggersnap.Capture(eng)
+	snap := snapshot.Capture(eng)
 	snap.TakenAtMs = time.Now().UnixMilli()
-	return triggersnap.Save(ctx, store, snapshotKey(cfg), snap, cfg.SnapshotFormat)
+	return snapshot.Save(ctx, store, snapshotKey(cfg), snap, cfg.SnapshotFormat)
 }
 
 // runExpirySweeper sweeps PENDING triggers whose ExpiresAtMs has
@@ -405,7 +405,7 @@ func runExpirySweeper(ctx context.Context, cfg Config, eng *engine.Engine, logge
 	}
 }
 
-func runSnapshotTicker(ctx context.Context, store snapshot.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) {
+func runSnapshotTicker(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) {
 	if store == nil || cfg.SnapshotInterval <= 0 {
 		return
 	}
@@ -455,7 +455,7 @@ func parseFlags() Config {
 		MarketTopic:                   "market-data",
 		SnapshotDir:                   "./data/trigger",
 		SnapshotInterval:              30 * time.Second,
-		SnapshotFormat:                snapshot.FormatProto, // ADR-0049
+		SnapshotFormat:                snapshotpkg.FormatProto, // ADR-0049
 		TerminalHistoryLimit:          1000,
 		ExpirySweepInterval:           5 * time.Second,
 		IDGenShard:                    900, // deliberately out of counter's 0..99 range
@@ -503,7 +503,7 @@ func parseFlags() Config {
 		snapshotFormatStr = envFmt
 	}
 	if snapshotFormatStr != "" {
-		f, err := snapshot.ParseFormat(snapshotFormatStr)
+		f, err := snapshotpkg.ParseFormat(snapshotFormatStr)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)

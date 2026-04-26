@@ -31,8 +31,8 @@ import (
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
-	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
+	countersnap "github.com/xargin/opentrade/trade-dump/snapshot/counter"
 )
 
 // defaultSemAcquireTimeout bounds the wait for the global in-flight

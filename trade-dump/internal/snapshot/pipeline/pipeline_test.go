@@ -15,8 +15,8 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
-	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/shadow"
+	countersnap "github.com/xargin/opentrade/trade-dump/snapshot/counter"
 )
 
 // mustPipeline builds a pipeline over a filesystem blob store in a

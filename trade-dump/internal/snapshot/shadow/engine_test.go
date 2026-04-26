@@ -26,9 +26,9 @@ func TestShadow_ApplyFreezeAndCheckpointAdvancesWatermarks(t *testing.T) {
 		Payload: &eventpb.CounterJournalEvent_Freeze{
 			Freeze: &eventpb.FreezeEvent{
 				UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
-				Side:         eventpb.Side_SIDE_BUY,
-				OrderType:    eventpb.OrderType_ORDER_TYPE_LIMIT,
-				Price:        "10", Qty: "1",
+				Side:      eventpb.Side_SIDE_BUY,
+				OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
+				Price:     "10", Qty: "1",
 				FreezeAsset:  "USDT",
 				FreezeAmount: "10",
 				BalanceAfter: &eventpb.BalanceSnapshot{
@@ -159,10 +159,10 @@ func TestShadow_CaptureProducesFullState(t *testing.T) {
 				Payload: &eventpb.CounterJournalEvent_Freeze{
 					Freeze: &eventpb.FreezeEvent{
 						UserId: "u1", OrderId: 10, Symbol: "BTC-USDT",
-						Side:         eventpb.Side_SIDE_BUY,
-						OrderType:    eventpb.OrderType_ORDER_TYPE_LIMIT,
-						Price:        "50000", Qty: "0.1",
-						FreezeAsset:  "USDT", FreezeAmount: "5000",
+						Side:      eventpb.Side_SIDE_BUY,
+						OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
+						Price:     "50000", Qty: "0.1",
+						FreezeAsset: "USDT", FreezeAmount: "5000",
 						BalanceAfter: &eventpb.BalanceSnapshot{
 							UserId: "u1", Asset: "USDT",
 							Available: "-4000", Frozen: "5000", Version: 2,
@@ -370,9 +370,9 @@ func TestShadow_RestoreFromSnapshotRoundTrip(t *testing.T) {
 		Payload: &eventpb.CounterJournalEvent_Freeze{
 			Freeze: &eventpb.FreezeEvent{
 				UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",
-				Side:         eventpb.Side_SIDE_BUY,
-				OrderType:    eventpb.OrderType_ORDER_TYPE_LIMIT,
-				Price:        "50000", Qty: "0.001",
+				Side:      eventpb.Side_SIDE_BUY,
+				OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
+				Price:     "50000", Qty: "0.001",
 				FreezeAsset: "USDT", FreezeAmount: "50",
 				BalanceAfter: &eventpb.BalanceSnapshot{
 					UserId: "u1", Asset: "USDT",
@@ -458,9 +458,9 @@ func TestShadow_ApplyStartupFenceIsNoOp(t *testing.T) {
 		Payload: &eventpb.CounterJournalEvent_Freeze{
 			Freeze: &eventpb.FreezeEvent{
 				UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
-				Side:         eventpb.Side_SIDE_BUY,
-				OrderType:    eventpb.OrderType_ORDER_TYPE_LIMIT,
-				Price:        "10", Qty: "1",
+				Side:      eventpb.Side_SIDE_BUY,
+				OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
+				Price:     "10", Qty: "1",
 				FreezeAsset:  "USDT",
 				FreezeAmount: "10",
 				BalanceAfter: &eventpb.BalanceSnapshot{
@@ -607,14 +607,14 @@ func settlementAt(user string, seq uint64, orderID uint64, balVer uint64) *event
 		CounterSeqId: seq,
 		Payload: &eventpb.CounterJournalEvent_Settlement{
 			Settlement: &eventpb.SettlementEvent{
-				UserId:         user,
-				OrderId:        orderID,
-				Symbol:         "BTC-USDT",
-				Side:           eventpb.Side_SIDE_BUY,
-				Price:          "10",
-				Qty:            "0",
-				DeltaBase:      "0",
-				DeltaQuote:     "0",
+				UserId:     user,
+				OrderId:    orderID,
+				Symbol:     "BTC-USDT",
+				Side:       eventpb.Side_SIDE_BUY,
+				Price:      "10",
+				Qty:        "0",
+				DeltaBase:  "0",
+				DeltaQuote: "0",
 				BaseBalanceAfter: &eventpb.BalanceSnapshot{
 					UserId: user, Asset: "BTC",
 					Available: "1", Frozen: "0", Version: balVer,

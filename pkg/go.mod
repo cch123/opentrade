@@ -14,7 +14,6 @@ require (
 	github.com/twmb/franz-go v1.18.0
 	github.com/xargin/opentrade/api v0.0.0-00010101000000-000000000000
 	github.com/xargin/opentrade/counter v0.0.0-00010101000000-000000000000
-	github.com/xargin/opentrade/trigger v0.0.0-00010101000000-000000000000
 	go.etcd.io/etcd/client/v3 v3.6.10
 	go.uber.org/zap v1.27.0
 	google.golang.org/protobuf v1.36.10
@@ -24,7 +23,6 @@ require (
 replace (
 	github.com/xargin/opentrade/api => ../api
 	github.com/xargin/opentrade/counter => ../counter
-	github.com/xargin/opentrade/trigger => ../trigger
 )
 
 require (
