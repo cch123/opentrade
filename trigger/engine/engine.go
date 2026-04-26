@@ -808,30 +808,6 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 // Persistence / snapshot hooks
 // -----------------------------------------------------------------------------
 
-// Snapshot exports everything needed to resume after restart. Safe to call
-// concurrently with HandleRecord / Place / Cancel.
-func (e *Engine) Snapshot() (pending []*Trigger, terminals []*Trigger, offsets map[int32]int64) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	pending = make([]*Trigger, 0, len(e.pending))
-	for _, c := range e.pending {
-		cp := *c
-		pending = append(pending, &cp)
-	}
-	terminals = make([]*Trigger, 0, len(e.termOrder))
-	for _, id := range e.termOrder {
-		if c, ok := e.terminals[id]; ok {
-			cp := *c
-			terminals = append(terminals, &cp)
-		}
-	}
-	offsets = make(map[int32]int64, len(e.offsets))
-	for p, o := range e.offsets {
-		offsets[p] = o
-	}
-	return pending, terminals, offsets
-}
-
 // Restore replaces in-memory state. Engine must be fresh (no prior writes)
 // or callers must accept replacement semantics. ADR-0054: the
 // activeTriggers index is derived from pending and rebuilt here.
@@ -869,18 +845,6 @@ func (e *Engine) Offsets() map[int32]int64 {
 	out := make(map[int32]int64, len(e.offsets))
 	for p, o := range e.offsets {
 		out[p] = o
-	}
-	return out
-}
-
-// OCOByClient returns a copy of the client_oco_id → group_id dedup map
-// (for snapshot capture).
-func (e *Engine) OCOByClient() map[string]string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make(map[string]string, len(e.ocoByClient))
-	for k, v := range e.ocoByClient {
-		out[k] = v
 	}
 	return out
 }

@@ -1,16 +1,17 @@
 // Command trigger runs the OpenTrade trigger-order service.
 //
-// MVP-14a scope (ADR-0040):
 //   - Accepts STOP_LOSS / STOP_LOSS_LIMIT / TAKE_PROFIT / TAKE_PROFIT_LIMIT
-//     via TriggerService gRPC.
-//   - Subscribes to market-data and fires Counter.PlaceOrder when the
-//     last PublicTrade price crosses the stop threshold.
-//   - Periodic local JSON snapshot + per-partition offset so a restart
-//     resumes from the saved offset (not topic tail).
+//     and trailing variants via TriggerService gRPC (ADR-0040 / ADR-0046).
+//   - Subscribes to market-data and fires Counter.PlaceOrder when the last
+//     PublicTrade price crosses the stop threshold.
+//   - On startup hydrates from a trade-dump-produced snapshot — hot path
+//     via TakeTriggerSnapshot RPC, cold path via the periodic snapshot in
+//     the shared BlobStore (ADR-0067). Trigger does not produce its own
+//     snapshots; trade-dump's shadow pipeline is the sole producer.
+//   - Optional cold-standby HA via etcd leader election (ADR-0042).
 //
 // Funds are not reserved at placement; the inner order can fail with
 // INSUFFICIENT_BALANCE at trigger time, which we surface as REJECTED.
-// MVP-14b will add proper reservation.
 package main
 
 import (

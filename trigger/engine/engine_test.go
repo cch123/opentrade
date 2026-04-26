@@ -951,7 +951,8 @@ func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	src := newEngine(placer)
 	id, _, _, _ := src.Place(context.Background(), goodReq())
 	src.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "101"), 0, 5)
-	pending, terminals, offsets := src.Snapshot()
+
+	pending, terminals, offsets := snapshotEngineState(src)
 
 	dst := newEngine(placer)
 	dst.Restore(pending, terminals, offsets)
@@ -966,4 +967,29 @@ func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	if dst.Offsets()[0] != 6 {
 		t.Errorf("offset: %d", dst.Offsets()[0])
 	}
+}
+
+// snapshotEngineState reads pending / terminal / offset state directly off
+// the engine for round-trip tests. Production capture lives in trade-dump's
+// shadow per ADR-0067, so the engine itself no longer exports a getter.
+func snapshotEngineState(e *Engine) ([]*Trigger, []*Trigger, map[int32]int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	pending := make([]*Trigger, 0, len(e.pending))
+	for _, c := range e.pending {
+		cp := *c
+		pending = append(pending, &cp)
+	}
+	terminals := make([]*Trigger, 0, len(e.termOrder))
+	for _, id := range e.termOrder {
+		if c, ok := e.terminals[id]; ok {
+			cp := *c
+			terminals = append(terminals, &cp)
+		}
+	}
+	offsets := make(map[int32]int64, len(e.offsets))
+	for p, o := range e.offsets {
+		offsets[p] = o
+	}
+	return pending, terminals, offsets
 }
