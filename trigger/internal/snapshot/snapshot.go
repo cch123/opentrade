@@ -112,6 +112,22 @@ func Restore(eng *engine.Engine, snap *Snapshot) error {
 	return nil
 }
 
+// RestoreFromProto restores eng from a proto-form TriggerSnapshot —
+// the shape trade-dump's shadow pipeline produces (ADR-0067 M5).
+// Returns the converted Go-side Snapshot so callers can read its
+// fields (Offsets for consumer wiring, lengths / TakenAtMs for
+// logging) without re-decoding.
+func RestoreFromProto(eng *engine.Engine, pb *snapshotpb.TriggerSnapshot) (*Snapshot, error) {
+	s := fromProto(pb)
+	if s == nil {
+		return nil, nil
+	}
+	if err := Restore(eng, s); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
 // -----------------------------------------------------------------------------
 // BlobStore I/O
 // -----------------------------------------------------------------------------

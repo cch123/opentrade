@@ -145,3 +145,56 @@ func TestLoad_JSONOnlyMigration(t *testing.T) {
 		t.Fatalf("json-only load: got %+v", snap)
 	}
 }
+
+// TestRestoreFromProto covers the ADR-0067 M5 cold path: trade-dump's
+// shadow pipeline produces a snapshot via pkg/snapshot/trigger; this
+// helper hands the proto to RestoreFromProto so trigger startup can
+// hydrate eng + read offsets in one call.
+func TestRestoreFromProto(t *testing.T) {
+	src := newEngine()
+	id1, _, _, _ := src.Place(context.Background(), &condrpc.PlaceTriggerRequest{
+		UserId:    "u1",
+		Symbol:    "BTC-USDT",
+		Side:      eventpb.Side_SIDE_SELL,
+		Type:      condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS,
+		StopPrice: "100",
+		Qty:       "0.5",
+	})
+	_, _, _ = src.Cancel(context.Background(), "u1", id1)
+	captured := Capture(src)
+	captured.TakenAtMs = 99
+	captured.Offsets = map[int32]int64{0: 555}
+
+	pb := toProto(captured)
+
+	dst := newEngine()
+	got, err := RestoreFromProto(dst, pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("RestoreFromProto returned nil snapshot")
+	}
+	if got.TakenAtMs != 99 {
+		t.Errorf("TakenAtMs = %d, want 99", got.TakenAtMs)
+	}
+	if got.Offsets[0] != 555 {
+		t.Errorf("Offsets[0] = %d, want 555", got.Offsets[0])
+	}
+	// Engine state was hydrated — terminal record (canceled u1 trigger)
+	// is reachable via List.
+	inactive := dst.List("u1", true)
+	if len(inactive) != 1 {
+		t.Fatalf("dst.List(u1, inactive) = %d, want 1", len(inactive))
+	}
+}
+
+func TestRestoreFromProto_NilTolerated(t *testing.T) {
+	got, err := RestoreFromProto(newEngine(), nil)
+	if err != nil {
+		t.Fatalf("RestoreFromProto(nil) = %v, want nil", err)
+	}
+	if got != nil {
+		t.Errorf("got = %+v, want nil", got)
+	}
+}

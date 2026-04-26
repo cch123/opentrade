@@ -36,6 +36,7 @@ import (
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	triggersnap "github.com/xargin/opentrade/pkg/snapshot/trigger"
 	"github.com/xargin/opentrade/trigger/engine"
 	"github.com/xargin/opentrade/trigger/internal/consumer"
 	"github.com/xargin/opentrade/trigger/internal/counterclient"
@@ -352,42 +353,80 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 // Snapshot helpers
 // ---------------------------------------------------------------------------
 
-// snapshotKey is the BlobStore key stem (no format extension); Save
-// appends `.pb` / `.json` per cfg.SnapshotFormat (ADR-0049). Used as the
-// log path too — combined with cfg.SnapshotDir it locates the file on
-// disk for ops.
-func snapshotKey(cfg Config) string { return cfg.InstanceID }
+// sharedSnapshotKey is the BlobStore key trade-dump's shadow pipeline
+// writes the trigger snapshot under (ADR-0067 M2 default — see
+// triggerpipeline.DefaultSnapshotKey). Fixed across instances so any
+// trigger replica reads what trade-dump produced regardless of who
+// the previous primary was.
+const sharedSnapshotKey = "trigger"
 
-// snapshotPath returns the human-readable on-disk path for log lines.
+// selfSnapshotKey is the legacy per-instance key used by trigger's
+// own Capture / Save loop (transitional, removed in ADR-0067 M6).
+func selfSnapshotKey(cfg Config) string { return cfg.InstanceID }
+
+// snapshotPath returns the human-readable on-disk path for log lines
+// against the legacy self-snapshot.
 func snapshotPath(cfg Config) string {
-	return filepath.Join(cfg.SnapshotDir, snapshotKey(cfg))
+	return filepath.Join(cfg.SnapshotDir, selfSnapshotKey(cfg))
 }
 
+// tryRestoreSnapshot loads the latest snapshot for this trigger and
+// restores it into eng. ADR-0067 M5 prefers the shared snapshot
+// trade-dump's shadow produces (key = "trigger"); falls back to the
+// legacy self-snapshot (key = cfg.InstanceID) when the shared one is
+// missing — typically the first cold start before trade-dump has
+// produced one. Returns the captured market-data offsets so the
+// caller can seed the consumer.
 func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
 	if store == nil {
 		logger.Info("snapshot disabled (empty --snapshot-dir); cold start")
 		return nil, nil
 	}
-	key := snapshotKey(cfg)
-	path := snapshotPath(cfg)
-	snap, err := snapshot.Load(ctx, store, key)
-	if err != nil {
-		return nil, fmt.Errorf("load %s: %w", path, err)
+
+	// ADR-0067 M5 cold path: read the snapshot trade-dump's shadow
+	// pipeline produced.
+	pb, err := triggersnap.Load(ctx, store, sharedSnapshotKey)
+	switch {
+	case err == nil:
+		s, err := snapshot.RestoreFromProto(eng, pb)
+		if err != nil {
+			return nil, fmt.Errorf("restore shared snapshot: %w", err)
+		}
+		logger.Info("trigger state restored from trade-dump snapshot",
+			zap.String("key", sharedSnapshotKey),
+			zap.Int64("taken_at_ms", s.TakenAtMs),
+			zap.Int("pending", len(s.Pending)),
+			zap.Int("terminals", len(s.Terminals)),
+			zap.Int("partitions", len(s.Offsets)))
+		return s.Offsets, nil
+	case errors.Is(err, os.ErrNotExist):
+		// Fall through to legacy self-snapshot.
+	default:
+		return nil, fmt.Errorf("load shared snapshot: %w", err)
 	}
-	if snap == nil {
+
+	// Legacy self-snapshot. Removed entirely in ADR-0067 M6 once the
+	// shared path has been verified in production.
+	key := selfSnapshotKey(cfg)
+	path := snapshotPath(cfg)
+	selfSnap, err := snapshot.Load(ctx, store, key)
+	if err != nil {
+		return nil, fmt.Errorf("load self snapshot %s: %w", path, err)
+	}
+	if selfSnap == nil {
 		logger.Info("no snapshot found; cold start", zap.String("path", path))
 		return nil, nil
 	}
-	if err := snapshot.Restore(eng, snap); err != nil {
+	if err := snapshot.Restore(eng, selfSnap); err != nil {
 		return nil, fmt.Errorf("engine restore: %w", err)
 	}
-	logger.Info("trigger state restored",
+	logger.Info("trigger state restored from legacy self-snapshot",
 		zap.String("path", path),
-		zap.Int64("taken_at_ms", snap.TakenAtMs),
-		zap.Int("pending", len(snap.Pending)),
-		zap.Int("terminals", len(snap.Terminals)),
-		zap.Int("partitions", len(snap.Offsets)))
-	return snap.Offsets, nil
+		zap.Int64("taken_at_ms", selfSnap.TakenAtMs),
+		zap.Int("pending", len(selfSnap.Pending)),
+		zap.Int("terminals", len(selfSnap.Terminals)),
+		zap.Int("partitions", len(selfSnap.Offsets)))
+	return selfSnap.Offsets, nil
 }
 
 func writeSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine) error {
@@ -396,7 +435,7 @@ func writeSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config,
 	}
 	snap := snapshot.Capture(eng)
 	snap.TakenAtMs = time.Now().UnixMilli()
-	return snapshot.Save(ctx, store, snapshotKey(cfg), snap, cfg.SnapshotFormat)
+	return snapshot.Save(ctx, store, selfSnapshotKey(cfg), snap, cfg.SnapshotFormat)
 }
 
 // runExpirySweeper sweeps PENDING triggers whose ExpiresAtMs has
