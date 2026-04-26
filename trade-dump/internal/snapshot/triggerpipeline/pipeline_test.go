@@ -65,16 +65,38 @@ func mustPipeline(t *testing.T, override Config) *Pipeline {
 
 func updateRecord(t *testing.T, id, seq uint64, status eventpb.TriggerEventStatus, partition int32, offset int64) *kgo.Record {
 	t.Helper()
-	u := &eventpb.TriggerUpdate{
-		Id:           id,
-		UserId:       "u1",
-		Symbol:       "BTC-USDT",
-		Status:       status,
-		StopPrice:    "100",
-		Qty:          "1",
-		TriggerSeqId: seq,
+	envelope := &eventpb.TriggerEvent{
+		Payload: &eventpb.TriggerEvent_Update{
+			Update: &eventpb.TriggerUpdate{
+				Id:           id,
+				UserId:       "u1",
+				Symbol:       "BTC-USDT",
+				Status:       status,
+				StopPrice:    "100",
+				Qty:          "1",
+				TriggerSeqId: seq,
+			},
+		},
 	}
-	payload, err := proto.Marshal(u)
+	payload, err := proto.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return &kgo.Record{Topic: "trigger-event", Partition: partition, Offset: offset, Value: payload}
+}
+
+// checkpointRecord builds a TriggerMarketCheckpointEvent envelope record.
+func checkpointRecord(t *testing.T, marketOffsets map[int32]int64, partition int32, offset int64) *kgo.Record {
+	t.Helper()
+	envelope := &eventpb.TriggerEvent{
+		Payload: &eventpb.TriggerEvent_MarketCheckpoint{
+			MarketCheckpoint: &eventpb.TriggerMarketCheckpointEvent{
+				MarketOffsets: marketOffsets,
+				TsUnixMs:      1,
+			},
+		},
+	}
+	payload, err := proto.Marshal(envelope)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -169,6 +191,50 @@ func TestHandleRecord_DecodeErrorDropped(t *testing.T) {
 	snap := p.engine.Capture(0, false)
 	if len(snap.Pending) != 0 || len(snap.Terminals) != 0 {
 		t.Errorf("garbage record mutated state: pending=%+v terminals=%+v", snap.Pending, snap.Terminals)
+	}
+}
+
+// Market checkpoint dispatch: envelope with MarketCheckpoint payload
+// advances market offsets without touching trigger state.
+func TestHandleRecord_MarketCheckpointDispatch(t *testing.T) {
+	p := mustPipeline(t, Config{})
+	rec := checkpointRecord(t, map[int32]int64{0: 555, 2: 999}, 0, 7)
+	p.handleRecord(context.Background(), rec)
+	snap := p.engine.Capture(0, false)
+	if got := snap.Offsets[0]; got != 555 {
+		t.Errorf("market offset partition 0 = %d, want 555", got)
+	}
+	if got := snap.Offsets[2]; got != 999 {
+		t.Errorf("market offset partition 2 = %d, want 999", got)
+	}
+	if len(snap.Pending) != 0 || len(snap.Terminals) != 0 {
+		t.Errorf("checkpoint mutated trigger state: pending=%+v terminals=%+v", snap.Pending, snap.Terminals)
+	}
+	// trigger-event cursor advances on partition 0 to offset+1 = 8.
+	if got := p.engine.NextTriggerEventOffset(0); got != 8 {
+		t.Errorf("cursor after checkpoint = %d, want 8", got)
+	}
+}
+
+// Mixed update + checkpoint stream: each variant lands on its
+// appropriate apply path; cursor advances through both.
+func TestHandleRecord_UpdateAndCheckpointMixed(t *testing.T) {
+	p := mustPipeline(t, Config{})
+	p.handleRecord(context.Background(), updateRecord(t, 1, 1, eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_PENDING, 0, 0))
+	p.handleRecord(context.Background(), checkpointRecord(t, map[int32]int64{0: 100}, 0, 1))
+	p.handleRecord(context.Background(), updateRecord(t, 2, 2, eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_TRIGGERED, 0, 2))
+	snap := p.engine.Capture(0, false)
+	if len(snap.Pending) != 1 || snap.Pending[0].Id != 1 {
+		t.Errorf("pending = %+v, want id=1", snap.Pending)
+	}
+	if len(snap.Terminals) != 1 || snap.Terminals[0].Id != 2 {
+		t.Errorf("terminals = %+v, want id=2", snap.Terminals)
+	}
+	if got := snap.Offsets[0]; got != 100 {
+		t.Errorf("market offset = %d, want 100", got)
+	}
+	if got := p.engine.NextTriggerEventOffset(0); got != 3 {
+		t.Errorf("cursor = %d, want 3", got)
 	}
 }
 

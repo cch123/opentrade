@@ -284,26 +284,50 @@ func (p *Pipeline) Close() {
 // shadow apply path, and triggers a snapshot when the window is
 // exceeded.
 //
-// Wire format note (M2): trigger-event currently carries raw
-// TriggerUpdate proto with no envelope. M3 may switch to an envelope
-// or add a sibling topic for TriggerMarketCheckpointEvent — until
-// then this handler treats every record as a TriggerUpdate.
+// Wire format (ADR-0067 M3): every record on trigger-event is a
+// TriggerEvent envelope with one of two payloads — TriggerUpdate
+// (full post-state of one trigger) or TriggerMarketCheckpointEvent
+// (ADR-0067 §4 market-data offset advance). Dispatch by variant.
 func (p *Pipeline) handleRecord(ctx context.Context, rec *kgo.Record) {
-	var u eventpb.TriggerUpdate
-	if err := proto.Unmarshal(rec.Value, &u); err != nil {
-		p.logger.Error("decode trigger-event record",
+	var envelope eventpb.TriggerEvent
+	if err := proto.Unmarshal(rec.Value, &envelope); err != nil {
+		p.logger.Error("decode trigger-event envelope",
 			zap.Int32("partition", rec.Partition),
 			zap.Int64("offset", rec.Offset),
 			zap.Error(err))
 		return
 	}
-	if err := p.engine.ApplyTriggerUpdate(&u, rec.Partition, rec.Offset); err != nil {
-		p.logger.Error("apply trigger-event record",
-			zap.Int32("partition", rec.Partition),
-			zap.Int64("offset", rec.Offset),
-			zap.Uint64("trigger_id", u.Id),
-			zap.Error(err))
-		return
+	switch payload := envelope.Payload.(type) {
+	case *eventpb.TriggerEvent_Update:
+		u := payload.Update
+		if err := p.engine.ApplyTriggerUpdate(u, rec.Partition, rec.Offset); err != nil {
+			p.logger.Error("apply trigger update",
+				zap.Int32("partition", rec.Partition),
+				zap.Int64("offset", rec.Offset),
+				zap.Uint64("trigger_id", u.Id),
+				zap.Error(err))
+			return
+		}
+	case *eventpb.TriggerEvent_MarketCheckpoint:
+		if err := p.engine.ApplyMarketCheckpoint(payload.MarketCheckpoint, rec.Partition, rec.Offset); err != nil {
+			p.logger.Error("apply trigger market checkpoint",
+				zap.Int32("partition", rec.Partition),
+				zap.Int64("offset", rec.Offset),
+				zap.Error(err))
+			return
+		}
+	default:
+		// Forward-compatible: unknown payload variant means a newer
+		// producer added a payload kind this build doesn't know.
+		// Cursor advance happens in the Apply path; with no Apply we
+		// have to do it here so the consumer doesn't replay this
+		// record forever after a snapshot+restart.
+		if err := p.engine.AdvanceCursor(rec.Partition, rec.Offset); err != nil {
+			p.logger.Error("advance cursor for unknown payload",
+				zap.Int32("partition", rec.Partition),
+				zap.Int64("offset", rec.Offset),
+				zap.Error(err))
+		}
 	}
 	p.maybeCapture(ctx)
 }

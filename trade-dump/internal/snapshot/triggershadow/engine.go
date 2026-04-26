@@ -167,6 +167,18 @@ func (e *Engine) ApplyMarketCheckpoint(c *eventpb.TriggerMarketCheckpointEvent, 
 	return nil
 }
 
+// AdvanceCursor moves the per-partition apply cursor past kafkaOffset
+// without touching shadow state. Called by the pipeline for unknown
+// envelope payload variants (forward-compat with newer producer
+// versions): no Apply happens, but the consumer must move past the
+// record or it'll replay it forever after a snapshot+restart.
+func (e *Engine) AdvanceCursor(partition int32, kafkaOffset int64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.advanceCursorLocked(partition, kafkaOffset)
+	return nil
+}
+
 func (e *Engine) advanceCursorLocked(partition int32, kafkaOffset int64) {
 	next := kafkaOffset + 1
 	if next > e.nextTriggerEventOffsets[partition] {

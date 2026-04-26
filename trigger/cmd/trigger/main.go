@@ -65,6 +65,15 @@ type Config struct {
 	// backward compatibility with MVP-14 deployments.
 	JournalTopic string
 
+	// MarketCheckpointInterval is how often the trigger primary
+	// publishes a TriggerMarketCheckpointEvent on the trigger-event
+	// topic so trade-dump's shadow pipeline (ADR-0067) can stamp
+	// current market-data offsets onto its produced snapshot. Zero
+	// disables — useful when the journal is disabled too. Default
+	// 1s; loose enough that the produce overhead is negligible,
+	// tight enough that RPO on a trigger restart stays bounded.
+	MarketCheckpointInterval time.Duration
+
 	// idgen shard id — snowflake layout (ADR: counter/cmd/counter uses
 	// ShardID for this). For trigger we give it its own shard id
 	// range by default to avoid id collisions with counter order ids
@@ -292,6 +301,13 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		defer wg.Done()
 		runExpirySweeper(ctx, cfg, eng, logger)
 	}()
+	if jProducer != nil && cfg.MarketCheckpointInterval > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runMarketCheckpointTicker(ctx, cfg, eng, jProducer, logger)
+		}()
+	}
 
 	svc := service.New(eng)
 	grpcSrv := grpc.NewServer()
@@ -423,6 +439,39 @@ func runSnapshotTicker(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 	}
 }
 
+// runMarketCheckpointTicker periodically publishes
+// TriggerMarketCheckpointEvent on the trigger-event topic so
+// trade-dump's shadow pipeline can stamp current market-data offsets
+// onto the snapshot it produces (ADR-0067 M3). Without these
+// checkpoints the shadow's snapshot would always show empty market
+// offsets and trigger restart from a trade-dump-produced snapshot
+// would AtStart on the market-data topic — losing the consumer
+// position carried in trigger's own engine.Offsets() map.
+//
+// Skips ticks when the engine has no offsets yet (cold start; nothing
+// to publish). Errors are logged and ignored — the next tick retries.
+func runMarketCheckpointTicker(ctx context.Context, cfg Config, eng *engine.Engine, producer *journal.Producer, logger *zap.Logger) {
+	ticker := time.NewTicker(cfg.MarketCheckpointInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			offsets := eng.Offsets()
+			if len(offsets) == 0 {
+				continue
+			}
+			if err := producer.PublishCheckpoint(ctx, offsets); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+				logger.Warn("market checkpoint publish failed", zap.Error(err))
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Counter dial
 // ---------------------------------------------------------------------------
@@ -458,6 +507,7 @@ func parseFlags() Config {
 		SnapshotFormat:                snapshotpkg.FormatProto, // ADR-0049
 		TerminalHistoryLimit:          1000,
 		ExpirySweepInterval:           5 * time.Second,
+		MarketCheckpointInterval:      1 * time.Second,
 		IDGenShard:                    900, // deliberately out of counter's 0..99 range
 		HAMode:                        "disabled",
 		LeaseTTL:                      10,
@@ -481,6 +531,7 @@ func parseFlags() Config {
 	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "snapshot on-disk encoding: proto (default) | json (debug). ADR-0049. Env OPENTRADE_SNAPSHOT_FORMAT overrides.")
 	flag.IntVar(&cfg.TerminalHistoryLimit, "terminal-history", cfg.TerminalHistoryLimit, "max retained terminal records per engine for ListTriggers(include_inactive)")
 	flag.DurationVar(&cfg.ExpirySweepInterval, "expiry-sweep", cfg.ExpirySweepInterval, "cadence for sweeping expired PENDING triggers (ADR-0043); 0 disables")
+	flag.DurationVar(&cfg.MarketCheckpointInterval, "market-checkpoint-interval", cfg.MarketCheckpointInterval, "cadence for publishing TriggerMarketCheckpointEvent on the journal topic (ADR-0067); 0 disables")
 	flag.IntVar(&cfg.IDGenShard, "idgen-shard", cfg.IDGenShard, "snowflake shard id for trigger ids (avoid collisions with counter)")
 	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0042)")
 	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto)")

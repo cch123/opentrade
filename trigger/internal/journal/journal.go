@@ -13,6 +13,7 @@ package journal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -140,7 +141,10 @@ func (p *Producer) Close(ctx context.Context) error {
 func (p *Producer) drain() {
 	defer close(p.done)
 	for u := range p.queue {
-		data, err := proto.Marshal(u)
+		envelope := &eventpb.TriggerEvent{
+			Payload: &eventpb.TriggerEvent_Update{Update: u},
+		}
+		data, err := proto.Marshal(envelope)
 		if err != nil {
 			p.logger.Warn("marshal trigger update", zap.Error(err))
 			continue
@@ -152,6 +156,43 @@ func (p *Producer) drain() {
 		}
 		p.produceWithRetry(u, rec)
 	}
+}
+
+// PublishCheckpoint synchronously emits a TriggerMarketCheckpointEvent
+// to the trigger-event topic (ADR-0067). Wraps in the TriggerEvent
+// envelope. Caller passes the trigger primary's current market-data
+// consumer offsets; trade-dump's shadow pipeline reads these to stamp
+// snap.MarketOffsets so a restart resumes at the right partition
+// positions.
+//
+// Synchronous (not queued) because the checkpoint cadence is low
+// (default 1s) and the call site is a ticker — backpressure on Kafka
+// is the right thing to surface, not silently drop.
+//
+// All checkpoints are produced under a fixed key so they all land on
+// the same partition; ordering between checkpoints is strict, but
+// they don't interact with TriggerUpdate ordering (different
+// trigger_ids on different partitions, and shadow apply doesn't care
+// which order checkpoint vs update arrive).
+func (p *Producer) PublishCheckpoint(ctx context.Context, marketOffsets map[int32]int64) error {
+	envelope := &eventpb.TriggerEvent{
+		Payload: &eventpb.TriggerEvent_MarketCheckpoint{
+			MarketCheckpoint: &eventpb.TriggerMarketCheckpointEvent{
+				MarketOffsets: marketOffsets,
+				TsUnixMs:      time.Now().UnixMilli(),
+			},
+		},
+	}
+	data, err := proto.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal checkpoint: %w", err)
+	}
+	rec := &kgo.Record{
+		Topic: p.topic,
+		Key:   []byte("__checkpoint__"),
+		Value: data,
+	}
+	return p.kc.ProduceSync(ctx, rec).FirstErr()
 }
 
 func (p *Producer) produceWithRetry(u *eventpb.TriggerUpdate, rec *kgo.Record) {
@@ -189,29 +230,29 @@ func convert(c *engine.Trigger, triggerSeq uint64, producerID string) *eventpb.T
 			TsUnixMs:   nowMs,
 			ProducerId: producerID,
 		},
-		TriggerSeqId:    triggerSeq,
-		Id:                  c.ID,
-		ClientTriggerId: c.ClientTriggerID,
-		UserId:              c.UserID,
-		Symbol:              c.Symbol,
-		Side:                c.Side,
-		Type:                mapType(c.Type),
-		StopPrice:           decString(c.StopPrice),
-		LimitPrice:          decString(c.LimitPrice),
-		Qty:                 decString(c.Qty),
-		QuoteQty:            decString(c.QuoteQty),
-		Tif:                 c.TIF,
-		Status:              mapStatus(c.Status),
-		CreatedAtUnixMs:     c.CreatedAtMs,
-		TriggeredAtUnixMs:   c.TriggeredAtMs,
-		PlacedOrderId:       c.PlacedOrderID,
-		RejectReason:        c.RejectReason,
-		ExpiresAtUnixMs:     c.ExpiresAtMs,
-		OcoGroupId:          c.OCOGroupID,
-		TrailingDeltaBps:    c.TrailingDeltaBps,
-		ActivationPrice:     decString(c.ActivationPrice),
-		TrailingWatermark:   decString(c.TrailingWatermark),
-		TrailingActive:      c.TrailingActive,
+		TriggerSeqId:      triggerSeq,
+		Id:                c.ID,
+		ClientTriggerId:   c.ClientTriggerID,
+		UserId:            c.UserID,
+		Symbol:            c.Symbol,
+		Side:              c.Side,
+		Type:              mapType(c.Type),
+		StopPrice:         decString(c.StopPrice),
+		LimitPrice:        decString(c.LimitPrice),
+		Qty:               decString(c.Qty),
+		QuoteQty:          decString(c.QuoteQty),
+		Tif:               c.TIF,
+		Status:            mapStatus(c.Status),
+		CreatedAtUnixMs:   c.CreatedAtMs,
+		TriggeredAtUnixMs: c.TriggeredAtMs,
+		PlacedOrderId:     c.PlacedOrderID,
+		RejectReason:      c.RejectReason,
+		ExpiresAtUnixMs:   c.ExpiresAtMs,
+		OcoGroupId:        c.OCOGroupID,
+		TrailingDeltaBps:  c.TrailingDeltaBps,
+		ActivationPrice:   decString(c.ActivationPrice),
+		TrailingWatermark: decString(c.TrailingWatermark),
+		TrailingActive:    c.TrailingActive,
 	}
 	return u
 }

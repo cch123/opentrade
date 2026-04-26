@@ -7,27 +7,47 @@ import "event/common.proto";
 option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 
 // -----------------------------------------------------------------------------
-// trigger-event topic — append-only audit stream of trigger-order
-// state transitions. See ADR-0047.
+// trigger-event topic — append-only stream of trigger-order state
+// transitions plus trade-dump-bound metadata events. See ADR-0047 +
+// ADR-0067.
 //
 // Partition key: user_id (so trade-dump sees events for a given trigger
-// in commit order).
+// in commit order). Checkpoint events (ADR-0067) carry no business
+// state and may use any key; the trigger producer keys them on a
+// constant for partition-0 affinity.
+//
+// Wire format: TriggerEvent envelope with `oneof payload {
+// TriggerUpdate update = 10; TriggerMarketCheckpointEvent
+// market_checkpoint = 20; }`. Consumers dispatch by payload variant.
+// MySQL projection ignores anything that isn't TriggerUpdate.
 //
 // Flow:
 //   trigger service         Kafka topic         trade-dump             MySQL
 //   --------------------         -------------      --------------         ------
 //   state change in engine ───▶  trigger-event ───▶ journal consumer ──▶ triggers table (upsert, seq-guarded)
+//   periodic ticker        ───▶  trigger-event ───▶ shadow consumer  ──▶ market_offsets in next snapshot
 //
-// Each event carries the *post-change* full snapshot of the trigger so
-// trade-dump can idempotently upsert by id with last-write-wins on
-// trigger_seq_id. That keeps the projection robust against duplicate
-// emissions during HA handover — the consumer side dedups by
-// trigger_seq_id without needing producer transactions.
+// Each TriggerUpdate carries the *post-change* full snapshot of the
+// trigger so trade-dump can idempotently upsert by id with
+// last-write-wins on trigger_seq_id. That keeps the projection robust
+// against duplicate emissions during HA handover — the consumer side
+// dedups by trigger_seq_id without needing producer transactions.
 //
 // Enums mirror the rpc/trigger.proto values 1:1. They are redeclared
 // here (with `EVENT_` prefix) to keep event/ from depending on rpc/; the
 // mapping is trivial and asserted by unit tests.
 // -----------------------------------------------------------------------------
+
+// TriggerEvent is the wire envelope for every record on the
+// trigger-event topic (ADR-0067). Existing producers / consumers wrap
+// their payloads in this envelope; tag numbers leave room for future
+// payload kinds without breaking ordering.
+message TriggerEvent {
+  oneof payload {
+    TriggerUpdate update = 10;
+    TriggerMarketCheckpointEvent market_checkpoint = 20;
+  }
+}
 
 // TriggerEventType parallels rpc/trigger.TriggerType. Keep int
 // values in sync.

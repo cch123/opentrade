@@ -110,16 +110,23 @@ func (c *TriggerConsumer) Run(ctx context.Context) error {
 func decodeTriggerBatch(records []*kgo.Record, logger *zap.Logger) []*eventpb.TriggerUpdate {
 	out := make([]*eventpb.TriggerUpdate, 0, len(records))
 	for _, rec := range records {
-		var evt eventpb.TriggerUpdate
-		if err := proto.Unmarshal(rec.Value, &evt); err != nil {
-			logger.Error("decode trigger-event",
+		var envelope eventpb.TriggerEvent
+		if err := proto.Unmarshal(rec.Value, &envelope); err != nil {
+			logger.Error("decode trigger-event envelope",
 				zap.String("topic", rec.Topic),
 				zap.Int32("partition", rec.Partition),
 				zap.Int64("offset", rec.Offset),
 				zap.Error(err))
 			continue
 		}
-		out = append(out, &evt)
+		// MySQL projection only cares about TriggerUpdate; checkpoint
+		// events are ADR-0067 metadata for trade-dump's shadow
+		// pipeline, not for this consumer.
+		u := envelope.GetUpdate()
+		if u == nil {
+			continue
+		}
+		out = append(out, u)
 	}
 	return out
 }
