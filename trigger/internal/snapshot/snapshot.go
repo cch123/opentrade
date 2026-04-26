@@ -1,44 +1,30 @@
-// Package snapshot serializes the trigger engine's pending / terminal
-// records and per-partition offsets to a BlobStore, so a restart resumes
-// where the last primary stopped instead of losing every in-flight stop
-// order (ADR-0040 §Persistence).
+// Package snapshot is trigger's consumer-side adapter over the
+// trigger snapshot wire format (api/gen/snapshot.TriggerSnapshot).
+// trade-dump's shadow pipeline produces these snapshots
+// (pkg/snapshot/trigger.Save, ADR-0067); this package converts the
+// proto back into engine state on startup.
 //
-// ADR-0049: default on-disk format is protobuf (.pb); JSON (.json) stays
-// available as a debug fallback via --snapshot-format=json. Load probes
-// .pb first, then .json.
-//
-// ADR-0058: I/O goes through pkg/snapshot.BlobStore so trigger shares
-// storage with Counter / trade-dump (FS today, S3 backlog) without
-// duplicating the storage layer.
-//
-// Transitional: per ADR-0066 the long-term plan (ADR-0067) is for
-// trade-dump to take over Capture/Save here, mirroring the Counter
-// arrangement under ADR-0061. Until that lands trigger remains its own
-// snapshot producer; this package therefore still exposes Capture / Save
-// alongside Restore / Load.
+// After ADR-0067 M6 trigger no longer self-produces snapshots — the
+// Capture / Save path used to live here and was removed once the
+// trade-dump shadow pipeline was verified end-to-end.
 package snapshot
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-
-	"google.golang.org/protobuf/proto"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	"github.com/xargin/opentrade/pkg/dec"
-	"github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/trigger/engine"
 )
 
 // Version of the on-disk format.
 const Version = 1
 
-// Snapshot is the root on-disk document.
+// Snapshot is the Go-side mirror of snapshotpb.TriggerSnapshot.
+// Returned from RestoreFromProto so callers can read fields like
+// Offsets / lengths / TakenAtMs without re-decoding.
 type Snapshot struct {
 	Version   int             `json:"version"`
 	TakenAtMs int64           `json:"taken_at_ms"`
@@ -79,20 +65,9 @@ type TriggerSnap struct {
 	TrailingActive    bool   `json:"trailing_active,omitempty"`
 }
 
-// Capture builds a Snapshot from the engine. Caller stamps TakenAtMs.
-func Capture(eng *engine.Engine) *Snapshot {
-	pending, terminals, offsets := eng.Snapshot()
-	return &Snapshot{
-		Version:     Version,
-		Offsets:     offsets,
-		Pending:     toSnapSlice(pending),
-		Terminals:   toSnapSlice(terminals),
-		OCOByClient: eng.OCOByClient(),
-	}
-}
-
-// Restore hydrates engine from snap. Caller must supply a fresh Engine.
-func Restore(eng *engine.Engine, snap *Snapshot) error {
+// restore hydrates eng from the Go-side Snapshot. Caller must supply
+// a fresh Engine.
+func restore(eng *engine.Engine, snap *Snapshot) error {
 	if snap == nil {
 		return nil
 	}
@@ -113,150 +88,24 @@ func Restore(eng *engine.Engine, snap *Snapshot) error {
 }
 
 // RestoreFromProto restores eng from a proto-form TriggerSnapshot —
-// the shape trade-dump's shadow pipeline produces (ADR-0067 M5).
-// Returns the converted Go-side Snapshot so callers can read its
-// fields (Offsets for consumer wiring, lengths / TakenAtMs for
-// logging) without re-decoding.
+// the shape trade-dump's shadow pipeline produces (ADR-0067). Returns
+// the converted Go-side Snapshot so callers can read its fields
+// (Offsets for consumer wiring, lengths / TakenAtMs for logging)
+// without re-decoding.
 func RestoreFromProto(eng *engine.Engine, pb *snapshotpb.TriggerSnapshot) (*Snapshot, error) {
 	s := fromProto(pb)
 	if s == nil {
 		return nil, nil
 	}
-	if err := Restore(eng, s); err != nil {
+	if err := restore(eng, s); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
 // -----------------------------------------------------------------------------
-// BlobStore I/O
+// Proto → Snapshot mapping
 // -----------------------------------------------------------------------------
-
-// Save encodes snap and writes it under `baseKey + format.Ext()`. The
-// BlobStore is responsible for atomicity (FSBlobStore stages through
-// .tmp + fsync + rename).
-func Save(ctx context.Context, store snapshot.BlobStore, baseKey string, snap *Snapshot, format snapshot.Format) error {
-	data, err := encode(snap, format)
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", format, err)
-	}
-	key := baseKey + format.Ext()
-	if err := store.Put(ctx, key, data); err != nil {
-		return fmt.Errorf("put %s: %w", key, err)
-	}
-	return nil
-}
-
-// Load fetches a snapshot by probing proto then json under baseKey
-// (ADR-0049). Missing both → (nil, nil) so callers can treat absence as
-// cold start.
-func Load(ctx context.Context, store snapshot.BlobStore, baseKey string) (*Snapshot, error) {
-	for _, format := range []snapshot.Format{snapshot.FormatProto, snapshot.FormatJSON} {
-		key := baseKey + format.Ext()
-		data, err := store.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("get %s: %w", key, err)
-		}
-		snap, err := decode(data, format)
-		if err != nil {
-			return nil, fmt.Errorf("decode %s: %w", key, err)
-		}
-		if snap.Version != Version {
-			return nil, fmt.Errorf("trigger snapshot version mismatch: got %d want %d", snap.Version, Version)
-		}
-		return snap, nil
-	}
-	return nil, nil
-}
-
-func encode(snap *Snapshot, format snapshot.Format) ([]byte, error) {
-	switch format {
-	case snapshot.FormatProto:
-		return proto.Marshal(toProto(snap))
-	case snapshot.FormatJSON:
-		return json.MarshalIndent(snap, "", "  ")
-	default:
-		return nil, fmt.Errorf("snapshot: unknown format %d", format)
-	}
-}
-
-func decode(data []byte, format snapshot.Format) (*Snapshot, error) {
-	switch format {
-	case snapshot.FormatProto:
-		var pb snapshotpb.TriggerSnapshot
-		if err := proto.Unmarshal(data, &pb); err != nil {
-			return nil, err
-		}
-		return fromProto(&pb), nil
-	case snapshot.FormatJSON:
-		var snap Snapshot
-		if err := json.Unmarshal(data, &snap); err != nil {
-			return nil, err
-		}
-		return &snap, nil
-	default:
-		return nil, fmt.Errorf("snapshot: unknown format %d", format)
-	}
-}
-
-// -----------------------------------------------------------------------------
-// Proto <-> Snapshot mapping (ADR-0049)
-// -----------------------------------------------------------------------------
-
-func toProto(s *Snapshot) *snapshotpb.TriggerSnapshot {
-	if s == nil {
-		return nil
-	}
-	pb := &snapshotpb.TriggerSnapshot{
-		Version:     uint32(s.Version),
-		TakenAtMs:   s.TakenAtMs,
-		Offsets:     s.Offsets,
-		OcoByClient: s.OCOByClient,
-	}
-	if n := len(s.Pending); n > 0 {
-		pb.Pending = make([]*snapshotpb.TriggerRecord, 0, n)
-		for i := range s.Pending {
-			pb.Pending = append(pb.Pending, recordToProto(&s.Pending[i]))
-		}
-	}
-	if n := len(s.Terminals); n > 0 {
-		pb.Terminals = make([]*snapshotpb.TriggerRecord, 0, n)
-		for i := range s.Terminals {
-			pb.Terminals = append(pb.Terminals, recordToProto(&s.Terminals[i]))
-		}
-	}
-	return pb
-}
-
-func recordToProto(c *TriggerSnap) *snapshotpb.TriggerRecord {
-	return &snapshotpb.TriggerRecord{
-		Id:                c.ID,
-		ClientTriggerId:   c.ClientTriggerID,
-		UserId:            c.UserID,
-		Symbol:            c.Symbol,
-		Side:              uint32(c.Side),
-		Type:              uint32(c.Type),
-		StopPrice:         c.StopPrice,
-		LimitPrice:        c.LimitPrice,
-		Qty:               c.Qty,
-		QuoteQty:          c.QuoteQty,
-		Tif:               uint32(c.TIF),
-		Status:            uint32(c.Status),
-		CreatedAtMs:       c.CreatedAtMs,
-		TriggeredAtMs:     c.TriggeredAtMs,
-		PlacedOrderId:     c.PlacedOrderID,
-		RejectReason:      c.RejectReason,
-		ExpiresAtMs:       c.ExpiresAtMs,
-		OcoGroupId:        c.OCOGroupID,
-		TrailingDeltaBps:  c.TrailingDeltaBps,
-		ActivationPrice:   c.ActivationPrice,
-		TrailingWatermark: c.TrailingWatermark,
-		TrailingActive:    c.TrailingActive,
-	}
-}
 
 func fromProto(pb *snapshotpb.TriggerSnapshot) *Snapshot {
 	if pb == nil {
@@ -310,44 +159,9 @@ func recordFromProto(r *snapshotpb.TriggerRecord) TriggerSnap {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
-
-func toSnapSlice(in []*engine.Trigger) []TriggerSnap {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]TriggerSnap, len(in))
-	for i, c := range in {
-		out[i] = TriggerSnap{
-			ID:                c.ID,
-			ClientTriggerID:   c.ClientTriggerID,
-			UserID:            c.UserID,
-			Symbol:            c.Symbol,
-			Side:              uint8(c.Side),
-			Type:              uint8(c.Type),
-			StopPrice:         c.StopPrice.String(),
-			LimitPrice:        decOrEmpty(c.LimitPrice),
-			Qty:               decOrEmpty(c.Qty),
-			QuoteQty:          decOrEmpty(c.QuoteQty),
-			TIF:               uint8(c.TIF),
-			Status:            uint8(c.Status),
-			CreatedAtMs:       c.CreatedAtMs,
-			TriggeredAtMs:     c.TriggeredAtMs,
-			PlacedOrderID:     c.PlacedOrderID,
-			RejectReason:      c.RejectReason,
-			ExpiresAtMs:       c.ExpiresAtMs,
-			OCOGroupID:        c.OCOGroupID,
-			TrailingDeltaBps:  c.TrailingDeltaBps,
-			ActivationPrice:   decOrEmpty(c.ActivationPrice),
-			TrailingWatermark: decOrEmpty(c.TrailingWatermark),
-			TrailingActive:    c.TrailingActive,
-		}
-	}
-	return out
-}
-
+// fromSnapSlice converts a slice of TriggerSnap (string-encoded
+// decimals) back into engine.Trigger instances ready to install via
+// engine.Restore.
 func fromSnapSlice(in []TriggerSnap) ([]*engine.Trigger, error) {
 	if len(in) == 0 {
 		return nil, nil
@@ -404,11 +218,4 @@ func fromSnapSlice(in []TriggerSnap) ([]*engine.Trigger, error) {
 		})
 	}
 	return out, nil
-}
-
-func decOrEmpty(d dec.Decimal) string {
-	if dec.IsZero(d) {
-		return ""
-	}
-	return d.String()
 }

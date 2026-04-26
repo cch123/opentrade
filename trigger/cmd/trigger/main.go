@@ -21,7 +21,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -54,8 +53,6 @@ type Config struct {
 	ConsumerGroup        string
 	CounterShards        []string
 	SnapshotDir          string
-	SnapshotInterval     time.Duration
-	SnapshotFormat       snapshotpkg.Format // ADR-0049
 	TerminalHistoryLimit int
 	// ExpirySweepInterval tunes how often the primary scans pending
 	// triggers for expired ones (ADR-0043). 0 disables.
@@ -262,7 +259,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		snapStore = snapshotpkg.NewFSBlobStore(cfg.SnapshotDir)
 	}
 
-	initialOffsets, err := tryRestoreSnapshot(ctx, snapStore, cfg, eng, logger)
+	initialOffsets, err := tryRestoreSnapshot(ctx, snapStore, eng, logger)
 	if err != nil {
 		logger.Error("snapshot restore", zap.Error(err))
 		return
@@ -290,13 +287,6 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		}
 	}()
 
-	snapCtx, cancelSnap := context.WithCancel(context.Background())
-	defer cancelSnap()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		runSnapshotTicker(snapCtx, snapStore, cfg, eng, logger)
-	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -332,15 +322,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	logger.Info("primary shutting down")
 	grpcSrv.GracefulStop()
 	mdCons.Close()
-	cancelSnap()
 	wg.Wait()
-	finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := writeSnapshot(finalCtx, snapStore, cfg, eng); err != nil {
-		logger.Error("final snapshot", zap.Error(err))
-	} else if snapStore != nil {
-		logger.Info("final snapshot written", zap.String("path", snapshotPath(cfg)))
-	}
-	finalCancel()
+	// No final snapshot write — trade-dump's shadow pipeline is the
+	// sole snapshot producer for trigger (ADR-0067 M6, mirrors ADR-0061
+	// for counter). The last trigger-event records this primary
+	// committed reach trade-dump and land in the next snapshot tick.
 	if jProducer != nil {
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = jProducer.Close(drainCtx)
@@ -354,37 +340,22 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 // ---------------------------------------------------------------------------
 
 // sharedSnapshotKey is the BlobStore key trade-dump's shadow pipeline
-// writes the trigger snapshot under (ADR-0067 M2 default — see
-// triggerpipeline.DefaultSnapshotKey). Fixed across instances so any
-// trigger replica reads what trade-dump produced regardless of who
-// the previous primary was.
+// writes the trigger snapshot under (ADR-0067 / triggerpipeline
+// DefaultSnapshotKey). Fixed across instances so any trigger replica
+// reads what trade-dump produced regardless of who the previous
+// primary was.
 const sharedSnapshotKey = "trigger"
 
-// selfSnapshotKey is the legacy per-instance key used by trigger's
-// own Capture / Save loop (transitional, removed in ADR-0067 M6).
-func selfSnapshotKey(cfg Config) string { return cfg.InstanceID }
-
-// snapshotPath returns the human-readable on-disk path for log lines
-// against the legacy self-snapshot.
-func snapshotPath(cfg Config) string {
-	return filepath.Join(cfg.SnapshotDir, selfSnapshotKey(cfg))
-}
-
-// tryRestoreSnapshot loads the latest snapshot for this trigger and
-// restores it into eng. ADR-0067 M5 prefers the shared snapshot
-// trade-dump's shadow produces (key = "trigger"); falls back to the
-// legacy self-snapshot (key = cfg.InstanceID) when the shared one is
-// missing — typically the first cold start before trade-dump has
-// produced one. Returns the captured market-data offsets so the
-// caller can seed the consumer.
-func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
+// tryRestoreSnapshot loads the trigger snapshot trade-dump's shadow
+// pipeline produced (ADR-0067) and restores it into eng. Absent
+// snapshot → cold start (typically only on first deployment, before
+// trade-dump has produced anything). Returns the captured market-data
+// offsets so the caller can seed the consumer.
+func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
 	if store == nil {
 		logger.Info("snapshot disabled (empty --snapshot-dir); cold start")
 		return nil, nil
 	}
-
-	// ADR-0067 M5 cold path: read the snapshot trade-dump's shadow
-	// pipeline produced.
 	pb, err := triggersnap.Load(ctx, store, sharedSnapshotKey)
 	switch {
 	case err == nil:
@@ -400,42 +371,11 @@ func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Co
 			zap.Int("partitions", len(s.Offsets)))
 		return s.Offsets, nil
 	case errors.Is(err, os.ErrNotExist):
-		// Fall through to legacy self-snapshot.
+		logger.Info("no snapshot found; cold start", zap.String("key", sharedSnapshotKey))
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("load shared snapshot: %w", err)
 	}
-
-	// Legacy self-snapshot. Removed entirely in ADR-0067 M6 once the
-	// shared path has been verified in production.
-	key := selfSnapshotKey(cfg)
-	path := snapshotPath(cfg)
-	selfSnap, err := snapshot.Load(ctx, store, key)
-	if err != nil {
-		return nil, fmt.Errorf("load self snapshot %s: %w", path, err)
-	}
-	if selfSnap == nil {
-		logger.Info("no snapshot found; cold start", zap.String("path", path))
-		return nil, nil
-	}
-	if err := snapshot.Restore(eng, selfSnap); err != nil {
-		return nil, fmt.Errorf("engine restore: %w", err)
-	}
-	logger.Info("trigger state restored from legacy self-snapshot",
-		zap.String("path", path),
-		zap.Int64("taken_at_ms", selfSnap.TakenAtMs),
-		zap.Int("pending", len(selfSnap.Pending)),
-		zap.Int("terminals", len(selfSnap.Terminals)),
-		zap.Int("partitions", len(selfSnap.Offsets)))
-	return selfSnap.Offsets, nil
-}
-
-func writeSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine) error {
-	if store == nil {
-		return nil
-	}
-	snap := snapshot.Capture(eng)
-	snap.TakenAtMs = time.Now().UnixMilli()
-	return snapshot.Save(ctx, store, selfSnapshotKey(cfg), snap, cfg.SnapshotFormat)
 }
 
 // runExpirySweeper sweeps PENDING triggers whose ExpiresAtMs has
@@ -455,24 +395,6 @@ func runExpirySweeper(ctx context.Context, cfg Config, eng *engine.Engine, logge
 		case <-ticker.C:
 			if n := eng.SweepExpired(ctx); n > 0 && logger != nil {
 				logger.Info("expiry sweep", zap.Int("expired", n))
-			}
-		}
-	}
-}
-
-func runSnapshotTicker(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) {
-	if store == nil || cfg.SnapshotInterval <= 0 {
-		return
-	}
-	ticker := time.NewTicker(cfg.SnapshotInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := writeSnapshot(ctx, store, cfg, eng); err != nil {
-				logger.Error("snapshot", zap.Error(err))
 			}
 		}
 	}
@@ -542,8 +464,6 @@ func parseFlags() Config {
 		GRPCAddr:                      ":8082",
 		MarketTopic:                   "market-data",
 		SnapshotDir:                   "./data/trigger",
-		SnapshotInterval:              30 * time.Second,
-		SnapshotFormat:                snapshotpkg.FormatProto, // ADR-0049
 		TerminalHistoryLimit:          1000,
 		ExpirySweepInterval:           5 * time.Second,
 		MarketCheckpointInterval:      1 * time.Second,
@@ -556,7 +476,7 @@ func parseFlags() Config {
 		Env:                           "dev",
 		LogLevel:                      "info",
 	}
-	var brokersStr, shardsStr, etcdStr, snapshotFormatStr string
+	var brokersStr, shardsStr, etcdStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (grpc client id / default group suffix)")
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
@@ -565,9 +485,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default trigger-{instance-id})")
 	flag.StringVar(&shardsStr, "counter-shards", "localhost:8081",
 		"comma-separated Counter gRPC endpoints, in shard-id order (shard 0 first)")
-	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "directory for engine-state snapshots (empty disables)")
-	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "snapshot cadence; 0 disables the ticker (still writes on shutdown)")
-	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "snapshot on-disk encoding: proto (default) | json (debug). ADR-0049. Env OPENTRADE_SNAPSHOT_FORMAT overrides.")
+	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "BlobStore directory holding the trigger snapshot trade-dump's shadow pipeline writes (ADR-0067). Empty disables snapshot restore — trigger cold-starts from trigger-event head.")
 	flag.IntVar(&cfg.TerminalHistoryLimit, "terminal-history", cfg.TerminalHistoryLimit, "max retained terminal records per engine for ListTriggers(include_inactive)")
 	flag.DurationVar(&cfg.ExpirySweepInterval, "expiry-sweep", cfg.ExpirySweepInterval, "cadence for sweeping expired PENDING triggers (ADR-0043); 0 disables")
 	flag.DurationVar(&cfg.MarketCheckpointInterval, "market-checkpoint-interval", cfg.MarketCheckpointInterval, "cadence for publishing TriggerMarketCheckpointEvent on the journal topic (ADR-0067); 0 disables")
@@ -588,18 +506,6 @@ func parseFlags() Config {
 	cfg.CounterShards = splitCSV(shardsStr)
 	cfg.EtcdEndpoints = splitCSV(etcdStr)
 	cfg.DefaultMaxActiveTriggerOrders = uint32(defaultMaxActiveCond)
-	// --snapshot-format + OPENTRADE_SNAPSHOT_FORMAT env override (ADR-0049).
-	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
-		snapshotFormatStr = envFmt
-	}
-	if snapshotFormatStr != "" {
-		f, err := snapshotpkg.ParseFormat(snapshotFormatStr)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-		cfg.SnapshotFormat = f
-	}
 	if cfg.ConsumerGroup == "" {
 		cfg.ConsumerGroup = "trigger-" + cfg.InstanceID
 	}

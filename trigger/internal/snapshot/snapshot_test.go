@@ -2,8 +2,6 @@ package snapshot
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,7 +10,7 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
-	"github.com/xargin/opentrade/pkg/snapshot"
+	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	"github.com/xargin/opentrade/trigger/engine"
 )
 
@@ -33,139 +31,41 @@ func newEngine() *engine.Engine {
 	}, &counterSeq{}, nopPlacer{}, nil, zap.NewNop())
 }
 
-func TestSaveLoad_RoundTrip_Proto(t *testing.T) {
-	testSaveLoadRoundTrip(t, snapshot.FormatProto)
-}
-
-func TestSaveLoad_RoundTrip_JSON(t *testing.T) {
-	testSaveLoadRoundTrip(t, snapshot.FormatJSON)
-}
-
-func testSaveLoadRoundTrip(t *testing.T, format snapshot.Format) {
-	src := newEngine()
-	id1, _, _, _ := src.Place(context.Background(), &condrpc.PlaceTriggerRequest{
-		UserId:    "u1",
-		Symbol:    "BTC-USDT",
-		Side:      eventpb.Side_SIDE_SELL,
-		Type:      condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS,
-		StopPrice: "100",
-		Qty:       "0.5",
-	})
-	_, _, _ = src.Cancel(context.Background(), "u1", id1)
-	_, _, _, _ = src.Place(context.Background(), &condrpc.PlaceTriggerRequest{
-		UserId:     "u2",
-		Symbol:     "ETH-USDT",
-		Side:       eventpb.Side_SIDE_BUY,
-		Type:       condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT,
-		StopPrice:  "200",
-		LimitPrice: "205",
-		Qty:        "1",
-		Tif:        eventpb.TimeInForce_TIME_IN_FORCE_IOC,
-	})
-	captured := Capture(src)
-	captured.TakenAtMs = 42
-
-	ctx := context.Background()
-	store := snapshot.NewFSBlobStore(t.TempDir())
-	if err := Save(ctx, store, "trigger", captured, format); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := Load(ctx, store, "trigger")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dst := newEngine()
-	if err := Restore(dst, loaded); err != nil {
-		t.Fatal(err)
-	}
-	pending := dst.List("u2", false)
-	if len(pending) != 1 {
-		t.Fatalf("u2 pending = %d, want 1", len(pending))
-	}
-	if pending[0].Type != condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT {
-		t.Errorf("u2 type: %v", pending[0].Type)
-	}
-	// Terminal (canceled) record preserved for u1.
-	inactive := dst.List("u1", true)
-	if len(inactive) != 1 {
-		t.Fatalf("u1 inactive = %d, want 1", len(inactive))
-	}
-	if inactive[0].Status != condrpc.TriggerStatus_TRIGGER_STATUS_CANCELED {
-		t.Errorf("u1 status: %v", inactive[0].Status)
-	}
-}
-
-func TestLoad_MissingFileReturnsNil(t *testing.T) {
-	store := snapshot.NewFSBlobStore(t.TempDir())
-	snap, err := Load(context.Background(), store, "nope")
-	if err != nil {
-		t.Fatalf("missing file should yield nil,nil: %v", err)
-	}
-	if snap != nil {
-		t.Errorf("snap = %+v", snap)
-	}
-}
-
-func TestLoad_VersionMismatch(t *testing.T) {
-	ctx := context.Background()
-	store := snapshot.NewFSBlobStore(t.TempDir())
-	if err := Save(ctx, store, "trigger", &Snapshot{Version: Version + 1}, snapshot.FormatProto); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(ctx, store, "trigger"); err == nil {
-		t.Fatal("expected version mismatch error")
-	}
-}
-
-func TestSave_AtomicRename(t *testing.T) {
-	dir := t.TempDir()
-	store := snapshot.NewFSBlobStore(dir)
-	if err := Save(context.Background(), store, "trigger", &Snapshot{Version: Version}, snapshot.FormatProto); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "trigger.pb.tmp")); !os.IsNotExist(err) {
-		t.Errorf("tmp lingered: %v", err)
-	}
-}
-
-// TestLoad_JSONOnlyMigration covers the upgrade window: only .json on
-// disk, Load still returns it (ADR-0049 probe order .pb → .json).
-func TestLoad_JSONOnlyMigration(t *testing.T) {
-	ctx := context.Background()
-	store := snapshot.NewFSBlobStore(t.TempDir())
-	if err := Save(ctx, store, "trigger", &Snapshot{Version: Version, TakenAtMs: 7}, snapshot.FormatJSON); err != nil {
-		t.Fatal(err)
-	}
-	snap, err := Load(ctx, store, "trigger")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snap == nil || snap.TakenAtMs != 7 {
-		t.Fatalf("json-only load: got %+v", snap)
-	}
-}
-
-// TestRestoreFromProto covers the ADR-0067 M5 cold path: trade-dump's
-// shadow pipeline produces a snapshot via pkg/snapshot/trigger; this
-// helper hands the proto to RestoreFromProto so trigger startup can
-// hydrate eng + read offsets in one call.
+// TestRestoreFromProto covers the ADR-0067 cold path: trade-dump's
+// shadow pipeline produces a snapshotpb.TriggerSnapshot via
+// pkg/snapshot/trigger.Save; trigger startup hands the proto to
+// RestoreFromProto so the engine + offsets are hydrated in one call.
 func TestRestoreFromProto(t *testing.T) {
-	src := newEngine()
-	id1, _, _, _ := src.Place(context.Background(), &condrpc.PlaceTriggerRequest{
-		UserId:    "u1",
-		Symbol:    "BTC-USDT",
-		Side:      eventpb.Side_SIDE_SELL,
-		Type:      condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS,
-		StopPrice: "100",
-		Qty:       "0.5",
-	})
-	_, _, _ = src.Cancel(context.Background(), "u1", id1)
-	captured := Capture(src)
-	captured.TakenAtMs = 99
-	captured.Offsets = map[int32]int64{0: 555}
-
-	pb := toProto(captured)
+	pb := &snapshotpb.TriggerSnapshot{
+		Version:   uint32(Version),
+		TakenAtMs: 99,
+		Offsets:   map[int32]int64{0: 555, 2: 200},
+		Pending: []*snapshotpb.TriggerRecord{
+			{
+				Id:         7,
+				UserId:     "u2",
+				Symbol:     "ETH-USDT",
+				Side:       uint32(eventpb.Side_SIDE_BUY),
+				Type:       uint32(condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT),
+				StopPrice:  "200",
+				LimitPrice: "205",
+				Qty:        "1",
+				Status:     uint32(condrpc.TriggerStatus_TRIGGER_STATUS_PENDING),
+			},
+		},
+		Terminals: []*snapshotpb.TriggerRecord{
+			{
+				Id:        9,
+				UserId:    "u1",
+				Symbol:    "BTC-USDT",
+				Side:      uint32(eventpb.Side_SIDE_SELL),
+				Type:      uint32(condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS),
+				StopPrice: "100",
+				Qty:       "0.5",
+				Status:    uint32(condrpc.TriggerStatus_TRIGGER_STATUS_CANCELED),
+			},
+		},
+	}
 
 	dst := newEngine()
 	got, err := RestoreFromProto(dst, pb)
@@ -178,14 +78,21 @@ func TestRestoreFromProto(t *testing.T) {
 	if got.TakenAtMs != 99 {
 		t.Errorf("TakenAtMs = %d, want 99", got.TakenAtMs)
 	}
-	if got.Offsets[0] != 555 {
-		t.Errorf("Offsets[0] = %d, want 555", got.Offsets[0])
+	if got.Offsets[0] != 555 || got.Offsets[2] != 200 {
+		t.Errorf("Offsets = %+v", got.Offsets)
 	}
-	// Engine state was hydrated — terminal record (canceled u1 trigger)
-	// is reachable via List.
+	// Engine state hydrated — pending u2 lookup + canceled u1 in
+	// terminal ring.
+	pending := dst.List("u2", false)
+	if len(pending) != 1 || pending[0].Type != condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT {
+		t.Fatalf("u2 pending = %+v", pending)
+	}
 	inactive := dst.List("u1", true)
 	if len(inactive) != 1 {
-		t.Fatalf("dst.List(u1, inactive) = %d, want 1", len(inactive))
+		t.Fatalf("u1 inactive = %+v", inactive)
+	}
+	if inactive[0].Status != condrpc.TriggerStatus_TRIGGER_STATUS_CANCELED {
+		t.Errorf("u1 status = %v", inactive[0].Status)
 	}
 }
 
@@ -196,5 +103,30 @@ func TestRestoreFromProto_NilTolerated(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("got = %+v, want nil", got)
+	}
+}
+
+func TestRestoreFromProto_VersionMismatch(t *testing.T) {
+	pb := &snapshotpb.TriggerSnapshot{Version: uint32(Version) + 1}
+	if _, err := RestoreFromProto(newEngine(), pb); err == nil {
+		t.Fatal("expected version mismatch error")
+	}
+}
+
+func TestRestoreFromProto_BadDecimal(t *testing.T) {
+	pb := &snapshotpb.TriggerSnapshot{
+		Version: uint32(Version),
+		Pending: []*snapshotpb.TriggerRecord{
+			{
+				Id:        1,
+				UserId:    "u",
+				Symbol:    "BTC-USDT",
+				StopPrice: "not-a-number",
+				Status:    uint32(condrpc.TriggerStatus_TRIGGER_STATUS_PENDING),
+			},
+		},
+	}
+	if _, err := RestoreFromProto(newEngine(), pb); err == nil {
+		t.Fatal("expected decimal parse error")
 	}
 }
