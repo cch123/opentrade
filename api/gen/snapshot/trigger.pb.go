@@ -35,15 +35,15 @@ type TriggerSnapshot struct {
 	// OCOByClient: client-supplied idempotency key → engine-assigned group id
 	// (ADR-0044).
 	OcoByClient map[string]string `protobuf:"bytes,6,rep,name=oco_by_client,json=ocoByClient,proto3" json:"oco_by_client,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// trigger_event_offset is the next-to-consume position on the
-	// trigger-event topic (ADR-0067). When trade-dump produces the
-	// snapshot, this is the shadow's apply cursor; trigger startup uses
-	// it to seek the catch-up consumer. Zero on legacy snapshots
-	// (trigger self-produced) — caller falls back to AtStart for
-	// catch-up.
-	TriggerEventOffset int64 `protobuf:"varint,7,opt,name=trigger_event_offset,json=triggerEventOffset,proto3" json:"trigger_event_offset,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// trigger_event_offsets is the per-partition next-to-consume position
+	// on the trigger-event topic (ADR-0067). When trade-dump produces the
+	// snapshot, this is the shadow's apply cursor for each partition;
+	// trigger startup uses it to seek the catch-up consumer. Empty on
+	// legacy snapshots (trigger self-produced) — caller falls back to
+	// AtStart for catch-up.
+	TriggerEventOffsets map[int32]int64 `protobuf:"bytes,7,rep,name=trigger_event_offsets,json=triggerEventOffsets,proto3" json:"trigger_event_offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TriggerSnapshot) Reset() {
@@ -118,11 +118,11 @@ func (x *TriggerSnapshot) GetOcoByClient() map[string]string {
 	return nil
 }
 
-func (x *TriggerSnapshot) GetTriggerEventOffset() int64 {
+func (x *TriggerSnapshot) GetTriggerEventOffsets() map[int32]int64 {
 	if x != nil {
-		return x.TriggerEventOffset
+		return x.TriggerEventOffsets
 	}
-	return 0
+	return nil
 }
 
 type TriggerRecord struct {
@@ -342,21 +342,24 @@ var File_snapshot_trigger_proto protoreflect.FileDescriptor
 
 const file_snapshot_trigger_proto_rawDesc = "" +
 	"\n" +
-	"\x16snapshot/trigger.proto\x12\x12opentrade.snapshot\"\x9d\x04\n" +
+	"\x16snapshot/trigger.proto\x12\x12opentrade.snapshot\"\xa5\x05\n" +
 	"\x0fTriggerSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x1e\n" +
 	"\vtaken_at_ms\x18\x02 \x01(\x03R\ttakenAtMs\x12J\n" +
 	"\aoffsets\x18\x03 \x03(\v20.opentrade.snapshot.TriggerSnapshot.OffsetsEntryR\aoffsets\x12;\n" +
 	"\apending\x18\x04 \x03(\v2!.opentrade.snapshot.TriggerRecordR\apending\x12?\n" +
 	"\tterminals\x18\x05 \x03(\v2!.opentrade.snapshot.TriggerRecordR\tterminals\x12X\n" +
-	"\roco_by_client\x18\x06 \x03(\v24.opentrade.snapshot.TriggerSnapshot.OcoByClientEntryR\vocoByClient\x120\n" +
-	"\x14trigger_event_offset\x18\a \x01(\x03R\x12triggerEventOffset\x1a:\n" +
+	"\roco_by_client\x18\x06 \x03(\v24.opentrade.snapshot.TriggerSnapshot.OcoByClientEntryR\vocoByClient\x12p\n" +
+	"\x15trigger_event_offsets\x18\a \x03(\v2<.opentrade.snapshot.TriggerSnapshot.TriggerEventOffsetsEntryR\x13triggerEventOffsets\x1a:\n" +
 	"\fOffsetsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a>\n" +
 	"\x10OcoByClientEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcd\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aF\n" +
+	"\x18TriggerEventOffsetsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xcd\x05\n" +
 	"\rTriggerRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12*\n" +
 	"\x11client_trigger_id\x18\x02 \x01(\tR\x0fclientTriggerId\x12\x17\n" +
@@ -397,23 +400,25 @@ func file_snapshot_trigger_proto_rawDescGZIP() []byte {
 	return file_snapshot_trigger_proto_rawDescData
 }
 
-var file_snapshot_trigger_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_snapshot_trigger_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_snapshot_trigger_proto_goTypes = []any{
 	(*TriggerSnapshot)(nil), // 0: opentrade.snapshot.TriggerSnapshot
 	(*TriggerRecord)(nil),   // 1: opentrade.snapshot.TriggerRecord
 	nil,                     // 2: opentrade.snapshot.TriggerSnapshot.OffsetsEntry
 	nil,                     // 3: opentrade.snapshot.TriggerSnapshot.OcoByClientEntry
+	nil,                     // 4: opentrade.snapshot.TriggerSnapshot.TriggerEventOffsetsEntry
 }
 var file_snapshot_trigger_proto_depIdxs = []int32{
 	2, // 0: opentrade.snapshot.TriggerSnapshot.offsets:type_name -> opentrade.snapshot.TriggerSnapshot.OffsetsEntry
 	1, // 1: opentrade.snapshot.TriggerSnapshot.pending:type_name -> opentrade.snapshot.TriggerRecord
 	1, // 2: opentrade.snapshot.TriggerSnapshot.terminals:type_name -> opentrade.snapshot.TriggerRecord
 	3, // 3: opentrade.snapshot.TriggerSnapshot.oco_by_client:type_name -> opentrade.snapshot.TriggerSnapshot.OcoByClientEntry
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	4, // 4: opentrade.snapshot.TriggerSnapshot.trigger_event_offsets:type_name -> opentrade.snapshot.TriggerSnapshot.TriggerEventOffsetsEntry
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_snapshot_trigger_proto_init() }
@@ -427,7 +432,7 @@ func file_snapshot_trigger_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snapshot_trigger_proto_rawDesc), len(file_snapshot_trigger_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

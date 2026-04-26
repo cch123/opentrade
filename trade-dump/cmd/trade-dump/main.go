@@ -1,17 +1,21 @@
 // Command trade-dump runs the OpenTrade persistence sidecar (ADR-0008).
 //
-// Two pipelines, selectable via --pipelines:
+// Three pipelines, selectable via --pipelines:
 //
-//   - sql   (ADR-0008 / 0023 / 0028 / 0047): consume trade-event +
-//     counter-journal + trigger-event and idempotently project onto
+//   - sql          (ADR-0008 / 0023 / 0028 / 0047): consume trade-event
+//   - counter-journal + trigger-event and idempotently project onto
 //     MySQL. asset-service owns funding-wallet history directly
 //     (ADR-0065) so trade-dump no longer consumes asset-journal.
-//   - snap  (ADR-0061): consume counter-journal per vshard,
-//     maintain a ShadowEngine, and write per-vshard snapshots to
-//     a blob store (fs / s3). Counter recovery seeks to the
+//   - snap         (ADR-0061): consume counter-journal per vshard,
+//     maintain a ShadowEngine, and write per-vshard snapshots to a
+//     blob store (fs / s3). Counter recovery seeks to the
 //     JournalOffset embedded in these snapshots on restart.
+//   - trigger-snap (ADR-0067): consume trigger-event, maintain a
+//     trigger ShadowEngine, write a single fixed-key trigger snapshot
+//     to the blob store. Trigger startup reads the snapshot and
+//     catches up trigger-event from the embedded cursor.
 //
-// Default: both pipelines run in-process.
+// Default: all three pipelines run in-process.
 package main
 
 import (
@@ -40,6 +44,7 @@ import (
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/trade-dump/internal/consumer"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/pipeline"
+	"github.com/xargin/opentrade/trade-dump/internal/snapshot/triggerpipeline"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshotrpc"
 	"github.com/xargin/opentrade/trade-dump/internal/writer"
 )
@@ -48,8 +53,8 @@ type Config struct {
 	InstanceID string
 	Brokers    []string
 
-	// Pipelines controls which projections run. Valid set
-	// members: "sql", "snap". Empty slice errors in validate().
+	// Pipelines controls which projections run. Valid set members:
+	// "sql", "snap", "trigger-snap". Empty slice errors in validate().
 	Pipelines []string
 
 	// -- SQL pipeline (ADR-0023 / 0028 / 0047) --
@@ -80,6 +85,16 @@ type Config struct {
 	SnapshotSaveTimeout time.Duration
 	SnapshotOwnerIndex  int
 	SnapshotOwnerCount  int
+
+	// -- Trigger snapshot pipeline (ADR-0067) --
+	// Topic / format / store config reuses the SQL pipeline's
+	// TriggerTopic + the snapshot pipeline's blob store.
+	TriggerSnapPartitionCount int
+	TriggerSnapKey            string
+	TriggerSnapInterval       time.Duration
+	TriggerSnapEventCount     uint64
+	TriggerSnapSaveTimeout    time.Duration
+	TriggerSnapTerminalLimit  int
 
 	// -- gRPC server (ADR-0064) --
 	// GRPCAddr is the TCP address for trade-dump's on-demand
@@ -140,6 +155,7 @@ func main() {
 
 	wantSQL := hasPipeline(cfg.Pipelines, "sql")
 	wantSnap := hasPipeline(cfg.Pipelines, "snap")
+	wantTriggerSnap := hasPipeline(cfg.Pipelines, "trigger-snap")
 
 	var wg sync.WaitGroup
 
@@ -273,6 +289,51 @@ func main() {
 			zap.Uint64("event_count", cfg.SnapshotEventCount))
 	} else {
 		logger.Info("snapshot pipeline disabled (--pipelines)")
+	}
+
+	// ---------------- Trigger snapshot pipeline (ADR-0067) ----------------
+	var triggerSnapPipe *triggerpipeline.Pipeline
+	if wantTriggerSnap {
+		store, err := newSnapshotStore(rootCtx, cfg, logger)
+		if err != nil {
+			logger.Fatal("trigger snapshot store init", zap.Error(err))
+		}
+		triggerSnapPipe, err = triggerpipeline.New(triggerpipeline.Config{
+			Brokers:            cfg.Brokers,
+			ClientID:           cfg.InstanceID + "-trigger-snap",
+			TriggerEventTopic:  cfg.TriggerTopic,
+			PartitionCount:     cfg.TriggerSnapPartitionCount,
+			Store:              store,
+			SnapshotFormat:     cfg.SnapshotFormat,
+			SnapshotKey:        cfg.TriggerSnapKey,
+			SnapshotInterval:   cfg.TriggerSnapInterval,
+			SnapshotEventCount: cfg.TriggerSnapEventCount,
+			SaveTimeout:        cfg.TriggerSnapSaveTimeout,
+			TerminalLimit:      cfg.TriggerSnapTerminalLimit,
+			Logger:             logger,
+		})
+		if err != nil {
+			logger.Fatal("trigger snapshot pipeline init", zap.Error(err))
+		}
+		if err := triggerSnapPipe.Start(rootCtx); err != nil {
+			logger.Fatal("trigger snapshot pipeline start", zap.Error(err))
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := triggerSnapPipe.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("trigger snapshot pipeline exited", zap.Error(err))
+				stop()
+			}
+		}()
+		logger.Info("trigger snapshot pipeline enabled",
+			zap.String("topic", cfg.TriggerTopic),
+			zap.Int("partition_count", cfg.TriggerSnapPartitionCount),
+			zap.String("key", cfg.TriggerSnapKey),
+			zap.Duration("interval", cfg.TriggerSnapInterval),
+			zap.Uint64("event_count", cfg.TriggerSnapEventCount))
+	} else {
+		logger.Info("trigger snapshot pipeline disabled (--pipelines)")
 	}
 
 	// ---------------- gRPC server (ADR-0064 on-demand snapshot) ----------------
@@ -419,6 +480,9 @@ func main() {
 	if snapPipe != nil {
 		snapPipe.Close()
 	}
+	if triggerSnapPipe != nil {
+		triggerSnapPipe.Close()
+	}
 	wg.Wait()
 	logger.Info("trade-dump shutdown complete")
 }
@@ -450,24 +514,34 @@ func parseFlags() Config {
 		// 10s/10000 to 60s/60000 now that on-demand carries the
 		// hot-path recovery cursor. Operators wanting tighter
 		// fallback RPO can override via the flags below.
-		SnapshotInterval:         60 * time.Second,
-		SnapshotEventCount:       60000,
-		SnapshotSaveTimeout:      30 * time.Second,
-		SnapshotOwnerIndex:       0,
-		SnapshotOwnerCount:       1,
-		GRPCAddr:                 ":8088",
-		OnDemandConcurrency:      16,
-		OnDemandWaitApplyTimeout: 2 * time.Second,
-		OnDemandWorkTimeout:      8 * time.Second,
-		OnDemandTTL:              1 * time.Hour,
-		OnDemandSweepInterval:    5 * time.Minute,
-		Env:                      "dev",
-		LogLevel:                 "info",
+		SnapshotInterval:    60 * time.Second,
+		SnapshotEventCount:  60000,
+		SnapshotSaveTimeout: 30 * time.Second,
+		SnapshotOwnerIndex:  0,
+		SnapshotOwnerCount:  1,
+		// ADR-0067 trigger snapshot pipeline defaults. Single
+		// partition matches the typical dev / single-region
+		// trigger-event provisioning; production overrides via
+		// --trigger-snap-partition-count.
+		TriggerSnapPartitionCount: 1,
+		TriggerSnapKey:            "trigger",
+		TriggerSnapInterval:       60 * time.Second,
+		TriggerSnapEventCount:     60000,
+		TriggerSnapSaveTimeout:    30 * time.Second,
+		TriggerSnapTerminalLimit:  10000,
+		GRPCAddr:                  ":8088",
+		OnDemandConcurrency:       16,
+		OnDemandWaitApplyTimeout:  2 * time.Second,
+		OnDemandWorkTimeout:       8 * time.Second,
+		OnDemandTTL:               1 * time.Hour,
+		OnDemandSweepInterval:     5 * time.Minute,
+		Env:                       "dev",
+		LogLevel:                  "info",
 	}
 	var brokersStr, pipelinesStr, snapFmtStr string
 	flag.StringVar(&cfg.InstanceID, "instance-id", cfg.InstanceID, "instance id (client id prefix)")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
-	flag.StringVar(&pipelinesStr, "pipelines", "sql,snap", "comma-separated list of pipelines to run: sql, snap")
+	flag.StringVar(&pipelinesStr, "pipelines", "sql,snap,trigger-snap", "comma-separated list of pipelines to run: sql, snap, trigger-snap")
 
 	// SQL pipeline flags
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", cfg.TradeTopic, "trade-event topic name")
@@ -498,6 +572,15 @@ func parseFlags() Config {
 	flag.IntVar(&cfg.SnapshotOwnerIndex, "snapshot-owner-index", cfg.SnapshotOwnerIndex, "zero-based snap replica index; owns vshards where vshard % owner-count == owner-index")
 	flag.IntVar(&cfg.SnapshotOwnerCount, "snapshot-owner-count", cfg.SnapshotOwnerCount, "total snap replicas sharing vshards; 1 means this instance owns all vshards")
 
+	// Trigger snapshot pipeline flags (ADR-0067)
+	flag.IntVar(&cfg.TriggerSnapPartitionCount, "trigger-snap-partition-count", cfg.TriggerSnapPartitionCount, "number of partitions on the trigger-event topic (must match topic provisioning)")
+	flag.StringVar(&cfg.TriggerSnapKey, "trigger-snap-key", cfg.TriggerSnapKey, "fixed BlobStore key stem for the trigger snapshot (ADR-0067)")
+	flag.DurationVar(&cfg.TriggerSnapInterval, "trigger-snap-interval", cfg.TriggerSnapInterval, "time-window trigger for trigger snapshot Capture (ADR-0067)")
+	var triggerSnapEventCount uint
+	flag.UintVar(&triggerSnapEventCount, "trigger-snap-event-count", uint(cfg.TriggerSnapEventCount), "event-window trigger for trigger snapshot Capture")
+	flag.DurationVar(&cfg.TriggerSnapSaveTimeout, "trigger-snap-save-timeout", cfg.TriggerSnapSaveTimeout, "max wall-time per trigger snapshot Save")
+	flag.IntVar(&cfg.TriggerSnapTerminalLimit, "trigger-snap-terminal-limit", cfg.TriggerSnapTerminalLimit, "max retained terminal trigger records on the shadow ring")
+
 	// gRPC server flags (ADR-0064)
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address for on-demand snapshot (ADR-0064); empty string disables")
 	flag.IntVar(&cfg.OnDemandConcurrency, "ondemand-concurrency", cfg.OnDemandConcurrency, "max concurrent on-demand TakeSnapshot requests (ADR-0064 §2.2)")
@@ -513,6 +596,7 @@ func parseFlags() Config {
 	cfg.Brokers = splitCSV(brokersStr)
 	cfg.Pipelines = splitCSV(pipelinesStr)
 	cfg.SnapshotEventCount = uint64(snapEventCount)
+	cfg.TriggerSnapEventCount = uint64(triggerSnapEventCount)
 	if cfg.TradeGroup == "" {
 		cfg.TradeGroup = "trade-dump-trade-" + cfg.InstanceID
 	}
@@ -544,11 +628,11 @@ func (c *Config) validate() error {
 		return fmt.Errorf("at least one broker required")
 	}
 	if len(c.Pipelines) == 0 {
-		return fmt.Errorf("at least one pipeline required (--pipelines=sql,snap)")
+		return fmt.Errorf("at least one pipeline required (--pipelines=sql,snap,trigger-snap)")
 	}
 	for _, p := range c.Pipelines {
-		if p != "sql" && p != "snap" {
-			return fmt.Errorf("unknown pipeline %q (valid: sql, snap)", p)
+		if p != "sql" && p != "snap" && p != "trigger-snap" {
+			return fmt.Errorf("unknown pipeline %q (valid: sql, snap, trigger-snap)", p)
 		}
 	}
 	if hasPipeline(c.Pipelines, "sql") && c.MySQLDSN == "" {
@@ -566,6 +650,17 @@ func (c *Config) validate() error {
 		}
 		if len(ownedSnapshotVShards(c.VShardCount, c.SnapshotOwnerIndex, c.SnapshotOwnerCount)) == 0 {
 			return fmt.Errorf("snapshot owner %d/%d owns no vshards (vshard-count=%d)", c.SnapshotOwnerIndex, c.SnapshotOwnerCount, c.VShardCount)
+		}
+		if c.SnapshotBackend == "s3" && c.SnapshotS3Bucket == "" {
+			return fmt.Errorf("snapshot-s3-bucket required when --snapshot-backend=s3")
+		}
+	}
+	if hasPipeline(c.Pipelines, "trigger-snap") {
+		if c.TriggerTopic == "" {
+			return fmt.Errorf("trigger-topic required when trigger-snap pipeline enabled")
+		}
+		if c.TriggerSnapPartitionCount <= 0 {
+			return fmt.Errorf("trigger-snap-partition-count must be > 0")
 		}
 		if c.SnapshotBackend == "s3" && c.SnapshotS3Bucket == "" {
 			return fmt.Errorf("snapshot-s3-bucket required when --snapshot-backend=s3")

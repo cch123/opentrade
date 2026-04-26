@@ -57,10 +57,12 @@ type Engine struct {
 	// at the right position (ADR-0048).
 	marketOffsets map[int32]int64
 
-	// nextTriggerEventOffset is the apply cursor on the trigger-event
-	// topic. Mirror of counter shadow's NextJournalOffset. After a
-	// successful Apply this equals kafkaOffset+1.
-	nextTriggerEventOffset int64
+	// nextTriggerEventOffsets is the per-partition apply cursor on the
+	// trigger-event topic. Mirror of counter shadow's NextJournalOffset
+	// but partition-aware because trigger-event is partitioned by
+	// user_id. After a successful Apply at (partition, offset), the
+	// map entry equals offset+1.
+	nextTriggerEventOffsets map[int32]int64
 
 	// eventsSinceLastSnapshot is the count-based snapshot trigger
 	// pipeline (M2) reads. Reset to 0 by the pipeline immediately
@@ -75,18 +77,32 @@ func New(terminalLimit int) *Engine {
 		terminalLimit = 0
 	}
 	return &Engine{
-		terminalLimit: terminalLimit,
-		pending:       make(map[uint64]*snapshotpb.TriggerRecord),
-		marketOffsets: make(map[int32]int64),
+		terminalLimit:           terminalLimit,
+		pending:                 make(map[uint64]*snapshotpb.TriggerRecord),
+		marketOffsets:           make(map[int32]int64),
+		nextTriggerEventOffsets: make(map[int32]int64),
 	}
 }
 
-// NextTriggerEventOffset returns the next-to-consume offset on the
-// trigger-event topic.
-func (e *Engine) NextTriggerEventOffset() int64 {
+// NextTriggerEventOffset returns the next-to-consume offset for the
+// given partition on the trigger-event topic. Returns 0 for partitions
+// the shadow has never seen (cold start; consumer should AtStart).
+func (e *Engine) NextTriggerEventOffset(partition int32) int64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.nextTriggerEventOffset
+	return e.nextTriggerEventOffsets[partition]
+}
+
+// NextTriggerEventOffsets returns a copy of the per-partition cursor
+// map. Caller-safe — mutations to the result don't affect engine state.
+func (e *Engine) NextTriggerEventOffsets() map[int32]int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[int32]int64, len(e.nextTriggerEventOffsets))
+	for p, o := range e.nextTriggerEventOffsets {
+		out[p] = o
+	}
+	return out
 }
 
 // EventsSinceLastSnapshot returns the count of Apply calls since the
@@ -97,12 +113,12 @@ func (e *Engine) EventsSinceLastSnapshot() uint64 {
 	return e.eventsSinceLastSnapshot
 }
 
-// ApplyTriggerUpdate ingests one TriggerUpdate at kafkaOffset on the
-// trigger-event topic. Terminal status (TRIGGERED / CANCELED /
-// REJECTED / EXPIRED) moves the record from pending into the terminal
-// ring, trimming oldest entries when the cap is exceeded; non-terminal
-// status overwrites the pending entry.
-func (e *Engine) ApplyTriggerUpdate(u *eventpb.TriggerUpdate, kafkaOffset int64) error {
+// ApplyTriggerUpdate ingests one TriggerUpdate from (partition,
+// kafkaOffset) on the trigger-event topic. Terminal status (TRIGGERED
+// / CANCELED / REJECTED / EXPIRED) moves the record from pending into
+// the terminal ring, trimming oldest entries when the cap is exceeded;
+// non-terminal status overwrites the pending entry.
+func (e *Engine) ApplyTriggerUpdate(u *eventpb.TriggerUpdate, partition int32, kafkaOffset int64) error {
 	if u == nil {
 		return fmt.Errorf("triggershadow: nil TriggerUpdate")
 	}
@@ -125,7 +141,7 @@ func (e *Engine) ApplyTriggerUpdate(u *eventpb.TriggerUpdate, kafkaOffset int64)
 		// Active state — overwrite pending entry.
 		e.pending[u.Id] = rec
 	}
-	e.advanceCursorLocked(kafkaOffset)
+	e.advanceCursorLocked(partition, kafkaOffset)
 	return nil
 }
 
@@ -136,7 +152,7 @@ func (e *Engine) ApplyTriggerUpdate(u *eventpb.TriggerUpdate, kafkaOffset int64)
 // Per-partition LWW on offsets: an entry is overwritten only when the
 // incoming offset is strictly higher, so out-of-order checkpoints
 // don't roll the cursor backwards.
-func (e *Engine) ApplyMarketCheckpoint(c *eventpb.TriggerMarketCheckpointEvent, kafkaOffset int64) error {
+func (e *Engine) ApplyMarketCheckpoint(c *eventpb.TriggerMarketCheckpointEvent, partition int32, kafkaOffset int64) error {
 	if c == nil {
 		return fmt.Errorf("triggershadow: nil TriggerMarketCheckpointEvent")
 	}
@@ -147,14 +163,14 @@ func (e *Engine) ApplyMarketCheckpoint(c *eventpb.TriggerMarketCheckpointEvent, 
 			e.marketOffsets[part] = off
 		}
 	}
-	e.advanceCursorLocked(kafkaOffset)
+	e.advanceCursorLocked(partition, kafkaOffset)
 	return nil
 }
 
-func (e *Engine) advanceCursorLocked(kafkaOffset int64) {
+func (e *Engine) advanceCursorLocked(partition int32, kafkaOffset int64) {
 	next := kafkaOffset + 1
-	if next > e.nextTriggerEventOffset {
-		e.nextTriggerEventOffset = next
+	if next > e.nextTriggerEventOffsets[partition] {
+		e.nextTriggerEventOffsets[partition] = next
 	}
 	e.eventsSinceLastSnapshot++
 }
@@ -171,9 +187,14 @@ func (e *Engine) Capture(takenAtMs int64, resetCounter bool) *snapshotpb.Trigger
 	defer e.mu.Unlock()
 
 	snap := &snapshotpb.TriggerSnapshot{
-		Version:            1,
-		TakenAtMs:          takenAtMs,
-		TriggerEventOffset: e.nextTriggerEventOffset,
+		Version:   1,
+		TakenAtMs: takenAtMs,
+	}
+	if len(e.nextTriggerEventOffsets) > 0 {
+		snap.TriggerEventOffsets = make(map[int32]int64, len(e.nextTriggerEventOffsets))
+		for p, o := range e.nextTriggerEventOffsets {
+			snap.TriggerEventOffsets[p] = o
+		}
 	}
 	if len(e.pending) > 0 {
 		snap.Pending = make([]*snapshotpb.TriggerRecord, 0, len(e.pending))
@@ -206,9 +227,9 @@ func (e *Engine) Capture(takenAtMs int64, resetCounter bool) *snapshotpb.Trigger
 
 // RestoreFromSnapshot seeds the engine from a previously captured
 // snapshot. MUST be called before any Apply — the engine state is
-// overwritten wholesale. After return the cursor is
-// snap.TriggerEventOffset; the pipeline seeks the Kafka consumer to
-// that offset to resume.
+// overwritten wholesale. After return the per-partition cursor map
+// matches snap.TriggerEventOffsets; the pipeline seeks each partition
+// in the Kafka consumer to its respective offset to resume.
 func (e *Engine) RestoreFromSnapshot(snap *snapshotpb.TriggerSnapshot) error {
 	if snap == nil {
 		return fmt.Errorf("triggershadow: RestoreFromSnapshot: nil snap")
@@ -219,6 +240,7 @@ func (e *Engine) RestoreFromSnapshot(snap *snapshotpb.TriggerSnapshot) error {
 	e.pending = make(map[uint64]*snapshotpb.TriggerRecord, len(snap.Pending))
 	e.terminals = e.terminals[:0]
 	e.marketOffsets = make(map[int32]int64, len(snap.Offsets))
+	e.nextTriggerEventOffsets = make(map[int32]int64, len(snap.TriggerEventOffsets))
 
 	for _, r := range snap.Pending {
 		e.pending[r.Id] = cloneRecord(r)
@@ -229,7 +251,9 @@ func (e *Engine) RestoreFromSnapshot(snap *snapshotpb.TriggerSnapshot) error {
 	for p, o := range snap.Offsets {
 		e.marketOffsets[p] = o
 	}
-	e.nextTriggerEventOffset = snap.TriggerEventOffset
+	for p, o := range snap.TriggerEventOffsets {
+		e.nextTriggerEventOffsets[p] = o
+	}
 	e.eventsSinceLastSnapshot = 0
 	return nil
 }
