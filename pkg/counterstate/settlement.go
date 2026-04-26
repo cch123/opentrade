@@ -10,10 +10,10 @@ import (
 // TradeInput describes a single fill as produced by Match (trade-event Trade
 // payload). Counter settles both parties (maker + taker).
 type TradeInput struct {
-	TradeID      string
-	Symbol       string
-	Price        dec.Decimal // maker's price (match price)
-	Qty          dec.Decimal
+	TradeID string
+	Symbol  string
+	Price   dec.Decimal // maker's price (match price)
+	Qty     dec.Decimal
 
 	MakerUserID  string
 	MakerOrderID uint64
@@ -30,12 +30,12 @@ type TradeInput struct {
 // PartySettlement describes the balance deltas for one side of a trade.
 // Positive deltas add, negative deltas subtract.
 type PartySettlement struct {
-	UserID          string
-	OrderID         uint64
+	UserID  string
+	OrderID uint64
 
-	BaseDelta       dec.Decimal // signed change to available base
-	QuoteDelta      dec.Decimal // signed change to available quote
-	FrozenBaseDelta dec.Decimal // signed change to frozen base (negative = release)
+	BaseDelta        dec.Decimal // signed change to available base
+	QuoteDelta       dec.Decimal // signed change to available quote
+	FrozenBaseDelta  dec.Decimal // signed change to frozen base (negative = release)
 	FrozenQuoteDelta dec.Decimal // signed change to frozen quote (negative = release)
 
 	// Updated order fields (caller applies via OrderStore.SetFilledQty +

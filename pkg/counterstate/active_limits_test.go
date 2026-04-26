@@ -119,7 +119,7 @@ func TestActiveLimits_RestoreInsertRebuildsCount(t *testing.T) {
 	s := newOrderStore()
 	s.RestoreInsert(newLimit(1, "u1", "BTC-USDT", OrderStatusNew))
 	s.RestoreInsert(newLimit(2, "u1", "BTC-USDT", OrderStatusPartiallyFilled))
-	s.RestoreInsert(newLimit(3, "u1", "BTC-USDT", OrderStatusFilled))   // terminal → skip
+	s.RestoreInsert(newLimit(3, "u1", "BTC-USDT", OrderStatusFilled)) // terminal → skip
 	s.RestoreInsert(newLimit(4, "u1", "ETH-USDT", OrderStatusNew))
 	s.RestoreInsert(newLimit(5, "u2", "BTC-USDT", OrderStatusPendingCancel))
 

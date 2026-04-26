@@ -14,7 +14,7 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
-	triggersnap "github.com/xargin/opentrade/trade-dump/snapshot/trigger"
+	triggersnap "github.com/xargin/opentrade/pkg/snapshot/trigger"
 )
 
 // mustPipeline builds a pipeline backed by an FS BlobStore in t.TempDir

@@ -1,19 +1,19 @@
-// Package snapshot is counter's adapter over the trade-dump-owned
-// snapshot package. Per ADR-0066 trade-dump is the projection platform
-// that produces shard snapshots; counter is a consumer that only loads
-// them on startup. Wire-format types and producer logic live in
-// trade-dump/snapshot/counter — this package keeps a single Load entry
-// point so worker code never reaches across the producer/consumer
+// Package snapshot is counter's adapter over the shared shard-snapshot
+// wire format. Per ADR-0066 trade-dump is the projection platform that
+// produces snapshots and counter consumes them on startup. The wire
+// format + Save / Load / Restore helpers live in pkg/snapshot/counter
+// (shared between both modules); this package keeps a single Load
+// entry point so worker code never reaches across the snapshot
 // boundary directly.
 package snapshot
 
 import (
 	"context"
 
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
-	countersnap "github.com/xargin/opentrade/trade-dump/snapshot/counter"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 )
 
 // Restored is everything Load extracts from a snapshot, ready for the

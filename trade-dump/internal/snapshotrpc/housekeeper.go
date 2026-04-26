@@ -17,7 +17,7 @@ import (
 // On-demand snapshots exist to be consumed by a single Counter
 // startup, then discarded. The TakeSnapshot handler writes them
 // with the filename shape `<prefix>vshard-NNN-ondemand-<unix_ms>`
-// (.pb / .json extension appended by trade-dump/snapshot/counter.Save). This loop
+// (.pb / .json extension appended by pkg/snapshot/counter.Save). This loop
 // detects stale entries by name pattern + LastModified and Deletes
 // them — the Counter caller has long since downloaded and restored.
 //

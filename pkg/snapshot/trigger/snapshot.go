@@ -5,7 +5,7 @@
 // The wire-format type itself lives in api/gen/snapshot
 // (TriggerSnapshot proto); this package contributes only the
 // encode/decode dispatch and the BlobStore I/O wrappers, mirroring
-// trade-dump/snapshot/counter for ShardSnapshot.
+// pkg/snapshot/counter for ShardSnapshot.
 package trigger
 
 import (

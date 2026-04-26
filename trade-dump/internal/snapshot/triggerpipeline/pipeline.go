@@ -39,8 +39,8 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	triggersnap "github.com/xargin/opentrade/pkg/snapshot/trigger"
 	"github.com/xargin/opentrade/trade-dump/internal/snapshot/triggershadow"
-	triggersnap "github.com/xargin/opentrade/trade-dump/snapshot/trigger"
 )
 
 // DefaultSnapshotKey is the BlobStore key stem the pipeline writes to.

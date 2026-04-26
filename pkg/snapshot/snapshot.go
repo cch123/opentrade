@@ -1,5 +1,4 @@
-// Package snapshot is the shared snapshot infrastructure. Per ADR-0066 §4
-// it contributes only the genuinely service-agnostic pieces:
+// Package snapshot is the shared snapshot infrastructure (ADR-0066 §4):
 //
 //   - Format: the on-disk encoding token (proto / json) and its file
 //     extension (ADR-0049).
@@ -7,11 +6,18 @@
 //     plus FSBlobStore (local fs, atomic tmp+rename) and S3BlobStore
 //     (ADR-0058).
 //
-// Service-specific snapshot types and the state ↔ snapshot conversion
-// live with their producer (trade-dump, the projection platform per
-// ADR-0066) — see trade-dump/snapshot/counter and, after ADR-0067,
-// trade-dump/snapshot/trigger. Consumers (counter, trigger) keep a
-// thin loadSnapshot wrapper inside the service.
+// Wire-format types shared between a service and trade-dump's shadow
+// pipeline live in subpackages:
+//
+//   - pkg/snapshot/counter — Counter ShardSnapshot (consumed by counter
+//     on startup, produced by trade-dump per ADR-0061).
+//   - pkg/snapshot/trigger — Trigger Snapshot (consumed by trigger on
+//     startup once ADR-0067 M5 lands; transitional self-produced
+//     snapshots also use this wire format).
+//
+// Each consumer service keeps a thin loadSnapshot wrapper in
+// `<service>/internal/snapshot/` so call sites never reach across
+// service boundaries directly.
 package snapshot
 
 import "fmt"

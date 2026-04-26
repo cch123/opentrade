@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/xargin/opentrade/pkg/shard"
-	countersnap "github.com/xargin/opentrade/trade-dump/snapshot/counter"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 )
 
 // TestReshard_RoutesUsersToNewShard constructs a fake 2-shard layout, asks

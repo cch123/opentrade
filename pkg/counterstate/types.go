@@ -88,9 +88,9 @@ const (
 
 // TransferResult is what Service.Transfer returns to callers.
 type TransferResult struct {
-	TransferID    string
-	Status        TransferStatus
-	RejectReason  string
-	BalanceAfter  Balance
-	CounterSeqID  uint64 // counter-shard-scoped seq assigned by UserSequencer (for audit)
+	TransferID   string
+	Status       TransferStatus
+	RejectReason string
+	BalanceAfter Balance
+	CounterSeqID uint64 // counter-shard-scoped seq assigned by UserSequencer (for audit)
 }
