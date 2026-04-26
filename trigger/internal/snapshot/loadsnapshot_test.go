@@ -2,6 +2,8 @@ package snapshot
 
 import (
 	"context"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -11,6 +13,8 @@ import (
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
+	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	triggersnap "github.com/xargin/opentrade/pkg/snapshot/trigger"
 	"github.com/xargin/opentrade/trigger/engine"
 )
 
@@ -31,11 +35,18 @@ func newEngine() *engine.Engine {
 	}, &counterSeq{}, nopPlacer{}, nil, zap.NewNop())
 }
 
-// TestRestoreFromProto covers the ADR-0067 cold path: trade-dump's
-// shadow pipeline produces a snapshotpb.TriggerSnapshot via
-// pkg/snapshot/trigger.Save; trigger startup hands the proto to
-// RestoreFromProto so the engine + offsets are hydrated in one call.
-func TestRestoreFromProto(t *testing.T) {
+func newStore(t *testing.T) snapshotpkg.BlobStore {
+	t.Helper()
+	return snapshotpkg.NewFSBlobStore(t.TempDir())
+}
+
+// TestLoad_HappyPath covers the ADR-0067 cold path: trade-dump's
+// shadow pipeline writes a snapshotpb.TriggerSnapshot via
+// pkg/snapshot/trigger.Save; trigger startup picks it up via Load and
+// the engine + offsets come back hydrated.
+func TestLoad_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
 	pb := &snapshotpb.TriggerSnapshot{
 		Version:   uint32(Version),
 		TakenAtMs: 99,
@@ -66,14 +77,14 @@ func TestRestoreFromProto(t *testing.T) {
 			},
 		},
 	}
+	if err := triggersnap.Save(ctx, store, "trigger", pb, snapshotpkg.FormatProto); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
 
-	dst := newEngine()
-	got, err := RestoreFromProto(dst, pb)
+	eng := newEngine()
+	got, err := Load(ctx, store, "trigger", eng)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if got == nil {
-		t.Fatal("RestoreFromProto returned nil snapshot")
 	}
 	if got.TakenAtMs != 99 {
 		t.Errorf("TakenAtMs = %d, want 99", got.TakenAtMs)
@@ -81,13 +92,16 @@ func TestRestoreFromProto(t *testing.T) {
 	if got.Offsets[0] != 555 || got.Offsets[2] != 200 {
 		t.Errorf("Offsets = %+v", got.Offsets)
 	}
+	if got.Pending != 1 || got.Terminals != 1 {
+		t.Errorf("counts = (%d, %d), want (1, 1)", got.Pending, got.Terminals)
+	}
 	// Engine state hydrated — pending u2 lookup + canceled u1 in
 	// terminal ring.
-	pending := dst.List("u2", false)
+	pending := eng.List("u2", false)
 	if len(pending) != 1 || pending[0].Type != condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT {
 		t.Fatalf("u2 pending = %+v", pending)
 	}
-	inactive := dst.List("u1", true)
+	inactive := eng.List("u1", true)
 	if len(inactive) != 1 {
 		t.Fatalf("u1 inactive = %+v", inactive)
 	}
@@ -96,24 +110,31 @@ func TestRestoreFromProto(t *testing.T) {
 	}
 }
 
-func TestRestoreFromProto_NilTolerated(t *testing.T) {
-	got, err := RestoreFromProto(newEngine(), nil)
-	if err != nil {
-		t.Fatalf("RestoreFromProto(nil) = %v, want nil", err)
-	}
-	if got != nil {
-		t.Errorf("got = %+v, want nil", got)
+// TestLoad_NotExistColdStart: empty store → Load surfaces
+// os.ErrNotExist so callers can branch into cold start.
+func TestLoad_NotExistColdStart(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	if _, err := Load(ctx, store, "trigger", newEngine()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want os.ErrNotExist", err)
 	}
 }
 
-func TestRestoreFromProto_VersionMismatch(t *testing.T) {
+func TestLoad_VersionMismatch(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
 	pb := &snapshotpb.TriggerSnapshot{Version: uint32(Version) + 1}
-	if _, err := RestoreFromProto(newEngine(), pb); err == nil {
+	if err := triggersnap.Save(ctx, store, "trigger", pb, snapshotpkg.FormatProto); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := Load(ctx, store, "trigger", newEngine()); err == nil {
 		t.Fatal("expected version mismatch error")
 	}
 }
 
-func TestRestoreFromProto_BadDecimal(t *testing.T) {
+func TestLoad_BadDecimal(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
 	pb := &snapshotpb.TriggerSnapshot{
 		Version: uint32(Version),
 		Pending: []*snapshotpb.TriggerRecord{
@@ -126,7 +147,10 @@ func TestRestoreFromProto_BadDecimal(t *testing.T) {
 			},
 		},
 	}
-	if _, err := RestoreFromProto(newEngine(), pb); err == nil {
+	if err := triggersnap.Save(ctx, store, "trigger", pb, snapshotpkg.FormatProto); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := Load(ctx, store, "trigger", newEngine()); err == nil {
 		t.Fatal("expected decimal parse error")
 	}
 }

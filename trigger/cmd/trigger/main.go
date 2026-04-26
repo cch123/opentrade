@@ -37,7 +37,6 @@ import (
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
-	triggersnap "github.com/xargin/opentrade/pkg/snapshot/trigger"
 	"github.com/xargin/opentrade/trigger/engine"
 	"github.com/xargin/opentrade/trigger/internal/consumer"
 	"github.com/xargin/opentrade/trigger/internal/counterclient"
@@ -386,20 +385,16 @@ func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Co
 	}
 
 	// Cold path: read the latest periodic snapshot from BlobStore.
-	pb, err := triggersnap.Load(ctx, store, sharedSnapshotKey)
+	r, err := snapshot.Load(ctx, store, sharedSnapshotKey, eng)
 	switch {
 	case err == nil:
-		s, err := snapshot.RestoreFromProto(eng, pb)
-		if err != nil {
-			return nil, fmt.Errorf("restore shared snapshot: %w", err)
-		}
 		logger.Info("trigger state restored from periodic snapshot (cold path)",
 			zap.String("key", sharedSnapshotKey),
-			zap.Int64("taken_at_ms", s.TakenAtMs),
-			zap.Int("pending", len(s.Pending)),
-			zap.Int("terminals", len(s.Terminals)),
-			zap.Int("partitions", len(s.Offsets)))
-		return s.Offsets, nil
+			zap.Int64("taken_at_ms", r.TakenAtMs),
+			zap.Int("pending", r.Pending),
+			zap.Int("terminals", r.Terminals),
+			zap.Int("partitions", len(r.Offsets)))
+		return r.Offsets, nil
 	case errors.Is(err, os.ErrNotExist):
 		logger.Info("no snapshot found; cold start", zap.String("key", sharedSnapshotKey))
 		return nil, nil
@@ -445,27 +440,22 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 	}
 
 	// trade-dump writes the on-demand snapshot at resp.SnapshotKey
-	// in the shared BlobStore (ADR-0067 M4). Download via LoadPath
-	// — the key already includes the format extension is added by
-	// triggersnap.Save, so probe both via LoadPath fallback.
-	pb, err := triggersnap.Load(ctx, store, resp.SnapshotKey)
+	// in the shared BlobStore (ADR-0067 M4). Load probes .pb / .json
+	// extensions internally.
+	r, err := snapshot.Load(ctx, store, resp.SnapshotKey, eng)
 	if err != nil {
-		logger.Warn("hot-path snapshot download failed; cold path",
+		logger.Warn("hot-path snapshot load failed; cold path",
 			zap.String("key", resp.SnapshotKey), zap.Error(err))
 		return nil, false, nil
 	}
-	s, err := snapshot.RestoreFromProto(eng, pb)
-	if err != nil {
-		return nil, false, fmt.Errorf("restore on-demand snapshot: %w", err)
-	}
 	logger.Info("trigger state restored from on-demand snapshot (hot path)",
 		zap.String("key", resp.SnapshotKey),
-		zap.Int64("taken_at_ms", s.TakenAtMs),
-		zap.Int("pending", len(s.Pending)),
-		zap.Int("terminals", len(s.Terminals)),
+		zap.Int64("taken_at_ms", r.TakenAtMs),
+		zap.Int("pending", r.Pending),
+		zap.Int("terminals", r.Terminals),
 		zap.Int("trigger_event_partitions", len(resp.TriggerEventOffsets)),
-		zap.Int("market_partitions", len(s.Offsets)))
-	return s.Offsets, true, nil
+		zap.Int("market_partitions", len(r.Offsets)))
+	return r.Offsets, true, nil
 }
 
 // runExpirySweeper sweeps PENDING triggers whose ExpiresAtMs has
