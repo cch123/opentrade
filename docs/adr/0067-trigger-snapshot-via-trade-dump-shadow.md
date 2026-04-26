@@ -1,6 +1,6 @@
 # ADR-0067: Trigger snapshot 由 trade-dump shadow 接管（trigger 不再自产 snapshot）
 
-- 状态: Proposed
+- 状态: Accepted（M1–M6 全部落地）
 - 日期: 2026-04-26
 - 决策者: xargin, Claude
 - 相关 ADR: 0040（trigger 服务）、0042（trigger HA cold standby）、0047（trigger-event 长期历史）、0048（snapshot + offset 原子绑定）、0049（snapshot proto/json）、0058（BlobStore + 共享存储）、0060（Counter 异步消费 + TECheckpoint event 范式）、0061（trade-dump snapshot pipeline，本 ADR mirror counter 路径）、0064（Counter on-demand snapshot RPC，本 ADR mirror）、0066（trade-dump 投影平台准入，本 ADR 是其 §准入清单 trigger 行的落地）
@@ -178,16 +178,25 @@ trigger 不再需要 NFS 共享 mount——BlobStore（FS 单机或 S3 多机）
 
 ### Milestones
 
-| M | 内容 | 范围 |
-|---|---|---|
-| M1 | proto 加 `TriggerSnapshot` (新结构) + `TriggerMarketCheckpointEvent`；trade-dump shadow 骨架（无 consumer）+ Apply 单测 | api / trade-dump 内部 |
-| M2 | trade-dump 起 trigger-event consumer 接 shadow apply；周期 Capture + Save 写 BlobStore | trade-dump |
-| M3 | trigger primary 加 TriggerMarketCheckpointEvent 周期 produce | trigger |
-| M4 | trade-dump TakeTriggerSnapshot RPC + housekeeper（如有 on-demand 需求；初期可只走 periodic 不上 RPC） | trade-dump |
-| M5 | trigger startup 加 hot/cold 路径，旁路新代码与现有 Capture/Save 并行 | trigger |
-| M6 | 切流：删除 trigger 自己的 Capture/Save/Load/Snapshot 数据结构 + ticker；trigger snapshot 只剩 loadsnapshot.go | trigger |
+| M | 内容 | 范围 | Commit |
+|---|---|---|---|
+| M1 | proto 加 `TriggerMarketCheckpointEvent` + 多 partition cursor；trade-dump shadow 骨架 + Apply 单测 | api / trade-dump 内部 | `e5f5d44` |
+| M2 | trade-dump 起 trigger-event consumer 接 shadow apply；周期 Capture + Save 写 BlobStore，固定 key=`trigger` | trade-dump | `d05fc4c` |
+| M3 | `TriggerEvent` 信封 + trigger primary 周期 produce `TriggerMarketCheckpointEvent`；shadow handleRecord 按 oneof 派发 | trigger / trade-dump | `03c7306` |
+| M4 | `TakeTriggerSnapshot` RPC（LEO 对齐 + WaitAppliedTo + Capture + Save）；trigger startup hot path 经 RPC 拉新鲜 snapshot | api / trigger / trade-dump | `31d42f6` |
+| M5 | trigger startup 加 cold path 读 BlobStore key=`trigger`；旁路与旧 self-snapshot 并行 | trigger | `3d14990` |
+| M6 | 删除 trigger 自己的 Capture/Save/Save-on-shutdown/ticker + `--snapshot-format`/`--snapshot-interval` flag；trigger 包仅留 `RestoreFromProto` | trigger | `bab3949` |
 
-每个 M 一个独立 PR；M5 之前老代码不删，rollback 路径清晰。
+每个 M 单独 commit 直接落 main；M5 之前 self-snapshot 路径并行保留为 rollback rail，M6 切流删除。
+
+附带的辅助重构（不在原计划里，但是 ADR-0067 落地路上长出来的）：
+
+| 范围 | 内容 | Commit |
+|---|---|---|
+| 模块布局 | `counter/engine` → `pkg/counterstate`；shared state machine 进 pkg/，counter 和 trade-dump 平级 import | `5c5c278` |
+| 模块布局 | `trade-dump/snapshot/{counter,trigger}` → `pkg/snapshot/{counter,trigger}`；wire-format 进 pkg/，counter↔trade-dump 跨模块 require 撤掉 | `ab97faa` |
+| ADR-0066 | §4 改判据：多模块共用进 pkg/，单服务专属留 service | `b5f13d7` |
+| Counter | 清掉 ADR-0061 Phase B 之后没删的 writeSnapshot 注释 + journalHighOffset infra + 死 metric | `c954597` |
 
 ### Migration / Rollback
 
