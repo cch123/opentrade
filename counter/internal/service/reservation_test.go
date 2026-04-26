@@ -5,12 +5,12 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
 func seedBalance(svc *Service, user, asset string, available dec.Decimal) {
-	svc.state.Account(user).PutForRestore(asset, engine.Balance{Available: available, Frozen: dec.Zero})
+	svc.state.Account(user).PutForRestore(asset, counterstate.Balance{Available: available, Frozen: dec.Zero})
 }
 
 func TestReserve_HappyPath(t *testing.T) {
@@ -21,8 +21,8 @@ func TestReserve_HappyPath(t *testing.T) {
 		UserID:        "u1",
 		ReservationID: "trig-1",
 		Symbol:        "BTC-USDT",
-		Side:          engine.SideBid,
-		OrderType:     engine.OrderTypeLimit,
+		Side:          counterstate.SideBid,
+		OrderType:     counterstate.OrderTypeLimit,
 		Price:         dec.New("100"),
 		Qty:           dec.New("1"),
 	})
@@ -50,8 +50,8 @@ func TestReserve_IdempotentByRefID(t *testing.T) {
 		UserID:        "u1",
 		ReservationID: "trig-1",
 		Symbol:        "BTC-USDT",
-		Side:          engine.SideBid,
-		OrderType:     engine.OrderTypeLimit,
+		Side:          counterstate.SideBid,
+		OrderType:     counterstate.OrderTypeLimit,
 		Price:         dec.New("100"),
 		Qty:           dec.New("1"),
 	}
@@ -75,12 +75,12 @@ func TestReserve_InsufficientBalanceReturnsError(t *testing.T) {
 		UserID:        "u1",
 		ReservationID: "trig-1",
 		Symbol:        "BTC-USDT",
-		Side:          engine.SideBid,
-		OrderType:     engine.OrderTypeLimit,
+		Side:          counterstate.SideBid,
+		OrderType:     counterstate.OrderTypeLimit,
 		Price:         dec.New("100"),
 		Qty:           dec.New("1"),
 	})
-	if !errors.Is(err, engine.ErrInsufficientAvailable) {
+	if !errors.Is(err, counterstate.ErrInsufficientAvailable) {
 		t.Errorf("err: %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestReleaseReservation_HappyPath(t *testing.T) {
 	seedBalance(svc, "u1", "USDT", dec.New("1000"))
 	_, _ = svc.Reserve(context.Background(), ReserveRequest{
 		UserID: "u1", ReservationID: "trig-1",
-		Symbol: "BTC-USDT", Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
+		Symbol: "BTC-USDT", Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	res, err := svc.ReleaseReservation(context.Background(), ReleaseReservationRequest{
@@ -132,7 +132,7 @@ func TestPlaceOrder_UsingReservation(t *testing.T) {
 	// Reserve 100 USDT for a limit buy.
 	if _, err := svc.Reserve(context.Background(), ReserveRequest{
 		UserID: "u1", ReservationID: "trig-1",
-		Symbol: "BTC-USDT", Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
+		Symbol: "BTC-USDT", Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	}); err != nil {
 		t.Fatal(err)
@@ -142,9 +142,9 @@ func TestPlaceOrder_UsingReservation(t *testing.T) {
 		UserID:        "u1",
 		ClientOrderID: "cli-1",
 		Symbol:        "BTC-USDT",
-		Side:          engine.SideBid,
-		OrderType:     engine.OrderTypeLimit,
-		TIF:           engine.TIFGTC,
+		Side:          counterstate.SideBid,
+		OrderType:     counterstate.OrderTypeLimit,
+		TIF:           counterstate.TIFGTC,
 		Price:         dec.New("100"),
 		Qty:           dec.New("1"),
 		ReservationID: "trig-1",
@@ -169,7 +169,7 @@ func TestPlaceOrder_ReservationMismatchRejected(t *testing.T) {
 	seedBalance(svc, "u1", "USDT", dec.New("1000"))
 	_, _ = svc.Reserve(context.Background(), ReserveRequest{
 		UserID: "u1", ReservationID: "trig-1",
-		Symbol: "BTC-USDT", Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
+		Symbol: "BTC-USDT", Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	// PlaceOrder with different qty → computed freeze = 200, but reservation is 100.
@@ -177,8 +177,8 @@ func TestPlaceOrder_ReservationMismatchRejected(t *testing.T) {
 		UserID:        "u1",
 		ClientOrderID: "cli-1",
 		Symbol:        "BTC-USDT",
-		Side:          engine.SideBid,
-		OrderType:     engine.OrderTypeLimit,
+		Side:          counterstate.SideBid,
+		OrderType:     counterstate.OrderTypeLimit,
 		Price:         dec.New("100"),
 		Qty:           dec.New("2"),
 		ReservationID: "trig-1",
@@ -200,8 +200,8 @@ func TestPlaceOrder_UnknownReservationRejected(t *testing.T) {
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID:        "u1",
 		Symbol:        "BTC-USDT",
-		Side:          engine.SideBid,
-		OrderType:     engine.OrderTypeLimit,
+		Side:          counterstate.SideBid,
+		OrderType:     counterstate.OrderTypeLimit,
 		Price:         dec.New("100"),
 		Qty:           dec.New("1"),
 		ReservationID: "no-such-ref",

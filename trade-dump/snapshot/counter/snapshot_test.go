@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/snapshot"
 )
@@ -95,13 +95,13 @@ func TestLoad_JSONOnlyMigration(t *testing.T) {
 }
 
 func TestCaptureRestore(t *testing.T) {
-	state := engine.NewShardState(3)
+	state := counterstate.NewShardState(3)
 
 	// Seed state through normal Transfer API.
-	for _, req := range []engine.TransferRequest{
-		{UserID: "u1", Asset: "USDT", Amount: dec.New("100"), Type: engine.TransferDeposit},
-		{UserID: "u1", Asset: "USDT", Amount: dec.New("40"), Type: engine.TransferFreeze},
-		{UserID: "u2", Asset: "BTC", Amount: dec.New("0.5"), Type: engine.TransferDeposit},
+	for _, req := range []counterstate.TransferRequest{
+		{UserID: "u1", Asset: "USDT", Amount: dec.New("100"), Type: counterstate.TransferDeposit},
+		{UserID: "u1", Asset: "USDT", Amount: dec.New("40"), Type: counterstate.TransferFreeze},
+		{UserID: "u2", Asset: "BTC", Amount: dec.New("0.5"), Type: counterstate.TransferDeposit},
 	} {
 		if _, err := state.ApplyTransfer(req); err != nil {
 			t.Fatalf("seed transfer: %v", err)
@@ -127,7 +127,7 @@ func TestCaptureRestore(t *testing.T) {
 	}
 
 	// Restore into a fresh state.
-	state2 := engine.NewShardState(3)
+	state2 := counterstate.NewShardState(3)
 	if err := RestoreState(3, state2, loaded); err != nil {
 		t.Fatalf("RestoreState: %v", err)
 	}
@@ -181,11 +181,11 @@ func TestCaptureRestore(t *testing.T) {
 // TestCaptureRestore_Reservations verifies reservations survive snapshot
 // round-trips — the only durability story for them (ADR-0041 §Durability).
 func TestCaptureRestore_Reservations(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 
 	// Seed balance and reserve against it.
-	if _, err := state.ApplyTransfer(engine.TransferRequest{
-		UserID: "u1", Asset: "USDT", Amount: dec.New("1000"), Type: engine.TransferDeposit,
+	if _, err := state.ApplyTransfer(counterstate.TransferRequest{
+		UserID: "u1", Asset: "USDT", Amount: dec.New("1000"), Type: counterstate.TransferDeposit,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state2 := engine.NewShardState(0)
+	state2 := counterstate.NewShardState(0)
 	if err := RestoreState(0, state2, loaded); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 }
 
 func TestRestoreRejectsVersionMismatch(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	snap := &ShardSnapshot{Version: 99, ShardID: 0}
 	if err := RestoreState(0, state, snap); err == nil {
 		t.Fatal("expected version mismatch error")
@@ -225,7 +225,7 @@ func TestRestoreRejectsVersionMismatch(t *testing.T) {
 }
 
 func TestRestoreRejectsShardMismatch(t *testing.T) {
-	state := engine.NewShardState(1)
+	state := counterstate.NewShardState(1)
 	snap := &ShardSnapshot{Version: Version, ShardID: 2}
 	if err := RestoreState(1, state, snap); err == nil {
 		t.Fatal("expected shard mismatch error")

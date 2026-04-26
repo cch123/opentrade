@@ -13,17 +13,13 @@ require (
 	github.com/shopspring/decimal v1.4.0
 	github.com/twmb/franz-go v1.18.0
 	github.com/xargin/opentrade/api v0.0.0-00010101000000-000000000000
-	github.com/xargin/opentrade/counter v0.0.0-00010101000000-000000000000
 	go.etcd.io/etcd/client/v3 v3.6.10
 	go.uber.org/zap v1.27.0
 	google.golang.org/protobuf v1.36.10
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace (
-	github.com/xargin/opentrade/api => ../api
-	github.com/xargin/opentrade/counter => ../counter
-)
+replace github.com/xargin/opentrade/api => ../api
 
 require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.9 // indirect

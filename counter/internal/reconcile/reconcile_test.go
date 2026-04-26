@@ -7,18 +7,18 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
 // putBalance seeds an in-memory account balance via the restore hook (the
 // only exported path that bypasses transfer validation).
-func putBalance(state *engine.ShardState, userID, asset string, avail, frozen dec.Decimal) {
-	state.Account(userID).PutForRestore(asset, engine.Balance{Available: avail, Frozen: frozen})
+func putBalance(state *counterstate.ShardState, userID, asset string, avail, frozen dec.Decimal) {
+	state.Account(userID).PutForRestore(asset, counterstate.Balance{Available: avail, Frozen: frozen})
 }
 
 func TestRunOnce_NoMismatches(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	putBalance(state, "u1", "USDT", dec.New("100"), dec.New("10"))
 	putBalance(state, "u1", "BTC", dec.New("0.5"), dec.Zero)
 	putBalance(state, "u2", "USDT", dec.New("200"), dec.Zero)
@@ -54,7 +54,7 @@ func TestRunOnce_NoMismatches(t *testing.T) {
 }
 
 func TestRunOnce_ValueDiff(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	putBalance(state, "u1", "USDT", dec.New("100"), dec.New("10"))
 
 	db, mock, err := sqlmock.New()
@@ -87,7 +87,7 @@ func TestRunOnce_ValueDiff(t *testing.T) {
 }
 
 func TestRunOnce_OnlyInMemory(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	putBalance(state, "u1", "USDT", dec.New("100"), dec.Zero)
 	putBalance(state, "u1", "BTC", dec.New("1"), dec.Zero)
 
@@ -118,7 +118,7 @@ func TestRunOnce_OnlyInMemory(t *testing.T) {
 }
 
 func TestRunOnce_EmptyState(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	db, _, err := sqlmock.New() // no expectations — should not query
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestRunOnce_EmptyState(t *testing.T) {
 }
 
 func TestRunOnce_Batching(t *testing.T) {
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	// 5 users, batch size 2 → 3 queries.
 	for i := 0; i < 5; i++ {
 		putBalance(state, userName(i), "USDT", dec.New("1"), dec.Zero)

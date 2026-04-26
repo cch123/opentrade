@@ -1,4 +1,4 @@
-package engine
+package counterstate
 
 import "github.com/xargin/opentrade/pkg/dec"
 

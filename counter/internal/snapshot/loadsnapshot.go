@@ -10,7 +10,7 @@ package snapshot
 import (
 	"context"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	countersnap "github.com/xargin/opentrade/trade-dump/snapshot/counter"
@@ -20,7 +20,7 @@ import (
 // worker to install. Caller still owns dedup.Table (not in snapshot
 // scope) and any other side state.
 type Restored struct {
-	State         *engine.ShardState
+	State         *counterstate.ShardState
 	Seq           *sequencer.UserSequencer
 	Offsets       map[int32]int64
 	JournalOffset int64
@@ -41,7 +41,7 @@ func Load(ctx context.Context, store snapshotpkg.BlobStore, key string, vshardID
 	if err != nil {
 		return nil, err
 	}
-	state := engine.NewShardState(vshardID)
+	state := counterstate.NewShardState(vshardID)
 	if err := countersnap.RestoreState(vshardID, state, snap); err != nil {
 		return nil, err
 	}

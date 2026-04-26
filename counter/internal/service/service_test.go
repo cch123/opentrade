@@ -11,7 +11,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 )
@@ -41,9 +41,9 @@ func (m *mockPublisher) Events() []*eventpb.CounterJournalEvent {
 	return append([]*eventpb.CounterJournalEvent(nil), m.events...)
 }
 
-func newFixture(t *testing.T) (*Service, *engine.ShardState, *mockPublisher) {
+func newFixture(t *testing.T) (*Service, *counterstate.ShardState, *mockPublisher) {
 	t.Helper()
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	seq := sequencer.New()
 	dt := dedup.New(time.Hour)
 	pub := &mockPublisher{}
@@ -54,17 +54,17 @@ func newFixture(t *testing.T) (*Service, *engine.ShardState, *mockPublisher) {
 func TestTransferConfirms(t *testing.T) {
 	svc, state, pub := newFixture(t)
 
-	res, err := svc.Transfer(context.Background(), engine.TransferRequest{
+	res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "tx-1",
 		UserID:     "u1",
 		Asset:      "USDT",
 		Amount:     dec.New("100"),
-		Type:       engine.TransferDeposit,
+		Type:       counterstate.TransferDeposit,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != engine.TransferStatusConfirmed {
+	if res.Status != counterstate.TransferStatusConfirmed {
 		t.Fatalf("status = %d, want Confirmed", res.Status)
 	}
 	if res.BalanceAfter.Available.String() != "100" {
@@ -80,14 +80,14 @@ func TestTransferConfirms(t *testing.T) {
 
 func TestTransferRejectsInsufficient(t *testing.T) {
 	svc, state, pub := newFixture(t)
-	res, err := svc.Transfer(context.Background(), engine.TransferRequest{
+	res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "tx-1", UserID: "u1", Asset: "USDT",
-		Amount: dec.New("10"), Type: engine.TransferWithdraw,
+		Amount: dec.New("10"), Type: counterstate.TransferWithdraw,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != engine.TransferStatusRejected {
+	if res.Status != counterstate.TransferStatusRejected {
 		t.Fatalf("status = %d, want Rejected", res.Status)
 	}
 	if !state.Balance("u1", "USDT").IsEmpty() {
@@ -100,22 +100,22 @@ func TestTransferRejectsInsufficient(t *testing.T) {
 
 func TestTransferIdempotent(t *testing.T) {
 	svc, _, pub := newFixture(t)
-	req := engine.TransferRequest{
+	req := counterstate.TransferRequest{
 		TransferID: "tx-1", UserID: "u1", Asset: "USDT",
-		Amount: dec.New("10"), Type: engine.TransferDeposit,
+		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	}
 	first, err := svc.Transfer(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Status != engine.TransferStatusConfirmed {
+	if first.Status != counterstate.TransferStatusConfirmed {
 		t.Fatalf("first: status = %d", first.Status)
 	}
 	second, err := svc.Transfer(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Status != engine.TransferStatusDuplicated {
+	if second.Status != counterstate.TransferStatusDuplicated {
 		t.Fatalf("second: status = %d, want Duplicated", second.Status)
 	}
 	// ADR-0048 backlog item 4 方案 A: ring only remembers the id, not the
@@ -138,9 +138,9 @@ func TestTransferKafkaFailureRollsBackMemory(t *testing.T) {
 	pub.failNext = errors.New("kafka down")
 	pub.mu.Unlock()
 
-	_, err := svc.Transfer(context.Background(), engine.TransferRequest{
+	_, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "tx-1", UserID: "u1", Asset: "USDT",
-		Amount: dec.New("10"), Type: engine.TransferDeposit,
+		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	})
 	if err == nil {
 		t.Fatal("expected publish error")
@@ -150,14 +150,14 @@ func TestTransferKafkaFailureRollsBackMemory(t *testing.T) {
 	}
 
 	// A retry with the same transfer_id should go through cleanly.
-	res, err := svc.Transfer(context.Background(), engine.TransferRequest{
+	res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "tx-1", UserID: "u1", Asset: "USDT",
-		Amount: dec.New("10"), Type: engine.TransferDeposit,
+		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != engine.TransferStatusConfirmed {
+	if res.Status != counterstate.TransferStatusConfirmed {
 		t.Fatalf("retry: status = %d", res.Status)
 	}
 	if state.Balance("u1", "USDT").Available.String() != "10" {
@@ -168,10 +168,10 @@ func TestTransferKafkaFailureRollsBackMemory(t *testing.T) {
 func TestTransferInvalidArgs(t *testing.T) {
 	svc, _, _ := newFixture(t)
 
-	cases := []engine.TransferRequest{
-		{UserID: "", TransferID: "tx", Asset: "USDT", Amount: dec.New("1"), Type: engine.TransferDeposit},
-		{UserID: "u1", TransferID: "", Asset: "USDT", Amount: dec.New("1"), Type: engine.TransferDeposit},
-		{UserID: "u1", TransferID: "tx", Asset: "", Amount: dec.New("1"), Type: engine.TransferDeposit},
+	cases := []counterstate.TransferRequest{
+		{UserID: "", TransferID: "tx", Asset: "USDT", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
+		{UserID: "u1", TransferID: "", Asset: "USDT", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
+		{UserID: "u1", TransferID: "tx", Asset: "", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
 	}
 	for _, c := range cases {
 		if _, err := svc.Transfer(context.Background(), c); err == nil {
@@ -190,14 +190,14 @@ func TestConcurrentUsersIndependent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < perUser; i++ {
-				res, err := svc.Transfer(context.Background(), engine.TransferRequest{
+				res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
 					TransferID: user + "-" + itoa(i),
 					UserID:     user,
 					Asset:      "USDT",
 					Amount:     dec.New("1"),
-					Type:       engine.TransferDeposit,
+					Type:       counterstate.TransferDeposit,
 				})
-				if err != nil || res.Status != engine.TransferStatusConfirmed {
+				if err != nil || res.Status != counterstate.TransferStatusConfirmed {
 					t.Errorf("%s#%d: err=%v status=%v", user, i, err, res.Status)
 					return
 				}

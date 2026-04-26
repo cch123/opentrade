@@ -9,7 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/counter/internal/metrics"
@@ -51,7 +51,7 @@ func (w *VShardWorker) loadOnDemand(
 	ctx context.Context,
 	producer *journal.TxnProducer,
 	logger *zap.Logger,
-) (*engine.ShardState, *sequencer.UserSequencer, *dedup.Table, map[int32]int64, int64, error) {
+) (*counterstate.ShardState, *sequencer.UserSequencer, *dedup.Table, map[int32]int64, int64, error) {
 	// Single budget for the entire on-demand attempt (sentinel
 	// produce + RPC + snapshot download). Without this, a slow
 	// sentinel or blob-store read would block startup indefinitely
@@ -146,7 +146,7 @@ func (w *VShardWorker) loadOnDemand(
 func (w *VShardWorker) loadLegacy(
 	ctx context.Context,
 	logger *zap.Logger,
-) (*engine.ShardState, *sequencer.UserSequencer, *dedup.Table, map[int32]int64, int64, error) {
+) (*counterstate.ShardState, *sequencer.UserSequencer, *dedup.Table, map[int32]int64, int64, error) {
 	dt := dedup.New(w.cfg.DedupTTL)
 	key := fmt.Sprintf(SnapshotKeyFormat, w.cfg.VShardID)
 	r, err := snapshot.Load(ctx, w.cfg.Store, key, int(w.cfg.VShardID))
@@ -162,7 +162,7 @@ func (w *VShardWorker) loadLegacy(
 		return r.State, r.Seq, dt, r.Offsets, r.JournalOffset, nil
 	case errors.Is(err, os.ErrNotExist):
 		logger.Info("legacy path: no snapshot found, starting fresh")
-		return engine.NewShardState(int(w.cfg.VShardID)), sequencer.New(), dt, nil, 0, nil
+		return counterstate.NewShardState(int(w.cfg.VShardID)), sequencer.New(), dt, nil, 0, nil
 	default:
 		return nil, nil, nil, nil, 0, fmt.Errorf("snapshot load: %w", err)
 	}

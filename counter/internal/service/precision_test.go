@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 )
@@ -42,7 +42,7 @@ func TestValidatePrecision_CompatModeNoTiers(t *testing.T) {
 	cfg := etcdcfg.SymbolConfig{Shard: "match-0", Trading: true} // no Tiers
 	req := PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
 		Price: dec.New("50000.123"), // would fail tick in strict mode
 		Qty:   dec.New("0.00000001"), // would fail step + min_qty
 	}
@@ -56,7 +56,7 @@ func TestValidatePrecision_LimitValid(t *testing.T) {
 	cfg := precisionFixtureCfg()
 	req := PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
 		Price: dec.New("50000.00"), Qty: dec.New("0.1"),
 	}
 	reason, pass := validatePrecision(cfg, req)
@@ -81,7 +81,7 @@ func TestValidatePrecision_LimitRejects(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			req := PlaceOrderRequest{
 				UserID: "u1", Symbol: "BTC-USDT",
-				Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
+				Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
 				Price: dec.New(c.price), Qty: dec.New(c.qty),
 			}
 			reason, pass := validatePrecision(cfg, req)
@@ -112,7 +112,7 @@ func TestValidatePrecision_MarketBuyByQuote(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			req := PlaceOrderRequest{
 				UserID: "u1", Symbol: "BTC-USDT",
-				Side: engine.SideBid, OrderType: engine.OrderTypeMarket,
+				Side: counterstate.SideBid, OrderType: counterstate.OrderTypeMarket,
 				QuoteQty: dec.New(c.quoteQty),
 			}
 			reason, pass := validatePrecision(cfg, req)
@@ -133,7 +133,7 @@ func TestValidatePrecision_MarketByBaseSkipsWithoutReferencePrice(t *testing.T) 
 	cfg := precisionFixtureCfg()
 	req := PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideAsk, OrderType: engine.OrderTypeMarket,
+		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeMarket,
 		Qty: dec.New("0.00000001"), // deliberately violates MinQty
 		// ReferencePrice not set
 	}
@@ -165,8 +165,8 @@ func TestValidatePrecision_MarketByBaseEnforcedWithReferencePrice(t *testing.T) 
 		t.Run(c.name, func(t *testing.T) {
 			req := PlaceOrderRequest{
 				UserID: "u1", Symbol: "BTC-USDT",
-				Side:           engine.SideAsk,
-				OrderType:      engine.OrderTypeMarket,
+				Side:           counterstate.SideAsk,
+				OrderType:      counterstate.OrderTypeMarket,
 				Qty:            dec.New(c.qty),
 				ReferencePrice: dec.New(c.ref),
 			}
@@ -183,16 +183,16 @@ func TestValidatePrecision_MarketByBaseEnforcedWithReferencePrice(t *testing.T) 
 
 func TestMapOrderKind(t *testing.T) {
 	cases := []struct {
-		otype    engine.OrderType
-		side     engine.Side
+		otype    counterstate.OrderType
+		side     counterstate.Side
 		quoteQty dec.Decimal
 		want     etcdcfg.OrderKind
 	}{
-		{engine.OrderTypeLimit, engine.SideBid, dec.Zero, etcdcfg.OrderKindLimit},
-		{engine.OrderTypeLimit, engine.SideAsk, dec.Zero, etcdcfg.OrderKindLimit},
-		{engine.OrderTypeMarket, engine.SideBid, dec.New("10"), etcdcfg.OrderKindMarketBuyByQuote},
-		{engine.OrderTypeMarket, engine.SideBid, dec.Zero, etcdcfg.OrderKindMarketByBase}, // buy with qty (no quoteQty)
-		{engine.OrderTypeMarket, engine.SideAsk, dec.Zero, etcdcfg.OrderKindMarketByBase}, // sell
+		{counterstate.OrderTypeLimit, counterstate.SideBid, dec.Zero, etcdcfg.OrderKindLimit},
+		{counterstate.OrderTypeLimit, counterstate.SideAsk, dec.Zero, etcdcfg.OrderKindLimit},
+		{counterstate.OrderTypeMarket, counterstate.SideBid, dec.New("10"), etcdcfg.OrderKindMarketBuyByQuote},
+		{counterstate.OrderTypeMarket, counterstate.SideBid, dec.Zero, etcdcfg.OrderKindMarketByBase}, // buy with qty (no quoteQty)
+		{counterstate.OrderTypeMarket, counterstate.SideAsk, dec.Zero, etcdcfg.OrderKindMarketByBase}, // sell
 	}
 	for _, c := range cases {
 		got := mapOrderKind(c.otype, c.side, c.quoteQty)
@@ -215,8 +215,8 @@ func TestPlaceOrder_PrecisionRejectsBeforeSequencer(t *testing.T) {
 	// Qty too small → RejectMinQty (step-valid but below MinQty).
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", ClientOrderID: "c-prec-1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
-		TIF:   engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
+		TIF:   counterstate.TIFGTC,
 		Price: dec.New("50000.00"),
 		Qty:   dec.New("0.00005"),
 	})
@@ -240,8 +240,8 @@ func TestPlaceOrder_NilLookupPreservesLegacyPath(t *testing.T) {
 	// Do NOT call SetSymbolLookup → stays nil.
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", ClientOrderID: "c-nil-1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
-		TIF:   engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
+		TIF:   counterstate.TIFGTC,
 		Price: dec.New("50000.00"),
 		Qty:   dec.New("0.00005"), // would fail MinQty in strict mode
 	})
@@ -263,8 +263,8 @@ func TestPlaceOrder_LookupMissSkipsPrecision(t *testing.T) {
 	})
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", ClientOrderID: "c-miss-1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit,
-		TIF:   engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit,
+		TIF:   counterstate.TIFGTC,
 		Price: dec.New("50000.00"),
 		Qty:   dec.New("0.00005"), // would fail MinQty in strict mode
 	})

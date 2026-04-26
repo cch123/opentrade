@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
@@ -19,9 +19,9 @@ import (
 // cap path, the SymbolLookup-override path, the dedup (no-double-count)
 // edge, and the "cancel frees a slot" release path.
 
-func newCapFixture(t *testing.T, cap uint32, lookup SymbolLookup) (*Service, *engine.ShardState) {
+func newCapFixture(t *testing.T, cap uint32, lookup SymbolLookup) (*Service, *counterstate.ShardState) {
 	t.Helper()
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	seq := sequencer.New()
 	dt := dedup.New(time.Hour)
 	pub := &mockPublisher{}
@@ -35,9 +35,9 @@ func newCapFixture(t *testing.T, cap uint32, lookup SymbolLookup) (*Service, *en
 	if lookup != nil {
 		svc.SetSymbolLookup(lookup)
 	}
-	_, _ = svc.Transfer(context.Background(), engine.TransferRequest{
+	_, _ = svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "seed-u1", UserID: "u1", Asset: "USDT",
-		Amount: dec.New("1000000"), Type: engine.TransferDeposit,
+		Amount: dec.New("1000000"), Type: counterstate.TransferDeposit,
 	})
 	return svc, state
 }
@@ -46,7 +46,7 @@ func placeLimit(t *testing.T, svc *Service, user, symbol, coid string) *PlaceOrd
 	t.Helper()
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: user, ClientOrderID: coid, Symbol: symbol,
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("1"), Qty: dec.New("1"),
 	})
 	if err != nil {
@@ -86,7 +86,7 @@ func TestPlaceOrder_CancelFreesSlot(t *testing.T) {
 	// CANCELED on Match ack); we simulate that here by driving the store
 	// directly, since CancelOrder only reaches PENDING_CANCEL which is
 	// non-terminal.
-	if _, err := svc.state.Orders().UpdateStatus(r.OrderID, engine.OrderStatusCanceled, 0); err != nil {
+	if _, err := svc.state.Orders().UpdateStatus(r.OrderID, counterstate.OrderStatusCanceled, 0); err != nil {
 		t.Fatal(err)
 	}
 	// Third attempt should now pass.
@@ -150,13 +150,13 @@ func TestPlaceOrder_MarketOrdersDoNotConsumeSlot(t *testing.T) {
 	// MARKET sell from u2 (not u1, but the point is MARKETs of any user
 	// must not touch LIMIT accounting). Use u2 with BTC balance seeded
 	// below.
-	_, _ = svc.Transfer(context.Background(), engine.TransferRequest{
+	_, _ = svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "seed-u2", UserID: "u2", Asset: "BTC",
-		Amount: dec.New("10"), Type: engine.TransferDeposit,
+		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	})
 	_, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u2", Symbol: "BTC-USDT",
-		Side: engine.SideAsk, OrderType: engine.OrderTypeMarket, TIF: engine.TIFGTC,
+		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeMarket, TIF: counterstate.TIFGTC,
 		Qty: dec.New("1"),
 	})
 	if err != nil {

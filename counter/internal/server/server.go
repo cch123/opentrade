@@ -13,7 +13,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/pkg/dec"
 )
@@ -192,24 +192,24 @@ func mapServiceError(err error) error {
 		errors.Is(err, service.ErrMissingAsset),
 		errors.Is(err, service.ErrInvalidSymbol),
 		errors.Is(err, service.ErrReservationIDRequired),
-		errors.Is(err, engine.ErrInvalidSymbol),
-		errors.Is(err, engine.ErrInvalidSide),
-		errors.Is(err, engine.ErrInvalidQty),
-		errors.Is(err, engine.ErrInvalidPrice),
-		errors.Is(err, engine.ErrMarketBuyNeedsQuote),
-		errors.Is(err, engine.ErrInvalidAmount):
+		errors.Is(err, counterstate.ErrInvalidSymbol),
+		errors.Is(err, counterstate.ErrInvalidSide),
+		errors.Is(err, counterstate.ErrInvalidQty),
+		errors.Is(err, counterstate.ErrInvalidPrice),
+		errors.Is(err, counterstate.ErrMarketBuyNeedsQuote),
+		errors.Is(err, counterstate.ErrInvalidAmount):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, service.ErrOrderDepsNotConfigured):
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, service.ErrWrongShard):
 		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, engine.ErrReservationNotFound):
+	case errors.Is(err, counterstate.ErrReservationNotFound):
 		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, engine.ErrReservationUserMismatch):
+	case errors.Is(err, counterstate.ErrReservationUserMismatch):
 		return status.Error(codes.PermissionDenied, err.Error())
-	case errors.Is(err, engine.ErrReservationMismatch),
-		errors.Is(err, engine.ErrInsufficientAvailable),
-		errors.Is(err, engine.ErrInsufficientFrozen):
+	case errors.Is(err, counterstate.ErrReservationMismatch),
+		errors.Is(err, counterstate.ErrInsufficientAvailable),
+		errors.Is(err, counterstate.ErrInsufficientFrozen):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())
@@ -402,7 +402,7 @@ func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderR
 	}, nil
 }
 
-func orderToProto(o *engine.Order) *counterrpc.QueryOrderResponse {
+func orderToProto(o *counterstate.Order) *counterrpc.QueryOrderResponse {
 	side, _ := sideToProto(o.Side)
 	ot, _ := orderTypeToProto(o.Type)
 	tif, _ := tifToProto(o.TIF)
@@ -423,91 +423,91 @@ func orderToProto(o *engine.Order) *counterrpc.QueryOrderResponse {
 	}
 }
 
-func sideFromProto(s eventpb.Side) (engine.Side, error) {
+func sideFromProto(s eventpb.Side) (counterstate.Side, error) {
 	switch s {
 	case eventpb.Side_SIDE_BUY:
-		return engine.SideBid, nil
+		return counterstate.SideBid, nil
 	case eventpb.Side_SIDE_SELL:
-		return engine.SideAsk, nil
+		return counterstate.SideAsk, nil
 	}
 	return 0, fmt.Errorf("invalid side: %v", s)
 }
 
-func sideToProto(s engine.Side) (eventpb.Side, error) {
+func sideToProto(s counterstate.Side) (eventpb.Side, error) {
 	switch s {
-	case engine.SideBid:
+	case counterstate.SideBid:
 		return eventpb.Side_SIDE_BUY, nil
-	case engine.SideAsk:
+	case counterstate.SideAsk:
 		return eventpb.Side_SIDE_SELL, nil
 	}
 	return eventpb.Side_SIDE_UNSPECIFIED, fmt.Errorf("invalid side: %d", s)
 }
 
-func orderTypeFromProto(t eventpb.OrderType) (engine.OrderType, error) {
+func orderTypeFromProto(t eventpb.OrderType) (counterstate.OrderType, error) {
 	switch t {
 	case eventpb.OrderType_ORDER_TYPE_LIMIT:
-		return engine.OrderTypeLimit, nil
+		return counterstate.OrderTypeLimit, nil
 	case eventpb.OrderType_ORDER_TYPE_MARKET:
-		return engine.OrderTypeMarket, nil
+		return counterstate.OrderTypeMarket, nil
 	}
 	return 0, fmt.Errorf("invalid order type: %v", t)
 }
 
-func orderTypeToProto(t engine.OrderType) (eventpb.OrderType, error) {
+func orderTypeToProto(t counterstate.OrderType) (eventpb.OrderType, error) {
 	switch t {
-	case engine.OrderTypeLimit:
+	case counterstate.OrderTypeLimit:
 		return eventpb.OrderType_ORDER_TYPE_LIMIT, nil
-	case engine.OrderTypeMarket:
+	case counterstate.OrderTypeMarket:
 		return eventpb.OrderType_ORDER_TYPE_MARKET, nil
 	}
 	return eventpb.OrderType_ORDER_TYPE_UNSPECIFIED, fmt.Errorf("invalid order type: %d", t)
 }
 
-func tifFromProto(t eventpb.TimeInForce) (engine.TIF, error) {
+func tifFromProto(t eventpb.TimeInForce) (counterstate.TIF, error) {
 	switch t {
 	case eventpb.TimeInForce_TIME_IN_FORCE_GTC, eventpb.TimeInForce_TIME_IN_FORCE_UNSPECIFIED:
-		return engine.TIFGTC, nil
+		return counterstate.TIFGTC, nil
 	case eventpb.TimeInForce_TIME_IN_FORCE_IOC:
-		return engine.TIFIOC, nil
+		return counterstate.TIFIOC, nil
 	case eventpb.TimeInForce_TIME_IN_FORCE_FOK:
-		return engine.TIFFOK, nil
+		return counterstate.TIFFOK, nil
 	case eventpb.TimeInForce_TIME_IN_FORCE_POST_ONLY:
-		return engine.TIFPostOnly, nil
+		return counterstate.TIFPostOnly, nil
 	}
 	return 0, fmt.Errorf("invalid TIF: %v", t)
 }
 
-func tifToProto(t engine.TIF) (eventpb.TimeInForce, error) {
+func tifToProto(t counterstate.TIF) (eventpb.TimeInForce, error) {
 	switch t {
-	case engine.TIFGTC:
+	case counterstate.TIFGTC:
 		return eventpb.TimeInForce_TIME_IN_FORCE_GTC, nil
-	case engine.TIFIOC:
+	case counterstate.TIFIOC:
 		return eventpb.TimeInForce_TIME_IN_FORCE_IOC, nil
-	case engine.TIFFOK:
+	case counterstate.TIFFOK:
 		return eventpb.TimeInForce_TIME_IN_FORCE_FOK, nil
-	case engine.TIFPostOnly:
+	case counterstate.TIFPostOnly:
 		return eventpb.TimeInForce_TIME_IN_FORCE_POST_ONLY, nil
 	}
 	return eventpb.TimeInForce_TIME_IN_FORCE_UNSPECIFIED, fmt.Errorf("invalid TIF: %d", t)
 }
 
-func internalStatusToProto(s engine.OrderStatus) eventpb.InternalOrderStatus {
+func internalStatusToProto(s counterstate.OrderStatus) eventpb.InternalOrderStatus {
 	switch s {
-	case engine.OrderStatusPendingNew:
+	case counterstate.OrderStatusPendingNew:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW
-	case engine.OrderStatusNew:
+	case counterstate.OrderStatusNew:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW
-	case engine.OrderStatusPartiallyFilled:
+	case counterstate.OrderStatusPartiallyFilled:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED
-	case engine.OrderStatusFilled:
+	case counterstate.OrderStatusFilled:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED
-	case engine.OrderStatusPendingCancel:
+	case counterstate.OrderStatusPendingCancel:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL
-	case engine.OrderStatusCanceled:
+	case counterstate.OrderStatusCanceled:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED
-	case engine.OrderStatusRejected:
+	case counterstate.OrderStatusRejected:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_REJECTED
-	case engine.OrderStatusExpired:
+	case counterstate.OrderStatusExpired:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_EXPIRED
 	}
 	return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_UNSPECIFIED

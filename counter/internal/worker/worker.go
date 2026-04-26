@@ -29,7 +29,7 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/journal"
@@ -186,7 +186,7 @@ type VShardWorker struct {
 
 	// Stateful components; populated once Run has restored the
 	// snapshot. Reads before Ready() closes are unsafe.
-	state      *engine.ShardState
+	state      *counterstate.ShardState
 	seq        *sequencer.UserSequencer
 	dedupTable *dedup.Table
 	svc        *service.Service
@@ -326,7 +326,7 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	// Both paths produce local fresh state; install is deferred
 	// until Phase 2 so failure to populate is recoverable.
 	var (
-		state          *engine.ShardState
+		state          *counterstate.ShardState
 		seq            *sequencer.UserSequencer
 		dt             *dedup.Table
 		offsets        map[int32]int64

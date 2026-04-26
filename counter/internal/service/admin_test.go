@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -18,7 +18,7 @@ func place3Orders(t *testing.T) (*Service, []uint64) {
 	// u1 buy BTC-USDT — limit buy freezes USDT.
 	r1, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", ClientOrderID: "c1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("50000"), Qty: dec.New("0.01"),
 	})
 	if err != nil {
@@ -27,7 +27,7 @@ func place3Orders(t *testing.T) (*Service, []uint64) {
 	// u1 buy ETH-USDT — different symbol same user.
 	r2, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", ClientOrderID: "c2", Symbol: "ETH-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("3000"), Qty: dec.New("0.01"),
 	})
 	if err != nil {
@@ -36,7 +36,7 @@ func place3Orders(t *testing.T) (*Service, []uint64) {
 	// u2 sell BTC-USDT — different user same symbol as r1.
 	r3, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u2", ClientOrderID: "s1", Symbol: "BTC-USDT",
-		Side: engine.SideAsk, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("51000"), Qty: dec.New("0.01"),
 	})
 	if err != nil {
@@ -56,7 +56,7 @@ func TestAdminCancel_ByUser(t *testing.T) {
 	}
 	// u2's order must still be live (not PENDING_CANCEL, not terminal).
 	o := svc.state.Orders().Get(ids[2])
-	if o == nil || o.Status != engine.OrderStatusPendingNew && o.Status != engine.OrderStatusNew {
+	if o == nil || o.Status != counterstate.OrderStatusPendingNew && o.Status != counterstate.OrderStatusNew {
 		t.Fatalf("u2 order status = %v", o.Status)
 	}
 }
@@ -75,7 +75,7 @@ func TestAdminCancel_BySymbol(t *testing.T) {
 	if o == nil {
 		t.Fatal("eth order vanished")
 	}
-	if o.Status == engine.OrderStatusPendingCancel {
+	if o.Status == counterstate.OrderStatusPendingCancel {
 		t.Fatal("eth order got cancelled by symbol=BTC-USDT")
 	}
 }
@@ -90,13 +90,13 @@ func TestAdminCancel_ByUserAndSymbolIntersection(t *testing.T) {
 		t.Fatalf("cancelled=%d, want 1", res.Cancelled)
 	}
 	// Only ids[0] should be pending cancel.
-	if s := svc.state.Orders().Get(ids[0]).Status; s != engine.OrderStatusPendingCancel {
+	if s := svc.state.Orders().Get(ids[0]).Status; s != counterstate.OrderStatusPendingCancel {
 		t.Fatalf("ids[0] status = %v", s)
 	}
-	if s := svc.state.Orders().Get(ids[1]).Status; s == engine.OrderStatusPendingCancel {
+	if s := svc.state.Orders().Get(ids[1]).Status; s == counterstate.OrderStatusPendingCancel {
 		t.Fatalf("ids[1] unexpectedly cancelled")
 	}
-	if s := svc.state.Orders().Get(ids[2]).Status; s == engine.OrderStatusPendingCancel {
+	if s := svc.state.Orders().Get(ids[2]).Status; s == counterstate.OrderStatusPendingCancel {
 		t.Fatalf("ids[2] unexpectedly cancelled")
 	}
 }
@@ -135,7 +135,7 @@ func TestCancelMyOrders_UserScope(t *testing.T) {
 		t.Fatalf("cancelled=%d skipped=%d", res.Cancelled, res.Skipped)
 	}
 	// u2's order must stay live — a user can only clear their own book.
-	if o := svc.state.Orders().Get(ids[2]); o.Status == engine.OrderStatusPendingCancel {
+	if o := svc.state.Orders().Get(ids[2]); o.Status == counterstate.OrderStatusPendingCancel {
 		t.Fatal("u2 order cancelled by u1's CancelMyOrders")
 	}
 }
@@ -150,13 +150,13 @@ func TestCancelMyOrders_SymbolScope(t *testing.T) {
 		t.Fatalf("cancelled=%d, want 1", res.Cancelled)
 	}
 	// Only u1/BTC-USDT cancelled; u1/ETH-USDT and u2/BTC-USDT untouched.
-	if s := svc.state.Orders().Get(ids[0]).Status; s != engine.OrderStatusPendingCancel {
+	if s := svc.state.Orders().Get(ids[0]).Status; s != counterstate.OrderStatusPendingCancel {
 		t.Fatalf("u1/BTC-USDT status = %v", s)
 	}
-	if s := svc.state.Orders().Get(ids[1]).Status; s == engine.OrderStatusPendingCancel {
+	if s := svc.state.Orders().Get(ids[1]).Status; s == counterstate.OrderStatusPendingCancel {
 		t.Fatal("u1/ETH-USDT cancelled by BTC-USDT scope")
 	}
-	if s := svc.state.Orders().Get(ids[2]).Status; s == engine.OrderStatusPendingCancel {
+	if s := svc.state.Orders().Get(ids[2]).Status; s == counterstate.OrderStatusPendingCancel {
 		t.Fatal("u2/BTC-USDT cancelled by u1's CancelMyOrders")
 	}
 }

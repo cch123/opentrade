@@ -22,7 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/snapshot"
 )
@@ -54,7 +54,7 @@ type KafkaOffset struct {
 	Offset    int64  `json:"offset"`
 }
 
-// BalanceSnapshot is the serialized form of engine.Balance. Version is the
+// BalanceSnapshot is the serialized form of counterstate.Balance. Version is the
 // per-(user, asset) monotonic counter (ADR-0048 backlog: 双层 version 方案
 // B). Persisted and restored verbatim so clients using Balance.Version as
 // a cache-invalidation handle / optimistic lock don't see it reset across
@@ -90,7 +90,7 @@ type DedupEntrySnapshot struct {
 	ExpiresUnix int64  `json:"expires_unix_ms"`
 }
 
-// OrderSnapshot is the serialized form of engine.Order.
+// OrderSnapshot is the serialized form of counterstate.Order.
 type OrderSnapshot struct {
 	ID              uint64 `json:"id"`
 	ClientOrderID   string `json:"client_order_id,omitempty"`
@@ -170,7 +170,7 @@ type ShardSnapshot struct {
 // single-threaded so no concurrent apply runs during Capture.
 func CaptureFromState(
 	shardID int,
-	state *engine.ShardState,
+	state *counterstate.ShardState,
 	counterSeq uint64,
 	offsets map[int32]int64,
 	journalOffset int64,
@@ -248,7 +248,7 @@ func CaptureFromState(
 // business state restores normally, snap.Offsets stays nil, callers are
 // expected to start their trade consumer at AtStart which equates to
 // one full rescan guarded by existing idempotency.
-func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) error {
+func RestoreState(shardID int, state *counterstate.ShardState, snap *ShardSnapshot) error {
 	if snap == nil {
 		return fmt.Errorf("snapshot is nil")
 	}
@@ -272,7 +272,7 @@ func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) er
 			if err != nil {
 				return fmt.Errorf("account %s %s frozen: %w", as.UserID, bs.Asset, err)
 			}
-			putBalance(acc, bs.Asset, engine.Balance{
+			putBalance(acc, bs.Asset, counterstate.Balance{
 				Available: available,
 				Frozen:    frozen,
 				Version:   bs.Version,
@@ -307,14 +307,14 @@ func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) er
 		if err != nil {
 			return fmt.Errorf("order %d frozen_spent: %w", os.ID, err)
 		}
-		state.Orders().RestoreInsert(&engine.Order{
+		state.Orders().RestoreInsert(&counterstate.Order{
 			ID:              os.ID,
 			ClientOrderID:   os.ClientOrderID,
 			UserID:          os.UserID,
 			Symbol:          os.Symbol,
-			Side:            engine.Side(os.Side),
-			Type:            engine.OrderType(os.OrderType),
-			TIF:             engine.TIF(os.TIF),
+			Side:            counterstate.Side(os.Side),
+			Type:            counterstate.OrderType(os.OrderType),
+			TIF:             counterstate.TIF(os.TIF),
 			Price:           price,
 			Qty:             qty,
 			QuoteQty:        quoteQty,
@@ -322,8 +322,8 @@ func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) er
 			FrozenAsset:     os.FrozenAsset,
 			FrozenAmount:    frozen,
 			FrozenSpent:     frozenSpent,
-			Status:          engine.OrderStatus(os.Status),
-			PreCancelStatus: engine.OrderStatus(os.PreCancelStatus),
+			Status:          counterstate.OrderStatus(os.Status),
+			PreCancelStatus: counterstate.OrderStatus(os.PreCancelStatus),
 			CreatedAt:       os.CreatedAt,
 			UpdatedAt:       os.UpdatedAt,
 		})
@@ -333,7 +333,7 @@ func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) er
 		if err != nil {
 			return fmt.Errorf("reservation %s amount: %w", rs.RefID, err)
 		}
-		state.RestoreReservation(&engine.Reservation{
+		state.RestoreReservation(&counterstate.Reservation{
 			UserID:      rs.UserID,
 			RefID:       rs.RefID,
 			Asset:       rs.Asset,
@@ -345,9 +345,9 @@ func RestoreState(shardID int, state *engine.ShardState, snap *ShardSnapshot) er
 }
 
 // putBalance is a restore-only helper that writes a full balance onto an
-// Account. It lives here rather than on engine.Account to keep engine's
+// Account. It lives here rather than on counterstate.Account to keep engine's
 // exported API transfer-only.
-func putBalance(acc *engine.Account, asset string, b engine.Balance) {
+func putBalance(acc *counterstate.Account, asset string, b counterstate.Balance) {
 	acc.PutForRestore(asset, b)
 }
 

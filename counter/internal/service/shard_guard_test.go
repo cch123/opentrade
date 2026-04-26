@@ -10,7 +10,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/shard"
@@ -18,7 +18,7 @@ import (
 
 func newShardedFixture(t *testing.T, shardID, totalShards int) *Service {
 	t.Helper()
-	state := engine.NewShardState(shardID)
+	state := counterstate.NewShardState(shardID)
 	seq := sequencer.New()
 	dt := dedup.New(time.Hour)
 	pub := &mockPublisher{}
@@ -61,9 +61,9 @@ func TestTransfer_WrongShardReturnsError(t *testing.T) {
 	svc := newShardedFixture(t, shardID, total)
 	otherUser := userForOtherShard(shardID, total)
 
-	_, err := svc.Transfer(context.Background(), engine.TransferRequest{
+	_, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "tx-1", UserID: otherUser, Asset: "USDT",
-		Amount: dec.New("10"), Type: engine.TransferDeposit,
+		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	})
 	if !errors.Is(err, ErrWrongShard) {
 		t.Fatalf("got %v, want ErrWrongShard", err)
@@ -149,14 +149,14 @@ func TestTransfer_CorrectShardPasses(t *testing.T) {
 			break
 		}
 	}
-	res, err := svc.Transfer(context.Background(), engine.TransferRequest{
+	res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "tx-1", UserID: owned, Asset: "USDT",
-		Amount: dec.New("50"), Type: engine.TransferDeposit,
+		Amount: dec.New("50"), Type: counterstate.TransferDeposit,
 	})
 	if err != nil {
 		t.Fatalf("Transfer failed for owned user: %v", err)
 	}
-	if res.Status != engine.TransferStatusConfirmed {
+	if res.Status != counterstate.TransferStatusConfirmed {
 		t.Errorf("expected Confirmed, got %d", res.Status)
 	}
 }

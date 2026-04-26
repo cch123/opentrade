@@ -17,7 +17,7 @@
 // ADR-0061 M1: consolidating the apply logic here (previously
 // lived in worker/catchup.go) makes trade-dump's shadow engine a
 // thin wrapper — it needs only this package + api/gen/event.
-package engine
+package counterstate
 
 import (
 	"errors"

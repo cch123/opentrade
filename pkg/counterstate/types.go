@@ -7,7 +7,7 @@
 // ShardState's map-level access is thread-safe (sync.Map). Individual Account
 // balances are mutated only through the UserSequencer (ADR-0018), which
 // guarantees at most one in-flight write per user.
-package engine
+package counterstate
 
 import "github.com/xargin/opentrade/pkg/dec"
 

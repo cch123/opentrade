@@ -24,7 +24,7 @@ package service
 //     we genuinely can't validate.
 
 import (
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 )
@@ -37,12 +37,12 @@ type SymbolLookup func(symbol string) (etcdcfg.SymbolConfig, bool)
 
 // mapOrderKind translates Counter's (orderType, side, quoteQty) triple into
 // the OrderKind expected by etcdcfg.ValidateOrderAgainstTier.
-func mapOrderKind(otype engine.OrderType, side engine.Side, quoteQty dec.Decimal) etcdcfg.OrderKind {
+func mapOrderKind(otype counterstate.OrderType, side counterstate.Side, quoteQty dec.Decimal) etcdcfg.OrderKind {
 	switch otype {
-	case engine.OrderTypeLimit:
+	case counterstate.OrderTypeLimit:
 		return etcdcfg.OrderKindLimit
-	case engine.OrderTypeMarket:
-		if side == engine.SideBid && dec.IsPositive(quoteQty) {
+	case counterstate.OrderTypeMarket:
+		if side == counterstate.SideBid && dec.IsPositive(quoteQty) {
 			return etcdcfg.OrderKindMarketBuyByQuote
 		}
 		return etcdcfg.OrderKindMarketByBase

@@ -14,7 +14,7 @@
 // recovery path is not latency-sensitive and the extra ~300ms beats
 // bringing in a kadm dep for a slight guarantee improvement.
 //
-// Apply logic lives in `counter/engine.ApplyCounterJournalEvent`
+// Apply logic lives in `counter/counterstate.ApplyCounterJournalEvent`
 // (ADR-0061 M1); this file only owns the consumer + counterSeq
 // advance glue.
 package worker
@@ -30,7 +30,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 )
 
@@ -51,7 +51,7 @@ const (
 
 // catchUpJournal seeks the vshard's counter-journal partition to
 // startOffset and applies every record up to HWM via
-// engine.ApplyCounterJournalEvent. On return the local state has
+// counterstate.ApplyCounterJournalEvent. On return the local state has
 // absorbed every event the last running owner committed, including
 // events published after the most recent snapshot was captured.
 //
@@ -138,12 +138,12 @@ func (w *VShardWorker) catchUpJournal(ctx context.Context, startOffset int64) er
 
 // applyJournalRecord decodes rec into a CounterJournalEvent, advances
 // the sequencer's counterSeq to cover the event, and dispatches the
-// payload-specific state mutation to engine.ApplyCounterJournalEvent.
+// payload-specific state mutation to counterstate.ApplyCounterJournalEvent.
 //
 // Errors are per-record — returned to the caller which typically
 // logs + continues.
 func applyJournalRecord(
-	state *engine.ShardState,
+	state *counterstate.ShardState,
 	seq *sequencer.UserSequencer,
 	rec *kgo.Record,
 ) error {
@@ -154,5 +154,5 @@ func applyJournalRecord(
 	if evt.CounterSeqId > 0 {
 		seq.AdvanceCounterSeqTo(evt.CounterSeqId)
 	}
-	return engine.ApplyCounterJournalEvent(state, &evt)
+	return counterstate.ApplyCounterJournalEvent(state, &evt)
 }

@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
@@ -26,9 +26,9 @@ type PlaceOrderRequest struct {
 	UserID        string
 	ClientOrderID string // optional
 	Symbol        string
-	Side          engine.Side
-	OrderType     engine.OrderType
-	TIF           engine.TIF
+	Side          counterstate.Side
+	OrderType     counterstate.OrderType
+	TIF           counterstate.TIF
 	Price         dec.Decimal
 	Qty           dec.Decimal
 	// QuoteQty is only set for BN-style market buy with quoteOrderQty
@@ -87,7 +87,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 	}
 
 	// Validate shape + compute freeze outside the sequencer.
-	freezeAsset, freezeAmount, err := engine.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty)
+	freezeAsset, freezeAmount, err := counterstate.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty)
 	if err != nil {
 		return &PlaceOrderResult{
 			ClientOrderID: req.ClientOrderID,
@@ -141,7 +141,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 		// orders are not counted (they're terminal the moment the sequencer
 		// releases). Dedup hits return above, so a repeated client_order_id
 		// never double-counts.
-		if req.OrderType == engine.OrderTypeLimit {
+		if req.OrderType == counterstate.OrderTypeLimit {
 			cap := s.cfg.DefaultMaxOpenLimitOrders
 			if s.symbolLookup != nil {
 				if cfg, ok := s.symbolLookup(req.Symbol); ok && cfg.MaxOpenLimitOrders > 0 {
@@ -163,7 +163,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 		// under `req.ReservationID`; we just validate the match and
 		// consume the record. Plain-path freezes Available here.
 		bal := s.state.Balance(req.UserID, freezeAsset)
-		var balAfter engine.Balance
+		var balAfter counterstate.Balance
 		if req.ReservationID != "" {
 			if err := s.state.ConsumeReservationForOrder(req.UserID, req.ReservationID, freezeAsset, freezeAmount); err != nil {
 				return &PlaceOrderResult{
@@ -183,7 +183,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 					RejectReason:  ErrInsufficientBalance.Error(),
 				}, nil
 			}
-			balAfter = engine.Balance{
+			balAfter = counterstate.Balance{
 				Available: bal.Available.Sub(freezeAmount),
 				Frozen:    bal.Frozen.Add(freezeAmount),
 			}
@@ -191,7 +191,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 
 		now := time.Now().UnixMilli()
 		orderID := s.idgen.Next()
-		order := &engine.Order{
+		order := &counterstate.Order{
 			ID:            orderID,
 			ClientOrderID: req.ClientOrderID,
 			UserID:        req.UserID,
@@ -205,7 +205,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 			FilledQty:     dec.Zero,
 			FrozenAsset:   freezeAsset,
 			FrozenAmount:  freezeAmount,
-			Status:        engine.OrderStatusPendingNew,
+			Status:        counterstate.OrderStatusPendingNew,
 			CreatedAt:     now,
 			UpdatedAt:     now,
 		}
@@ -286,7 +286,7 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 			return &CancelOrderResult{
 				OrderID:      req.OrderID,
 				Accepted:     false,
-				RejectReason: engine.ErrNotOrderOwner.Error(),
+				RejectReason: counterstate.ErrNotOrderOwner.Error(),
 			}, nil
 		}
 		if o.Status.IsTerminal() {
@@ -296,7 +296,7 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 				RejectReason: "order already terminal",
 			}, nil
 		}
-		if o.Status == engine.OrderStatusPendingCancel {
+		if o.Status == counterstate.OrderStatusPendingCancel {
 			// Idempotent: cancel already in flight.
 			return &CancelOrderResult{
 				OrderID:  req.OrderID,
@@ -319,7 +319,7 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 
 		// Transition local status. The Match-side OrderCancelled event will
 		// eventually move us to CANCELED (or FILLED if we raced with fills).
-		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusPendingCancel, time.Now().UnixMilli()); err != nil {
+		if _, err := s.state.Orders().UpdateStatus(o.ID, counterstate.OrderStatusPendingCancel, time.Now().UnixMilli()); err != nil {
 			s.logger.Error("cancel: update status after commit", zap.Error(err))
 			return nil, err
 		}

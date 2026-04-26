@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -20,8 +20,8 @@ type ReserveRequest struct {
 	UserID        string
 	ReservationID string // idempotency key
 	Symbol        string
-	Side          engine.Side
-	OrderType     engine.OrderType
+	Side          counterstate.Side
+	OrderType     counterstate.OrderType
 	Price         dec.Decimal
 	Qty           dec.Decimal
 	QuoteQty      dec.Decimal
@@ -46,7 +46,7 @@ func (s *Service) Reserve(_ context.Context, req ReserveRequest) (*ReserveResult
 	if !s.OwnsUser(req.UserID) {
 		return nil, ErrWrongShard
 	}
-	asset, amount, err := engine.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty)
+	asset, amount, err := counterstate.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty)
 	if err != nil {
 		return nil, err
 	}

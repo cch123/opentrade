@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -14,16 +14,16 @@ func TestBuildTransferEvent(t *testing.T) {
 		TsUnixMS:     1000,
 		TraceID:      "trace-1",
 		ProducerID:   "counter-shard-0-main",
-		Req: engine.TransferRequest{
+		Req: counterstate.TransferRequest{
 			TransferID: "tx-1",
 			UserID:     "u1",
 			Asset:      "USDT",
 			Amount:     dec.New("100.5"),
-			Type:       engine.TransferDeposit,
+			Type:       counterstate.TransferDeposit,
 			BizRefID:   "chain-hash-1",
 			Memo:       "initial deposit",
 		},
-		BalanceAfter: engine.Balance{
+		BalanceAfter: counterstate.Balance{
 			Available: dec.New("100.5"),
 			Frozen:    dec.Zero,
 		},
@@ -52,13 +52,13 @@ func TestBuildTransferEvent(t *testing.T) {
 
 func TestTransferTypeCoverage(t *testing.T) {
 	cases := []struct {
-		in  engine.TransferType
+		in  counterstate.TransferType
 		out eventpb.TransferEvent_TransferType
 	}{
-		{engine.TransferDeposit, eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT},
-		{engine.TransferWithdraw, eventpb.TransferEvent_TRANSFER_TYPE_WITHDRAW},
-		{engine.TransferFreeze, eventpb.TransferEvent_TRANSFER_TYPE_FREEZE},
-		{engine.TransferUnfreeze, eventpb.TransferEvent_TRANSFER_TYPE_UNFREEZE},
+		{counterstate.TransferDeposit, eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT},
+		{counterstate.TransferWithdraw, eventpb.TransferEvent_TRANSFER_TYPE_WITHDRAW},
+		{counterstate.TransferFreeze, eventpb.TransferEvent_TRANSFER_TYPE_FREEZE},
+		{counterstate.TransferUnfreeze, eventpb.TransferEvent_TRANSFER_TYPE_UNFREEZE},
 	}
 	for _, c := range cases {
 		got, err := transferTypeToProto(c.in)
@@ -75,18 +75,18 @@ func TestTransferTypeCoverage(t *testing.T) {
 }
 
 func TestBuildSettlementEventCarriesReplayFields(t *testing.T) {
-	state := engine.NewShardState(0)
-	state.Orders().RestoreInsert(&engine.Order{
+	state := counterstate.NewShardState(0)
+	state.Orders().RestoreInsert(&counterstate.Order{
 		ID:           77,
 		UserID:       "u1",
 		Symbol:       "BTC-USDT",
-		Side:         engine.SideBid,
-		Type:         engine.OrderTypeLimit,
+		Side:         counterstate.SideBid,
+		Type:         counterstate.OrderTypeLimit,
 		Price:        dec.New("50000"),
 		Qty:          dec.New("1"),
 		FrozenAsset:  "USDT",
 		FrozenAmount: dec.New("50000"),
-		Status:       engine.OrderStatusNew,
+		Status:       counterstate.OrderStatusNew,
 	})
 	evt, err := BuildSettlementEvent(SettlementEventInput{
 		CounterSeqID:   18,
@@ -94,23 +94,23 @@ func TestBuildSettlementEventCarriesReplayFields(t *testing.T) {
 		AccountVersion: 3,
 		Symbol:         "BTC-USDT",
 		TradeID:        "trade-1",
-		Side:           engine.SideBid,
+		Side:           counterstate.SideBid,
 		Price:          "50000",
 		Qty:            "0.1",
-		Party: engine.PartySettlement{
+		Party: counterstate.PartySettlement{
 			UserID:           "u1",
 			OrderID:          77,
 			BaseDelta:        dec.New("0.1"),
 			QuoteDelta:       dec.New("-5000"),
 			FrozenQuoteDelta: dec.New("-5000"),
 			FilledQtyAfter:   dec.New("0.1"),
-			StatusAfter:      engine.OrderStatusPartiallyFilled,
+			StatusAfter:      counterstate.OrderStatusPartiallyFilled,
 		},
-		BaseAfter: engine.Balance{
+		BaseAfter: counterstate.Balance{
 			Available: dec.New("0.1"),
 			Version:   1,
 		},
-		QuoteAfter: engine.Balance{
+		QuoteAfter: counterstate.Balance{
 			Available: dec.New("45000"),
 			Frozen:    dec.New("45000"),
 			Version:   2,
@@ -126,7 +126,7 @@ func TestBuildSettlementEventCarriesReplayFields(t *testing.T) {
 	if settle.Price != "50000" || settle.Qty != "0.1" || settle.Side != eventpb.Side_SIDE_BUY {
 		t.Fatalf("settlement replay fields = price %q qty %q side %v", settle.Price, settle.Qty, settle.Side)
 	}
-	if err := engine.ApplyCounterJournalEvent(state, evt); err != nil {
+	if err := counterstate.ApplyCounterJournalEvent(state, evt); err != nil {
 		t.Fatalf("apply settlement: %v", err)
 	}
 	o := state.Orders().Get(77)
@@ -147,7 +147,7 @@ func TestBuildUnfreezeEvent(t *testing.T) {
 		OrderID:        77,
 		Asset:          "USDT",
 		Amount:         "2500",
-		BalanceAfter: engine.Balance{
+		BalanceAfter: counterstate.Balance{
 			Available: dec.New("47500"),
 			Frozen:    dec.New("0"),
 			Version:   5,

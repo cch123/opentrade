@@ -12,14 +12,14 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
 )
 
 func newHolderPair(t *testing.T) (*AssetHolderServer, *fakePub) {
 	t.Helper()
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	seq := sequencer.New()
 	dt := dedup.New(time.Hour)
 	pub := &fakePub{}
@@ -285,7 +285,7 @@ func TestHolder_MissingFields(t *testing.T) {
 func TestHolder_WrongShard(t *testing.T) {
 	// Build a Service bound to shard 0 of a 2-shard cluster, so half of
 	// user_ids don't belong to this shard and must get FailedPrecondition.
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	seq := sequencer.New()
 	dt := dedup.New(time.Hour)
 	pub := &fakePub{}

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 )
 
 // TransferEventInput is the internal input used to build a journal envelope.
@@ -26,8 +26,8 @@ type TransferEventInput struct {
 	ProducerID     string
 	AccountVersion uint64
 
-	Req          engine.TransferRequest
-	BalanceAfter engine.Balance
+	Req          counterstate.TransferRequest
+	BalanceAfter counterstate.Balance
 }
 
 // BuildTransferEvent builds a CounterJournalEvent with a TransferEvent payload.
@@ -72,15 +72,15 @@ func BuildTransferEvent(in TransferEventInput) (*eventpb.CounterJournalEvent, er
 
 // transferTypeToProto maps the internal TransferType to the proto enum inside
 // TransferEvent.
-func transferTypeToProto(t engine.TransferType) (eventpb.TransferEvent_TransferType, error) {
+func transferTypeToProto(t counterstate.TransferType) (eventpb.TransferEvent_TransferType, error) {
 	switch t {
-	case engine.TransferDeposit:
+	case counterstate.TransferDeposit:
 		return eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT, nil
-	case engine.TransferWithdraw:
+	case counterstate.TransferWithdraw:
 		return eventpb.TransferEvent_TRANSFER_TYPE_WITHDRAW, nil
-	case engine.TransferFreeze:
+	case counterstate.TransferFreeze:
 		return eventpb.TransferEvent_TRANSFER_TYPE_FREEZE, nil
-	case engine.TransferUnfreeze:
+	case counterstate.TransferUnfreeze:
 		return eventpb.TransferEvent_TRANSFER_TYPE_UNFREEZE, nil
 	default:
 		return 0, fmt.Errorf("unknown transfer type: %d", t)
@@ -99,8 +99,8 @@ type PlaceOrderEventInput struct {
 	ProducerID     string
 	AccountVersion uint64
 
-	Order        *engine.Order
-	BalanceAfter engine.Balance
+	Order        *counterstate.Order
+	BalanceAfter counterstate.Balance
 }
 
 // BuildPlaceOrderEvents constructs the (counter-journal, order-event) pair
@@ -186,7 +186,7 @@ type CancelOrderEventInput struct {
 	ProducerID     string
 	AccountVersion uint64
 
-	Order *engine.Order
+	Order *counterstate.Order
 }
 
 // BuildCancelEvents constructs the (counter-journal, order-event) pair that
@@ -236,22 +236,22 @@ type SettlementEventInput struct {
 	AccountVersion uint64
 
 	Symbol  string
-	Party   engine.PartySettlement
+	Party   counterstate.PartySettlement
 	TradeID string
-	Side    engine.Side
+	Side    counterstate.Side
 	Price   string
 	Qty     string
 
 	// Snapshot of the (base, quote) balances for the party AFTER applying the
 	// settlement. Balance.Version is propagated to BalanceSnapshot.Version.
-	BaseAfter  engine.Balance
-	QuoteAfter engine.Balance
+	BaseAfter  counterstate.Balance
+	QuoteAfter counterstate.Balance
 }
 
 // BuildSettlementEvent builds a CounterJournalEvent/SettlementEvent for one
 // side of a Trade.
 func BuildSettlementEvent(in SettlementEventInput) (*eventpb.CounterJournalEvent, error) {
-	base, quote, err := engine.SymbolAssets(in.Symbol)
+	base, quote, err := counterstate.SymbolAssets(in.Symbol)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ type UnfreezeEventInput struct {
 	OrderID      uint64
 	Asset        string
 	Amount       string
-	BalanceAfter engine.Balance
+	BalanceAfter counterstate.Balance
 }
 
 // BuildUnfreezeEvent builds a CounterJournalEvent/UnfreezeEvent for terminal
@@ -363,8 +363,8 @@ type OrderStatusEventInput struct {
 
 	UserID    string
 	OrderID   uint64
-	OldStatus engine.OrderStatus
-	NewStatus engine.OrderStatus
+	OldStatus counterstate.OrderStatus
+	NewStatus counterstate.OrderStatus
 	FilledQty string
 	Reject    eventpb.RejectReason
 }
@@ -439,66 +439,66 @@ func BuildOrderStatusEvent(in OrderStatusEventInput) *eventpb.CounterJournalEven
 // enum mappings
 // -----------------------------------------------------------------------------
 
-func sideToProto(s engine.Side) (eventpb.Side, error) {
+func sideToProto(s counterstate.Side) (eventpb.Side, error) {
 	switch s {
-	case engine.SideBid:
+	case counterstate.SideBid:
 		return eventpb.Side_SIDE_BUY, nil
-	case engine.SideAsk:
+	case counterstate.SideAsk:
 		return eventpb.Side_SIDE_SELL, nil
 	default:
 		return 0, fmt.Errorf("unknown side: %d", s)
 	}
 }
 
-func orderTypeToProto(t engine.OrderType) (eventpb.OrderType, error) {
+func orderTypeToProto(t counterstate.OrderType) (eventpb.OrderType, error) {
 	switch t {
-	case engine.OrderTypeLimit:
+	case counterstate.OrderTypeLimit:
 		return eventpb.OrderType_ORDER_TYPE_LIMIT, nil
-	case engine.OrderTypeMarket:
+	case counterstate.OrderTypeMarket:
 		return eventpb.OrderType_ORDER_TYPE_MARKET, nil
 	default:
 		return 0, fmt.Errorf("unknown order type: %d", t)
 	}
 }
 
-func tifToProto(t engine.TIF) (eventpb.TimeInForce, error) {
+func tifToProto(t counterstate.TIF) (eventpb.TimeInForce, error) {
 	switch t {
-	case engine.TIFGTC:
+	case counterstate.TIFGTC:
 		return eventpb.TimeInForce_TIME_IN_FORCE_GTC, nil
-	case engine.TIFIOC:
+	case counterstate.TIFIOC:
 		return eventpb.TimeInForce_TIME_IN_FORCE_IOC, nil
-	case engine.TIFFOK:
+	case counterstate.TIFFOK:
 		return eventpb.TimeInForce_TIME_IN_FORCE_FOK, nil
-	case engine.TIFPostOnly:
+	case counterstate.TIFPostOnly:
 		return eventpb.TimeInForce_TIME_IN_FORCE_POST_ONLY, nil
 	default:
 		return 0, fmt.Errorf("unknown TIF: %d", t)
 	}
 }
 
-func orderStatusToProto(s engine.OrderStatus) eventpb.InternalOrderStatus {
+func orderStatusToProto(s counterstate.OrderStatus) eventpb.InternalOrderStatus {
 	switch s {
-	case engine.OrderStatusPendingNew:
+	case counterstate.OrderStatusPendingNew:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW
-	case engine.OrderStatusNew:
+	case counterstate.OrderStatusNew:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW
-	case engine.OrderStatusPartiallyFilled:
+	case counterstate.OrderStatusPartiallyFilled:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED
-	case engine.OrderStatusFilled:
+	case counterstate.OrderStatusFilled:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED
-	case engine.OrderStatusPendingCancel:
+	case counterstate.OrderStatusPendingCancel:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL
-	case engine.OrderStatusCanceled:
+	case counterstate.OrderStatusCanceled:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED
-	case engine.OrderStatusRejected:
+	case counterstate.OrderStatusRejected:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_REJECTED
-	case engine.OrderStatusExpired:
+	case counterstate.OrderStatusExpired:
 		return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_EXPIRED
 	}
 	return eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_UNSPECIFIED
 }
 
-// OrderStatusFromProto moved to counter/engine.OrderStatusFromProto
+// OrderStatusFromProto moved to counter/counterstate.OrderStatusFromProto
 // (ADR-0061 M1). Journal builders still use orderStatusToProto (above)
 // for the emit path; the inverse mapping now lives next to the
 // shadow / catch-up apply logic so trade-dump can import it without

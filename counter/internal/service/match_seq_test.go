@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -20,7 +20,7 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 	// u1 BUY 1 BTC @ 100 (frozen 100 USDT).
 	buy, err := svc.PlaceOrder(ctx, PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err != nil || !buy.Accepted {
@@ -29,7 +29,7 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 	// u2 SELL 1 BTC @ 100 (frozen 1 BTC).
 	sell, err := svc.PlaceOrder(ctx, PlaceOrderRequest{
 		UserID: "u2", Symbol: "BTC-USDT",
-		Side: engine.SideAsk, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err != nil || !sell.Accepted {

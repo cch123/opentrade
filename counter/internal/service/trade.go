@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/pkg/dec"
 )
@@ -99,7 +99,7 @@ func (s *Service) HandleTradeEventAsync(ctx context.Context, evt *eventpb.TradeE
 // matchSeqDuplicate reports whether a non-zero matchSeq has already been
 // applied for (user, symbol). Must be called inside the user's sequencer
 // fn so the read + advance pair is atomic.
-func matchSeqDuplicate(acc *engine.Account, symbol string, matchSeq uint64) bool {
+func matchSeqDuplicate(acc *counterstate.Account, symbol string, matchSeq uint64) bool {
 	if matchSeq == 0 {
 		return false
 	}
@@ -120,15 +120,15 @@ func (s *Service) buildAcceptedFn(ctx context.Context, a *eventpb.OrderAccepted,
 			return nil // ADR-0048 backlog: already seen this match_seq
 		}
 		o := s.state.Orders().Get(a.OrderId)
-		if o == nil || o.Status != engine.OrderStatusPendingNew {
+		if o == nil || o.Status != counterstate.OrderStatusPendingNew {
 			acc.AdvanceMatchSeq(a.Symbol, matchSeq)
 			return nil // already past PENDING_NEW or not ours
 		}
 		oldStatus := o.Status
-		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusNew, time.Now().UnixMilli()); err != nil {
+		if _, err := s.state.Orders().UpdateStatus(o.ID, counterstate.OrderStatusNew, time.Now().UnixMilli()); err != nil {
 			return err
 		}
-		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusNew, 0); err != nil {
+		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, counterstate.OrderStatusNew, 0); err != nil {
 			return err
 		}
 		acc.AdvanceMatchSeq(a.Symbol, matchSeq)
@@ -179,13 +179,13 @@ func (s *Service) buildRejectedFn(ctx context.Context, r *eventpb.OrderRejected,
 		if err != nil {
 			return err
 		}
-		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusRejected, time.Now().UnixMilli()); err != nil {
+		if _, err := s.state.Orders().UpdateStatus(o.ID, counterstate.OrderStatusRejected, time.Now().UnixMilli()); err != nil {
 			return err
 		}
 		if err := s.emitUnfreeze(ctx, counterSeq, o, unfreeze); err != nil {
 			return err
 		}
-		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusRejected, r.Reason); err != nil {
+		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, counterstate.OrderStatusRejected, r.Reason); err != nil {
 			return err
 		}
 		acc.AdvanceMatchSeq(r.Symbol, matchSeq)
@@ -218,24 +218,24 @@ func (s *Service) handleRejectedAsync(ctx context.Context, r *eventpb.OrderRejec
 // parseTradeInput decodes the protobuf Trade fields into the engine's
 // TradeInput. Extracted so sync and async handlers share the same
 // parse path.
-func parseTradeInput(t *eventpb.Trade) (engine.TradeInput, error) {
+func parseTradeInput(t *eventpb.Trade) (counterstate.TradeInput, error) {
 	makerFilledAfter, err := dec.Parse(t.MakerFilledQtyAfter)
 	if err != nil {
-		return engine.TradeInput{}, fmt.Errorf("parse maker_filled_qty_after: %w", err)
+		return counterstate.TradeInput{}, fmt.Errorf("parse maker_filled_qty_after: %w", err)
 	}
 	takerFilledAfter, err := dec.Parse(t.TakerFilledQtyAfter)
 	if err != nil {
-		return engine.TradeInput{}, fmt.Errorf("parse taker_filled_qty_after: %w", err)
+		return counterstate.TradeInput{}, fmt.Errorf("parse taker_filled_qty_after: %w", err)
 	}
 	price, err := dec.Parse(t.Price)
 	if err != nil {
-		return engine.TradeInput{}, fmt.Errorf("parse trade price: %w", err)
+		return counterstate.TradeInput{}, fmt.Errorf("parse trade price: %w", err)
 	}
 	qty, err := dec.Parse(t.Qty)
 	if err != nil {
-		return engine.TradeInput{}, fmt.Errorf("parse trade qty: %w", err)
+		return counterstate.TradeInput{}, fmt.Errorf("parse trade qty: %w", err)
 	}
-	return engine.TradeInput{
+	return counterstate.TradeInput{
 		TradeID:             t.TradeId,
 		Symbol:              t.Symbol,
 		Price:               price,
@@ -340,22 +340,22 @@ func (s *Service) handleTradeAsync(ctx context.Context, t *eventpb.Trade, matchS
 
 // buildSelfTradeFn — see buildAcceptedFn's contract. Settles both
 // maker and taker sides in a single fn (both sides share the account).
-func (s *Service) buildSelfTradeFn(ctx context.Context, ti engine.TradeInput, matchSeq uint64) func(uint64) error {
+func (s *Service) buildSelfTradeFn(ctx context.Context, ti counterstate.TradeInput, matchSeq uint64) func(uint64) error {
 	userID := ti.MakerUserID
 	return func(counterSeq uint64) error {
 		acc := s.state.Account(userID)
 		if matchSeqDuplicate(acc, ti.Symbol, matchSeq) {
 			return nil
 		}
-		mSet, tSet, err := engine.ComputeSettlement(s.state, ti)
+		mSet, tSet, err := counterstate.ComputeSettlement(s.state, ti)
 		if err != nil {
 			return err
 		}
-		base, quote, _ := engine.SymbolAssets(ti.Symbol)
+		base, quote, _ := counterstate.SymbolAssets(ti.Symbol)
 		// Apply maker then taker. Each call mutates the same account; the
 		// engine applies deltas sequentially so the final state reflects
 		// both sides.
-		for _, party := range []engine.PartySettlement{mSet, tSet} {
+		for _, party := range []counterstate.PartySettlement{mSet, tSet} {
 			o := s.state.Orders().Get(party.OrderID)
 			if o == nil {
 				continue
@@ -413,7 +413,7 @@ func (s *Service) buildSelfTradeFn(ctx context.Context, ti engine.TradeInput, ma
 // inside one sequencer pass. Idempotency: the (user, symbol) match_seq guard
 // still covers replays because we advance it once at the end — a replay of
 // the same event is dropped before doing any work.
-func (s *Service) applySelfTrade(ctx context.Context, ti engine.TradeInput, matchSeq uint64) error {
+func (s *Service) applySelfTrade(ctx context.Context, ti counterstate.TradeInput, matchSeq uint64) error {
 	userID := ti.MakerUserID
 	if !s.OwnsUser(userID) {
 		s.logForeignSkip("trade-self", userID, ti.MakerOrderID)
@@ -443,13 +443,13 @@ func (s *Service) buildCancelledFn(ctx context.Context, c *eventpb.OrderCancelle
 		if err != nil {
 			return err
 		}
-		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusCanceled, time.Now().UnixMilli()); err != nil {
+		if _, err := s.state.Orders().UpdateStatus(o.ID, counterstate.OrderStatusCanceled, time.Now().UnixMilli()); err != nil {
 			return err
 		}
 		if err := s.emitUnfreeze(ctx, counterSeq, o, unfreeze); err != nil {
 			return err
 		}
-		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusCanceled, 0); err != nil {
+		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, counterstate.OrderStatusCanceled, 0); err != nil {
 			return err
 		}
 		acc.AdvanceMatchSeq(c.Symbol, matchSeq)
@@ -496,13 +496,13 @@ func (s *Service) buildExpiredFn(ctx context.Context, e *eventpb.OrderExpired, m
 		if err != nil {
 			return err
 		}
-		if _, err := s.state.Orders().UpdateStatus(o.ID, engine.OrderStatusExpired, time.Now().UnixMilli()); err != nil {
+		if _, err := s.state.Orders().UpdateStatus(o.ID, counterstate.OrderStatusExpired, time.Now().UnixMilli()); err != nil {
 			return err
 		}
 		if err := s.emitUnfreeze(ctx, counterSeq, o, unfreeze); err != nil {
 			return err
 		}
-		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, engine.OrderStatusExpired, e.Reason); err != nil {
+		if err := s.emitStatus(ctx, counterSeq, o, oldStatus, counterstate.OrderStatusExpired, e.Reason); err != nil {
 			return err
 		}
 		acc.AdvanceMatchSeq(e.Symbol, matchSeq)
@@ -538,7 +538,7 @@ func (s *Service) handleExpiredAsync(ctx context.Context, e *eventpb.OrderExpire
 
 // buildPartyFn — fn body for one side of a normal (non-self) trade.
 // Assumes OwnsUser(party_uid) == true; caller must gate on that.
-func (s *Service) buildPartyFn(ctx context.Context, ti engine.TradeInput, maker bool, matchSeq uint64) func(uint64) error {
+func (s *Service) buildPartyFn(ctx context.Context, ti counterstate.TradeInput, maker bool, matchSeq uint64) func(uint64) error {
 	userID := ti.TakerUserID
 	orderID := ti.TakerOrderID
 	if maker {
@@ -568,7 +568,7 @@ func (s *Service) buildPartyFn(ctx context.Context, ti engine.TradeInput, maker 
 			return nil // already applied
 		}
 
-		mSet, tSet, err := engine.ComputeSettlement(s.state, ti)
+		mSet, tSet, err := counterstate.ComputeSettlement(s.state, ti)
 		if err != nil {
 			return err
 		}
@@ -584,7 +584,7 @@ func (s *Service) buildPartyFn(ctx context.Context, ti engine.TradeInput, maker 
 		// Emit settlement event to counter-journal (best-effort, non-txn).
 		// ApplyPartySettlement above has already bumped versions through
 		// setBalance, so reading back picks up the post-commit values.
-		base, quote, _ := engine.SymbolAssets(ti.Symbol)
+		base, quote, _ := counterstate.SymbolAssets(ti.Symbol)
 		baseAfter := s.state.Balance(party.UserID, base)
 		quoteAfter := s.state.Balance(party.UserID, quote)
 		evt, err := journal.BuildSettlementEvent(journal.SettlementEventInput{
@@ -630,7 +630,7 @@ func (s *Service) buildPartyFn(ctx context.Context, ti engine.TradeInput, maker 
 //     applied.
 //   - Fill-qty check: belt-and-suspenders against mid-rollout / zero-seq
 //     legacy records where match_seq is unset.
-func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInput, maker bool, matchSeq uint64) error {
+func (s *Service) applyPartyViaSequencer(ctx context.Context, ti counterstate.TradeInput, maker bool, matchSeq uint64) error {
 	userID := ti.TakerUserID
 	orderID := ti.TakerOrderID
 	kind := "trade-taker"
@@ -652,7 +652,7 @@ func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInp
 
 // unfreezeResidual releases the still-frozen funds of a terminal order
 // (cancel / reject / expire). Residual = FrozenAmount − FrozenSpent, where
-// FrozenSpent is accumulated by settlement per fill (see engine.ApplyPartySettlement).
+// FrozenSpent is accumulated by settlement per fill (see counterstate.ApplyPartySettlement).
 // The formula is uniform across:
 //
 //	limit buy:            Price * Qty    − Price * FilledQty
@@ -663,11 +663,11 @@ func (s *Service) applyPartyViaSequencer(ctx context.Context, ti engine.TradeInp
 // ADR-0035.
 type unfreezeResult struct {
 	amount       dec.Decimal
-	balanceAfter engine.Balance
+	balanceAfter counterstate.Balance
 	ok           bool
 }
 
-func (s *Service) unfreezeResidual(o *engine.Order) (unfreezeResult, error) {
+func (s *Service) unfreezeResidual(o *counterstate.Order) (unfreezeResult, error) {
 	if o.FrozenAsset == "" {
 		return unfreezeResult{}, nil
 	}
@@ -714,7 +714,7 @@ func (s *Service) logForeignSkip(kind, userID string, orderID uint64) {
 // AccountVersion is read AT emit time. Callers that just called
 // unfreezeResidual will see the bumped value; pure-status transitions
 // (PENDING_NEW → NEW) emit the still-stable pre-call value.
-func (s *Service) emitUnfreeze(ctx context.Context, counterSeq uint64, o *engine.Order, res unfreezeResult) error {
+func (s *Service) emitUnfreeze(ctx context.Context, counterSeq uint64, o *counterstate.Order, res unfreezeResult) error {
 	if !res.ok {
 		return nil
 	}
@@ -731,7 +731,7 @@ func (s *Service) emitUnfreeze(ctx context.Context, counterSeq uint64, o *engine
 	return s.publisher.Publish(ctx, o.UserID, evt)
 }
 
-func (s *Service) emitStatus(ctx context.Context, counterSeq uint64, o *engine.Order, oldStatus, newStatus engine.OrderStatus, reason eventpb.RejectReason) error {
+func (s *Service) emitStatus(ctx context.Context, counterSeq uint64, o *counterstate.Order, oldStatus, newStatus counterstate.OrderStatus, reason eventpb.RejectReason) error {
 	evt := journal.BuildOrderStatusEvent(journal.OrderStatusEventInput{
 		CounterSeqID:   counterSeq,
 		ProducerID:     s.cfg.ProducerID,
@@ -747,7 +747,7 @@ func (s *Service) emitStatus(ctx context.Context, counterSeq uint64, o *engine.O
 		return err
 	}
 	if newStatus.IsTerminal() {
-		if err := s.state.Orders().Delete(o.ID); err != nil && !errors.Is(err, engine.ErrOrderNotFound) {
+		if err := s.state.Orders().Delete(o.ID); err != nil && !errors.Is(err, counterstate.ErrOrderNotFound) {
 			return fmt.Errorf("terminal delete: %w", err)
 		}
 	}
@@ -758,12 +758,12 @@ func (s *Service) emitStatus(ctx context.Context, counterSeq uint64, o *engine.O
 // SideBid for unknown values for safety; callers may ignore the mismatch
 // since Side is used only for settlement arithmetic, which also takes the
 // order's stored side.
-func sideFromProto(s eventpb.Side) engine.Side {
+func sideFromProto(s eventpb.Side) counterstate.Side {
 	switch s {
 	case eventpb.Side_SIDE_BUY:
-		return engine.SideBid
+		return counterstate.SideBid
 	case eventpb.Side_SIDE_SELL:
-		return engine.SideAsk
+		return counterstate.SideAsk
 	}
-	return engine.SideBid
+	return counterstate.SideBid
 }

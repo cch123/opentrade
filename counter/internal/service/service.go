@@ -1,6 +1,6 @@
 // Package service is the business layer of Counter. It ties together:
 //
-//   - engine.ShardState    — in-memory accounts and transfer logic
+//   - counterstate.ShardState    — in-memory accounts and transfer logic
 //   - sequencer.UserSequencer — per-user FIFO serializer (ADR-0018)
 //   - dedup.Table          — transfer_id idempotency (ADR-0011)
 //   - Publisher            — Kafka counter-journal producer (ADR-0004)
@@ -17,7 +17,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/shard"
@@ -76,7 +76,7 @@ type Config struct {
 // Service executes Counter business operations.
 type Service struct {
 	cfg       Config
-	state     *engine.ShardState
+	state     *counterstate.ShardState
 	seq       *sequencer.UserSequencer
 	dedup     *dedup.Table
 	publisher Publisher
@@ -93,7 +93,7 @@ type Service struct {
 
 // New wires a Service. All dependencies must be non-nil. txn / idgen may be
 // nil if PlaceOrder / CancelOrder are not used (legacy MVP-2 path).
-func New(cfg Config, state *engine.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, publisher Publisher, logger *zap.Logger) *Service {
+func New(cfg Config, state *counterstate.ShardState, seq *sequencer.UserSequencer, dt *dedup.Table, publisher Publisher, logger *zap.Logger) *Service {
 	return &Service{
 		cfg:       cfg,
 		state:     state,
@@ -169,7 +169,7 @@ func (s *Service) OwnsUser(userID string) bool {
 //
 // The "compute → publish → commit" order ensures Kafka is always strictly
 // ahead of in-memory state, matching ADR-0001.
-func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*engine.TransferResult, error) {
+func (s *Service) Transfer(ctx context.Context, req counterstate.TransferRequest) (*counterstate.TransferResult, error) {
 	if err := validateTransfer(req); err != nil {
 		return nil, err
 	}
@@ -198,9 +198,9 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 		if cerr != nil {
 			// Business rejection — no Kafka write, no ring remember. The
 			// caller may retry with fixed params.
-			return &engine.TransferResult{
+			return &counterstate.TransferResult{
 				TransferID:   req.TransferID,
-				Status:       engine.TransferStatusRejected,
+				Status:       counterstate.TransferStatusRejected,
 				RejectReason: cerr.Error(),
 				CounterSeqID: counterSeq,
 			}, nil
@@ -236,9 +236,9 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 		// Commit + remember.
 		s.state.CommitBalance(req.UserID, req.Asset, newBalance)
 		acc.RememberTransfer(req.TransferID)
-		return &engine.TransferResult{
+		return &counterstate.TransferResult{
 			TransferID:   req.TransferID,
-			Status:       engine.TransferStatusConfirmed,
+			Status:       counterstate.TransferStatusConfirmed,
 			BalanceAfter: acc.Balance(req.Asset), // read back to pick up bumped version
 			CounterSeqID: counterSeq,
 		}, nil
@@ -246,7 +246,7 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 	if err != nil {
 		return nil, err
 	}
-	return v.(*engine.TransferResult), nil
+	return v.(*counterstate.TransferResult), nil
 }
 
 // QueryBalance returns the current balance snapshot for (userID, asset).
@@ -254,15 +254,15 @@ func (s *Service) Transfer(ctx context.Context, req engine.TransferRequest) (*en
 // balance while a concurrent write for the same user is in-flight. This is
 // intentional — ADR-0007 treats query as a best-effort view; authoritative
 // state is Kafka journal.
-func (s *Service) QueryBalance(userID, asset string) (engine.Balance, error) {
+func (s *Service) QueryBalance(userID, asset string) (counterstate.Balance, error) {
 	if !s.OwnsUser(userID) {
-		return engine.Balance{}, ErrWrongShard
+		return counterstate.Balance{}, ErrWrongShard
 	}
 	return s.state.Balance(userID, asset), nil
 }
 
 // QueryAccount returns the full map of (asset -> balance) for a user.
-func (s *Service) QueryAccount(userID string) (map[string]engine.Balance, error) {
+func (s *Service) QueryAccount(userID string) (map[string]counterstate.Balance, error) {
 	if !s.OwnsUser(userID) {
 		return nil, ErrWrongShard
 	}
@@ -270,16 +270,16 @@ func (s *Service) QueryAccount(userID string) (map[string]engine.Balance, error)
 }
 
 // QueryOrder returns a clone of the order if it exists and belongs to userID.
-func (s *Service) QueryOrder(userID string, orderID uint64) (*engine.Order, error) {
+func (s *Service) QueryOrder(userID string, orderID uint64) (*counterstate.Order, error) {
 	if !s.OwnsUser(userID) {
 		return nil, ErrWrongShard
 	}
 	o := s.state.Orders().Get(orderID)
 	if o == nil {
-		return nil, engine.ErrOrderNotFound
+		return nil, counterstate.ErrOrderNotFound
 	}
 	if o.UserID != userID {
-		return nil, engine.ErrNotOrderOwner
+		return nil, counterstate.ErrNotOrderOwner
 	}
 	return o.Clone(), nil
 }
@@ -288,7 +288,7 @@ func (s *Service) QueryOrder(userID string, orderID uint64) (*engine.Order, erro
 // helpers
 // ---------------------------------------------------------------------------
 
-func validateTransfer(req engine.TransferRequest) error {
+func validateTransfer(req counterstate.TransferRequest) error {
 	if req.UserID == "" {
 		return ErrMissingUserID
 	}
@@ -306,9 +306,9 @@ func validateTransfer(req engine.TransferRequest) error {
 // need the balance_after must follow up with QueryBalance. This is a
 // deliberate breaking simplification (see ADR-0048 backlog item 4, 方案 A
 // + documented drawbacks).
-func dedupResult(transferID string) *engine.TransferResult {
-	return &engine.TransferResult{
+func dedupResult(transferID string) *counterstate.TransferResult {
+	return &counterstate.TransferResult{
 		TransferID: transferID,
-		Status:     engine.TransferStatusDuplicated,
+		Status:     counterstate.TransferStatusDuplicated,
 	}
 }

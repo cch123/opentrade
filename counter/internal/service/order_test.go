@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/dec"
@@ -52,9 +52,9 @@ type intIDGen struct{ n atomic.Uint64 }
 
 func (g *intIDGen) Next() uint64 { return g.n.Add(1) }
 
-func newOrderFixture(t *testing.T) (*Service, *engine.ShardState, *mockPublisher, *mockTxnPublisher) {
+func newOrderFixture(t *testing.T) (*Service, *counterstate.ShardState, *mockPublisher, *mockTxnPublisher) {
 	t.Helper()
-	state := engine.NewShardState(0)
+	state := counterstate.NewShardState(0)
 	seq := sequencer.New()
 	dt := dedup.New(time.Hour)
 	pub := &mockPublisher{}
@@ -63,13 +63,13 @@ func newOrderFixture(t *testing.T) (*Service, *engine.ShardState, *mockPublisher
 		state, seq, dt, pub, zap.NewNop())
 	svc.SetOrderDeps(txn, &intIDGen{})
 	// Seed u1 with USDT, u2 with BTC.
-	_, _ = svc.Transfer(context.Background(), engine.TransferRequest{
+	_, _ = svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "seed-u1", UserID: "u1", Asset: "USDT",
-		Amount: dec.New("1000"), Type: engine.TransferDeposit,
+		Amount: dec.New("1000"), Type: counterstate.TransferDeposit,
 	})
-	_, _ = svc.Transfer(context.Background(), engine.TransferRequest{
+	_, _ = svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "seed-u2", UserID: "u2", Asset: "BTC",
-		Amount: dec.New("1"), Type: engine.TransferDeposit,
+		Amount: dec.New("1"), Type: counterstate.TransferDeposit,
 	})
 	return svc, state, pub, txn
 }
@@ -78,7 +78,7 @@ func TestPlaceOrderBuyFreezesQuote(t *testing.T) {
 	svc, state, _, txn := newOrderFixture(t)
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", ClientOrderID: "c1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("2"),
 	})
 	if err != nil {
@@ -96,7 +96,7 @@ func TestPlaceOrderBuyFreezesQuote(t *testing.T) {
 		t.Fatalf("u1 USDT = %+v", bal)
 	}
 	o := state.Orders().Get(res.OrderID)
-	if o == nil || o.Status != engine.OrderStatusPendingNew || o.FrozenAmount.String() != "200" {
+	if o == nil || o.Status != counterstate.OrderStatusPendingNew || o.FrozenAmount.String() != "200" {
 		t.Fatalf("order = %+v", o)
 	}
 }
@@ -105,7 +105,7 @@ func TestPlaceOrderRejectedOnInsufficientBalance(t *testing.T) {
 	svc, state, _, txn := newOrderFixture(t)
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("10000"), Qty: dec.New("1"), // needs 10000 USDT, have 1000
 	})
 	if err != nil {
@@ -126,7 +126,7 @@ func TestPlaceOrderIdempotencyViaCOID(t *testing.T) {
 	svc, _, _, txn := newOrderFixture(t)
 	req := PlaceOrderRequest{
 		UserID: "u1", ClientOrderID: "dup",
-		Symbol: "BTC-USDT", Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Symbol: "BTC-USDT", Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	}
 	first, err := svc.PlaceOrder(context.Background(), req)
@@ -152,7 +152,7 @@ func TestPlaceOrderKafkaFailureKeepsStateClean(t *testing.T) {
 	txn.mu.Unlock()
 	_, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err == nil {
@@ -167,7 +167,7 @@ func TestCancelOrderTransitionsToPendingCancel(t *testing.T) {
 	svc, state, _, _ := newOrderFixture(t)
 	placed, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err != nil {
@@ -183,7 +183,7 @@ func TestCancelOrderTransitionsToPendingCancel(t *testing.T) {
 		t.Fatalf("cancel not accepted: %+v", cancelRes)
 	}
 	o := state.Orders().Get(placed.OrderID)
-	if o.Status != engine.OrderStatusPendingCancel {
+	if o.Status != counterstate.OrderStatusPendingCancel {
 		t.Fatalf("status = %s, want pending_cancel", o.Status)
 	}
 }
@@ -192,7 +192,7 @@ func TestCancelOrderNotOwner(t *testing.T) {
 	svc, _, _, _ := newOrderFixture(t)
 	placed, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err != nil {
@@ -237,7 +237,7 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 	// u1 places BUY 1 BTC @ 100 USDT  -> needs 100 USDT frozen.
 	buy, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err != nil || !buy.Accepted {
@@ -246,7 +246,7 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 	// u2 places SELL 1 BTC @ 100 USDT -> freezes 1 BTC.
 	sell, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u2", Symbol: "BTC-USDT",
-		Side: engine.SideAsk, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err != nil || !sell.Accepted {
@@ -325,7 +325,7 @@ func TestTerminalCancelEmitsUnfreezeBeforeStatus(t *testing.T) {
 
 	placed, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: "u1", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("2"),
 	})
 	if err != nil || !placed.Accepted {
@@ -362,12 +362,12 @@ func TestTerminalCancelEmitsUnfreezeBeforeStatus(t *testing.T) {
 		t.Fatalf("last event = %+v, want canceled status", status)
 	}
 
-	shadow := engine.NewShardState(0)
+	shadow := counterstate.NewShardState(0)
 	replay := append([]*eventpb.CounterJournalEvent{}, events[:2]...)
 	replay = append(replay, txn.pairs[0].Journal)
 	replay = append(replay, events[2:]...)
 	for _, evt := range replay {
-		if err := engine.ApplyCounterJournalEvent(shadow, evt); err != nil {
+		if err := counterstate.ApplyCounterJournalEvent(shadow, evt); err != nil {
 			t.Fatalf("replay %T: %v", evt.Payload, err)
 		}
 	}

@@ -1,6 +1,6 @@
 // Package shadow is trade-dump's in-memory mirror of one Counter
 // vshard (ADR-0061 M2). It consumes counter-journal records in
-// offset order and drives engine.ShardState through the same
+// offset order and drives counterstate.ShardState through the same
 // ApplyCounterJournalEvent surface Counter uses for recovery; at
 // configured triggers (time or event-count) it captures a
 // snapshot.ShardSnapshot and hands it to the pipeline's async save
@@ -26,7 +26,7 @@ import (
 	"time"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	countersnap "github.com/xargin/opentrade/trade-dump/snapshot/counter"
 )
 
@@ -61,7 +61,7 @@ type Engine struct {
 	// take mu — it reads publishedOffset via atomic Load instead.
 	mu sync.Mutex
 
-	state *engine.ShardState
+	state *counterstate.ShardState
 
 	// counterSeq tracks the highest CounterSeqId seen in any applied
 	// event. Sample is exact (no missing gaps): the shadow engine
@@ -113,7 +113,7 @@ type Engine struct {
 func New(vshardID int) *Engine {
 	return &Engine{
 		vshardID:             vshardID,
-		state:                engine.NewShardState(vshardID),
+		state:                counterstate.NewShardState(vshardID),
 		teWatermarkPartition: int32(vshardID),
 	}
 }
@@ -167,7 +167,7 @@ func (e *Engine) VShardID() int { return e.vshardID }
 // State exposes the underlying ShardState, primarily for tests and
 // the snapshot-diff tool (ADR-0061 M5) that compares shadow state
 // against Counter-produced snapshots.
-func (e *Engine) State() *engine.ShardState { return e.state }
+func (e *Engine) State() *counterstate.ShardState { return e.state }
 
 // CounterSeq returns the highest counter_seq_id seen.
 func (e *Engine) CounterSeq() uint64 { return e.counterSeq }
@@ -180,7 +180,7 @@ func (e *Engine) TeWatermark() (partition int32, offset int64) {
 }
 
 // NextJournalOffset returns the next-to-consume counter-journal
-// offset (== last applied offset + 1). Zero for a fresh engine.
+// offset (== last applied offset + 1). Zero for a fresh counterstate.
 func (e *Engine) NextJournalOffset() int64 { return e.nextJournalOffset }
 
 // EventsSinceLastSnapshot is the count of Apply calls since the
@@ -243,7 +243,7 @@ func (e *Engine) Apply(evt *eventpb.CounterJournalEvent, kafkaOffset int64) erro
 		return nil
 	}
 
-	if err := engine.ApplyCounterJournalEvent(e.state, evt); err != nil {
+	if err := counterstate.ApplyCounterJournalEvent(e.state, evt); err != nil {
 		// Apply failure leaves publishedOffset un-advanced so a
 		// concurrent WaitAppliedTo does not falsely conclude the
 		// record was processed. The pipeline logs and moves on —

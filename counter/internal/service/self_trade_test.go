@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -18,12 +18,12 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 	ctx := context.Background()
 
 	// Give alice enough on both sides to place buy + sell.
-	state.CommitBalance("alice", "USDT", engine.Balance{Available: dec.New("1000")})
-	state.CommitBalance("alice", "BTC", engine.Balance{Available: dec.New("10")})
+	state.CommitBalance("alice", "USDT", counterstate.Balance{Available: dec.New("1000")})
+	state.CommitBalance("alice", "BTC", counterstate.Balance{Available: dec.New("10")})
 
 	buy, err := svc.PlaceOrder(ctx, PlaceOrderRequest{
 		UserID: "alice", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err != nil || !buy.Accepted {
@@ -31,7 +31,7 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 	}
 	sell, err := svc.PlaceOrder(ctx, PlaceOrderRequest{
 		UserID: "alice", Symbol: "BTC-USDT",
-		Side: engine.SideAsk, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err != nil || !sell.Accepted {
@@ -96,17 +96,17 @@ func TestSelfTradeReplayIdempotent(t *testing.T) {
 	svc, state, _, _ := newOrderFixture(t)
 	ctx := context.Background()
 
-	state.CommitBalance("alice", "USDT", engine.Balance{Available: dec.New("1000")})
-	state.CommitBalance("alice", "BTC", engine.Balance{Available: dec.New("10")})
+	state.CommitBalance("alice", "USDT", counterstate.Balance{Available: dec.New("1000")})
+	state.CommitBalance("alice", "BTC", counterstate.Balance{Available: dec.New("10")})
 
 	buy, _ := svc.PlaceOrder(ctx, PlaceOrderRequest{
 		UserID: "alice", Symbol: "BTC-USDT",
-		Side: engine.SideBid, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	sell, _ := svc.PlaceOrder(ctx, PlaceOrderRequest{
 		UserID: "alice", Symbol: "BTC-USDT",
-		Side: engine.SideAsk, OrderType: engine.OrderTypeLimit, TIF: engine.TIFGTC,
+		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 

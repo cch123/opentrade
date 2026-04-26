@@ -6,7 +6,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 )
 
 // ErrAdminCancelFilterEmpty is returned when neither user_id nor symbol is
@@ -75,7 +75,7 @@ func (s *Service) cancelOrdersMatching(ctx context.Context, filter AdminCancelFi
 
 	snapshot := s.state.Orders().All() // clone slice
 
-	targets := make([]*engine.Order, 0, len(snapshot))
+	targets := make([]*counterstate.Order, 0, len(snapshot))
 	var skipped uint32
 	for _, o := range snapshot {
 		if filter.UserID != "" && o.UserID != filter.UserID {
@@ -89,7 +89,7 @@ func (s *Service) cancelOrdersMatching(ctx context.Context, filter AdminCancelFi
 		if filter.UserID == "" && !s.OwnsUser(o.UserID) {
 			continue
 		}
-		if o.Status.IsTerminal() || o.Status == engine.OrderStatusPendingCancel {
+		if o.Status.IsTerminal() || o.Status == counterstate.OrderStatusPendingCancel {
 			skipped++
 			continue
 		}

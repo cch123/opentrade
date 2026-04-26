@@ -11,7 +11,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/clustering"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
 )
@@ -50,7 +50,7 @@ func (m *mockCheckpointPub) Events() []*eventpb.TECheckpointEvent {
 // exercise runAdvancer. Doesn't open Kafka / storage.
 func newAdvancerTestWorker(t *testing.T, vshardID clustering.VShardID) *VShardWorker {
 	t.Helper()
-	state := engine.NewShardState(int(vshardID))
+	state := counterstate.NewShardState(int(vshardID))
 	seq := sequencer.New()
 	svc := service.New(
 		service.Config{ShardID: int(vshardID), TotalShards: 256},

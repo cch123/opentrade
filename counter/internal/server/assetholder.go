@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/pkg/dec"
 )
@@ -21,7 +21,7 @@ import (
 // and calls these methods on Counter as one leg of each saga.
 //
 // All three methods share a common shape: they translate the incoming
-// request into a counter engine.TransferRequest (with SagaTransferID
+// request into a counter counterstate.TransferRequest (with SagaTransferID
 // filled from the incoming transfer_id) and call svc.Transfer. Counter's
 // existing per-user sequencer + ring-buffer dedup + counter-journal
 // publisher take care of idempotency and durability.
@@ -56,7 +56,7 @@ func (s *AssetHolderServer) routeOrFail(userID string) (*service.Service, error)
 
 // TransferOut debits (user_id, asset) by amount. It is the "from" leg of
 // an asset-service saga when Counter is the source biz_line. The RPC
-// translates to engine.TransferRequest{Type: Withdraw, SagaTransferID:
+// translates to counterstate.TransferRequest{Type: Withdraw, SagaTransferID:
 // req.TransferId}; Counter's existing business logic handles precision,
 // underflow rejection, and counter-journal emission.
 func (s *AssetHolderServer) TransferOut(ctx context.Context, req *assetholderrpc.TransferOutRequest) (*assetholderrpc.TransferOutResponse, error) {
@@ -70,7 +70,7 @@ func (s *AssetHolderServer) TransferOut(ctx context.Context, req *assetholderrpc
 		Amount:     req.Amount,
 		PeerBiz:    req.PeerBiz,
 		Memo:       req.Memo,
-		Direction:  engine.TransferWithdraw,
+		Direction:  counterstate.TransferWithdraw,
 	})
 	if err != nil {
 		return nil, holderArgumentError(err)
@@ -105,7 +105,7 @@ func (s *AssetHolderServer) TransferIn(ctx context.Context, req *assetholderrpc.
 		Amount:     req.Amount,
 		PeerBiz:    req.PeerBiz,
 		Memo:       req.Memo,
-		Direction:  engine.TransferDeposit,
+		Direction:  counterstate.TransferDeposit,
 	})
 	if err != nil {
 		return nil, holderArgumentError(err)
@@ -152,7 +152,7 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *asse
 		Amount:     req.Amount,
 		PeerBiz:    req.PeerBiz,
 		Memo:       memo,
-		Direction:  engine.TransferDeposit,
+		Direction:  counterstate.TransferDeposit,
 	})
 	if err != nil {
 		return nil, holderArgumentError(err)
@@ -184,32 +184,32 @@ type holderRequestInput struct {
 	Amount     string
 	PeerBiz    string
 	Memo       string
-	Direction  engine.TransferType // TransferWithdraw (out) or TransferDeposit (in / compensate)
+	Direction  counterstate.TransferType // TransferWithdraw (out) or TransferDeposit (in / compensate)
 }
 
 // holderRequestToEngine validates the RPC shape and returns the
-// corresponding engine.TransferRequest. The saga's transfer_id is
-// stamped into BOTH the dedup key (engine.TransferRequest.TransferID)
-// AND the cross-ref field (engine.TransferRequest.SagaTransferID) so
+// corresponding counterstate.TransferRequest. The saga's transfer_id is
+// stamped into BOTH the dedup key (counterstate.TransferRequest.TransferID)
+// AND the cross-ref field (counterstate.TransferRequest.SagaTransferID) so
 // downstream trade-dump projections can correlate either way.
-func holderRequestToEngine(in holderRequestInput) (engine.TransferRequest, error) {
+func holderRequestToEngine(in holderRequestInput) (counterstate.TransferRequest, error) {
 	if in.UserID == "" {
-		return engine.TransferRequest{}, errors.New("user_id required")
+		return counterstate.TransferRequest{}, errors.New("user_id required")
 	}
 	if in.TransferID == "" {
-		return engine.TransferRequest{}, errors.New("transfer_id required")
+		return counterstate.TransferRequest{}, errors.New("transfer_id required")
 	}
 	if in.Asset == "" {
-		return engine.TransferRequest{}, errors.New("asset required")
+		return counterstate.TransferRequest{}, errors.New("asset required")
 	}
 	amount, err := dec.Parse(in.Amount)
 	if err != nil {
-		return engine.TransferRequest{}, fmt.Errorf("invalid amount %q: %w", in.Amount, err)
+		return counterstate.TransferRequest{}, fmt.Errorf("invalid amount %q: %w", in.Amount, err)
 	}
 	if amount.Sign() <= 0 {
-		return engine.TransferRequest{}, errors.New("amount must be positive")
+		return counterstate.TransferRequest{}, errors.New("amount must be positive")
 	}
-	return engine.TransferRequest{
+	return counterstate.TransferRequest{
 		TransferID:     in.TransferID,
 		UserID:         in.UserID,
 		Asset:          in.Asset,
@@ -225,16 +225,16 @@ func holderArgumentError(err error) error {
 	return status.Error(codes.InvalidArgument, err.Error())
 }
 
-// holderStatusToProto maps engine.TransferStatus to the AssetHolder
+// holderStatusToProto maps counterstate.TransferStatus to the AssetHolder
 // TransferStatus enum (which is identical in shape but declared in a
 // different proto package).
-func holderStatusToProto(s engine.TransferStatus) assetholderrpc.TransferStatus {
+func holderStatusToProto(s counterstate.TransferStatus) assetholderrpc.TransferStatus {
 	switch s {
-	case engine.TransferStatusConfirmed:
+	case counterstate.TransferStatusConfirmed:
 		return assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED
-	case engine.TransferStatusRejected:
+	case counterstate.TransferStatusRejected:
 		return assetholderrpc.TransferStatus_TRANSFER_STATUS_REJECTED
-	case engine.TransferStatusDuplicated:
+	case counterstate.TransferStatusDuplicated:
 		return assetholderrpc.TransferStatus_TRANSFER_STATUS_DUPLICATED
 	}
 	return assetholderrpc.TransferStatus_TRANSFER_STATUS_UNSPECIFIED
@@ -242,17 +242,17 @@ func holderStatusToProto(s engine.TransferStatus) assetholderrpc.TransferStatus 
 
 // rejectReasonToProto folds Counter's free-form RejectReason string into
 // the AssetHolder RejectReason enum. Counter's reject reasons come from
-// engine.ErrInsufficientAvailable / ErrInsufficientFrozen /
+// counterstate.ErrInsufficientAvailable / ErrInsufficientFrozen /
 // ErrInvalidAmount etc. — we match on the string form because Counter
 // currently surfaces them via cerr.Error() (see service.Transfer).
 func rejectReasonToProto(s string) assetholderrpc.RejectReason {
 	switch s {
 	case "":
 		return assetholderrpc.RejectReason_REJECT_REASON_UNSPECIFIED
-	case engine.ErrInsufficientAvailable.Error(),
-		engine.ErrInsufficientFrozen.Error():
+	case counterstate.ErrInsufficientAvailable.Error(),
+		counterstate.ErrInsufficientFrozen.Error():
 		return assetholderrpc.RejectReason_REJECT_REASON_INSUFFICIENT_BALANCE
-	case engine.ErrInvalidAmount.Error():
+	case counterstate.ErrInvalidAmount.Error():
 		return assetholderrpc.RejectReason_REJECT_REASON_AMOUNT_INVALID
 	}
 	return assetholderrpc.RejectReason_REJECT_REASON_INTERNAL

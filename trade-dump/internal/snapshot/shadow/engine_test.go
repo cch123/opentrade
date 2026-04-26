@@ -9,13 +9,13 @@ import (
 	"time"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 )
 
 // TestShadow_ApplyFreezeAndCheckpointAdvancesWatermarks drives the
 // engine through the two event shapes that bump engine-local
 // bookkeeping (counterSeq, teWatermark, nextJournalOffset) plus
-// ShardState (via the engine.ApplyCounterJournalEvent path).
+// ShardState (via the counterstate.ApplyCounterJournalEvent path).
 func TestShadow_ApplyFreezeAndCheckpointAdvancesWatermarks(t *testing.T) {
 	sh := New(42)
 
@@ -113,7 +113,7 @@ func TestShadow_CheckpointMonotonic(t *testing.T) {
 }
 
 // TestShadow_CounterSeqMonotonic verifies an older event's CounterSeqId
-// does not regress engine.counterSeq.
+// does not regress counterstate.counterSeq.
 func TestShadow_CounterSeqMonotonic(t *testing.T) {
 	sh := New(0)
 	hi := &eventpb.CounterJournalEvent{CounterSeqId: 100}
@@ -271,7 +271,7 @@ func TestShadow_ClearEventsSinceLastSnapshot(t *testing.T) {
 
 // TestShadow_ApplyRejectsNilEventGracefully guards the fast path:
 // a nil event should be a no-op, not a panic, so pipeline code
-// that fans out unrelated errors doesn't poison the engine.
+// that fans out unrelated errors doesn't poison the counterstate.
 func TestShadow_ApplyRejectsNilEventGracefully(t *testing.T) {
 	sh := New(0)
 	if err := sh.Apply(nil, 0); err != nil {
@@ -295,11 +295,11 @@ func containsTransferID(ids []string, want string) bool {
 
 // TestShadow_StateTypeCompatibility is a compile-time-ish guard:
 // if the shadow engine's State() return type drifts from
-// engine.ShardState, this test body stops compiling. Cheaper than
+// counterstate.ShardState, this test body stops compiling. Cheaper than
 // wiring `var _ = ...` at package scope since the latter executes
 // at init time and nil-derefs.
 func TestShadow_StateTypeCompatibility(t *testing.T) {
-	var s *engine.ShardState = New(0).State()
+	var s *counterstate.ShardState = New(0).State()
 	if s == nil {
 		t.Fatal("State() must be non-nil on a fresh engine")
 	}
@@ -406,7 +406,7 @@ func TestShadow_RestoreFromSnapshotRoundTrip(t *testing.T) {
 // invariant: RestoreFromSnapshot must run on a fresh engine
 // (RestoreState errors on non-empty state). This prevents a
 // subtle bug where a pipeline accidentally restores an already-
-// active engine.
+// active counterstate.
 func TestShadow_RestoreFromSnapshotRejectsNonEmpty(t *testing.T) {
 	e := New(0)
 	deposit := &eventpb.CounterJournalEvent{
@@ -681,7 +681,7 @@ func TestShadow_PublishedOffsetTracksApply(t *testing.T) {
 // TestShadow_PublishedOffsetNotAdvancedOnApplyError locks the
 // contract ADR-0064 WaitAppliedTo relies on: PublishedOffset() only
 // moves forward after a fully successful Apply. A malformed event
-// that fails inside engine.ApplyCounterJournalEvent must leave the
+// that fails inside counterstate.ApplyCounterJournalEvent must leave the
 // atomic mirror un-advanced even though nextJournalOffset has been
 // pre-set for restart purposes. Without this invariant a waiter
 // would falsely conclude a corrupt record was processed.

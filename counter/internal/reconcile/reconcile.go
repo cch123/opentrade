@@ -33,7 +33,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/counter/engine"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -49,13 +49,13 @@ type Config struct {
 // Reconciler audits Counter memory against MySQL on a tick.
 type Reconciler struct {
 	cfg    Config
-	state  *engine.ShardState
+	state  *counterstate.ShardState
 	db     *sql.DB
 	logger *zap.Logger
 }
 
 // New constructs a Reconciler. Caller owns db lifecycle.
-func New(cfg Config, state *engine.ShardState, db *sql.DB, logger *zap.Logger) *Reconciler {
+func New(cfg Config, state *counterstate.ShardState, db *sql.DB, logger *zap.Logger) *Reconciler {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 200
 	}
@@ -134,7 +134,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Report, error) {
 	}
 	// Build memory view first. This may miss transfers that land mid-run,
 	// but the ticker cadence (hour scale) makes that negligible.
-	mem := make(map[string]map[string]engine.Balance, len(users))
+	mem := make(map[string]map[string]counterstate.Balance, len(users))
 	for _, u := range users {
 		cp := r.state.Account(u).Copy()
 		if len(cp) == 0 {
@@ -200,8 +200,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Report, error) {
 
 // loadAccounts queries MySQL in batches and returns a
 // user_id → asset → Balance map.
-func (r *Reconciler) loadAccounts(ctx context.Context, users []string) (map[string]map[string]engine.Balance, error) {
-	out := make(map[string]map[string]engine.Balance, len(users))
+func (r *Reconciler) loadAccounts(ctx context.Context, users []string) (map[string]map[string]counterstate.Balance, error) {
+	out := make(map[string]map[string]counterstate.Balance, len(users))
 	for start := 0; start < len(users); start += r.cfg.BatchSize {
 		end := start + r.cfg.BatchSize
 		if end > len(users) {
@@ -215,7 +215,7 @@ func (r *Reconciler) loadAccounts(ctx context.Context, users []string) (map[stri
 	return out, nil
 }
 
-func (r *Reconciler) loadBatch(ctx context.Context, batch []string, out map[string]map[string]engine.Balance) error {
+func (r *Reconciler) loadBatch(ctx context.Context, batch []string, out map[string]map[string]counterstate.Balance) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -245,9 +245,9 @@ func (r *Reconciler) loadBatch(ctx context.Context, batch []string, out map[stri
 			return fmt.Errorf("parse frozen for %s/%s: %w", userID, asset, err)
 		}
 		if out[userID] == nil {
-			out[userID] = make(map[string]engine.Balance)
+			out[userID] = make(map[string]counterstate.Balance)
 		}
-		out[userID][asset] = engine.Balance{Available: availDec, Frozen: frozenDec}
+		out[userID][asset] = counterstate.Balance{Available: availDec, Frozen: frozenDec}
 	}
 	return rows.Err()
 }
