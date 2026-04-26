@@ -5,7 +5,9 @@
 //
 // Workflow (operator):
 //
-//  1. Stop every Counter shard cleanly. Each writes its final snapshot.
+//  1. Stop every Counter shard cleanly. The latest snapshot for each
+//     vshard already lives in trade-dump's BlobStore (ADR-0061); copy
+//     those files into the input directory.
 //  2. Copy the N snapshot files under one directory.
 //  3. Run `counter-reshard -in old -out new -from N -to M`.
 //  4. Start M shards with --snapshot-dir=new --total-shards=M.

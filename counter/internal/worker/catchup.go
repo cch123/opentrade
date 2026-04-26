@@ -128,16 +128,6 @@ func (w *VShardWorker) catchUpJournal(ctx context.Context, startOffset int64) er
 		}
 	}
 
-	// Prime TxnProducer.journalHighOffset so the next writeSnapshot
-	// records a journal_offset >= what we just observed. Without this,
-	// a snapshot taken before any new publish would regress
-	// journal_offset back to startOffset and the next recovery would
-	// replay events we already applied (harmless via idempotency, but
-	// wasted wall time).
-	if lastOffset >= 0 {
-		w.producer.NoteObservedJournalOffset(lastOffset)
-	}
-
 	w.cfg.Metrics.RecordCatchUpApplied(int32(w.cfg.VShardID), applied)
 
 	logger.Info("catchup complete",

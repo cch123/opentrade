@@ -22,9 +22,7 @@ func TestCounter_NilSafe(t *testing.T) {
 	c.RecordPendingSize(0, 10)
 	c.RecordCheckpointPublish(0, true)
 	c.RecordPublishRetry("Publish", 2)
-	c.RecordSnapshotDuration(0, 0.5)
 	c.RecordCatchUpApplied(0, 100)
-	c.RecordCounterSeq(0, 42)
 	// ADR-0064 M2d additions.
 	c.RecordStartupDuration(0, StartupModeLabelOnDemand, 1.2, true)
 	c.RecordOnDemandRPCDuration(0, "ok", 0.2)

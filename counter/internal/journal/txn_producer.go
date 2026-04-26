@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -83,21 +82,6 @@ type TxnProducer struct {
 	logger *zap.Logger
 
 	mu sync.Mutex // serializes BeginTxn ... EndTransaction
-
-	// journalHighOffset tracks the highest committed record offset on
-	// this producer's counter-journal partition (ADR-0060 §4.1). Updated
-	// after every successful ProduceSync on JournalTopic; read by
-	// VShardWorker.writeSnapshot to stamp snap.JournalOffset. Atomic
-	// because Flush + snapshot read can race with in-flight produces
-	// (even though produce itself is serialised by mu, the snapshot
-	// path reads without holding mu).
-	//
-	// Value semantics: -1 means "never produced". Callers computing the
-	// next-to-consume offset add 1; zero value is therefore indistinguishable
-	// from "nothing ever published" which is the correct catch-up behaviour
-	// on cold start (journal_offset=0 → consumer seeks to start, topic
-	// is empty, nothing to apply).
-	journalHighOffset atomic.Int64
 }
 
 // NewTxnProducer constructs the client and initializes transactions (fences
@@ -134,9 +118,7 @@ func NewTxnProducer(ctx context.Context, cfg TxnProducerConfig, logger *zap.Logg
 	if err != nil {
 		return nil, fmt.Errorf("kgo.NewClient: %w", err)
 	}
-	p := &TxnProducer{cli: cli, cfg: cfg, logger: logger}
-	p.journalHighOffset.Store(-1)
-	return p, nil
+	return &TxnProducer{cli: cli, cfg: cfg, logger: logger}, nil
 }
 
 // PublishOrderPlacement atomically writes (1) a counter-journal event and
@@ -254,9 +236,6 @@ func (p *TxnProducer) PublishToVShard(
 //   - vshardID MUST match this producer's configured vshard; we
 //     cross-check against WriterEpoch / TransactionalID-derived
 //     identity in M2c when we have worker context to compare.
-//   - On return the journalHighOffset mirror is bumped past the
-//     sentinel's offset, so a subsequent snapshot picks a cursor
-//     >= startOffset (inherits Publish's invariant).
 //   - The sentinel's apply path must tolerate nodeID/epoch=0 zero
 //     values too — tests inject those for determinism.
 func (p *TxnProducer) ProduceFenceSentinel(ctx context.Context, vshardID int32) error {
@@ -424,10 +403,6 @@ func (p *TxnProducer) runTxn(ctx context.Context, fn func() error) error {
 // Writer metadata (ADR-0058 §4) is attached as Kafka record headers so
 // audit tooling can tell which node / assignment epoch produced each
 // event without coupling to the payload schema.
-//
-// After a successful JournalTopic write, updates journalHighOffset so
-// VShardWorker.writeSnapshot can stamp snap.JournalOffset for
-// ADR-0060 catch-up replay on next restore.
 func (p *TxnProducer) produce(ctx context.Context, topic, key string, pb proto.Message) error {
 	payload, err := proto.Marshal(pb)
 	if err != nil {
@@ -443,11 +418,7 @@ func (p *TxnProducer) produce(ctx context.Context, topic, key string, pb proto.M
 		// key == user_id for every counter-journal event.
 		rec.Partition = int32(shard.Index(key, p.cfg.VShardCount))
 	}
-	if err := p.cli.ProduceSync(ctx, rec).FirstErr(); err != nil {
-		return err
-	}
-	p.noteJournalOffset(topic, rec)
-	return nil
+	return p.cli.ProduceSync(ctx, rec).FirstErr()
 }
 
 // produceToPartition writes a record directly to a caller-specified
@@ -465,75 +436,7 @@ func (p *TxnProducer) produceToPartition(ctx context.Context, topic string, part
 		Value:     payload,
 		Headers:   p.writerHeaders(),
 	}
-	if err := p.cli.ProduceSync(ctx, rec).FirstErr(); err != nil {
-		return err
-	}
-	p.noteJournalOffset(topic, rec)
-	return nil
-}
-
-// noteJournalOffset bumps journalHighOffset after a successful produce to
-// the counter-journal topic. Ignores non-journal writes (order-event etc.
-// — those have their own downstream watermarks). Uses atomic max so
-// out-of-order callbacks (shouldn't happen under mu-serialised runTxn
-// but cheap insurance) never rewind the value.
-func (p *TxnProducer) noteJournalOffset(topic string, rec *kgo.Record) {
-	if topic != p.cfg.JournalTopic {
-		return
-	}
-	for {
-		cur := p.journalHighOffset.Load()
-		if rec.Offset <= cur {
-			return
-		}
-		if p.journalHighOffset.CompareAndSwap(cur, rec.Offset) {
-			return
-		}
-	}
-}
-
-// JournalOffsetNext returns the next-to-consume offset on this vshard's
-// counter-journal partition: last successfully-committed record offset
-// + 1, or 0 if nothing was ever produced. Callers use this to stamp
-// snapshot.JournalOffset (ADR-0060 §4.1) so recovery's catch-up
-// consumer lands at the right place.
-//
-// Safe to call concurrently with produce(): the underlying atomic
-// write happens after ProduceSync returns success, and Flush
-// guarantees all in-flight produces have settled before snapshot
-// read (ADR-0048 output barrier still applies).
-func (p *TxnProducer) JournalOffsetNext() int64 {
-	hi := p.journalHighOffset.Load()
-	if hi < 0 {
-		return 0
-	}
-	return hi + 1
-}
-
-// NoteObservedJournalOffset bumps journalHighOffset to max(current,
-// observed). Used by ADR-0060 catch-up: after replay reads the last
-// journal record at offset K, seeding the producer's tracker with K
-// guarantees the next writeSnapshot picks a journal_offset >=
-// startOffset of this recovery. Prevents an oscillating regression
-// where every clean restart walks the catch-up window from 0 because
-// the first snapshot after restart predates any new publish.
-//
-// Callers must only use this in initialisation paths (Run before
-// consumer opens). On the live path use produce() which bumps via
-// noteJournalOffset.
-func (p *TxnProducer) NoteObservedJournalOffset(observed int64) {
-	if observed < 0 {
-		return
-	}
-	for {
-		cur := p.journalHighOffset.Load()
-		if observed <= cur {
-			return
-		}
-		if p.journalHighOffset.CompareAndSwap(cur, observed) {
-			return
-		}
-	}
+	return p.cli.ProduceSync(ctx, rec).FirstErr()
 }
 
 // writerHeaders returns the fixed audit headers for every record this

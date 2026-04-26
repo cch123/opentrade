@@ -64,10 +64,12 @@ func StartMigration(ctx context.Context, client *clientv3.Client, keys *Keys, vs
 }
 
 // MarkHandoffReady is called by the old owner after it has flushed
-// its transactional producer and uploaded the final snapshot. The
-// caller asserts ownership (Owner == expectedOwner && Epoch ==
-// expectedEpoch && State == MIGRATING); any mismatch indicates the
-// migration was torn down under us and we must NOT advance the state.
+// its transactional producer (so trade-dump's shadow has consumed
+// every committed event and the next ADR-0064 on-demand snapshot will
+// be aligned to that position). The caller asserts ownership (Owner
+// == expectedOwner && Epoch == expectedEpoch && State == MIGRATING);
+// any mismatch indicates the migration was torn down under us and we
+// must NOT advance the state.
 func MarkHandoffReady(ctx context.Context, client *clientv3.Client, keys *Keys, vshardID VShardID, expectedOwner string, expectedEpoch uint64) error {
 	return casUpdateAssignment(ctx, client, keys, vshardID,
 		func(a Assignment) (Assignment, error) {

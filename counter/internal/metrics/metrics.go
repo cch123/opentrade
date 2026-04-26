@@ -7,69 +7,61 @@
 //
 // Series:
 //
-//   counter_pendinglist_size{vshard}      — gauge, updated by the
-//                                           async handler + advancer
-//                                           on every Enqueue/Pop.
-//   counter_checkpoint_publish_total{vshard, result}
-//                                         — counter, one inc per
-//                                           advancer publish (result
-//                                           = "ok" / "err").
-//   counter_publish_retry_total{op, attempt_range}
-//                                         — counter, one inc per
-//                                           retry attempt inside
-//                                           TxnProducer.runTxnWithRetry
-//                                           (op = Publish /
-//                                           PublishOrderPlacement /
-//                                           PublishToVShard;
-//                                           attempt_range = 1 /
-//                                           "2-5" / "6+" so the
-//                                           histogram stays compact).
-//   counter_snapshot_duration_seconds{vshard}
-//                                         — histogram, observed by
-//                                           writeSnapshot around the
-//                                           Flush + Capture + Save
-//                                           critical section.
-//   counter_catchup_events_applied_total{vshard}
-//                                         — counter, one inc per
-//                                           journal record replayed
-//                                           during recovery.
-//   counter_seq_high_watermark{vshard}    — gauge, mirrors the
-//                                           sequencer's counterSeq;
-//                                           refreshed per snapshot.
+//	counter_pendinglist_size{vshard}      — gauge, updated by the
+//	                                        async handler + advancer
+//	                                        on every Enqueue/Pop.
+//	counter_checkpoint_publish_total{vshard, result}
+//	                                      — counter, one inc per
+//	                                        advancer publish (result
+//	                                        = "ok" / "err").
+//	counter_publish_retry_total{op, attempt_range}
+//	                                      — counter, one inc per
+//	                                        retry attempt inside
+//	                                        TxnProducer.runTxnWithRetry
+//	                                        (op = Publish /
+//	                                        PublishOrderPlacement /
+//	                                        PublishToVShard;
+//	                                        attempt_range = 1 /
+//	                                        "2-5" / "6+" so the
+//	                                        histogram stays compact).
+//	counter_catchup_events_applied_total{vshard}
+//	                                      — counter, one inc per
+//	                                        journal record replayed
+//	                                        during recovery.
 //
 // ADR-0064 M2d on-demand startup:
 //
-//   counter_startup_duration_seconds{vshard, mode, result}
-//                                         — histogram, observed by
-//                                           worker.Run at close(ready).
-//                                           mode = on-demand | fallback;
-//                                           result = success | error.
-//                                           _count rate → boot rate;
-//                                           _bucket → p99 boot latency;
-//                                           combined filter on mode +
-//                                           result answers "is
-//                                           on-demand actually faster
-//                                           than fallback?"
-//   counter_ondemand_rpc_duration_seconds{vshard, result}
-//                                         — histogram, wraps just the
-//                                           TakeSnapshot gRPC call in
-//                                           loadOnDemand. result maps
-//                                           to one of: ok | timeout |
-//                                           unavailable |
-//                                           failed_precondition |
-//                                           resource_exhausted |
-//                                           canceled | unimplemented |
-//                                           internal | other. Splits
-//                                           network vs trade-dump
-//                                           server-side issues.
-//   counter_sentinel_produce_duration_seconds{vshard, result}
-//                                         — histogram, wraps just the
-//                                           TxnProducer.ProduceFenceSentinel
-//                                           call. result = ok | error.
-//                                           Isolates the Kafka
-//                                           InitProducerID / fencing
-//                                           path from the rest of
-//                                           startup.
+//	counter_startup_duration_seconds{vshard, mode, result}
+//	                                      — histogram, observed by
+//	                                        worker.Run at close(ready).
+//	                                        mode = on-demand | fallback;
+//	                                        result = success | error.
+//	                                        _count rate → boot rate;
+//	                                        _bucket → p99 boot latency;
+//	                                        combined filter on mode +
+//	                                        result answers "is
+//	                                        on-demand actually faster
+//	                                        than fallback?"
+//	counter_ondemand_rpc_duration_seconds{vshard, result}
+//	                                      — histogram, wraps just the
+//	                                        TakeSnapshot gRPC call in
+//	                                        loadOnDemand. result maps
+//	                                        to one of: ok | timeout |
+//	                                        unavailable |
+//	                                        failed_precondition |
+//	                                        resource_exhausted |
+//	                                        canceled | unimplemented |
+//	                                        internal | other. Splits
+//	                                        network vs trade-dump
+//	                                        server-side issues.
+//	counter_sentinel_produce_duration_seconds{vshard, result}
+//	                                      — histogram, wraps just the
+//	                                        TxnProducer.ProduceFenceSentinel
+//	                                        call. result = ok | error.
+//	                                        Isolates the Kafka
+//	                                        InitProducerID / fencing
+//	                                        path from the rest of
+//	                                        startup.
 //
 // Callers pass *Counter around; nil is a valid zero value that
 // makes every Record* method a cheap no-op. Tests and legacy paths
@@ -90,12 +82,10 @@ import (
 // Counter bundles the Prometheus series emitted by ADR-0060 and
 // ADR-0064 observability. Nil receivers skip all work.
 type Counter struct {
-	PendingListSize         *prometheus.GaugeVec
-	CheckpointPublishTotal  *prometheus.CounterVec
-	PublishRetryTotal       *prometheus.CounterVec
-	SnapshotDurationSec     *prometheus.HistogramVec
-	CatchUpEventsApplied    *prometheus.CounterVec
-	CounterSeqHighWatermark *prometheus.GaugeVec
+	PendingListSize        *prometheus.GaugeVec
+	CheckpointPublishTotal *prometheus.CounterVec
+	PublishRetryTotal      *prometheus.CounterVec
+	CatchUpEventsApplied   *prometheus.CounterVec
 
 	// ADR-0064 M2d startup observability.
 	StartupDurationSec         *prometheus.HistogramVec // labels: vshard, mode, result
@@ -131,22 +121,9 @@ func NewCounter(reg prometheus.Registerer) *Counter {
 			ConstLabels: labels,
 		}, []string{"op", "attempt_range"}),
 
-		SnapshotDurationSec: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:        "counter_snapshot_duration_seconds",
-			Help:        "writeSnapshot critical-section duration (Flush + Capture + Save) — bounds M7 stop-the-world window.",
-			ConstLabels: labels,
-			Buckets:     prometheus.ExponentialBucketsRange(0.001, 5, 10),
-		}, []string{"vshard"}),
-
 		CatchUpEventsApplied: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name:        "counter_catchup_events_applied_total",
 			Help:        "Journal records re-applied during catch-up recovery (ADR-0060 M6).",
-			ConstLabels: labels,
-		}, []string{"vshard"}),
-
-		CounterSeqHighWatermark: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name:        "counter_seq_high_watermark",
-			Help:        "UserSequencer.CounterSeq() sampled on each snapshot — monotonic across restarts (ADR-0018).",
 			ConstLabels: labels,
 		}, []string{"vshard"}),
 
@@ -190,9 +167,7 @@ func NewCounter(reg prometheus.Registerer) *Counter {
 	reg.MustRegister(c.PendingListSize)
 	reg.MustRegister(c.CheckpointPublishTotal)
 	reg.MustRegister(c.PublishRetryTotal)
-	reg.MustRegister(c.SnapshotDurationSec)
 	reg.MustRegister(c.CatchUpEventsApplied)
-	reg.MustRegister(c.CounterSeqHighWatermark)
 	reg.MustRegister(c.StartupDurationSec)
 	reg.MustRegister(c.OnDemandRPCDurationSec)
 	reg.MustRegister(c.SentinelProduceDurationSec)
@@ -231,15 +206,6 @@ func (c *Counter) RecordPublishRetry(op string, attempt int) {
 	c.PublishRetryTotal.WithLabelValues(op, attemptRange(attempt)).Inc()
 }
 
-// RecordSnapshotDuration observes the writeSnapshot critical-section
-// duration in seconds. Nil receiver is a no-op.
-func (c *Counter) RecordSnapshotDuration(vshard int32, seconds float64) {
-	if c == nil || c.SnapshotDurationSec == nil {
-		return
-	}
-	c.SnapshotDurationSec.WithLabelValues(vshardLabel(vshard)).Observe(seconds)
-}
-
 // RecordCatchUpApplied bumps the catch-up replay counter by n events.
 // Nil receiver is a no-op.
 func (c *Counter) RecordCatchUpApplied(vshard int32, n int) {
@@ -247,15 +213,6 @@ func (c *Counter) RecordCatchUpApplied(vshard int32, n int) {
 		return
 	}
 	c.CatchUpEventsApplied.WithLabelValues(vshardLabel(vshard)).Add(float64(n))
-}
-
-// RecordCounterSeq updates the sequencer high-watermark gauge.
-// Nil receiver is a no-op.
-func (c *Counter) RecordCounterSeq(vshard int32, seq uint64) {
-	if c == nil || c.CounterSeqHighWatermark == nil {
-		return
-	}
-	c.CounterSeqHighWatermark.WithLabelValues(vshardLabel(vshard)).Set(float64(seq))
 }
 
 // StartupMode is the wire-string form of worker.StartupMode used in

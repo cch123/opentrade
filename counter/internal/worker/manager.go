@@ -13,16 +13,17 @@ import (
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
-	"github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/pkg/shard"
+	"github.com/xargin/opentrade/pkg/snapshot"
 )
 
 // Manager subscribes to the node's assigned (vshard, epoch) set and
 // runs the matching VShardWorker for each entry. On every assignment
 // change it reconciles the running set with the desired set:
 //
-//   - vshard dropped from desired → stop the worker (graceful snapshot
-//     on the way out)
+//   - vshard dropped from desired → stop the worker (transactional
+//     producer flush so trade-dump's shadow sees every committed
+//     event, ADR-0061)
 //   - vshard stayed but epoch bumped → stop + restart (fresh producer
 //     with the new transactional id, fencing the old)
 //   - vshard appeared in desired → start a new worker
@@ -118,8 +119,9 @@ func NewManager(cluster *clustering.Cluster, template WorkerTemplate, logger *za
 }
 
 // Run subscribes to WatchAssignedAssignments and reconciles until ctx
-// is cancelled. On exit every running worker is stopped and its final
-// snapshot is flushed.
+// is cancelled. On exit every running worker is stopped and its
+// transactional producer is flushed (ADR-0061: trade-dump's shadow
+// pipeline owns snapshot production; Counter never writes one).
 func (m *Manager) Run(ctx context.Context) error {
 	ch, err := m.cluster.WatchAssignedAssignments(ctx)
 	if err != nil {
@@ -268,11 +270,13 @@ func (m *Manager) startUnlocked(ctx context.Context, a clustering.Assignment) er
 
 // stopUnlocked cancels one worker and waits for Run to return. Caller
 // must hold m.mu. Releases the lock while waiting for Run so Lookup
-// callers aren't blocked on a shutdown snapshot. After the worker has
-// drained (flushed its transactional producer + final snapshot), this
-// method also checks whether the stop was the old-owner leg of a cold
-// handoff (ADR-0058 §7) and, if so, promotes the assignment from
-// MIGRATING to HANDOFF_READY so the coordinator can complete the swap.
+// callers aren't blocked on the producer drain. After the worker has
+// drained (flushed its transactional producer so the journal events
+// reach trade-dump's shadow, ADR-0061), this method also checks
+// whether the stop was the old-owner leg of a cold handoff (ADR-0058
+// §7) and, if so, promotes the assignment from MIGRATING to
+// HANDOFF_READY so the coordinator can complete the swap. The new
+// owner picks up the latest snapshot via the ADR-0064 on-demand RPC.
 func (m *Manager) stopUnlocked(vid clustering.VShardID, run *workerRun) {
 	delete(m.running, vid)
 	m.mu.Unlock()
@@ -320,15 +324,15 @@ func (m *Manager) promoteHandoffReadyIfMigrating(vid clustering.VShardID, epoch 
 // Used on Manager.Run exit (normal shutdown or watch death).
 func (m *Manager) stopAll() {
 	m.mu.Lock()
-	snapshotRuns := make([]*workerRun, 0, len(m.running))
+	runs := make([]*workerRun, 0, len(m.running))
 	for vid, run := range m.running {
-		snapshotRuns = append(snapshotRuns, run)
+		runs = append(runs, run)
 		delete(m.running, vid)
 	}
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
-	for _, run := range snapshotRuns {
+	for _, run := range runs {
 		wg.Add(1)
 		go func(r *workerRun) {
 			defer wg.Done()

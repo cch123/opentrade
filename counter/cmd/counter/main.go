@@ -42,13 +42,13 @@ import (
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/server"
-	"github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/counter/internal/symregistry"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
 	"github.com/xargin/opentrade/counter/internal/worker"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
 	sharedmetrics "github.com/xargin/opentrade/pkg/metrics"
+	"github.com/xargin/opentrade/pkg/snapshot"
 )
 
 // Config captures every runtime knob. ADR-0058 removed shard-id /
@@ -319,9 +319,11 @@ func main() {
 	<-grpcDone
 
 	// Manager → cluster: stopping the manager lets every VShardWorker
-	// run its final snapshot inside worker.ShutdownFlushTimeout; then
-	// the cluster loop exits and releases the node lease + coordinator
-	// role gracefully.
+	// flush its transactional producer (so trade-dump's shadow sees
+	// every committed event, ADR-0061); then the cluster loop exits
+	// and releases the node lease + coordinator role gracefully.
+	// Counter does not write a final snapshot — trade-dump's snapshot
+	// pipeline is the sole producer per ADR-0061 Phase B.
 	<-mgrDone
 	<-clusterDone
 
