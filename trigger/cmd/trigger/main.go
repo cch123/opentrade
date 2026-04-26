@@ -28,8 +28,10 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
@@ -71,6 +73,17 @@ type Config struct {
 	// 1s; loose enough that the produce overhead is negligible,
 	// tight enough that RPO on a trigger restart stays bounded.
 	MarketCheckpointInterval time.Duration
+
+	// TradeDumpEndpoint is host:port of trade-dump's TakeTriggerSnapshot
+	// gRPC server (ADR-0067 M4 hot path). Empty disables the hot path
+	// and trigger relies on the periodic shared snapshot cold path
+	// instead. Failure of the RPC also falls through to the cold path.
+	TradeDumpEndpoint string
+
+	// TradeDumpRPCTimeout bounds the per-attempt budget for the
+	// TakeTriggerSnapshot RPC + the subsequent blob download. Default
+	// 3s, matching counter ADR-0064's per-attempt budget.
+	TradeDumpRPCTimeout time.Duration
 
 	// idgen shard id — snowflake layout (ADR: counter/cmd/counter uses
 	// ShardID for this). For trigger we give it its own shard id
@@ -259,7 +272,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		snapStore = snapshotpkg.NewFSBlobStore(cfg.SnapshotDir)
 	}
 
-	initialOffsets, err := tryRestoreSnapshot(ctx, snapStore, eng, logger)
+	initialOffsets, err := tryRestoreSnapshot(ctx, snapStore, cfg, eng, logger)
 	if err != nil {
 		logger.Error("snapshot restore", zap.Error(err))
 		return
@@ -346,16 +359,33 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 // primary was.
 const sharedSnapshotKey = "trigger"
 
-// tryRestoreSnapshot loads the trigger snapshot trade-dump's shadow
-// pipeline produced (ADR-0067) and restores it into eng. Absent
-// snapshot → cold start (typically only on first deployment, before
-// trade-dump has produced anything). Returns the captured market-data
-// offsets so the caller can seed the consumer.
-func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
+// tryRestoreSnapshot hydrates eng from a trade-dump-produced snapshot.
+// Tries the ADR-0067 M4 hot path first (TakeTriggerSnapshot RPC, which
+// returns a snapshot aligned to the latest LEO of every trigger-event
+// partition); on RPC failure or unconfigured endpoint, falls back to
+// the M5 cold path (read the periodic shared snapshot at
+// sharedSnapshotKey). Absent both → cold start. Returns the captured
+// market-data offsets so the caller can seed the consumer.
+func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
 	if store == nil {
 		logger.Info("snapshot disabled (empty --snapshot-dir); cold start")
 		return nil, nil
 	}
+
+	// Hot path: TakeTriggerSnapshot RPC.
+	if cfg.TradeDumpEndpoint != "" {
+		offsets, ok, err := tryHotPathRestore(ctx, store, cfg, eng, logger)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return offsets, nil
+		}
+		// Hot path returned but didn't restore (RPC unavailable /
+		// timeout / unimplemented); fall through to cold path.
+	}
+
+	// Cold path: read the latest periodic snapshot from BlobStore.
 	pb, err := triggersnap.Load(ctx, store, sharedSnapshotKey)
 	switch {
 	case err == nil:
@@ -363,7 +393,7 @@ func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, eng *e
 		if err != nil {
 			return nil, fmt.Errorf("restore shared snapshot: %w", err)
 		}
-		logger.Info("trigger state restored from trade-dump snapshot",
+		logger.Info("trigger state restored from periodic snapshot (cold path)",
 			zap.String("key", sharedSnapshotKey),
 			zap.Int64("taken_at_ms", s.TakenAtMs),
 			zap.Int("pending", len(s.Pending)),
@@ -376,6 +406,66 @@ func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, eng *e
 	default:
 		return nil, fmt.Errorf("load shared snapshot: %w", err)
 	}
+}
+
+// tryHotPathRestore dials trade-dump, calls TakeTriggerSnapshot, and
+// downloads + restores the returned snapshot. Returns ok=true on
+// successful restore. ok=false signals "fall back to cold path"; the
+// only fatal errors are surfaced as err (currently unused, but
+// reserved for future fail-fast scenarios).
+func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, bool, error) {
+	timeout := cfg.TradeDumpRPCTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	dialCtx, dialCancel := context.WithTimeout(ctx, timeout)
+	defer dialCancel()
+	conn, err := grpc.DialContext(dialCtx,
+		cfg.TradeDumpEndpoint,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		logger.Warn("trade-dump dial failed; cold path", zap.Error(err))
+		return nil, false, nil
+	}
+	defer func() { _ = conn.Close() }()
+
+	cli := tradedumprpc.NewTradeDumpSnapshotClient(conn)
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, timeout)
+	defer rpcCancel()
+	resp, err := cli.TakeTriggerSnapshot(rpcCtx, &tradedumprpc.TakeTriggerSnapshotRequest{
+		RequesterNodeId: cfg.InstanceID,
+	})
+	if err != nil {
+		logger.Warn("TakeTriggerSnapshot RPC failed; cold path",
+			zap.String("endpoint", cfg.TradeDumpEndpoint),
+			zap.Error(err))
+		return nil, false, nil
+	}
+
+	// trade-dump writes the on-demand snapshot at resp.SnapshotKey
+	// in the shared BlobStore (ADR-0067 M4). Download via LoadPath
+	// — the key already includes the format extension is added by
+	// triggersnap.Save, so probe both via LoadPath fallback.
+	pb, err := triggersnap.Load(ctx, store, resp.SnapshotKey)
+	if err != nil {
+		logger.Warn("hot-path snapshot download failed; cold path",
+			zap.String("key", resp.SnapshotKey), zap.Error(err))
+		return nil, false, nil
+	}
+	s, err := snapshot.RestoreFromProto(eng, pb)
+	if err != nil {
+		return nil, false, fmt.Errorf("restore on-demand snapshot: %w", err)
+	}
+	logger.Info("trigger state restored from on-demand snapshot (hot path)",
+		zap.String("key", resp.SnapshotKey),
+		zap.Int64("taken_at_ms", s.TakenAtMs),
+		zap.Int("pending", len(s.Pending)),
+		zap.Int("terminals", len(s.Terminals)),
+		zap.Int("trigger_event_partitions", len(resp.TriggerEventOffsets)),
+		zap.Int("market_partitions", len(s.Offsets)))
+	return s.Offsets, true, nil
 }
 
 // runExpirySweeper sweeps PENDING triggers whose ExpiresAtMs has
@@ -467,6 +557,7 @@ func parseFlags() Config {
 		TerminalHistoryLimit:          1000,
 		ExpirySweepInterval:           5 * time.Second,
 		MarketCheckpointInterval:      1 * time.Second,
+		TradeDumpRPCTimeout:           3 * time.Second,
 		IDGenShard:                    900, // deliberately out of counter's 0..99 range
 		HAMode:                        "disabled",
 		LeaseTTL:                      10,
@@ -489,6 +580,8 @@ func parseFlags() Config {
 	flag.IntVar(&cfg.TerminalHistoryLimit, "terminal-history", cfg.TerminalHistoryLimit, "max retained terminal records per engine for ListTriggers(include_inactive)")
 	flag.DurationVar(&cfg.ExpirySweepInterval, "expiry-sweep", cfg.ExpirySweepInterval, "cadence for sweeping expired PENDING triggers (ADR-0043); 0 disables")
 	flag.DurationVar(&cfg.MarketCheckpointInterval, "market-checkpoint-interval", cfg.MarketCheckpointInterval, "cadence for publishing TriggerMarketCheckpointEvent on the journal topic (ADR-0067); 0 disables")
+	flag.StringVar(&cfg.TradeDumpEndpoint, "trade-dump-endpoint", cfg.TradeDumpEndpoint, "host:port of trade-dump's TakeTriggerSnapshot gRPC server (ADR-0067 M4 hot path); empty disables")
+	flag.DurationVar(&cfg.TradeDumpRPCTimeout, "trade-dump-rpc-timeout", cfg.TradeDumpRPCTimeout, "per-attempt budget for TakeTriggerSnapshot RPC + blob download")
 	flag.IntVar(&cfg.IDGenShard, "idgen-shard", cfg.IDGenShard, "snowflake shard id for trigger ids (avoid collisions with counter)")
 	flag.StringVar(&cfg.HAMode, "ha-mode", cfg.HAMode, "ha mode: disabled | auto (etcd leader election, ADR-0042)")
 	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required when --ha-mode=auto)")

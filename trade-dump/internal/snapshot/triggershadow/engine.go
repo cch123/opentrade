@@ -26,8 +26,10 @@
 package triggershadow
 
 import (
+	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -165,6 +167,47 @@ func (e *Engine) ApplyMarketCheckpoint(c *eventpb.TriggerMarketCheckpointEvent, 
 	}
 	e.advanceCursorLocked(partition, kafkaOffset)
 	return nil
+}
+
+// WaitAppliedTo blocks until the apply cursor for every partition in
+// targets reaches at least the corresponding next-to-consume offset.
+// Used by the on-demand TakeTriggerSnapshot RPC handler (ADR-0067 M4)
+// after querying trigger-event LEOs: caller wants to capture a
+// snapshot that has consumed every record up through the LEO at
+// request time.
+//
+// Polls every pollInterval (default 5ms; bounded by ctx). Returns
+// ctx.Err() on cancel/deadline; nil otherwise. targets values come
+// straight from a Kafka LEO query, which is "next offset to be
+// produced" — equal in semantics to nextTriggerEventOffset, so
+// equality is enough.
+func (e *Engine) WaitAppliedTo(ctx context.Context, targets map[int32]int64, pollInterval time.Duration) error {
+	if pollInterval <= 0 {
+		pollInterval = 5 * time.Millisecond
+	}
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		if e.appliedAtLeast(targets) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (e *Engine) appliedAtLeast(targets map[int32]int64) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for part, want := range targets {
+		if e.nextTriggerEventOffsets[part] < want {
+			return false
+		}
+	}
+	return true
 }
 
 // AdvanceCursor moves the per-partition apply cursor past kafkaOffset

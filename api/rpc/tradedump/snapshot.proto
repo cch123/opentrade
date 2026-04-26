@@ -54,6 +54,27 @@ service TradeDumpSnapshot {
   //                         not yet built out (ADR-0064 M1b
   //                         skeleton — replaced in M1c)
   rpc TakeSnapshot(TakeSnapshotRequest) returns (TakeSnapshotResponse);
+
+  // TakeTriggerSnapshot asks trade-dump to produce a fresh trigger
+  // snapshot aligned to the latest LEO on every partition of the
+  // trigger-event topic (ADR-0067 M4). Mirror of TakeSnapshot for the
+  // counter shadow but simplified: trigger doesn't shard, has no
+  // EOS/fence dance, and requester_epoch is unused (HA cold-standby
+  // is mediated by trigger's own etcd lease, not an ADR-0058 vshard
+  // lock).
+  //
+  // Semantics:
+  //
+  //   - Called on trigger startup. Failures fall back to the
+  //     periodic shared snapshot (ADR-0067 M5 cold path).
+  //   - Concurrent callers see the same snapshot via singleflight.
+  //   - Global in-flight limit applies (default shared with
+  //     TakeSnapshot).
+  //
+  // Error codes match TakeSnapshot's set; UNIMPLEMENTED when the
+  // trigger-snapshot pipeline isn't running on this trade-dump
+  // instance (--pipelines without trigger-snap).
+  rpc TakeTriggerSnapshot(TakeTriggerSnapshotRequest) returns (TakeTriggerSnapshotResponse);
 }
 
 message TakeSnapshotRequest {
@@ -72,6 +93,31 @@ message TakeSnapshotRequest {
   // in-memory last-seen-epoch per vshard and rejects stale requests
   // with FAILED_PRECONDITION — defense in depth over the vshard lock.
   uint64 requester_epoch = 3;
+}
+
+message TakeTriggerSnapshotRequest {
+  // requester_node_id is the trigger primary's instance id (audit
+  // only; not used for auth).
+  string requester_node_id = 1;
+}
+
+message TakeTriggerSnapshotResponse {
+  // snapshot_key is the BlobStore key (S3 / fs backend) of the produced
+  // on-demand snapshot. Key format: `trigger-ondemand-{unix_ms}`. The
+  // housekeeper deletes these after a TTL (default 1h); trigger reads
+  // once and does not cache.
+  string snapshot_key = 1;
+
+  // trigger_event_offsets is the per-partition next-to-consume offset
+  // on the trigger-event topic at snapshot time, equal to the shadow
+  // engine's apply cursor map. trigger uses this to skip catch-up
+  // entirely on the on-demand path.
+  map<int32, int64> trigger_event_offsets = 2;
+
+  // market_offsets is the per-partition next-to-consume offset on the
+  // market-data topic at snapshot time, mirrored into the snapshot
+  // proto. trigger seeds its market-data consumer from this map.
+  map<int32, int64> market_offsets = 3;
 }
 
 message TakeSnapshotResponse {

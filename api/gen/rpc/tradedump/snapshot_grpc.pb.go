@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TradeDumpSnapshot_TakeSnapshot_FullMethodName = "/opentrade.rpc.tradedump.TradeDumpSnapshot/TakeSnapshot"
+	TradeDumpSnapshot_TakeSnapshot_FullMethodName        = "/opentrade.rpc.tradedump.TradeDumpSnapshot/TakeSnapshot"
+	TradeDumpSnapshot_TakeTriggerSnapshot_FullMethodName = "/opentrade.rpc.tradedump.TradeDumpSnapshot/TakeTriggerSnapshot"
 )
 
 // TradeDumpSnapshotClient is the client API for TradeDumpSnapshot service.
@@ -60,6 +61,26 @@ type TradeDumpSnapshotClient interface {
 	//     not yet built out (ADR-0064 M1b
 	//     skeleton — replaced in M1c)
 	TakeSnapshot(ctx context.Context, in *TakeSnapshotRequest, opts ...grpc.CallOption) (*TakeSnapshotResponse, error)
+	// TakeTriggerSnapshot asks trade-dump to produce a fresh trigger
+	// snapshot aligned to the latest LEO on every partition of the
+	// trigger-event topic (ADR-0067 M4). Mirror of TakeSnapshot for the
+	// counter shadow but simplified: trigger doesn't shard, has no
+	// EOS/fence dance, and requester_epoch is unused (HA cold-standby
+	// is mediated by trigger's own etcd lease, not an ADR-0058 vshard
+	// lock).
+	//
+	// Semantics:
+	//
+	//   - Called on trigger startup. Failures fall back to the
+	//     periodic shared snapshot (ADR-0067 M5 cold path).
+	//   - Concurrent callers see the same snapshot via singleflight.
+	//   - Global in-flight limit applies (default shared with
+	//     TakeSnapshot).
+	//
+	// Error codes match TakeSnapshot's set; UNIMPLEMENTED when the
+	// trigger-snapshot pipeline isn't running on this trade-dump
+	// instance (--pipelines without trigger-snap).
+	TakeTriggerSnapshot(ctx context.Context, in *TakeTriggerSnapshotRequest, opts ...grpc.CallOption) (*TakeTriggerSnapshotResponse, error)
 }
 
 type tradeDumpSnapshotClient struct {
@@ -74,6 +95,16 @@ func (c *tradeDumpSnapshotClient) TakeSnapshot(ctx context.Context, in *TakeSnap
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TakeSnapshotResponse)
 	err := c.cc.Invoke(ctx, TradeDumpSnapshot_TakeSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tradeDumpSnapshotClient) TakeTriggerSnapshot(ctx context.Context, in *TakeTriggerSnapshotRequest, opts ...grpc.CallOption) (*TakeTriggerSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TakeTriggerSnapshotResponse)
+	err := c.cc.Invoke(ctx, TradeDumpSnapshot_TakeTriggerSnapshot_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +149,26 @@ type TradeDumpSnapshotServer interface {
 	//     not yet built out (ADR-0064 M1b
 	//     skeleton — replaced in M1c)
 	TakeSnapshot(context.Context, *TakeSnapshotRequest) (*TakeSnapshotResponse, error)
+	// TakeTriggerSnapshot asks trade-dump to produce a fresh trigger
+	// snapshot aligned to the latest LEO on every partition of the
+	// trigger-event topic (ADR-0067 M4). Mirror of TakeSnapshot for the
+	// counter shadow but simplified: trigger doesn't shard, has no
+	// EOS/fence dance, and requester_epoch is unused (HA cold-standby
+	// is mediated by trigger's own etcd lease, not an ADR-0058 vshard
+	// lock).
+	//
+	// Semantics:
+	//
+	//   - Called on trigger startup. Failures fall back to the
+	//     periodic shared snapshot (ADR-0067 M5 cold path).
+	//   - Concurrent callers see the same snapshot via singleflight.
+	//   - Global in-flight limit applies (default shared with
+	//     TakeSnapshot).
+	//
+	// Error codes match TakeSnapshot's set; UNIMPLEMENTED when the
+	// trigger-snapshot pipeline isn't running on this trade-dump
+	// instance (--pipelines without trigger-snap).
+	TakeTriggerSnapshot(context.Context, *TakeTriggerSnapshotRequest) (*TakeTriggerSnapshotResponse, error)
 	mustEmbedUnimplementedTradeDumpSnapshotServer()
 }
 
@@ -130,6 +181,9 @@ type UnimplementedTradeDumpSnapshotServer struct{}
 
 func (UnimplementedTradeDumpSnapshotServer) TakeSnapshot(context.Context, *TakeSnapshotRequest) (*TakeSnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TakeSnapshot not implemented")
+}
+func (UnimplementedTradeDumpSnapshotServer) TakeTriggerSnapshot(context.Context, *TakeTriggerSnapshotRequest) (*TakeTriggerSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TakeTriggerSnapshot not implemented")
 }
 func (UnimplementedTradeDumpSnapshotServer) mustEmbedUnimplementedTradeDumpSnapshotServer() {}
 func (UnimplementedTradeDumpSnapshotServer) testEmbeddedByValue()                           {}
@@ -170,6 +224,24 @@ func _TradeDumpSnapshot_TakeSnapshot_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TradeDumpSnapshot_TakeTriggerSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TakeTriggerSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TradeDumpSnapshotServer).TakeTriggerSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TradeDumpSnapshot_TakeTriggerSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TradeDumpSnapshotServer).TakeTriggerSnapshot(ctx, req.(*TakeTriggerSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TradeDumpSnapshot_ServiceDesc is the grpc.ServiceDesc for TradeDumpSnapshot service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -180,6 +252,10 @@ var TradeDumpSnapshot_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TakeSnapshot",
 			Handler:    _TradeDumpSnapshot_TakeSnapshot_Handler,
+		},
+		{
+			MethodName: "TakeTriggerSnapshot",
+			Handler:    _TradeDumpSnapshot_TakeTriggerSnapshot_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

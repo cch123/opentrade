@@ -190,6 +190,11 @@ type Config struct {
 	// nowFn is a seam so tests can freeze wall-clock timestamps
 	// in generated blob-store keys. Default time.Now.
 	nowFn func() time.Time
+
+	// Trigger is the dependency bundle for ADR-0067 M4
+	// TakeTriggerSnapshot. Nil → handler returns Unimplemented so
+	// trigger falls back to the cold-path BlobStore read.
+	Trigger *TriggerBackend
 }
 
 // Server implements tradedumprpc.TradeDumpSnapshotServer.

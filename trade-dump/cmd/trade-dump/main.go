@@ -360,18 +360,14 @@ func main() {
 	var grpcSrv *grpc.Server
 	grpcDone := make(chan struct{})
 	var grpcAdminClient *kgo.Client
+	wantGRPC := (wantSnap && snapPipe != nil) || (wantTriggerSnap && triggerSnapPipe != nil)
 	switch {
-	case !wantSnap:
+	case !wantGRPC:
 		close(grpcDone)
-		logger.Info("grpc server disabled (snap pipeline off — on-demand snapshot requires shadow engine)")
+		logger.Info("grpc server disabled (no snapshot pipeline running — on-demand RPCs require a shadow engine)")
 	case cfg.GRPCAddr == "":
 		close(grpcDone)
 		logger.Info("grpc server disabled (--grpc-addr empty)")
-	case snapPipe == nil:
-		// Defensive: snap pipeline init failed earlier. We'd have
-		// fatal'd already, but keep the invariant explicit.
-		close(grpcDone)
-		logger.Warn("grpc server disabled (snap pipeline not constructed)")
 	default:
 		// Dedicated admin client — separate from pipeline's consumer
 		// so ListEndOffsets traffic is isolated. Closed during
@@ -395,9 +391,8 @@ func main() {
 			logger.Fatal("grpc listen", zap.Error(err), zap.String("addr", cfg.GRPCAddr))
 		}
 		grpcSrv = grpc.NewServer()
-		tradedumprpc.RegisterTradeDumpSnapshotServer(grpcSrv, snapshotrpc.New(snapshotrpc.Config{
+		rpcCfg := snapshotrpc.Config{
 			Logger:       logger,
-			Shadow:       snapPipe,
 			Admin:        admin,
 			BlobStore:    store,
 			JournalTopic: cfg.JournalTopic,
@@ -413,7 +408,21 @@ func main() {
 			WaitApplyTimeout: cfg.OnDemandWaitApplyTimeout,
 			WorkTimeout:      cfg.OnDemandWorkTimeout,
 			SnapshotFormat:   cfg.SnapshotFormat,
-		}))
+		}
+		if wantSnap && snapPipe != nil {
+			rpcCfg.Shadow = snapPipe
+		}
+		if wantTriggerSnap && triggerSnapPipe != nil {
+			rpcCfg.Trigger = &snapshotrpc.TriggerBackend{
+				Shadow:         triggerSnapPipe.Engine(),
+				Admin:          admin,
+				BlobStore:      store,
+				Topic:          cfg.TriggerTopic,
+				PartitionCount: cfg.TriggerSnapPartitionCount,
+				SnapshotFormat: cfg.SnapshotFormat,
+			}
+		}
+		tradedumprpc.RegisterTradeDumpSnapshotServer(grpcSrv, snapshotrpc.New(rpcCfg))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

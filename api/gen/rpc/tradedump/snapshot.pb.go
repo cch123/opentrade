@@ -91,6 +91,123 @@ func (x *TakeSnapshotRequest) GetRequesterEpoch() uint64 {
 	return 0
 }
 
+type TakeTriggerSnapshotRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// requester_node_id is the trigger primary's instance id (audit
+	// only; not used for auth).
+	RequesterNodeId string `protobuf:"bytes,1,opt,name=requester_node_id,json=requesterNodeId,proto3" json:"requester_node_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *TakeTriggerSnapshotRequest) Reset() {
+	*x = TakeTriggerSnapshotRequest{}
+	mi := &file_rpc_tradedump_snapshot_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TakeTriggerSnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TakeTriggerSnapshotRequest) ProtoMessage() {}
+
+func (x *TakeTriggerSnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_tradedump_snapshot_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TakeTriggerSnapshotRequest.ProtoReflect.Descriptor instead.
+func (*TakeTriggerSnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_tradedump_snapshot_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TakeTriggerSnapshotRequest) GetRequesterNodeId() string {
+	if x != nil {
+		return x.RequesterNodeId
+	}
+	return ""
+}
+
+type TakeTriggerSnapshotResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// snapshot_key is the BlobStore key (S3 / fs backend) of the produced
+	// on-demand snapshot. Key format: `trigger-ondemand-{unix_ms}`. The
+	// housekeeper deletes these after a TTL (default 1h); trigger reads
+	// once and does not cache.
+	SnapshotKey string `protobuf:"bytes,1,opt,name=snapshot_key,json=snapshotKey,proto3" json:"snapshot_key,omitempty"`
+	// trigger_event_offsets is the per-partition next-to-consume offset
+	// on the trigger-event topic at snapshot time, equal to the shadow
+	// engine's apply cursor map. trigger uses this to skip catch-up
+	// entirely on the on-demand path.
+	TriggerEventOffsets map[int32]int64 `protobuf:"bytes,2,rep,name=trigger_event_offsets,json=triggerEventOffsets,proto3" json:"trigger_event_offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// market_offsets is the per-partition next-to-consume offset on the
+	// market-data topic at snapshot time, mirrored into the snapshot
+	// proto. trigger seeds its market-data consumer from this map.
+	MarketOffsets map[int32]int64 `protobuf:"bytes,3,rep,name=market_offsets,json=marketOffsets,proto3" json:"market_offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TakeTriggerSnapshotResponse) Reset() {
+	*x = TakeTriggerSnapshotResponse{}
+	mi := &file_rpc_tradedump_snapshot_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TakeTriggerSnapshotResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TakeTriggerSnapshotResponse) ProtoMessage() {}
+
+func (x *TakeTriggerSnapshotResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_tradedump_snapshot_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TakeTriggerSnapshotResponse.ProtoReflect.Descriptor instead.
+func (*TakeTriggerSnapshotResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_tradedump_snapshot_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *TakeTriggerSnapshotResponse) GetSnapshotKey() string {
+	if x != nil {
+		return x.SnapshotKey
+	}
+	return ""
+}
+
+func (x *TakeTriggerSnapshotResponse) GetTriggerEventOffsets() map[int32]int64 {
+	if x != nil {
+		return x.TriggerEventOffsets
+	}
+	return nil
+}
+
+func (x *TakeTriggerSnapshotResponse) GetMarketOffsets() map[int32]int64 {
+	if x != nil {
+		return x.MarketOffsets
+	}
+	return nil
+}
+
 type TakeSnapshotResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// snapshot_key is the blob-store key (S3 / fs backend) of the
@@ -120,7 +237,7 @@ type TakeSnapshotResponse struct {
 
 func (x *TakeSnapshotResponse) Reset() {
 	*x = TakeSnapshotResponse{}
-	mi := &file_rpc_tradedump_snapshot_proto_msgTypes[1]
+	mi := &file_rpc_tradedump_snapshot_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -132,7 +249,7 @@ func (x *TakeSnapshotResponse) String() string {
 func (*TakeSnapshotResponse) ProtoMessage() {}
 
 func (x *TakeSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_tradedump_snapshot_proto_msgTypes[1]
+	mi := &file_rpc_tradedump_snapshot_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -145,7 +262,7 @@ func (x *TakeSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TakeSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*TakeSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_tradedump_snapshot_proto_rawDescGZIP(), []int{1}
+	return file_rpc_tradedump_snapshot_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *TakeSnapshotResponse) GetSnapshotKey() string {
@@ -177,14 +294,27 @@ const file_rpc_tradedump_snapshot_proto_rawDesc = "" +
 	"\x13TakeSnapshotRequest\x12\x1b\n" +
 	"\tvshard_id\x18\x01 \x01(\rR\bvshardId\x12*\n" +
 	"\x11requester_node_id\x18\x02 \x01(\tR\x0frequesterNodeId\x12'\n" +
-	"\x0frequester_epoch\x18\x03 \x01(\x04R\x0erequesterEpoch\"l\n" +
+	"\x0frequester_epoch\x18\x03 \x01(\x04R\x0erequesterEpoch\"H\n" +
+	"\x1aTakeTriggerSnapshotRequest\x12*\n" +
+	"\x11requester_node_id\x18\x01 \x01(\tR\x0frequesterNodeId\"\xbe\x03\n" +
+	"\x1bTakeTriggerSnapshotResponse\x12!\n" +
+	"\fsnapshot_key\x18\x01 \x01(\tR\vsnapshotKey\x12\x81\x01\n" +
+	"\x15trigger_event_offsets\x18\x02 \x03(\v2M.opentrade.rpc.tradedump.TakeTriggerSnapshotResponse.TriggerEventOffsetsEntryR\x13triggerEventOffsets\x12n\n" +
+	"\x0emarket_offsets\x18\x03 \x03(\v2G.opentrade.rpc.tradedump.TakeTriggerSnapshotResponse.MarketOffsetsEntryR\rmarketOffsets\x1aF\n" +
+	"\x18TriggerEventOffsetsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a@\n" +
+	"\x12MarketOffsetsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"l\n" +
 	"\x14TakeSnapshotResponse\x12!\n" +
 	"\fsnapshot_key\x18\x01 \x01(\tR\vsnapshotKey\x12\x10\n" +
 	"\x03leo\x18\x02 \x01(\x03R\x03leo\x12\x1f\n" +
 	"\vcounter_seq\x18\x03 \x01(\x04R\n" +
-	"counterSeq2\x80\x01\n" +
+	"counterSeq2\x83\x02\n" +
 	"\x11TradeDumpSnapshot\x12k\n" +
-	"\fTakeSnapshot\x12,.opentrade.rpc.tradedump.TakeSnapshotRequest\x1a-.opentrade.rpc.tradedump.TakeSnapshotResponseB@Z>github.com/xargin/opentrade/api/gen/rpc/tradedump;tradedumprpcb\x06proto3"
+	"\fTakeSnapshot\x12,.opentrade.rpc.tradedump.TakeSnapshotRequest\x1a-.opentrade.rpc.tradedump.TakeSnapshotResponse\x12\x80\x01\n" +
+	"\x13TakeTriggerSnapshot\x123.opentrade.rpc.tradedump.TakeTriggerSnapshotRequest\x1a4.opentrade.rpc.tradedump.TakeTriggerSnapshotResponseB@Z>github.com/xargin/opentrade/api/gen/rpc/tradedump;tradedumprpcb\x06proto3"
 
 var (
 	file_rpc_tradedump_snapshot_proto_rawDescOnce sync.Once
@@ -198,19 +328,27 @@ func file_rpc_tradedump_snapshot_proto_rawDescGZIP() []byte {
 	return file_rpc_tradedump_snapshot_proto_rawDescData
 }
 
-var file_rpc_tradedump_snapshot_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_rpc_tradedump_snapshot_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_rpc_tradedump_snapshot_proto_goTypes = []any{
-	(*TakeSnapshotRequest)(nil),  // 0: opentrade.rpc.tradedump.TakeSnapshotRequest
-	(*TakeSnapshotResponse)(nil), // 1: opentrade.rpc.tradedump.TakeSnapshotResponse
+	(*TakeSnapshotRequest)(nil),         // 0: opentrade.rpc.tradedump.TakeSnapshotRequest
+	(*TakeTriggerSnapshotRequest)(nil),  // 1: opentrade.rpc.tradedump.TakeTriggerSnapshotRequest
+	(*TakeTriggerSnapshotResponse)(nil), // 2: opentrade.rpc.tradedump.TakeTriggerSnapshotResponse
+	(*TakeSnapshotResponse)(nil),        // 3: opentrade.rpc.tradedump.TakeSnapshotResponse
+	nil,                                 // 4: opentrade.rpc.tradedump.TakeTriggerSnapshotResponse.TriggerEventOffsetsEntry
+	nil,                                 // 5: opentrade.rpc.tradedump.TakeTriggerSnapshotResponse.MarketOffsetsEntry
 }
 var file_rpc_tradedump_snapshot_proto_depIdxs = []int32{
-	0, // 0: opentrade.rpc.tradedump.TradeDumpSnapshot.TakeSnapshot:input_type -> opentrade.rpc.tradedump.TakeSnapshotRequest
-	1, // 1: opentrade.rpc.tradedump.TradeDumpSnapshot.TakeSnapshot:output_type -> opentrade.rpc.tradedump.TakeSnapshotResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	4, // 0: opentrade.rpc.tradedump.TakeTriggerSnapshotResponse.trigger_event_offsets:type_name -> opentrade.rpc.tradedump.TakeTriggerSnapshotResponse.TriggerEventOffsetsEntry
+	5, // 1: opentrade.rpc.tradedump.TakeTriggerSnapshotResponse.market_offsets:type_name -> opentrade.rpc.tradedump.TakeTriggerSnapshotResponse.MarketOffsetsEntry
+	0, // 2: opentrade.rpc.tradedump.TradeDumpSnapshot.TakeSnapshot:input_type -> opentrade.rpc.tradedump.TakeSnapshotRequest
+	1, // 3: opentrade.rpc.tradedump.TradeDumpSnapshot.TakeTriggerSnapshot:input_type -> opentrade.rpc.tradedump.TakeTriggerSnapshotRequest
+	3, // 4: opentrade.rpc.tradedump.TradeDumpSnapshot.TakeSnapshot:output_type -> opentrade.rpc.tradedump.TakeSnapshotResponse
+	2, // 5: opentrade.rpc.tradedump.TradeDumpSnapshot.TakeTriggerSnapshot:output_type -> opentrade.rpc.tradedump.TakeTriggerSnapshotResponse
+	4, // [4:6] is the sub-list for method output_type
+	2, // [2:4] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_rpc_tradedump_snapshot_proto_init() }
@@ -224,7 +362,7 @@ func file_rpc_tradedump_snapshot_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_tradedump_snapshot_proto_rawDesc), len(file_rpc_tradedump_snapshot_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
