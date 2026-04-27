@@ -93,68 +93,68 @@
 ## 5. 核心架构图
 
 ```
-         ┌──── etcd (集群成员 / vshard 分配 / 选主 / 配置) ──────────────────────┐
-         │                                                                        │
-    ┌─ BFF (无状态, N 实例) ──────────────────────────────────────────┐
-    │ REST + WS, 鉴权, 限流, market-data cache (ADR-0038)              │
-    │ watch etcd vshard 分配表 → user_id hash 路由 (ADR-0058)          │
-    └──┬───────────────────────────────┬─────────────────┬────────────┘
-       │ gRPC (按 user → vshard)       │ WS sticky       │ gRPC
-       ▼                               ▼                 ▼
-  ┌─ counter (N node × 256 vshard) ─┐ ┌─ push (10) ─┐ ┌─ trigger (1主1备) ─┐
-  │ VShardWorker per vshard:         │ │ WS fan-out   │ │ Place/Cancel/PlaceOCO  │
-  │   state / sequencer / TxnProducer│ │ coalesce +   │ │ Trigger → Counter       │
-  │ 消费异步 (ADR-0060):              │ │ rate-limit    │ │  .PlaceOrder(res_id)   │
-  │   SubmitAsync + pendingList +    │ └──▲────▲──────┘ │ HA cold-standby         │
-  │   advancer → TECheckpoint         │    │    │        │ 本地 snapshot           │
-  │ 冷切失效迁移 (ADR-0058)            │    │    │        └────────▲──────▲────────┘
-  │ 订单终态 evict (ADR-0062)          │    │    │                 │      │ market-data
-  └─────┬──────────────────────▲──┘    │    │                 │      │
-        │ 事务写                │ tail  │    │                 │      │
-        ▼                       │结算   │    │                 │      │
-  ┌─ Kafka Cluster (3 broker, ISR≥2) ───┼────┼─────────────────┴──────┤
-  │  counter-journal  (vshard 分区 ×256)│    │                        │
-  │  order-event      (symbol 分区)     │    │                        │
-  │  trade-event      (vshard 分区 ×256)│    │                        │
-  │  trigger-event    (user 分区)       │    │                        │
-  │  market-data      (symbol 分区)     │    │                        │
-  └─────┬──────────────────────────┬────┘    │                        │
-        │ (per-symbol partition)   │         │                        │
-        ▼                          │         │                        │
-  ┌─ match (N shard × 1主1备) ──┐  │         │                        │
-  │ 主: 消费 order-event → 撮合  │  │         │                        │
-  │     → 事务产出 trade-event   │  │         │                        │
-  │     (ADR-0058 dual-emit      │  │         │                        │
-  │      到 maker/taker vshard)  │  │         │                        │
-  │ 备: tail 同步                │  │         │                        │
-  │ 快照 10k/1min → S3          │  │         │                        │
-  └──┬──────────────────────────┘  │         │                        │
-     │ trade-event                 │         │                        │
-     └──────┬──────────────────────┤         │                        │
-            │                      │         │                        │
-  ┌─ quote ─┼─────────┐ ┌── trade-dump (--pipelines=sql,snap) ──┐      │
-  │ 深度/K线│         │ │ sql:  counter-journal/trade-event/... │      │
-  │ state   │         │ │       → MySQL (ADR-0023/0028/57/47)   │      │
-  │ snapshot│         │ │ snap: counter-journal per vshard      │      │
-  └────┬────┘         │ │       → ShadowEngine.Apply+Capture    │      │
-       │ market-data  │ │       → blob store (ADR-0061)         │      │
-       │              │ │       = 唯一 snapshot writer,         │      │
-       │              │ │         Counter 启动时 read           │      │
-       │              │ └──────────┬────────────────────────────┘      │
-       │              │            │ MySQL                             │
-       │              │            ▼                                   │
-       │              │     ┌─ history (N, 只读, ADR-0046) ─┐          │
-       │              │     │ BFF: GET /v1/orders            │◀─── BFF │
-       └──────────────┴─────┤      /v1/trades                │         │
-                            │      /v1/account-logs          │         │
-                            │ 读 MySQL read-replica           │         │
-                            └────────────────────────────────┘         │
-       ─────────────────────────────────────────────────────────────────┘
+   ┌── etcd ── /cex/counter/{nodes,assignments,coordinator} / SymbolConfig ─┐
+   │                                                                         │
+ ┌─▼─ BFF (无状态 N 实例) ───────────────────────────────────────────────┐   │
+ │ REST + WS / 鉴权 / 限流 / market-data cache (ADR-0038)                 │   │
+ │ watch /cex/counter/assignments → user_id hash → vshard 路由 (ADR-0058) │   │
+ └─┬──────┬─────────┬──────────┬──────────────────────────┬─────────────┘   │
+   │gRPC  │gRPC     │gRPC      │gRPC                      │WS sticky        │
+   ▼      ▼         ▼          ▼                          ▼                 │
+ counter trigger   asset      history (只读)              push               │
+ N node  HA cold   HA cold    MySQL ro 投影               N 实例             │
+ ×256    standby   standby    orders/trades/              WS 扇出            │
+ vshard  ADR-0042  ADR-0065   account_logs/triggers       ADR-0022           │
+ ADR-58  +ADR-67               ADR-0046                                       │
+ ADR-60  read snap                                                            │
+         from td                                                              │
+   │ │     │ │       │            ▲                       ▲ ▲                 │
+   │ │     │ │ mkt   │            │ MySQL ro              │ │ priv + pub      │
+   │ │     │ │ data  │            │                       │ │                 │
+   ▼ ▼     ▼ │       ▼            │                       │ │                 │
+ ┌── Kafka cluster (3 broker, ISR ≥ 2) ────────────────────┴─┴──────────────┐ │
+ │ counter-journal        (256 vshard partition; Counter WAL, ADR-0004)     │ │
+ │ order-event[-<symbol>] (per-symbol partition; Counter→Match, ADR-0050)   │ │
+ │ trade-event            (256 vshard partition; Match→Counter/Quote/dump)  │ │
+ │ trigger-event          (user_id partition; Trigger→trade-dump, ADR-0047) │ │
+ │ asset-journal          (user_id partition; Asset→trade-dump, ADR-0065)   │ │
+ │ market-data            (symbol partition; Quote→Push/Trigger/BFF)        │ │
+ └─┬─────────┬───────────────────────────┬────────────────────────────────┘ │
+   │poll     │poll                       │poll                                │
+   ▼         ▼                           ▼                                    │
+ match     quote                    trade-dump (持久化 + snapshot 生产)       │
+ per-sym   depth/                   pipelines:                                │
+ shard     kline/                     sql        → MySQL projection (ADR-08)  │
+ 主备(02)  trades                     snap       ShadowEngine + Capture       │
+ snapshot  snapshot                              → BlobStore (ADR-0061)        │
+ →trade-   →market-                   trig-snap  同 snap (ADR-0067)            │
+  event     data                    on-demand RPC:                             │
+                                      TakeSnapshot         (ADR-0064)          │
+                                      TakeTriggerSnapshot  (ADR-0067 M4)       │
+                                     │                                         │
+                                     ▼                                         │
+                             MySQL    BlobStore (fs / s3)                      │
+                             (history  ▲ counter & trigger                      │
+                              reads)   │ startup READ                           │
+                                                                                │
+ ┌── admin-gateway ─────────────────────────────────────────────────────────┐ │
+ │ 内部 ops / rollout / 灰度切换 / SymbolConfig 维护                        │ │
+ └──────────────────────────────────────────────────────────────────────────┘ │
+                                                                                │
+   ─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+> **关键变化**（与旧 ADR-0010 / ADR-0006 时代对比）：
+> - **Counter**：N node × 256 vshard，每 vshard 单 owner（不是 1 主 1 备）。Coordinator 用 HRW 算分配；故障 failover 自动，新增节点扩容用 `counter-migrate` 手动 rebalance（ADR-0058 / [runbook §8](./runbook-counter.md#8-vshard-扩容--再平衡-adr-0058)）
+> - **Trigger**：HA cold standby（ADR-0042）+ 启动从 trade-dump 共享 BlobStore 读 snapshot（ADR-0067，自己不再写）
+> - **Asset**：funding-wallet service（ADR-0065），承担充提冻 / 内部转账，独立 `asset-journal`
+> - **trade-dump**：三条 pipeline 同进程（sql / snap / trig-snap）；同时提供 on-demand snapshot RPC（ADR-0064 / 0067 M4）作为 counter / trigger 启动 hot path
+> - **history**：只读 MySQL 投影服务（ADR-0046），BFF 列表类查询走它，不走 counter 内存
+> - **admin-gateway**：运维侧（rollout / 灰度切换 / SymbolConfig 维护）
 
 > **读路径（ADR-0046）**：BFF 的列表类 REST 不直接读 MySQL —— 走
 > `history` gRPC。history 是无状态只读服务，订阅 trade-dump 投影的
-> `orders` / `trades` / `account_logs` 三张表，对上提供 cursor 分页 +
+> `orders` / `trades` / `account_logs` / `triggers` 表，对上提供 cursor 分页 +
 > 时间窗口 + (symbol / status / asset / biz_type) 过滤。延迟受 trade-dump
 > 批提交语义影响（ADR-0023，≤ 一批），实时成交进度仍走 Push 的
 > `user` 流（ADR-0007）。活跃单按 id 查询 (`GET /v1/order/:id`) 保留 Counter hot path。
@@ -485,39 +485,60 @@ Counter 启动的完整恢复流程（`counter/internal/worker/worker.go:Run`）
 - 内容：每个 symbol 的 orderbook（买卖盘、所有活跃订单）+ 消费到的 `order-event offset`
 - 存储：同上
 
-### 11.2b Quote / Trigger 快照
+### 11.2b Quote 快照（ADR-0036）
 
-都走"本地 JSON snapshot + per-partition Kafka offset 原子推进"模式（
-[ADR-0036](./adr/0036-quote-state-snapshot.md) / [ADR-0042](./adr/0042-trigger-ha.md)）：
+Quote 走"主单实例 + 本地 JSON snapshot + per-partition Kafka offset 原子推进"模式：
 
-- **Quote**：由**主**（单实例）每 30s 产生；内容 = per-symbol depth book
-  + kline aggregators + engine emit seq + 每 partition offset
-- **Trigger**：由**主**每 30s 产生；内容 = pending / terminals 条
-  件单 + `ocoByClient` dedup 表 + 每 partition offset
-- **非 Kafka-journal**：这两个服务的状态不进 counter-journal，snapshot
-  是唯一 durability。HA 下需要共享 mount（NFS / EFS）让 backup 读到
-- **原子性**：snapshot Capture 和 engine 状态更新拿同一把锁，offset 和
-  state 永远一致 ↔ 重启从保存的 offset 续消费，不重不漏
+- 由**主**（单实例）每 30s 产生；内容 = per-symbol depth book + kline aggregators + engine emit seq + 每 partition offset
+- **非 Kafka-journal**：Quote 状态不进 counter-journal，snapshot 是唯一 durability。HA 部署需要共享 mount（NFS / EFS）让 backup 读到
+- **原子性**：snapshot Capture 和 engine 状态更新拿同一把锁，offset 和 state 永远一致 ↔ 重启从保存的 offset 续消费，不重不漏
+
+### 11.2c Trigger 快照（ADR-0067）
+
+Trigger 已经迁出"自己写 snapshot"的旧模式 —— 由 trade-dump 的 trig-snap pipeline 接管，与 Counter 同模型（ADR-0067 镜像 ADR-0061 Phase B）：
+
+- **Trigger 自身不写 snapshot**。Trigger 只在进程启动时 READ snapshot 做 state restore
+- **Snapshot 的唯一 writer 是 trade-dump 的 trig-snap pipeline**（`trade-dump/internal/snapshot/trigger/{pipeline,shadow}`）：消费 `trigger-event` 维护 `trigger.shadow.Engine`（pending / terminals / per-partition apply cursor / market-data offsets），周期 + 事件计数双触发 Capture → BlobStore（fixed key `trigger`）
+- **启动恢复**双路径：
+  - **Hot path**：调 trade-dump 的 `TakeTriggerSnapshot` gRPC，强制现产一份 LEO-aligned snapshot 直接 load（ADR-0067 M4；hot path 失败 / 超时 / 不可用 → 落 cold path）
+  - **Cold path**：直接读 BlobStore 上 trade-dump 周期产出的 fixed-key snapshot（ADR-0067 M5）
+- 配合 ADR-0048 + ADR-0061 同款"snapshot 嵌 offset → 重启 seek 续消费"原子性；trigger 在 `--snapshot-dir` 这一路对 BlobStore 来说是只读 handle
 
 ### 11.3 冷启动
 
+ADR-0058 vshard 模型下，Counter 的冷启动是**每个 vshard 独立**的恢复（不再是"每个 shard 主备并行加载"）；Trigger 一个进程一个 engine 走同样的两条路径。
+
 ```
-1. 加载最近 snapshot → (state, offset)
-2. 从 offset 开始 tail 对应 Kafka topic
-3. 回放到 latest offset
-4. 注册到 etcd (ready 状态)
-5. 对外服务
+1. 进程启动并注册到 etcd (counter: /cex/counter/nodes/{nodeID})
+2. 拿到自己负责的 vshard 列表 (counter) / 整体 (trigger / asset / quote)
+3. 对每个 vshard / 整体执行：
+     a. Hot path: 调 trade-dump TakeSnapshot / TakeTriggerSnapshot RPC →
+        直接 load 返回的 LEO-aligned snapshot
+        (counter ADR-0064 / trigger ADR-0067 M4)
+     b. Cold path: 失败 / 超时 / 不可用 → 从共享 BlobStore 读最近一份周期 snapshot
+        (counter ADR-0061 / trigger ADR-0067 M5)
+     c. catch-up: 从 snapshot 嵌的 journal_offset 重播 counter-journal /
+        trigger-event 到 HWM (counter ADR-0060 §4.2)
+4. trade-event consumer 用 AdjustFetchOffsetsFn seek 到 snapshot 嵌的 offset
+   (ADR-0048)
+5. 标记 ready → 对外服务
 ```
 
-千万用户场景下的 Counter 冷启动目标：< 1 分钟（按 shard 并行加载）。
+千万用户场景下的 Counter 启动目标：< 1 分钟（每个 vshard worker 并行恢复，加上 hot path RPC 把延迟压在 trade-dump 那一边）。
 
 ## 12. 分片与弹性
 
-### 12.1 Counter 分片
+### 12.1 Counter 分片（ADR-0058 vshard 模型）
 
-- **10 个 shard**（固定，MVP 不支持 resharding）
-- BFF 按 `user_id hash % 10` 路由
-- 每 shard 主备 2 节点 → 共 20 节点（MVP 可缩减为 1 shard + 1 副本做验证）
+Counter 走 **vshard cluster + Coordinator + 自动 failover + 手动 rebalance** 的模型，不是老式"固定 N shard，每 shard 一主一备"。
+
+- **256 个虚拟分片（vshard）**：用 `user_id` hash `% 256` 算 vshard id（BFF 和 counter 共用同一个 hash 函数，路由确定性）
+- **N 个 counter 节点**：每个节点登记到 `/cex/counter/nodes/{nodeID}`（带 lease），任意时刻 vshard → 节点的映射写在 `/cex/counter/assignments/vshard-NNN`
+- **Coordinator**（任一 counter 当选 leader）负责 vshard 分配：用 HRW (Rendezvous Hashing) 把 vshard 均匀分到活节点；新节点加入只搬 ~1/N 的 vshard，不会全表洗牌
+- **Failover 自动**：节点 etcd lease 过期 → coordinator 的 failover loop 触发 `sweepOrphans` 把它拥有的 vshard force-reassign 给活节点（epoch+1 同时 fence 老 owner 的 transactional producer）
+- **Rebalance 手动**：新增节点不会触发自动迁移；运维用 `counter-migrate plan|rebalance|move` 工具串行迁。完整状态机（ACTIVE → MIGRATING → HANDOFF_READY → ACTIVE@new,ep+1）+ 操作步骤见 [runbook-counter.md §8](./runbook-counter.md#8-vshard-扩容--再平衡-adr-0058)
+- **每个 vshard 一个 transactional.id**（`counter-vshard-NNN`），新 owner 接管时同 ID 调 `InitTransactions()` 自动 fence 老 owner（ADR-0017 / ADR-0058）
+- **每个 vshard 在节点内是一个 VShardWorker**：state + sequencer + TxnProducer + 独立 trade-event consumer goroutine；消费异步化（ADR-0060：SubmitAsync + pendingList + advancer + TECheckpoint）
 
 ### 12.2 Match 分片
 
@@ -610,59 +631,60 @@ Counter 启动的完整恢复流程（`counter/internal/worker/worker.go:Run`）
 opentrade/
 ├── go.work                           # 开发期联动所有 module
 ├── go.work.sum
+├── Makefile
 ├── README.md
-├── .gitignore
+├── buf.yaml / buf.gen.yaml           # protoc / connect-go 生成
 │
 ├── api/                              # module: proto + 生成代码
 │   ├── go.mod
-│   ├── buf.yaml / buf.gen.yaml       # 或 Makefile 驱动 protoc
-│   ├── event/
+│   ├── event/                        # event topic envelopes
 │   │   ├── counter_journal.proto
 │   │   ├── order_event.proto
 │   │   ├── trade_event.proto
-│   │   ├── wallet_event.proto
+│   │   ├── trigger_event.proto
+│   │   ├── asset_journal.proto
 │   │   └── market_data.proto
-│   ├── rpc/
-│   │   ├── counter.proto
-│   │   ├── match.proto
-│   │   └── bff.proto
-│   └── gen/                          # 生成的 pb.go / grpc.pb.go
+│   ├── rpc/                          # service interfaces (counter / match / bff / trigger / asset / ...)
+│   ├── snapshot/                     # snapshot wire formats (counter / trigger)
+│   └── gen/                          # 生成的 *.pb.go / *.connect.go
 │
 ├── pkg/                              # module: 公共库
 │   ├── go.mod
-│   ├── kafka/                        # franz-go 封装: 事务 producer, EOS consumer
+│   ├── kafka/                        # franz-go 封装：事务 producer + EOS consumer
 │   ├── election/                     # etcd lease 选主
-│   ├── snapshot/                     # 快照 save/load (本地 + S3 接口)
+│   ├── snapshot/                     # BlobStore (fs / s3) + counter & trigger 编解码
+│   ├── connectx/                     # connect-go 中间件 (auth / metrics / 限流)
 │   ├── logx/                         # zap 封装
-│   ├── metrics/                      # prometheus 封装 + middleware
+│   ├── metrics/                      # Prometheus 封装 + middleware
 │   ├── idgen/                        # 雪花 ID
-│   ├── decimal/                      # shopspring/decimal 封装
-│   └── config/                       # 配置加载 (etcd + 本地 yaml)
+│   ├── dec/                          # shopspring/decimal 封装
+│   ├── etcdcfg/                      # etcd 配置 / SymbolConfig watcher
+│   ├── shard/                        # user_id → vshard 共用 hash
+│   └── ...
 │
-├── counter/                          # module: 柜台服务
+├── counter/                          # module: 柜台/清算 (ADR-0058 vshard 模型)
 │   ├── go.mod
 │   ├── cmd/
-│   │   ├── counter/main.go
-│   │   ├── counter-migrate/          # ADR-0058 vshard 在线再平衡工具（runbook-counter §8）
-│   │   └── counter-reshard/          # 已废弃 — 老 --total-shards 模型的离线 reshard，ADR-0058 后用不到
+│   │   ├── counter/main.go           # vshard cluster member; ADR-0058 移除 legacy --total-shards
+│   │   ├── counter-migrate/          # ADR-0058 vshard 在线再平衡工具 (runbook-counter §8)
+│   │   └── counter-reshard/          # 已废弃 — 老 --total-shards 模型遗留, ADR-0058 后用不到
 │   ├── engine/                       # 账户/订单状态机 + journal apply
-│   │                                 #   (脱 internal，ADR-0061 M1；
-│   │                                 #   trade-dump shadow engine 复用)
-│   ├── snapshot/                     # Capture / Restore / BlobStore
-│   │                                 #   (脱 internal，ADR-0061 M1；
-│   │                                 #   trade-dump pipeline 产出该格式)
+│   │                                 #   (脱 internal, ADR-0061 M1; trade-dump shadow engine 复用)
+│   ├── snapshot/                     # Capture/Restore wire
+│   │                                 #   (脱 internal, ADR-0061 M1; trade-dump pipeline 产出该格式)
 │   └── internal/
-│       ├── clustering/               # ADR-0058 etcd 集群成员 + vshard 分配
-│       ├── dedup/                    # 旧 shard 级 dedup.Table（保留加载）
-│       ├── journal/                  # TxnProducer + trade consumer
-│       ├── metrics/                  # Prometheus 指标（ADR-0060 M8）
-│       ├── reconcile/                # MySQL vs 内存对账（已解耦 MVP）
+│       ├── clustering/               # ADR-0058 etcd 集群成员 + vshard 分配 + Coordinator
+│       ├── dedup/                    # transfer_id ring (per-vshard)
+│       ├── journal/                  # TxnProducer + trade-event consumer (per-vshard)
+│       ├── metrics/                  # Prometheus 指标 (ADR-0060 M8)
+│       ├── reconcile/                # MySQL vs 内存对账 (ADR-0008)
 │       ├── sequencer/                # per-user FIFO + SubmitAsync (ADR-0060 M1)
-│       ├── server/                   # gRPC server / AssetHolder server
-│       ├── service/                  # RPC → engine 适配 + trade handler
-│       ├── symregistry/              # etcd symbol-config watcher
-│       └── worker/                   # VShardWorker (启动 restore + 异步消费
-│                                     #   + advancer + evictor)
+│       ├── server/                   # connect-go server (CounterService / AssetHolder)
+│       ├── service/                  # RPC → engine 适配 + trade event handler
+│       ├── snapshot/                 # 启动加载 trade-dump 产出的 snapshot (ADR-0061 / 0064)
+│       ├── symregistry/              # etcd SymbolConfig watcher
+│       ├── tradedumpclient/          # trade-dump on-demand RPC client (ADR-0064 hot path)
+│       └── worker/                   # VShardWorker (startup restore + 异步消费 + advancer)
 │
 ├── match/                            # module: 撮合服务
 │   ├── go.mod
@@ -673,25 +695,52 @@ opentrade/
 │       ├── journal/                  # Kafka producer/consumer
 │       └── snapshot/
 │
+├── trigger/                          # module: 条件单 (ADR-0040~46 / 0067)
+│   ├── go.mod
+│   ├── cmd/trigger/main.go           # runPrimary + runElectionLoop (ADR-0042 cold standby)
+│   └── internal/
+│       ├── engine/                   # pending / OCO / trailing 状态机
+│       ├── consumer/                 # market-data consumer (snapshot offset seek)
+│       ├── counterclient/            # counter gRPC (PlaceOrder / Reserve / Release)
+│       ├── journal/                  # trigger-event producer (ADR-0047)
+│       ├── server/                   # connect-go server
+│       ├── service/                  # gRPC → engine 适配
+│       └── snapshot/                 # 启动加载 trade-dump 产出的 snapshot (ADR-0067 M5)
+│
+├── asset/                            # module: 资金钱包 (ADR-0065)
+│   ├── go.mod
+│   ├── cmd/asset/main.go
+│   └── internal/
+│       ├── engine/                   # funding-wallet 状态机
+│       ├── holder/                   # AssetHolder (账户层 RPC client)
+│       ├── journal/                  # asset-journal 写入
+│       ├── metrics/                  # Prometheus
+│       ├── saga/                     # 充提冻 saga
+│       ├── server/                   # connect-go server
+│       ├── service/                  # gRPC → engine 适配
+│       └── store/                    # 持久化 (本地 + MySQL)
+│
 ├── bff/                              # module: API 网关
 │   ├── go.mod
 │   ├── cmd/bff/main.go
 │   └── internal/
+│       ├── client/                   # counter / trigger / asset / history gRPC client
+│       ├── clusterview/              # /cex/counter/assignments watcher
+│       ├── marketcache/              # market-data 本地缓存 (ADR-0038)
+│       ├── ratelimit/                # 限流
 │       ├── rest/                     # REST handler
-│       ├── ws/                       # WebSocket gateway
-│       ├── client/                   # counter/match gRPC client
-│       ├── ratelimit/
-│       └── auth/                     # middleware 挂载点
+│       └── ws/                       # WebSocket gateway
 │
-├── push/                             # module: WS 推送
+├── push/                             # module: WebSocket 推送 (ADR-0022)
 │   ├── go.mod
 │   ├── cmd/push/main.go
 │   └── internal/
-│       ├── ws/
+│       ├── consumer/                 # counter-journal + market-data
+│       ├── hub/                      # 连接 hub
 │       ├── subscribe/                # 订阅关系
-│       └── consumer/
+│       └── ws/                       # 协议帧
 │
-├── quote/                            # module: 行情
+├── quote/                            # module: 行情聚合
 │   ├── go.mod
 │   ├── cmd/quote/main.go
 │   └── internal/
@@ -699,44 +748,53 @@ opentrade/
 │       ├── kline/                    # K 线
 │       └── trades/                   # 逐笔
 │
-├── trigger/                      # module: 触发服务
+├── trade-dump/                       # module: 持久化 + snapshot 生产 (sidecar)
 │   ├── go.mod
-│   ├── cmd/trigger/main.go       # runPrimary + runElectionLoop (ADR-0042)
+│   ├── cmd/trade-dump/main.go        # --pipelines=sql,snap,trigger-snap (默认全跑)
 │   └── internal/
-│       ├── engine/                   # pending / OCO / trailing 状态机
-│       ├── consumer/                 # market-data consumer (AdjustFetchOffsetsFn)
-│       ├── counterclient/            # Counter gRPC (PlaceOrder / Reserve / Release)
-│       ├── service/                  # gRPC → engine 适配
-│       ├── server/                   # gRPC server + error mapping
-│       └── snapshot/                 # 本地 JSON 持久化
+│       ├── mysqlsink/                # Kafka → MySQL projection 管线
+│       │   ├── consumer/             #   journal / trade / trigger Kafka 消费者
+│       │   └── writer/               #   MySQL 幂等写入 (ADR-0008/23/28/47)
+│       ├── snapshot/                 # ShadowEngine + 周期 capture
+│       │   ├── counter/              #   counter snapshot pipeline + shadow (ADR-0061)
+│       │   │   ├── pipeline/
+│       │   │   └── shadow/
+│       │   └── trigger/              #   trigger snapshot pipeline + shadow (ADR-0067)
+│       │       ├── pipeline/
+│       │       └── shadow/
+│       └── snapshotrpc/              # TakeSnapshot / TakeTriggerSnapshot RPC (ADR-0064/67)
 │
-├── trade-dump/                       # module: 持久化 + snapshot 生产
-│   ├── go.mod
-│   ├── cmd/trade-dump/main.go        # --pipelines=sql,snap (默认同时跑)
-│   └── internal/
-│       ├── consumer/                 # sql pipeline: trade/journal/trigger
-│       ├── writer/                   # MySQL 幂等写入 (ADR-0023/0028/0047)
-│       └── snapshot/                 # snap pipeline (ADR-0061)
-│           ├── shadow/               # per-vshard ShadowEngine (单线程 Apply)
-│           └── pipeline/             # consumer + 触发 + async save
-│                                     #   (唯一 snapshot writer, Counter 不再自产)
-│
-├── history/                          # module: 只读查询聚合 (ADR-0046)
+├── history/                          # module: 只读历史查询 (ADR-0046)
 │   ├── go.mod
 │   ├── cmd/history/main.go
 │   └── internal/
 │       ├── cursor/                   # opaque 分页游标 (base64(JSON))
-│       ├── mysqlstore/               # orders / trades / account_logs 读层
-│       └── server/                   # gRPC server + scope→statuses 展开
+│       ├── mysqlstore/               # orders / trades / account_logs / triggers 读层
+│       └── server/                   # connect-go server + scope→statuses 展开
+│
+├── admin-gateway/                    # module: 运维网关
+│   ├── go.mod
+│   ├── cmd/admin-gateway/main.go
+│   └── internal/
+│       ├── counterclient/            # counter 内部调用
+│       ├── rollout/                  # 灰度 / SymbolConfig 维护
+│       └── server/                   # 内部 ops API
+│
+├── tools/
+│   ├── tui/                          # 运维 TUI
+│   ├── web/                          # 运维 Web
+│   └── precision-cli/                # symbol precision 配置
 │
 ├── deploy/
-│   ├── docker/
-│   │   └── docker-compose.yml        # 本地: kafka + etcd + mysql + minio
+│   ├── docker/                       # docker-compose.yml: kafka / etcd / mysql / minio
 │   ├── k8s/                          # 预留
 │   └── scripts/                      # 切主 / 重做快照 / 迁移 symbol
 │
 └── docs/
-    └── architecture.md               # 本文件
+    ├── architecture.md               # 本文件
+    ├── runbook-counter.md            # Counter 运维 (含 §8 vshard 扩容/再平衡)
+    ├── roadmap.md
+    └── adr/                          # 决策记录 0001~
 ```
 
 ### 16.2 依赖关系
