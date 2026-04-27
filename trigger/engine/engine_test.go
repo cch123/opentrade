@@ -8,9 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
@@ -362,7 +361,7 @@ func TestHandleRecord_OnlyRelevantSymbolFires(t *testing.T) {
 func TestHandleRecord_RejectionCapturedAsStatus(t *testing.T) {
 	placer := &fakePlacer{
 		respFn: func(*counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
-			return nil, status.Error(codes.FailedPrecondition, "insufficient balance")
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("insufficient balance"))
 		},
 	}
 	e := newEngine(placer)
@@ -503,7 +502,7 @@ func TestTrigger_UsesReservationID(t *testing.T) {
 func TestTrigger_RejectionReleasesReservation(t *testing.T) {
 	placer := &fakePlacer{
 		respFn: func(*counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
-			return nil, status.Error(codes.Unavailable, "counter down")
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("counter down"))
 		},
 	}
 	reserver := &fakeReserver{}

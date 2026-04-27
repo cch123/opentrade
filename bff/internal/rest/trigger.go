@@ -6,12 +6,11 @@ import (
 	"strconv"
 	"strings"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	"github.com/xargin/opentrade/pkg/auth"
 )
 
@@ -70,30 +69,30 @@ func (s *Server) handlePlaceTrigger(w http.ResponseWriter, r *http.Request) {
 		}
 		tif = t
 	}
-	resp, err := s.trigger.PlaceTrigger(r.Context(), &condrpc.PlaceTriggerRequest{
-		UserId:              userID,
-		ClientTriggerId: body.ClientTriggerID,
-		Symbol:              body.Symbol,
-		Side:                side,
-		Type:                typ,
-		StopPrice:           body.StopPrice,
-		LimitPrice:          body.LimitPrice,
-		Qty:                 body.Qty,
-		QuoteQty:            body.QuoteQty,
-		Tif:                 tif,
-		ExpiresAtUnixMs:     body.ExpiresAtUnixMs,
-		TrailingDeltaBps:    body.TrailingDeltaBps,
-		ActivationPrice:     body.ActivationPrice,
-	})
+	resp, err := s.trigger.PlaceTrigger(r.Context(), connect.NewRequest(&condrpc.PlaceTriggerRequest{
+		UserId:           userID,
+		ClientTriggerId:  body.ClientTriggerID,
+		Symbol:           body.Symbol,
+		Side:             side,
+		Type:             typ,
+		StopPrice:        body.StopPrice,
+		LimitPrice:       body.LimitPrice,
+		Qty:              body.Qty,
+		QuoteQty:         body.QuoteQty,
+		Tif:              tif,
+		ExpiresAtUnixMs:  body.ExpiresAtUnixMs,
+		TrailingDeltaBps: body.TrailingDeltaBps,
+		ActivationPrice:  body.ActivationPrice,
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":                  resp.Id,
-		"status":              triggerStatusLabel(resp.Status),
-		"accepted":            resp.Accepted,
-		"received_ts_unix_ms": resp.ReceivedTsUnixMs,
+		"id":                  resp.Msg.Id,
+		"status":              triggerStatusLabel(resp.Msg.Status),
+		"accepted":            resp.Msg.Accepted,
+		"received_ts_unix_ms": resp.Msg.ReceivedTsUnixMs,
 	})
 }
 
@@ -113,17 +112,17 @@ func (s *Server) handleCancelTrigger(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	resp, err := s.trigger.CancelTrigger(r.Context(), &condrpc.CancelTriggerRequest{
+	resp, err := s.trigger.CancelTrigger(r.Context(), connect.NewRequest(&condrpc.CancelTriggerRequest{
 		UserId: userID, Id: id,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":       resp.Id,
-		"accepted": resp.Accepted,
-		"status":   triggerStatusLabel(resp.Status),
+		"id":       resp.Msg.Id,
+		"accepted": resp.Msg.Accepted,
+		"status":   triggerStatusLabel(resp.Msg.Status),
 	})
 }
 
@@ -145,15 +144,15 @@ func (s *Server) handleQueryTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.trigger != nil {
-		resp, err := s.trigger.QueryTrigger(r.Context(), &condrpc.QueryTriggerRequest{
+		resp, err := s.trigger.QueryTrigger(r.Context(), connect.NewRequest(&condrpc.QueryTriggerRequest{
 			UserId: userID, Id: id,
-		})
+		}))
 		if err == nil {
-			writeJSON(w, http.StatusOK, triggerToJSON(resp.Trigger))
+			writeJSON(w, http.StatusOK, triggerToJSON(resp.Msg.Trigger))
 			return
 		}
-		if status.Code(err) != codes.NotFound || s.history == nil {
-			writeGRPCError(w, err)
+		if connect.CodeOf(err) != connect.CodeNotFound || s.history == nil {
+			writeConnectError(w, err)
 			return
 		}
 		// Fall through to history lookup below.
@@ -162,14 +161,14 @@ func (s *Server) handleQueryTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hresp, herr := s.history.GetTrigger(r.Context(), &historypb.GetTriggerRequest{
+	hresp, herr := s.history.GetTrigger(r.Context(), connect.NewRequest(&historypb.GetTriggerRequest{
 		UserId: userID, Id: id,
-	})
+	}))
 	if herr != nil {
-		writeGRPCError(w, herr)
+		writeConnectError(w, herr)
 		return
 	}
-	writeJSON(w, http.StatusOK, historyTriggerToJSON(hresp.Trigger))
+	writeJSON(w, http.StatusOK, historyTriggerToJSON(hresp.Msg.Trigger))
 }
 
 // placeOCOBody is the REST request for POST /v1/trigger/oco.
@@ -238,17 +237,17 @@ func (s *Server) handlePlaceOCO(w http.ResponseWriter, r *http.Request) {
 			ActivationPrice:     lb.ActivationPrice,
 		}
 	}
-	resp, err := s.trigger.PlaceOCO(r.Context(), &condrpc.PlaceOCORequest{
+	resp, err := s.trigger.PlaceOCO(r.Context(), connect.NewRequest(&condrpc.PlaceOCORequest{
 		UserId:      userID,
 		ClientOcoId: body.ClientOCOID,
 		Legs:        legs,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
-	legsOut := make([]map[string]any, len(resp.Legs))
-	for i, lr := range resp.Legs {
+	legsOut := make([]map[string]any, len(resp.Msg.Legs))
+	for i, lr := range resp.Msg.Legs {
 		legsOut[i] = map[string]any{
 			"id":       lr.Id,
 			"status":   triggerStatusLabel(lr.Status),
@@ -256,10 +255,10 @@ func (s *Server) handlePlaceOCO(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"oco_group_id":        resp.OcoGroupId,
+		"oco_group_id":        resp.Msg.OcoGroupId,
 		"legs":                legsOut,
-		"accepted":            resp.Accepted,
-		"received_ts_unix_ms": resp.ReceivedTsUnixMs,
+		"accepted":            resp.Msg.Accepted,
+		"received_ts_unix_ms": resp.Msg.ReceivedTsUnixMs,
 	})
 }
 
@@ -296,15 +295,15 @@ func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "trigger service not configured")
 			return
 		}
-		resp, err := s.trigger.ListTriggers(r.Context(), &condrpc.ListTriggersRequest{
+		resp, err := s.trigger.ListTriggers(r.Context(), connect.NewRequest(&condrpc.ListTriggersRequest{
 			UserId: userID, IncludeInactive: false,
-		})
+		}))
 		if err != nil {
-			writeGRPCError(w, err)
+			writeConnectError(w, err)
 			return
 		}
-		out := make([]map[string]any, 0, len(resp.Triggers))
-		for _, c := range resp.Triggers {
+		out := make([]map[string]any, 0, len(resp.Msg.Triggers))
+		for _, c := range resp.Msg.Triggers {
 			out = append(out, triggerToJSON(c))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"triggers": out})
@@ -314,15 +313,15 @@ func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
 			// trigger service's in-memory terminal buffer for "all"
 			// (MVP-14 behaviour). "terminal" alone truly needs history.
 			if scope == "all" && s.trigger != nil {
-				resp, err := s.trigger.ListTriggers(r.Context(), &condrpc.ListTriggersRequest{
+				resp, err := s.trigger.ListTriggers(r.Context(), connect.NewRequest(&condrpc.ListTriggersRequest{
 					UserId: userID, IncludeInactive: true,
-				})
+				}))
 				if err != nil {
-					writeGRPCError(w, err)
+					writeConnectError(w, err)
 					return
 				}
-				out := make([]map[string]any, 0, len(resp.Triggers))
-				for _, c := range resp.Triggers {
+				out := make([]map[string]any, 0, len(resp.Msg.Triggers))
+				for _, c := range resp.Msg.Triggers {
 					out = append(out, triggerToJSON(c))
 				}
 				writeJSON(w, http.StatusOK, map[string]any{"triggers": out})
@@ -335,7 +334,7 @@ func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
 		if scope == "all" {
 			histScope = historypb.TriggerScope_TRIGGER_SCOPE_ALL
 		}
-		resp, err := s.history.ListTriggers(r.Context(), &historypb.ListTriggersRequest{
+		resp, err := s.history.ListTriggers(r.Context(), connect.NewRequest(&historypb.ListTriggersRequest{
 			UserId:  userID,
 			Symbol:  q.Get("symbol"),
 			Scope:   histScope,
@@ -343,18 +342,18 @@ func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
 			UntilMs: parseInt64Query(q.Get("until_ms")),
 			Cursor:  q.Get("cursor"),
 			Limit:   parseInt32Query(q.Get("limit")),
-		})
+		}))
 		if err != nil {
-			writeGRPCError(w, err)
+			writeConnectError(w, err)
 			return
 		}
-		out := make([]map[string]any, 0, len(resp.Triggers))
-		for _, c := range resp.Triggers {
+		out := make([]map[string]any, 0, len(resp.Msg.Triggers))
+		for _, c := range resp.Msg.Triggers {
 			out = append(out, historyTriggerToJSON(c))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"triggers": out,
-			"next_cursor":  resp.NextCursor,
+			"triggers":    out,
+			"next_cursor": resp.Msg.NextCursor,
 		})
 	default:
 		writeError(w, http.StatusBadRequest, "invalid scope: "+scope)

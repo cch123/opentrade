@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"google.golang.org/grpc"
+	"connectrpc.com/connect"
 
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 )
@@ -17,15 +17,15 @@ type fakeCounter struct {
 	err    error
 }
 
-func (f *fakeCounter) AdminCancelOrders(_ context.Context, _ *counterrpc.AdminCancelOrdersRequest, _ ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error) {
+func (f *fakeCounter) AdminCancelOrders(_ context.Context, _ *connect.Request[counterrpc.AdminCancelOrdersRequest]) (*connect.Response[counterrpc.AdminCancelOrdersResponse], error) {
 	f.hits++
 	if f.err != nil {
 		return nil, f.err
 	}
 	if f.result != nil {
-		return f.result, nil
+		return connect.NewResponse(f.result), nil
 	}
-	return &counterrpc.AdminCancelOrdersResponse{ShardId: int32(f.id)}, nil
+	return connect.NewResponse(&counterrpc.AdminCancelOrdersResponse{ShardId: int32(f.id)}), nil
 }
 
 func TestNewSharded_Validation(t *testing.T) {
@@ -43,7 +43,7 @@ func TestBroadcastAggregatesAndSurfacesFirstError(t *testing.T) {
 	f2 := &fakeCounter{id: 2, result: &counterrpc.AdminCancelOrdersResponse{Cancelled: 3, Skipped: 0, ShardId: 2}}
 	s, _ := NewSharded([]Counter{f0, f1, f2})
 
-	results, err := s.BroadcastAdminCancelOrders(context.Background(), &counterrpc.AdminCancelOrdersRequest{Symbol: "BTC-USDT"})
+	results, err := s.BroadcastAdminCancelOrders(context.Background(), connect.NewRequest(&counterrpc.AdminCancelOrdersRequest{Symbol: "BTC-USDT"}))
 	if err == nil {
 		t.Fatal("expected first error")
 	}

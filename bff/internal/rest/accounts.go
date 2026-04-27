@@ -1,11 +1,11 @@
 package rest
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 
 	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
@@ -45,7 +45,7 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	resp, err := s.asset.Transfer(r.Context(), &assetrpc.TransferRequest{
+	resp, err := s.asset.Transfer(r.Context(), connect.NewRequest(&assetrpc.TransferRequest{
 		UserId:     userID,
 		TransferId: body.TransferID,
 		FromBiz:    body.FromBiz,
@@ -53,16 +53,16 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		Asset:      body.Asset,
 		Amount:     body.Amount,
 		Memo:       body.Memo,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"transfer_id":   resp.TransferId,
-		"state":         sagaStateToString(resp.State),
-		"reject_reason": resp.RejectReason,
-		"terminal":      resp.Terminal,
+		"transfer_id":   resp.Msg.TransferId,
+		"state":         sagaStateToString(resp.Msg.State),
+		"reject_reason": resp.Msg.RejectReason,
+		"terminal":      resp.Msg.Terminal,
 	})
 }
 
@@ -88,19 +88,20 @@ func (s *Server) handleQueryTransfer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "transfer_id required")
 		return
 	}
-	resp, err := s.asset.QueryTransfer(r.Context(), &assetrpc.QueryTransferRequest{
+	resp, err := s.asset.QueryTransfer(r.Context(), connect.NewRequest(&assetrpc.QueryTransferRequest{
 		TransferId: id,
 		UserId:     userID,
-	})
+	}))
 	if err != nil {
-		if se, ok := status.FromError(err); ok && se.Code() == codes.NotFound {
-			writeError(w, http.StatusNotFound, se.Message())
+		var cerr *connect.Error
+		if errors.As(err, &cerr) && cerr.Code() == connect.CodeNotFound {
+			writeError(w, http.StatusNotFound, cerr.Message())
 			return
 		}
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, transferResponseToJSON(resp))
+	writeJSON(w, http.StatusOK, transferResponseToJSON(resp.Msg))
 }
 
 // handleListTransfers pages a user's saga rows via asset-service. Post
@@ -134,18 +135,18 @@ func (s *Server) handleListTransfers(w http.ResponseWriter, r *http.Request) {
 		Cursor:  q.Get("cursor"),
 		Limit:   parseInt32Query(q.Get("limit")),
 	}
-	resp, err := s.asset.ListTransfers(r.Context(), req)
+	resp, err := s.asset.ListTransfers(r.Context(), connect.NewRequest(req))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
-	out := make([]map[string]any, 0, len(resp.Transfers))
-	for _, t := range resp.Transfers {
+	out := make([]map[string]any, 0, len(resp.Msg.Transfers))
+	for _, t := range resp.Msg.Transfers {
 		out = append(out, transferToJSON(t))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"transfers":   out,
-		"next_cursor": resp.NextCursor,
+		"next_cursor": resp.Msg.NextCursor,
 	})
 }
 
@@ -221,16 +222,16 @@ func (s *Server) handleQueryFundingBalance(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	asset := r.URL.Query().Get("asset")
-	resp, err := s.asset.QueryFundingBalance(r.Context(), &assetrpc.QueryFundingBalanceRequest{
+	resp, err := s.asset.QueryFundingBalance(r.Context(), connect.NewRequest(&assetrpc.QueryFundingBalanceRequest{
 		UserId: userID,
 		Asset:  asset,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
-	balances := make([]map[string]any, 0, len(resp.Balances))
-	for _, b := range resp.Balances {
+	balances := make([]map[string]any, 0, len(resp.Msg.Balances))
+	for _, b := range resp.Msg.Balances {
 		balances = append(balances, map[string]any{
 			"asset":     b.Asset,
 			"available": b.Available,
@@ -251,16 +252,16 @@ func (s *Server) handleQueryBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	asset := r.URL.Query().Get("asset")
-	resp, err := s.counter.QueryBalance(r.Context(), &counterrpc.QueryBalanceRequest{
+	resp, err := s.counter.QueryBalance(r.Context(), connect.NewRequest(&counterrpc.QueryBalanceRequest{
 		UserId: userID,
 		Asset:  asset,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
-	balances := make([]map[string]string, 0, len(resp.Balances))
-	for _, b := range resp.Balances {
+	balances := make([]map[string]string, 0, len(resp.Msg.Balances))
+	for _, b := range resp.Msg.Balances {
 		balances = append(balances, map[string]string{
 			"asset":     b.Asset,
 			"available": b.Available,
@@ -299,4 +300,3 @@ func sagaStateToString(s assetrpc.SagaState) string {
 	}
 	return "UNSPECIFIED"
 }
-

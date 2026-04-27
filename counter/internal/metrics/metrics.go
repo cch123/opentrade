@@ -74,9 +74,8 @@ import (
 	"errors"
 	"strconv"
 
+	"connectrpc.com/connect"
 	"github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // Counter bundles the Prometheus series emitted by ADR-0060 and
@@ -282,28 +281,29 @@ func OnDemandRPCResultLabel(err error) string {
 	if err == nil {
 		return "ok"
 	}
-	// Raw ctx errors can leak past gRPC wrapping on Dial failures;
-	// treat them first so "timeout" doesn't collapse into "other".
+	// Raw ctx errors can leak past Connect wrapping on transport
+	// failures; treat them first so "timeout" doesn't collapse into
+	// "other".
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
 	if errors.Is(err, context.Canceled) {
 		return "canceled"
 	}
-	switch status.Code(err) {
-	case codes.DeadlineExceeded:
+	switch connect.CodeOf(err) {
+	case connect.CodeDeadlineExceeded:
 		return "timeout"
-	case codes.Canceled:
+	case connect.CodeCanceled:
 		return "canceled"
-	case codes.Unavailable:
+	case connect.CodeUnavailable:
 		return "unavailable"
-	case codes.FailedPrecondition:
+	case connect.CodeFailedPrecondition:
 		return "failed_precondition"
-	case codes.ResourceExhausted:
+	case connect.CodeResourceExhausted:
 		return "resource_exhausted"
-	case codes.Unimplemented:
+	case connect.CodeUnimplemented:
 		return "unimplemented"
-	case codes.Internal:
+	case connect.CodeInternal:
 		return "internal"
 	}
 	return "other"

@@ -1,13 +1,13 @@
 package rest
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
+	"connectrpc.com/connect"
 	"github.com/shopspring/decimal"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
@@ -183,7 +183,7 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 	// MarketBuyByQuote anyway.
 	referencePrice := s.bestEffortMidPrice(body.Symbol)
 
-	resp, err := s.counter.PlaceOrder(r.Context(), &counterrpc.PlaceOrderRequest{
+	resp, err := s.counter.PlaceOrder(r.Context(), connect.NewRequest(&counterrpc.PlaceOrderRequest{
 		UserId:         userID,
 		ClientOrderId:  body.ClientOrderID,
 		Symbol:         body.Symbol,
@@ -194,17 +194,17 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		Qty:            body.Qty,
 		QuoteQty:       body.QuoteQty,
 		ReferencePrice: referencePrice,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"order_id":         resp.OrderId,
-		"client_order_id":  resp.ClientOrderId,
-		"status":           "new", // MVP: external status always 'new' at placement
-		"accepted":         resp.Accepted,
-		"received_ts_unix_ms": resp.ReceivedTsUnixMs,
+		"order_id":            resp.Msg.OrderId,
+		"client_order_id":     resp.Msg.ClientOrderId,
+		"status":              "new", // MVP: external status always 'new' at placement
+		"accepted":            resp.Msg.Accepted,
+		"received_ts_unix_ms": resp.Msg.ReceivedTsUnixMs,
 	})
 }
 
@@ -219,17 +219,17 @@ func (s *Server) handleCancelMyOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	symbol := r.URL.Query().Get("symbol")
-	resp, err := s.counter.CancelMyOrders(r.Context(), &counterrpc.CancelMyOrdersRequest{
+	resp, err := s.counter.CancelMyOrders(r.Context(), connect.NewRequest(&counterrpc.CancelMyOrdersRequest{
 		UserId: userID,
 		Symbol: symbol,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cancelled": resp.Cancelled,
-		"skipped":   resp.Skipped,
+		"cancelled": resp.Msg.Cancelled,
+		"skipped":   resp.Msg.Skipped,
 	})
 }
 
@@ -244,17 +244,17 @@ func (s *Server) handleCancelOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid order_id")
 		return
 	}
-	resp, err := s.counter.CancelOrder(r.Context(), &counterrpc.CancelOrderRequest{
+	resp, err := s.counter.CancelOrder(r.Context(), connect.NewRequest(&counterrpc.CancelOrderRequest{
 		UserId:  userID,
 		OrderId: orderID,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"order_id": resp.OrderId,
-		"accepted": resp.Accepted,
+		"order_id": resp.Msg.OrderId,
+		"accepted": resp.Msg.Accepted,
 	})
 }
 
@@ -269,32 +269,32 @@ func (s *Server) handleQueryOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid order_id")
 		return
 	}
-	resp, err := s.counter.QueryOrder(r.Context(), &counterrpc.QueryOrderRequest{
+	resp, err := s.counter.QueryOrder(r.Context(), connect.NewRequest(&counterrpc.QueryOrderRequest{
 		UserId:  userID,
 		OrderId: orderID,
-	})
+	}))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"order_id":        resp.OrderId,
-		"client_order_id": resp.ClientOrderId,
-		"symbol":          resp.Symbol,
-		"side":            sideToString(resp.Side),
-		"order_type":      orderTypeToString(resp.OrderType),
-		"tif":             tifToString(resp.Tif),
-		"price":           resp.Price,
-		"qty":             resp.Qty,
-		"filled_qty":      resp.FilledQty,
-		"frozen_amount":   resp.FrozenAmt,
-		"status":          externalStatusFromInternal(resp.Status),
+		"order_id":        resp.Msg.OrderId,
+		"client_order_id": resp.Msg.ClientOrderId,
+		"symbol":          resp.Msg.Symbol,
+		"side":            sideToString(resp.Msg.Side),
+		"order_type":      orderTypeToString(resp.Msg.OrderType),
+		"tif":             tifToString(resp.Msg.Tif),
+		"price":           resp.Msg.Price,
+		"qty":             resp.Msg.Qty,
+		"filled_qty":      resp.Msg.FilledQty,
+		"frozen_amount":   resp.Msg.FrozenAmt,
+		"status":          externalStatusFromInternal(resp.Msg.Status),
 		// internal_status surfaces the 8-state machine (ADR-0020) so callers
 		// that need to distinguish e.g. PENDING_CANCEL from NEW — which the
 		// coarse external status folds together — can act on the real state.
-		"internal_status": internalStatusString(resp.Status),
-		"created_at":      resp.CreatedAtUnixMs,
-		"updated_at":      resp.UpdatedAtUnixMs,
+		"internal_status": internalStatusString(resp.Msg.Status),
+		"created_at":      resp.Msg.CreatedAtUnixMs,
+		"updated_at":      resp.Msg.UpdatedAtUnixMs,
 	})
 }
 
@@ -427,32 +427,32 @@ func externalStatusFromInternal(s eventpb.InternalOrderStatus) string {
 }
 
 // ---------------------------------------------------------------------------
-// gRPC -> HTTP error mapping
+// Connect -> HTTP error mapping
 // ---------------------------------------------------------------------------
 
-func writeGRPCError(w http.ResponseWriter, err error) {
-	st, ok := status.FromError(err)
-	if !ok {
+func writeConnectError(w http.ResponseWriter, err error) {
+	var cerr *connect.Error
+	if !errors.As(err, &cerr) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	switch st.Code() {
-	case codes.InvalidArgument:
-		writeError(w, http.StatusBadRequest, st.Message())
-	case codes.NotFound:
-		writeError(w, http.StatusNotFound, st.Message())
-	case codes.FailedPrecondition, codes.AlreadyExists:
-		writeError(w, http.StatusConflict, st.Message())
-	case codes.Unauthenticated:
-		writeError(w, http.StatusUnauthorized, st.Message())
-	case codes.PermissionDenied:
-		writeError(w, http.StatusForbidden, st.Message())
-	case codes.ResourceExhausted:
-		writeError(w, http.StatusTooManyRequests, st.Message())
-	case codes.Unavailable:
-		writeError(w, http.StatusServiceUnavailable, st.Message())
+	switch cerr.Code() {
+	case connect.CodeInvalidArgument:
+		writeError(w, http.StatusBadRequest, cerr.Message())
+	case connect.CodeNotFound:
+		writeError(w, http.StatusNotFound, cerr.Message())
+	case connect.CodeFailedPrecondition, connect.CodeAlreadyExists:
+		writeError(w, http.StatusConflict, cerr.Message())
+	case connect.CodeUnauthenticated:
+		writeError(w, http.StatusUnauthorized, cerr.Message())
+	case connect.CodePermissionDenied:
+		writeError(w, http.StatusForbidden, cerr.Message())
+	case connect.CodeResourceExhausted:
+		writeError(w, http.StatusTooManyRequests, cerr.Message())
+	case connect.CodeUnavailable:
+		writeError(w, http.StatusServiceUnavailable, cerr.Message())
 	default:
-		writeError(w, http.StatusInternalServerError, st.Message())
+		writeError(w, http.StatusInternalServerError, cerr.Message())
 	}
 }
 

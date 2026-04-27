@@ -1,5 +1,5 @@
-// Package server adapts counter/internal/service.Service to the protobuf
-// CounterService gRPC interface.
+// Package server adapts counter/internal/service.Service to the
+// CounterService Connect-Go handler interface.
 package server
 
 import (
@@ -7,18 +7,17 @@ import (
 	"errors"
 	"fmt"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/service"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-// Router is the dispatcher contract every gRPC handler depends on.
+// Router is the dispatcher contract every RPC handler depends on.
 // Implementations resolve a user_id to the per-vshard Service owned by
 // this node. Returning (nil, false) means "not my vshard" or "not yet
 // ready" — the handler replies FailedPrecondition so the BFF refreshes
@@ -27,10 +26,8 @@ type Router interface {
 	Lookup(userID string) (*service.Service, bool)
 }
 
-// Server implements counterrpc.CounterServiceServer.
+// Server satisfies counterrpcconnect.CounterServiceHandler.
 type Server struct {
-	counterrpc.UnimplementedCounterServiceServer
-
 	router Router
 	logger *zap.Logger
 }
@@ -47,12 +44,12 @@ func New(router Router, logger *zap.Logger) *Server {
 // handler in this file calls it as its first step.
 func (s *Server) routeOrFail(userID string) (*service.Service, error) {
 	if userID == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	svc, ok := s.router.Lookup(userID)
 	if !ok {
-		return nil, status.Error(codes.FailedPrecondition,
-			"service: user does not belong to this node")
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("service: user does not belong to this node"))
 	}
 	return svc, nil
 }
@@ -75,98 +72,102 @@ func (r *SingleServiceRouter) Lookup(_ string) (*service.Service, bool) {
 }
 
 // PlaceOrder implements CounterService.PlaceOrder (MVP-3).
-func (s *Server) PlaceOrder(ctx context.Context, req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *Server) PlaceOrder(ctx context.Context, req *connect.Request[counterrpc.PlaceOrderRequest]) (*connect.Response[counterrpc.PlaceOrderResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	svc, err := s.routeOrFail(req.UserId)
+	svc, err := s.routeOrFail(m.UserId)
 	if err != nil {
 		return nil, err
 	}
-	internalReq, err := placeOrderFromProto(req)
+	internalReq, err := placeOrderFromProto(m)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	res, err := svc.PlaceOrder(ctx, internalReq)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 	if !res.Accepted && res.RejectReason != "" && res.OrderID == 0 {
-		return nil, status.Error(codes.FailedPrecondition, res.RejectReason)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(res.RejectReason))
 	}
-	return &counterrpc.PlaceOrderResponse{
-		OrderId:         res.OrderID,
-		ClientOrderId:   res.ClientOrderID,
-		Accepted:        res.Accepted,
+	return connect.NewResponse(&counterrpc.PlaceOrderResponse{
+		OrderId:          res.OrderID,
+		ClientOrderId:    res.ClientOrderID,
+		Accepted:         res.Accepted,
 		ReceivedTsUnixMs: res.ReceivedAtMS,
-	}, nil
+	}), nil
 }
 
 // CancelOrder implements CounterService.CancelOrder (MVP-3).
-func (s *Server) CancelOrder(ctx context.Context, req *counterrpc.CancelOrderRequest) (*counterrpc.CancelOrderResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *Server) CancelOrder(ctx context.Context, req *connect.Request[counterrpc.CancelOrderRequest]) (*connect.Response[counterrpc.CancelOrderResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	svc, err := s.routeOrFail(req.UserId)
+	svc, err := s.routeOrFail(m.UserId)
 	if err != nil {
 		return nil, err
 	}
 	res, err := svc.CancelOrder(ctx, service.CancelOrderRequest{
-		UserID:  req.UserId,
-		OrderID: req.OrderId,
+		UserID:  m.UserId,
+		OrderID: m.OrderId,
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 	if !res.Accepted && res.RejectReason != "" {
-		return nil, status.Error(codes.FailedPrecondition, res.RejectReason)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(res.RejectReason))
 	}
-	return &counterrpc.CancelOrderResponse{
+	return connect.NewResponse(&counterrpc.CancelOrderResponse{
 		OrderId:  res.OrderID,
 		Accepted: res.Accepted,
-	}, nil
+	}), nil
 }
 
 // QueryOrder implements CounterService.QueryOrder (MVP-3).
-func (s *Server) QueryOrder(_ context.Context, req *counterrpc.QueryOrderRequest) (*counterrpc.QueryOrderResponse, error) {
-	if req == nil || req.UserId == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id required")
+func (s *Server) QueryOrder(_ context.Context, req *connect.Request[counterrpc.QueryOrderRequest]) (*connect.Response[counterrpc.QueryOrderResponse], error) {
+	m := req.Msg
+	if m == nil || m.UserId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
-	svc, err := s.routeOrFail(req.UserId)
+	svc, err := s.routeOrFail(m.UserId)
 	if err != nil {
 		return nil, err
 	}
-	o, err := svc.QueryOrder(req.UserId, req.OrderId)
+	o, err := svc.QueryOrder(m.UserId, m.OrderId)
 	if err != nil {
-		return nil, status.Error(codes.NotFound, err.Error())
+		return nil, connect.NewError(connect.CodeNotFound, err)
 	}
-	return orderToProto(o), nil
+	return connect.NewResponse(orderToProto(o)), nil
 }
 
 // QueryBalance implements CounterService.QueryBalance. If Asset is empty,
 // returns all assets for the user.
-func (s *Server) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceRequest) (*counterrpc.QueryBalanceResponse, error) {
-	if req == nil || req.UserId == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+func (s *Server) QueryBalance(_ context.Context, req *connect.Request[counterrpc.QueryBalanceRequest]) (*connect.Response[counterrpc.QueryBalanceResponse], error) {
+	m := req.Msg
+	if m == nil || m.UserId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
 	}
-	svc, err := s.routeOrFail(req.UserId)
+	svc, err := s.routeOrFail(m.UserId)
 	if err != nil {
 		return nil, err
 	}
 	resp := &counterrpc.QueryBalanceResponse{}
-	if req.Asset != "" {
-		bal, err := svc.QueryBalance(req.UserId, req.Asset)
+	if m.Asset != "" {
+		bal, err := svc.QueryBalance(m.UserId, m.Asset)
 		if err != nil {
 			return nil, mapServiceError(err)
 		}
 		resp.Balances = []*counterrpc.Balance{{
-			Asset:     req.Asset,
+			Asset:     m.Asset,
 			Available: bal.Available.String(),
 			Frozen:    bal.Frozen.String(),
 		}}
-		return resp, nil
+		return connect.NewResponse(resp), nil
 	}
-	account, err := svc.QueryAccount(req.UserId)
+	account, err := svc.QueryAccount(m.UserId)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -177,14 +178,14 @@ func (s *Server) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceReq
 			Frozen:    bal.Frozen.String(),
 		})
 	}
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
 // ---------------------------------------------------------------------------
 // proto <-> internal helpers
 // ---------------------------------------------------------------------------
 
-// mapServiceError converts service-layer errors to gRPC status codes.
+// mapServiceError converts service-layer errors to Connect codes.
 func mapServiceError(err error) error {
 	switch {
 	case errors.Is(err, service.ErrMissingUserID),
@@ -198,21 +199,21 @@ func mapServiceError(err error) error {
 		errors.Is(err, counterstate.ErrInvalidPrice),
 		errors.Is(err, counterstate.ErrMarketBuyNeedsQuote),
 		errors.Is(err, counterstate.ErrInvalidAmount):
-		return status.Error(codes.InvalidArgument, err.Error())
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, service.ErrOrderDepsNotConfigured):
-		return status.Error(codes.Unavailable, err.Error())
+		return connect.NewError(connect.CodeUnavailable, err)
 	case errors.Is(err, service.ErrWrongShard):
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, counterstate.ErrReservationNotFound):
-		return status.Error(codes.NotFound, err.Error())
+		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, counterstate.ErrReservationUserMismatch):
-		return status.Error(codes.PermissionDenied, err.Error())
+		return connect.NewError(connect.CodePermissionDenied, err)
 	case errors.Is(err, counterstate.ErrReservationMismatch),
 		errors.Is(err, counterstate.ErrInsufficientAvailable),
 		errors.Is(err, counterstate.ErrInsufficientFrozen):
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
-	return status.Error(codes.Internal, err.Error())
+	return connect.NewError(connect.CodeInternal, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -220,42 +221,43 @@ func mapServiceError(err error) error {
 // ---------------------------------------------------------------------------
 
 // Reserve implements CounterService.Reserve (ADR-0041).
-func (s *Server) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *Server) Reserve(ctx context.Context, req *connect.Request[counterrpc.ReserveRequest]) (*connect.Response[counterrpc.ReserveResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	side, err := sideFromProto(req.Side)
+	side, err := sideFromProto(m.Side)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	ot, err := orderTypeFromProto(req.OrderType)
+	ot, err := orderTypeFromProto(m.OrderType)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	var price dec.Decimal
-	if req.Price != "" {
-		p, perr := dec.Parse(req.Price)
+	if m.Price != "" {
+		p, perr := dec.Parse(m.Price)
 		if perr != nil {
-			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid price %q: %v", req.Price, perr))
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid price %q: %v", m.Price, perr))
 		}
 		price = p
 	}
-	qty, err := dec.Parse(req.Qty)
+	qty, err := dec.Parse(m.Qty)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid qty %q: %v", req.Qty, err))
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid qty %q: %v", m.Qty, err))
 	}
-	quoteQty, err := dec.Parse(req.QuoteQty)
+	quoteQty, err := dec.Parse(m.QuoteQty)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid quote_qty %q: %v", req.QuoteQty, err))
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid quote_qty %q: %v", m.QuoteQty, err))
 	}
-	svc, err := s.routeOrFail(req.UserId)
+	svc, err := s.routeOrFail(m.UserId)
 	if err != nil {
 		return nil, err
 	}
 	res, err := svc.Reserve(ctx, service.ReserveRequest{
-		UserID:        req.UserId,
-		ReservationID: req.ReservationId,
-		Symbol:        req.Symbol,
+		UserID:        m.UserId,
+		ReservationID: m.ReservationId,
+		Symbol:        m.Symbol,
 		Side:          side,
 		OrderType:     ot,
 		Price:         price,
@@ -265,76 +267,79 @@ func (s *Server) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (*
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-	return &counterrpc.ReserveResponse{
+	return connect.NewResponse(&counterrpc.ReserveResponse{
 		ReservationId: res.ReservationID,
 		Asset:         res.Asset,
 		Amount:        res.Amount.String(),
 		Accepted:      res.Accepted,
-	}, nil
+	}), nil
 }
 
 // AdminCancelOrders implements CounterService.AdminCancelOrders (ADR-0052).
 // ADR-0058: under vshard routing we require UserID so dispatch is
 // deterministic; symbol-only fan-out moves to an operator tool that
 // targets specific nodes directly.
-func (s *Server) AdminCancelOrders(ctx context.Context, req *counterrpc.AdminCancelOrdersRequest) (*counterrpc.AdminCancelOrdersResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *Server) AdminCancelOrders(ctx context.Context, req *connect.Request[counterrpc.AdminCancelOrdersRequest]) (*connect.Response[counterrpc.AdminCancelOrdersResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	svc, err := s.routeOrFail(req.UserId)
+	svc, err := s.routeOrFail(m.UserId)
 	if err != nil {
 		return nil, err
 	}
 	res, err := svc.AdminCancelOrders(ctx, service.AdminCancelFilter{
-		UserID: req.UserId,
-		Symbol: req.Symbol,
+		UserID: m.UserId,
+		Symbol: m.Symbol,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrAdminCancelFilterEmpty) {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		return nil, mapServiceError(err)
 	}
-	return &counterrpc.AdminCancelOrdersResponse{
+	return connect.NewResponse(&counterrpc.AdminCancelOrdersResponse{
 		Cancelled: res.Cancelled,
 		Skipped:   res.Skipped,
 		ShardId:   int32(svc.ShardID()),
-	}, nil
+	}), nil
 }
 
 // CancelMyOrders implements CounterService.CancelMyOrders. User-facing
 // bulk cancel: user_id is required, symbol optional (empty = every active
 // order owned by the user on this shard).
-func (s *Server) CancelMyOrders(ctx context.Context, req *counterrpc.CancelMyOrdersRequest) (*counterrpc.CancelMyOrdersResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *Server) CancelMyOrders(ctx context.Context, req *connect.Request[counterrpc.CancelMyOrdersRequest]) (*connect.Response[counterrpc.CancelMyOrdersResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	svc, err := s.routeOrFail(req.UserId)
+	svc, err := s.routeOrFail(m.UserId)
 	if err != nil {
 		return nil, err
 	}
-	res, err := svc.CancelMyOrders(ctx, req.UserId, req.Symbol)
+	res, err := svc.CancelMyOrders(ctx, m.UserId, m.Symbol)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-	return &counterrpc.CancelMyOrdersResponse{
+	return connect.NewResponse(&counterrpc.CancelMyOrdersResponse{
 		Cancelled: res.Cancelled,
 		Skipped:   res.Skipped,
-	}, nil
+	}), nil
 }
 
 // ReleaseReservation implements CounterService.ReleaseReservation (ADR-0041).
-func (s *Server) ReleaseReservation(ctx context.Context, req *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *Server) ReleaseReservation(ctx context.Context, req *connect.Request[counterrpc.ReleaseReservationRequest]) (*connect.Response[counterrpc.ReleaseReservationResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	svc, err := s.routeOrFail(req.UserId)
+	svc, err := s.routeOrFail(m.UserId)
 	if err != nil {
 		return nil, err
 	}
 	res, err := svc.ReleaseReservation(ctx, service.ReleaseReservationRequest{
-		UserID:        req.UserId,
-		ReservationID: req.ReservationId,
+		UserID:        m.UserId,
+		ReservationID: m.ReservationId,
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -347,7 +352,7 @@ func (s *Server) ReleaseReservation(ctx context.Context, req *counterrpc.Release
 		resp.Asset = res.Asset
 		resp.Amount = res.Amount.String()
 	}
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
 func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderRequest, error) {

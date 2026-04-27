@@ -1,5 +1,6 @@
-// Package server is the gRPC entry point into the trigger service. It
-// translates between condrpc.* and the narrower service + engine errors.
+// Package server is the Connect-Go entry point into the trigger service.
+// It translates between the generated handler interface and the narrower
+// service + engine errors.
 package server
 
 import (
@@ -7,17 +8,15 @@ import (
 	"errors"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	"github.com/xargin/opentrade/trigger/engine"
 	"github.com/xargin/opentrade/trigger/internal/service"
 )
 
-// Server satisfies condrpc.TriggerServiceServer.
+// Server satisfies triggerrpcconnect.TriggerServiceHandler.
 type Server struct {
-	condrpc.UnimplementedTriggerServiceServer
 	svc   *service.Service
 	clock func() time.Time
 }
@@ -30,60 +29,55 @@ func New(svc *service.Service, clock func() time.Time) *Server {
 	return &Server{svc: svc, clock: clock}
 }
 
-// PlaceTrigger is the gRPC entry. Errors are mapped to canonical codes.
-func (s *Server) PlaceTrigger(ctx context.Context, req *condrpc.PlaceTriggerRequest) (*condrpc.PlaceTriggerResponse, error) {
-	resp, err := s.svc.Place(ctx, req, s.clock().UnixMilli())
+func (s *Server) PlaceTrigger(ctx context.Context, req *connect.Request[condrpc.PlaceTriggerRequest]) (*connect.Response[condrpc.PlaceTriggerResponse], error) {
+	resp, err := s.svc.Place(ctx, req.Msg, s.clock().UnixMilli())
 	if err != nil {
-		return nil, toGRPCErr(err)
+		return nil, toConnectErr(err)
 	}
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
-// CancelTrigger is the gRPC entry.
-func (s *Server) CancelTrigger(ctx context.Context, req *condrpc.CancelTriggerRequest) (*condrpc.CancelTriggerResponse, error) {
-	resp, err := s.svc.Cancel(ctx, req)
+func (s *Server) CancelTrigger(ctx context.Context, req *connect.Request[condrpc.CancelTriggerRequest]) (*connect.Response[condrpc.CancelTriggerResponse], error) {
+	resp, err := s.svc.Cancel(ctx, req.Msg)
 	if err != nil {
-		return nil, toGRPCErr(err)
+		return nil, toConnectErr(err)
 	}
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
-// QueryTrigger is the gRPC entry.
-func (s *Server) QueryTrigger(_ context.Context, req *condrpc.QueryTriggerRequest) (*condrpc.QueryTriggerResponse, error) {
-	resp, err := s.svc.Query(req)
+func (s *Server) QueryTrigger(_ context.Context, req *connect.Request[condrpc.QueryTriggerRequest]) (*connect.Response[condrpc.QueryTriggerResponse], error) {
+	resp, err := s.svc.Query(req.Msg)
 	if err != nil {
-		return nil, toGRPCErr(err)
+		return nil, toConnectErr(err)
 	}
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
-// ListTriggers is the gRPC entry.
-func (s *Server) ListTriggers(_ context.Context, req *condrpc.ListTriggersRequest) (*condrpc.ListTriggersResponse, error) {
-	resp, err := s.svc.List(req)
+func (s *Server) ListTriggers(_ context.Context, req *connect.Request[condrpc.ListTriggersRequest]) (*connect.Response[condrpc.ListTriggersResponse], error) {
+	resp, err := s.svc.List(req.Msg)
 	if err != nil {
-		return nil, toGRPCErr(err)
+		return nil, toConnectErr(err)
 	}
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
-// PlaceOCO is the gRPC entry.
-func (s *Server) PlaceOCO(ctx context.Context, req *condrpc.PlaceOCORequest) (*condrpc.PlaceOCOResponse, error) {
-	resp, err := s.svc.PlaceOCO(ctx, req, s.clock().UnixMilli())
+func (s *Server) PlaceOCO(ctx context.Context, req *connect.Request[condrpc.PlaceOCORequest]) (*connect.Response[condrpc.PlaceOCOResponse], error) {
+	resp, err := s.svc.PlaceOCO(ctx, req.Msg, s.clock().UnixMilli())
 	if err != nil {
-		return nil, toGRPCErr(err)
+		return nil, toConnectErr(err)
 	}
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
-// toGRPCErr maps engine-layer errors into canonical codes. Validation
-// failures become InvalidArgument; missing records become NotFound; the
-// catch-all is Internal (operators should see these in logs and fix).
-func toGRPCErr(err error) error {
+// toConnectErr maps engine-layer errors into canonical Connect codes.
+// Validation failures become InvalidArgument; missing records become
+// NotFound; the catch-all is Internal.
+func toConnectErr(err error) error {
 	switch {
 	case errors.Is(err, engine.ErrNotFound):
-		return status.Error(codes.NotFound, err.Error())
+		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, engine.ErrNotOwner):
-		return status.Error(codes.PermissionDenied, err.Error())
+		return connect.NewError(connect.CodePermissionDenied, err)
 	case errors.Is(err, engine.ErrMissingUserID),
 		errors.Is(err, engine.ErrMissingSymbol),
 		errors.Is(err, engine.ErrInvalidType),
@@ -104,7 +98,7 @@ func toGRPCErr(err error) error {
 		errors.Is(err, engine.ErrTrailingDeltaRange),
 		errors.Is(err, engine.ErrActivationPriceShape),
 		errors.Is(err, engine.ErrStopPriceForbidden):
-		return status.Error(codes.InvalidArgument, err.Error())
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	return status.Error(codes.Internal, err.Error())
+	return connect.NewError(connect.CodeInternal, err)
 }

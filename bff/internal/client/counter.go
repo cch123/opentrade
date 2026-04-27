@@ -1,36 +1,43 @@
-// Package client wraps the Counter gRPC client so REST handlers depend on an
-// interface (easy to fake in tests) rather than on the generated stub
-// directly.
+// Package client wraps the Counter Connect-Go stub so REST handlers
+// depend on an interface (easy to fake in tests) rather than on the
+// generated stub directly.
 package client
 
 import (
 	"context"
-	"fmt"
+	"net/http"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"connectrpc.com/connect"
 
-	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	"github.com/xargin/opentrade/api/gen/rpc/counter/counterrpcconnect"
+	"github.com/xargin/opentrade/pkg/connectx"
 )
 
-// Counter is the minimal surface BFF needs. Tests may substitute a fake.
-// ADR-0057 M4: Transfer was removed — all user-facing fund movement goes
-// through asset-service now (see client.Asset).
-type Counter interface {
-	PlaceOrder(ctx context.Context, in *counterrpc.PlaceOrderRequest, opts ...grpc.CallOption) (*counterrpc.PlaceOrderResponse, error)
-	CancelOrder(ctx context.Context, in *counterrpc.CancelOrderRequest, opts ...grpc.CallOption) (*counterrpc.CancelOrderResponse, error)
-	QueryOrder(ctx context.Context, in *counterrpc.QueryOrderRequest, opts ...grpc.CallOption) (*counterrpc.QueryOrderResponse, error)
-	QueryBalance(ctx context.Context, in *counterrpc.QueryBalanceRequest, opts ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error)
-	AdminCancelOrders(ctx context.Context, in *counterrpc.AdminCancelOrdersRequest, opts ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error)
-	CancelMyOrders(ctx context.Context, in *counterrpc.CancelMyOrdersRequest, opts ...grpc.CallOption) (*counterrpc.CancelMyOrdersResponse, error)
+// Counter is the minimal surface BFF needs. The Connect-generated
+// CounterServiceClient already carries all the methods, so we alias
+// rather than redeclaring them — fakes implement the alias and hot
+// paths invoke the same generated stub.
+//
+// ADR-0057 M4: Transfer was removed — all user-facing fund movement
+// goes through asset-service now (see client.Asset).
+type Counter = counterrpcconnect.CounterServiceClient
+
+// DialCounter wires a Counter Connect client over plaintext h2c. The
+// returned *http.Client owns the transport; callers drop idle conns
+// via CloseIdleConnections at shutdown. mTLS / auth credentials arrive
+// in a later MVP.
+func DialCounter(_ context.Context, endpoint string) (*http.Client, Counter, error) {
+	httpClient := connectx.NewH2CClient()
+	cli := counterrpcconnect.NewCounterServiceClient(
+		httpClient,
+		connectx.BaseURL(endpoint),
+		connect.WithGRPC(),
+	)
+	return httpClient, cli, nil
 }
 
-// Dial opens a plaintext gRPC connection to a Counter shard endpoint.
-// mTLS / auth credentials arrive in a later MVP.
-func Dial(ctx context.Context, endpoint string) (*grpc.ClientConn, Counter, error) {
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("grpc Dial %s: %w", endpoint, err)
-	}
-	return conn, counterrpc.NewCounterServiceClient(conn), nil
+// Dial preserves the legacy entry name for callers still using
+// `client.Dial`.
+func Dial(ctx context.Context, endpoint string) (*http.Client, Counter, error) {
+	return DialCounter(ctx, endpoint)
 }

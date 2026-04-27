@@ -5,16 +5,15 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
+	"github.com/xargin/opentrade/pkg/counterstate"
 )
 
 func newHolderPair(t *testing.T) (*AssetHolderServer, *fakePub) {
@@ -31,15 +30,15 @@ func newHolderPair(t *testing.T) (*AssetHolderServer, *fakePub) {
 // seedDeposit pre-funds a user so subsequent TransferOut has balance.
 func seedDeposit(t *testing.T, h *AssetHolderServer, userID, asset, amount string) {
 	t.Helper()
-	resp, err := h.TransferIn(context.Background(), &assetholderrpc.TransferInRequest{
+	resp, err := h.TransferIn(context.Background(), connect.NewRequest(&assetholderrpc.TransferInRequest{
 		UserId: userID, TransferId: "seed-" + userID + "-" + asset + "-" + amount,
 		Asset: asset, Amount: amount, PeerBiz: "funding",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("seed TransferIn: %v", err)
 	}
-	if resp.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
-		t.Fatalf("seed status = %v", resp.Status)
+	if resp.Msg.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
+		t.Fatalf("seed status = %v", resp.Msg.Status)
 	}
 }
 
@@ -50,22 +49,22 @@ func seedDeposit(t *testing.T, h *AssetHolderServer, userID, asset, amount strin
 func TestTransferIn_Confirmed(t *testing.T) {
 	h, pub := newHolderPair(t)
 
-	resp, err := h.TransferIn(context.Background(), &assetholderrpc.TransferInRequest{
+	resp, err := h.TransferIn(context.Background(), connect.NewRequest(&assetholderrpc.TransferInRequest{
 		UserId:     "u1",
 		TransferId: "saga-1",
 		Asset:      "USDT",
 		Amount:     "100",
 		PeerBiz:    "funding",
 		Memo:       "test",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("TransferIn: %v", err)
 	}
-	if resp.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
-		t.Fatalf("status = %v", resp.Status)
+	if resp.Msg.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
+		t.Fatalf("status = %v", resp.Msg.Status)
 	}
-	if resp.AvailableAfter != "100" {
-		t.Errorf("available_after = %q", resp.AvailableAfter)
+	if resp.Msg.AvailableAfter != "100" {
+		t.Errorf("available_after = %q", resp.Msg.AvailableAfter)
 	}
 
 	// Verify the journal event was published with saga_transfer_id.
@@ -92,25 +91,27 @@ func TestTransferIn_Confirmed(t *testing.T) {
 func TestTransferIn_Idempotent(t *testing.T) {
 	h, pub := newHolderPair(t)
 
-	req := &assetholderrpc.TransferInRequest{
-		UserId: "u1", TransferId: "saga-1", Asset: "USDT",
-		Amount: "100", PeerBiz: "funding",
+	build := func() *connect.Request[assetholderrpc.TransferInRequest] {
+		return connect.NewRequest(&assetholderrpc.TransferInRequest{
+			UserId: "u1", TransferId: "saga-1", Asset: "USDT",
+			Amount: "100", PeerBiz: "funding",
+		})
 	}
 
-	first, err := h.TransferIn(context.Background(), req)
+	first, err := h.TransferIn(context.Background(), build())
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if first.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
-		t.Fatalf("first status = %v", first.Status)
+	if first.Msg.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
+		t.Fatalf("first status = %v", first.Msg.Status)
 	}
 
-	second, err := h.TransferIn(context.Background(), req)
+	second, err := h.TransferIn(context.Background(), build())
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
-	if second.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_DUPLICATED {
-		t.Fatalf("second status = %v, want DUPLICATED", second.Status)
+	if second.Msg.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_DUPLICATED {
+		t.Fatalf("second status = %v, want DUPLICATED", second.Msg.Status)
 	}
 
 	// Journal must have exactly one event despite two RPC calls.
@@ -129,18 +130,18 @@ func TestTransferOut_Confirmed(t *testing.T) {
 	h, pub := newHolderPair(t)
 	seedDeposit(t, h, "u1", "USDT", "500")
 
-	resp, err := h.TransferOut(context.Background(), &assetholderrpc.TransferOutRequest{
+	resp, err := h.TransferOut(context.Background(), connect.NewRequest(&assetholderrpc.TransferOutRequest{
 		UserId: "u1", TransferId: "saga-out-1", Asset: "USDT",
 		Amount: "150", PeerBiz: "funding",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("TransferOut: %v", err)
 	}
-	if resp.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
-		t.Fatalf("status = %v", resp.Status)
+	if resp.Msg.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
+		t.Fatalf("status = %v", resp.Msg.Status)
 	}
-	if resp.AvailableAfter != "350" {
-		t.Errorf("available_after = %q, want 350", resp.AvailableAfter)
+	if resp.Msg.AvailableAfter != "350" {
+		t.Errorf("available_after = %q, want 350", resp.Msg.AvailableAfter)
 	}
 
 	pub.mu.Lock()
@@ -162,18 +163,18 @@ func TestTransferOut_InsufficientBalance(t *testing.T) {
 	h, _ := newHolderPair(t)
 	seedDeposit(t, h, "u1", "USDT", "10")
 
-	resp, err := h.TransferOut(context.Background(), &assetholderrpc.TransferOutRequest{
+	resp, err := h.TransferOut(context.Background(), connect.NewRequest(&assetholderrpc.TransferOutRequest{
 		UserId: "u1", TransferId: "saga-out-bad", Asset: "USDT",
 		Amount: "100", PeerBiz: "funding",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("TransferOut: %v", err)
 	}
-	if resp.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_REJECTED {
-		t.Fatalf("status = %v, want REJECTED", resp.Status)
+	if resp.Msg.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_REJECTED {
+		t.Fatalf("status = %v, want REJECTED", resp.Msg.Status)
 	}
-	if resp.RejectReason != assetholderrpc.RejectReason_REJECT_REASON_INSUFFICIENT_BALANCE {
-		t.Errorf("reject_reason = %v, want INSUFFICIENT_BALANCE", resp.RejectReason)
+	if resp.Msg.RejectReason != assetholderrpc.RejectReason_REJECT_REASON_INSUFFICIENT_BALANCE {
+		t.Errorf("reject_reason = %v, want INSUFFICIENT_BALANCE", resp.Msg.RejectReason)
 	}
 }
 
@@ -184,22 +185,22 @@ func TestTransferOut_InsufficientBalance(t *testing.T) {
 func TestCompensate_CreditsAndTags(t *testing.T) {
 	h, pub := newHolderPair(t)
 
-	resp, err := h.CompensateTransferOut(context.Background(), &assetholderrpc.CompensateTransferOutRequest{
+	resp, err := h.CompensateTransferOut(context.Background(), connect.NewRequest(&assetholderrpc.CompensateTransferOutRequest{
 		UserId:          "u1",
 		TransferId:      "saga-compensate-1",
 		Asset:           "USDT",
 		Amount:          "100",
 		PeerBiz:         "funding",
 		CompensateCause: "peer_in_timeout",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Compensate: %v", err)
 	}
-	if resp.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
-		t.Fatalf("status = %v", resp.Status)
+	if resp.Msg.Status != assetholderrpc.TransferStatus_TRANSFER_STATUS_CONFIRMED {
+		t.Fatalf("status = %v", resp.Msg.Status)
 	}
-	if resp.AvailableAfter != "100" {
-		t.Errorf("available_after = %q", resp.AvailableAfter)
+	if resp.Msg.AvailableAfter != "100" {
+		t.Errorf("available_after = %q", resp.Msg.AvailableAfter)
 	}
 
 	pub.mu.Lock()
@@ -226,29 +227,29 @@ func TestCompensate_CreditsAndTags(t *testing.T) {
 // Argument / shard guards
 // ---------------------------------------------------------------------------
 
-func TestHolder_NilRequest(t *testing.T) {
+func TestHolder_NilMsg(t *testing.T) {
 	h, _ := newHolderPair(t)
 	cases := []struct {
 		name string
 		call func() error
 	}{
 		{"out", func() error {
-			_, err := h.TransferOut(context.Background(), nil)
+			_, err := h.TransferOut(context.Background(), connect.NewRequest((*assetholderrpc.TransferOutRequest)(nil)))
 			return err
 		}},
 		{"in", func() error {
-			_, err := h.TransferIn(context.Background(), nil)
+			_, err := h.TransferIn(context.Background(), connect.NewRequest((*assetholderrpc.TransferInRequest)(nil)))
 			return err
 		}},
 		{"compensate", func() error {
-			_, err := h.CompensateTransferOut(context.Background(), nil)
+			_, err := h.CompensateTransferOut(context.Background(), connect.NewRequest((*assetholderrpc.CompensateTransferOutRequest)(nil)))
 			return err
 		}},
 	}
 	for _, tc := range cases {
 		err := tc.call()
-		if status.Code(err) != codes.InvalidArgument {
-			t.Errorf("%s: code = %s, want InvalidArgument", tc.name, status.Code(err))
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("%s: code = %s, want InvalidArgument", tc.name, connect.CodeOf(err))
 		}
 	}
 }
@@ -257,12 +258,12 @@ func TestHolder_InvalidAmount(t *testing.T) {
 	h, _ := newHolderPair(t)
 	cases := []string{"", "not-a-number", "0", "-1"}
 	for _, amt := range cases {
-		_, err := h.TransferIn(context.Background(), &assetholderrpc.TransferInRequest{
+		_, err := h.TransferIn(context.Background(), connect.NewRequest(&assetholderrpc.TransferInRequest{
 			UserId: "u1", TransferId: "saga-" + amt, Asset: "USDT",
 			Amount: amt, PeerBiz: "funding",
-		})
-		if status.Code(err) != codes.InvalidArgument {
-			t.Errorf("amount=%q: code = %s, want InvalidArgument", amt, status.Code(err))
+		}))
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("amount=%q: code = %s, want InvalidArgument", amt, connect.CodeOf(err))
 		}
 	}
 }
@@ -275,9 +276,9 @@ func TestHolder_MissingFields(t *testing.T) {
 		{UserId: "u1", TransferId: "saga-1", Amount: "10"},   // missing asset
 	}
 	for i, req := range cases {
-		_, err := h.TransferIn(context.Background(), req)
-		if status.Code(err) != codes.InvalidArgument {
-			t.Errorf("case %d: code = %s, want InvalidArgument", i, status.Code(err))
+		_, err := h.TransferIn(context.Background(), connect.NewRequest(req))
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("case %d: code = %s, want InvalidArgument", i, connect.CodeOf(err))
 		}
 	}
 }
@@ -307,11 +308,11 @@ func TestHolder_WrongShard(t *testing.T) {
 		t.Fatal("could not find a user outside shard 0 in the trial set")
 	}
 
-	_, err := h.TransferIn(context.Background(), &assetholderrpc.TransferInRequest{
+	_, err := h.TransferIn(context.Background(), connect.NewRequest(&assetholderrpc.TransferInRequest{
 		UserId: foreignUser, TransferId: "saga-shard", Asset: "USDT",
 		Amount: "10", PeerBiz: "funding",
-	})
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("code = %s, want FailedPrecondition", status.Code(err))
+	}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("code = %s, want FailedPrecondition", connect.CodeOf(err))
 	}
 }

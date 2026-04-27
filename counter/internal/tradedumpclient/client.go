@@ -1,4 +1,4 @@
-// Package tradedumpclient wraps trade-dump's TradeDumpSnapshot gRPC
+// Package tradedumpclient wraps trade-dump's TradeDumpSnapshot RPC
 // surface (ADR-0064 §2) into the narrow view Counter's startup flow
 // consumes:
 //
@@ -9,7 +9,7 @@
 //
 // Keeping the ADR-0064 §4 fallback decision table inside one
 // package means worker.Run stays focused on sequencing Phase 1 /
-// Phase 2 and doesn't leak gRPC codes into the startup state
+// Phase 2 and doesn't leak Connect codes into the startup state
 // machine.
 package tradedumpclient
 
@@ -17,36 +17,36 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
+	"github.com/xargin/opentrade/api/gen/rpc/tradedump/tradedumprpcconnect"
+	"github.com/xargin/opentrade/pkg/connectx"
 )
 
 // ErrFallback signals that the on-demand path did not produce a
 // usable snapshot and the caller should take the legacy startup
 // path (load last periodic snapshot + catchUpJournal). Wrapped
-// around the underlying gRPC / transport error so callers can
-// errors.Is it AND still unwrap to log the original reason.
+// around the underlying transport error so callers can errors.Is
+// it AND still unwrap to log the original reason.
 //
-// Every gRPC code listed in ADR-0064 §4 as a "fallback trigger"
+// Every Connect code listed in ADR-0064 §4 as a "fallback trigger"
 // maps to ErrFallback:
 //
-//   - codes.Unimplemented     — trade-dump running skeleton mode
-//                               or Counter built against a newer
-//                               proto
-//   - codes.Unavailable       — transient Kafka / S3 / network
-//   - codes.DeadlineExceeded  — WaitApply timed out or caller
-//                               cancelled
-//   - codes.Canceled          — caller cancelled
-//   - codes.FailedPrecondition — trade-dump doesn't own the vshard
-//                                or rejected stale epoch
-//   - codes.ResourceExhausted  — too many on-demand in flight
+//   - CodeUnimplemented      — trade-dump running skeleton mode
+//                              or Counter built against a newer
+//                              proto
+//   - CodeUnavailable        — transient Kafka / S3 / network
+//   - CodeDeadlineExceeded   — WaitApply timed out or caller
+//                              cancelled
+//   - CodeCanceled           — caller cancelled
+//   - CodeFailedPrecondition — trade-dump doesn't own the vshard
+//                              or rejected stale epoch
+//   - CodeResourceExhausted  — too many on-demand in flight
 //
 // Any other non-OK code (Internal, Unknown, InvalidArgument,
 // DataLoss, …) surfaces as a naked error — Counter treats those
@@ -74,21 +74,22 @@ type Response struct {
 	CounterSeq uint64
 }
 
-// Client is the thin wrapper over a single long-lived gRPC
-// connection and the generated stub.
+// Client is the thin wrapper over a single long-lived h2c HTTP/2
+// pool and the generated Connect stub.
 type Client struct {
-	conn   *grpc.ClientConn
-	stub   tradedumprpc.TradeDumpSnapshotClient
-	logger *zap.Logger
+	httpClient *http.Client
+	owns       bool // true => Close() drops idle conns on httpClient
+	stub       tradedumprpcconnect.TradeDumpSnapshotClient
+	logger     *zap.Logger
 }
 
-// Dial opens one plaintext gRPC connection to the trade-dump
-// TakeSnapshot endpoint. mTLS / auth arrive with the broader
+// Dial wires a Connect client targeting the trade-dump TakeSnapshot
+// endpoint over plaintext h2c. mTLS / auth arrive with the broader
 // auth work; for now the internal cluster network is the trust
 // boundary. logger is the caller's, stamped onto every RPC log.
 //
-// The returned Client owns conn — callers invoke Close on shutdown
-// and MUST NOT close conn themselves.
+// The returned Client owns its http.Client — callers invoke Close
+// on shutdown.
 func Dial(_ context.Context, endpoint string, logger *zap.Logger) (*Client, error) {
 	if endpoint == "" {
 		return nil, errors.New("tradedumpclient: empty endpoint")
@@ -96,15 +97,17 @@ func Dial(_ context.Context, endpoint string, logger *zap.Logger) (*Client, erro
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	conn, err := grpc.NewClient(endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", endpoint, err)
-	}
+	httpClient := connectx.NewH2CClient()
+	stub := tradedumprpcconnect.NewTradeDumpSnapshotClient(
+		httpClient,
+		connectx.BaseURL(endpoint),
+		connect.WithGRPC(),
+	)
 	return &Client{
-		conn:   conn,
-		stub:   tradedumprpc.NewTradeDumpSnapshotClient(conn),
-		logger: logger,
+		httpClient: httpClient,
+		owns:       true,
+		stub:       stub,
+		logger:     logger,
 	}, nil
 }
 
@@ -112,20 +115,21 @@ func Dial(_ context.Context, endpoint string, logger *zap.Logger) (*Client, erro
 // supply a hand-built stub without going through Dial. Production
 // code should prefer Dial; NewFromStub skips connection ownership
 // so Close is a no-op.
-func NewFromStub(stub tradedumprpc.TradeDumpSnapshotClient, logger *zap.Logger) *Client {
+func NewFromStub(stub tradedumprpcconnect.TradeDumpSnapshotClient, logger *zap.Logger) *Client {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &Client{stub: stub, logger: logger}
 }
 
-// Close releases the underlying gRPC connection. Safe to call
-// multiple times; safe on Client constructed via NewFromStub (no-op).
+// Close drops idle connections on the owned *http.Client. Safe to
+// call multiple times; safe on Client constructed via NewFromStub
+// (no-op).
 func (c *Client) Close() error {
-	if c.conn == nil {
-		return nil
+	if c.owns && c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
 	}
-	return c.conn.Close()
+	return nil
 }
 
 // TakeSnapshot issues one RPC to trade-dump. The caller supplies
@@ -155,18 +159,19 @@ func (c *Client) TakeSnapshot(
 	epoch uint64,
 ) (*Response, error) {
 	start := time.Now()
-	resp, err := c.stub.TakeSnapshot(ctx, &tradedumprpc.TakeSnapshotRequest{
+	resp, err := c.stub.TakeSnapshot(ctx, connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId:        vshardID,
 		RequesterNodeId: nodeID,
 		RequesterEpoch:  epoch,
-	})
+	}))
 	elapsed := time.Since(start)
 
 	if err != nil {
-		// Raw context errors can surface when the gRPC client
+		// Raw context errors can surface when the Connect client
 		// short-circuits on ctx.Done before the transport turns
-		// them into a status. Treat them as fallback explicitly
-		// so callers don't need to probe status.Code separately.
+		// them into a Connect error. Treat them as fallback
+		// explicitly so callers don't need to probe codes
+		// separately.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			c.logger.Info("ondemand falling back (ctx)",
 				zap.Uint32("vshard_id", vshardID),
@@ -174,7 +179,7 @@ func (c *Client) TakeSnapshot(
 				zap.Error(err))
 			return nil, fmt.Errorf("%w: %v", ErrFallback, err)
 		}
-		code := status.Code(err)
+		code := connect.CodeOf(err)
 		if IsFallbackCode(code) {
 			c.logger.Info("ondemand falling back",
 				zap.Uint32("vshard_id", vshardID),
@@ -193,30 +198,30 @@ func (c *Client) TakeSnapshot(
 
 	c.logger.Info("ondemand succeeded",
 		zap.Uint32("vshard_id", vshardID),
-		zap.Int64("leo", resp.Leo),
-		zap.Uint64("counter_seq", resp.CounterSeq),
-		zap.String("snapshot_key", resp.SnapshotKey),
+		zap.Int64("leo", resp.Msg.Leo),
+		zap.Uint64("counter_seq", resp.Msg.CounterSeq),
+		zap.String("snapshot_key", resp.Msg.SnapshotKey),
 		zap.Duration("elapsed", elapsed))
 
 	return &Response{
-		SnapshotKey: resp.SnapshotKey,
-		LEO:         resp.Leo,
-		CounterSeq:  resp.CounterSeq,
+		SnapshotKey: resp.Msg.SnapshotKey,
+		LEO:         resp.Msg.Leo,
+		CounterSeq:  resp.Msg.CounterSeq,
 	}, nil
 }
 
-// IsFallbackCode reports whether a gRPC status code is one Counter
+// IsFallbackCode reports whether a Connect status code is one Counter
 // should treat as "fall back to legacy path" per ADR-0064 §4.
 // Exported so tests and other callers (future health probes) can
 // share the classification without re-deriving it.
-func IsFallbackCode(code codes.Code) bool {
+func IsFallbackCode(code connect.Code) bool {
 	switch code {
-	case codes.Unimplemented,
-		codes.Unavailable,
-		codes.DeadlineExceeded,
-		codes.Canceled,
-		codes.FailedPrecondition,
-		codes.ResourceExhausted:
+	case connect.CodeUnimplemented,
+		connect.CodeUnavailable,
+		connect.CodeDeadlineExceeded,
+		connect.CodeCanceled,
+		connect.CodeFailedPrecondition,
+		connect.CodeResourceExhausted:
 		return true
 	}
 	return false

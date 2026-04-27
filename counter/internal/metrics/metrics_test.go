@@ -5,9 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // TestCounter_NilSafe pins the zero-value contract the whole package
@@ -155,14 +154,14 @@ func TestOnDemandRPCResultLabel(t *testing.T) {
 		{"nil", nil, "ok"},
 		{"ctx deadline raw", context.DeadlineExceeded, "timeout"},
 		{"ctx canceled raw", context.Canceled, "canceled"},
-		{"deadline exceeded status", status.Error(codes.DeadlineExceeded, "x"), "timeout"},
-		{"canceled status", status.Error(codes.Canceled, "x"), "canceled"},
-		{"unavailable", status.Error(codes.Unavailable, "x"), "unavailable"},
-		{"failed_precondition", status.Error(codes.FailedPrecondition, "x"), "failed_precondition"},
-		{"resource_exhausted", status.Error(codes.ResourceExhausted, "x"), "resource_exhausted"},
-		{"unimplemented", status.Error(codes.Unimplemented, "x"), "unimplemented"},
-		{"internal", status.Error(codes.Internal, "x"), "internal"},
-		{"invalid argument falls to other", status.Error(codes.InvalidArgument, "x"), "other"},
+		{"deadline exceeded status", connect.NewError(connect.CodeDeadlineExceeded, errors.New("x")), "timeout"},
+		{"canceled status", connect.NewError(connect.CodeCanceled, errors.New("x")), "canceled"},
+		{"unavailable", connect.NewError(connect.CodeUnavailable, errors.New("x")), "unavailable"},
+		{"failed_precondition", connect.NewError(connect.CodeFailedPrecondition, errors.New("x")), "failed_precondition"},
+		{"resource_exhausted", connect.NewError(connect.CodeResourceExhausted, errors.New("x")), "resource_exhausted"},
+		{"unimplemented", connect.NewError(connect.CodeUnimplemented, errors.New("x")), "unimplemented"},
+		{"internal", connect.NewError(connect.CodeInternal, errors.New("x")), "internal"},
+		{"invalid argument falls to other", connect.NewError(connect.CodeInvalidArgument, errors.New("x")), "other"},
 		{"unknown falls to other", errors.New("plain error"), "other"},
 	}
 	for _, tc := range cases {

@@ -4,22 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
+	"github.com/xargin/opentrade/api/gen/rpc/tradedump/tradedumprpcconnect"
 	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
+	"github.com/xargin/opentrade/pkg/connectx"
 	countershadow "github.com/xargin/opentrade/trade-dump/internal/snapshot/counter/shadow"
 )
 
@@ -165,6 +168,20 @@ func fixedNow(ms int64) func() time.Time {
 	return func() time.Time { return ts }
 }
 
+// connectErrMsg returns the message of a *connect.Error or err.Error()
+// for other types. Used in t.Fatalf format strings so test failure logs
+// stay informative under the Connect wire.
+func connectErrMsg(err error) string {
+	if err == nil {
+		return ""
+	}
+	var cerr *connect.Error
+	if errors.As(err, &cerr) {
+		return cerr.Message()
+	}
+	return err.Error()
+}
+
 // -----------------------------------------------------------------------------
 // EpochTracker unit tests
 // -----------------------------------------------------------------------------
@@ -239,9 +256,9 @@ func TestEpochTracker_PerVshardIsolation(t *testing.T) {
 // and full-backend modes.
 func TestServer_TakeSnapshot_NilRequestInvalidArgument(t *testing.T) {
 	srv := New(Config{Logger: zap.NewNop()})
-	_, err := srv.TakeSnapshot(context.Background(), nil)
-	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
-		t.Fatalf("want InvalidArgument, got %v", st.Code())
+	_, err := srv.TakeSnapshot(context.Background(), connect.NewRequest((*tradedumprpc.TakeSnapshotRequest)(nil)))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("want InvalidArgument, got %v", got)
 	}
 }
 
@@ -251,52 +268,43 @@ func TestServer_TakeSnapshot_NilRequestInvalidArgument(t *testing.T) {
 // cleanly.
 func TestServer_TakeSnapshot_SkeletonReturnsUnimplemented(t *testing.T) {
 	srv := New(Config{Logger: zap.NewNop()}) // no backend deps
-	_, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	_, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 5, RequesterEpoch: 1,
-	})
-	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
-		t.Fatalf("want Unimplemented, got %v", st.Code())
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
+		t.Fatalf("want Unimplemented, got %v", got)
 	}
 }
 
 // TestServer_TakeSnapshot_TransportRegistration is a transport-level
-// smoke test that survives M1b → M1c wiring: a real TCP listener,
-// a real gRPC client dial, and a call that must not panic. Backend
+// smoke test that survives M1b → M1c wiring: a real h2c listener, a
+// real Connect client dial, and a call that must not panic. Backend
 // intentionally left missing so the reply is Unimplemented.
 func TestServer_TakeSnapshot_TransportRegistration(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer lis.Close()
+	mux := http.NewServeMux()
+	path, handler := tradedumprpcconnect.NewTradeDumpSnapshotHandler(New(Config{Logger: zap.NewNop()}))
+	mux.Handle(path, handler)
+	srv := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
+	srv.EnableHTTP2 = true
+	srv.Start()
+	t.Cleanup(srv.Close)
 
-	grpcSrv := grpc.NewServer()
-	tradedumprpc.RegisterTradeDumpSnapshotServer(grpcSrv, New(Config{Logger: zap.NewNop()}))
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- grpcSrv.Serve(lis) }()
-	t.Cleanup(func() {
-		grpcSrv.GracefulStop()
-		<-serveErr
-	})
+	endpoint := strings.TrimPrefix(srv.URL, "http://")
+	httpClient := connectx.NewH2CClient()
+	t.Cleanup(httpClient.CloseIdleConnections)
+	client := tradedumprpcconnect.NewTradeDumpSnapshotClient(
+		httpClient,
+		connectx.BaseURL(endpoint),
+		connect.WithGRPC(),
+	)
 
-	dialCtx, cancelDial := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancelDial()
-	conn, err := grpc.DialContext(dialCtx, lis.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer conn.Close()
-
-	client := tradedumprpc.NewTradeDumpSnapshotClient(conn)
 	callCtx, cancelCall := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelCall()
-	_, err = client.TakeSnapshot(callCtx, &tradedumprpc.TakeSnapshotRequest{
+	_, err := client.TakeSnapshot(callCtx, connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 1, RequesterEpoch: 1,
-	})
-	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
-		t.Fatalf("want Unimplemented over transport, got %v", st.Code())
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
+		t.Fatalf("want Unimplemented over transport, got %v", got)
 	}
 }
 
@@ -340,23 +348,23 @@ func TestServer_TakeSnapshot_HappyPath(t *testing.T) {
 	seedApply(t, eng, 42, 99)
 	admin.set(2, 100)
 
-	resp, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	resp, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId:        2,
 		RequesterNodeId: "counter-node-A",
 		RequesterEpoch:  7,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
-	if resp.Leo != 100 {
-		t.Errorf("resp.Leo = %d, want 100", resp.Leo)
+	if resp.Msg.Leo != 100 {
+		t.Errorf("resp.Msg.Leo = %d, want 100", resp.Msg.Leo)
 	}
-	if resp.CounterSeq != 42 {
-		t.Errorf("resp.CounterSeq = %d, want 42", resp.CounterSeq)
+	if resp.Msg.CounterSeq != 42 {
+		t.Errorf("resp.Msg.CounterSeq = %d, want 42", resp.Msg.CounterSeq)
 	}
 	wantKey := "test/vshard-002-ondemand-1700000000000"
-	if resp.SnapshotKey != wantKey {
-		t.Errorf("resp.SnapshotKey = %q, want %q", resp.SnapshotKey, wantKey)
+	if resp.Msg.SnapshotKey != wantKey {
+		t.Errorf("resp.Msg.SnapshotKey = %q, want %q", resp.Msg.SnapshotKey, wantKey)
 	}
 	// Blob store should have the expected key written. snapshotpkg
 	// appends extension — proto format → ".pb".
@@ -370,11 +378,11 @@ func TestServer_TakeSnapshot_HappyPath(t *testing.T) {
 // fallback picks this up and retries via cluster routing.
 func TestServer_TakeSnapshot_UnknownVshard(t *testing.T) {
 	srv, _, _, _ := newTestServer(t, 2)
-	_, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	_, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 99, RequesterEpoch: 1,
-	})
-	if st, _ := status.FromError(err); st.Code() != codes.FailedPrecondition {
-		t.Fatalf("want FailedPrecondition, got %v", st.Code())
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("want FailedPrecondition, got %v", got)
 	}
 }
 
@@ -386,17 +394,17 @@ func TestServer_TakeSnapshot_StaleEpochRejected(t *testing.T) {
 	admin.set(0, 1)
 
 	// First request at epoch 5 succeeds.
-	if _, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	if _, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 5,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("first request: %v", err)
 	}
 	// Stale request at epoch 3 rejected.
-	_, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	_, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 3,
-	})
-	if st, _ := status.FromError(err); st.Code() != codes.FailedPrecondition {
-		t.Fatalf("want FailedPrecondition for stale epoch, got %v (msg=%v)", st.Code(), st.Message())
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("want FailedPrecondition for stale epoch, got %v (msg=%v)", got, connectErrMsg(err))
 	}
 }
 
@@ -407,11 +415,11 @@ func TestServer_TakeSnapshot_LEOQueryFailure(t *testing.T) {
 	seedApply(t, sh.engines[0], 1, 0)
 	admin.setErr(0, errors.New("kafka broker unreachable"))
 
-	_, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	_, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 1,
-	})
-	if st, _ := status.FromError(err); st.Code() != codes.Unavailable {
-		t.Fatalf("want Unavailable, got %v (msg=%v)", st.Code(), st.Message())
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("want Unavailable, got %v (msg=%v)", got, connectErrMsg(err))
 	}
 }
 
@@ -435,11 +443,11 @@ func TestServer_TakeSnapshot_WorkTimeoutBoundsDetachedLEO(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, err := srv.TakeSnapshot(ctx, &tradedumprpc.TakeSnapshotRequest{
+	_, err := srv.TakeSnapshot(ctx, connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 1,
-	})
-	if st, _ := status.FromError(err); st.Code() != codes.DeadlineExceeded {
-		t.Fatalf("want DeadlineExceeded from detached work timeout, got %v (msg=%v)", st.Code(), st.Message())
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeDeadlineExceeded {
+		t.Fatalf("want DeadlineExceeded from detached work timeout, got %v (msg=%v)", got, connectErrMsg(err))
 	}
 	admin.block.Store(false)
 	close(admin.blockC)
@@ -456,12 +464,12 @@ func TestServer_TakeSnapshot_WaitApplyTimeout(t *testing.T) {
 	admin.set(0, 200)
 
 	start := time.Now()
-	_, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	_, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 1,
-	})
+	}))
 	elapsed := time.Since(start)
-	if st, _ := status.FromError(err); st.Code() != codes.DeadlineExceeded {
-		t.Fatalf("want DeadlineExceeded, got %v (msg=%v)", st.Code(), st.Message())
+	if got := connect.CodeOf(err); got != connect.CodeDeadlineExceeded {
+		t.Fatalf("want DeadlineExceeded, got %v (msg=%v)", got, connectErrMsg(err))
 	}
 	// Must not drag beyond the configured budget + a small buffer.
 	if elapsed > 500*time.Millisecond {
@@ -477,11 +485,11 @@ func TestServer_TakeSnapshot_BlobStoreFailure(t *testing.T) {
 	admin.set(0, 100)
 	blob.saveErr = errors.New("s3 503")
 
-	_, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	_, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 1,
-	})
-	if st, _ := status.FromError(err); st.Code() != codes.Unavailable {
-		t.Fatalf("want Unavailable for blob failure, got %v (msg=%v)", st.Code(), st.Message())
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("want Unavailable for blob failure, got %v (msg=%v)", got, connectErrMsg(err))
 	}
 }
 
@@ -505,9 +513,9 @@ func TestServer_TakeSnapshot_SingleflightCoalescesSameVshard(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+			_, errs[i] = srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 				VshardId: 0, RequesterEpoch: 1,
-			})
+			}))
 		}()
 	}
 	// Let the goroutines pile up inside singleflight.
@@ -581,9 +589,9 @@ func TestServer_TakeSnapshot_SemaphoreLimitsInflight(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = srv.TakeSnapshot(winnersCtx, &tradedumprpc.TakeSnapshotRequest{
+			_, _ = srv.TakeSnapshot(winnersCtx, connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 				VshardId: uint32(i), RequesterEpoch: 1,
-			})
+			}))
 		}()
 	}
 	// Let winners acquire the 2 permits.
@@ -595,12 +603,12 @@ func TestServer_TakeSnapshot_SemaphoreLimitsInflight(t *testing.T) {
 	// not from the caller ctx.
 	loserCtx, cancelLoser := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancelLoser()
-	_, loserErr := srv.TakeSnapshot(loserCtx, &tradedumprpc.TakeSnapshotRequest{
+	_, loserErr := srv.TakeSnapshot(loserCtx, connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 2, RequesterEpoch: 1,
-	})
-	if st, _ := status.FromError(loserErr); st.Code() != codes.ResourceExhausted {
+	}))
+	if got := connect.CodeOf(loserErr); got != connect.CodeResourceExhausted {
 		t.Errorf("want ResourceExhausted for saturated-sem loser, got %v (msg=%v)",
-			st.Code(), st.Message())
+			got, connectErrMsg(loserErr))
 	}
 
 	// Unblock winners so the test finishes cleanly.
@@ -661,9 +669,9 @@ func TestServer_TakeSnapshot_NoDoubleKeyPrefix(t *testing.T) {
 		nowFn:            fixedNow(1_700_000_000_000),
 	})
 
-	resp, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	resp, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 1,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
@@ -683,9 +691,9 @@ func TestServer_TakeSnapshot_NoDoubleKeyPrefix(t *testing.T) {
 	// Handler-returned SnapshotKey is in the caller-facing namespace
 	// (no store prefix), which Counter's Load will pass back to the
 	// same store's Get for automatic re-prefixing.
-	if resp.SnapshotKey != "vshard-000-ondemand-1700000000000" {
-		t.Errorf("resp.SnapshotKey = %q, want %q",
-			resp.SnapshotKey, "vshard-000-ondemand-1700000000000")
+	if resp.Msg.SnapshotKey != "vshard-000-ondemand-1700000000000" {
+		t.Errorf("resp.Msg.SnapshotKey = %q, want %q",
+			resp.Msg.SnapshotKey, "vshard-000-ondemand-1700000000000")
 	}
 }
 
@@ -712,7 +720,7 @@ func TestServer_TakeSnapshot_LeoReportsCaptureCursor(t *testing.T) {
 	//
 	// We simulate the "Apply raced ahead" case deterministically
 	// by Apply'ing the extra records FIRST (so Capture sees cursor
-	// = 150 when it runs), then verifying resp.Leo reflects 150,
+	// = 150 when it runs), then verifying resp.Msg.Leo reflects 150,
 	// NOT the Admin's queried 100.
 	for i := int64(100); i < 150; i++ {
 		evt := &eventpb.CounterJournalEvent{
@@ -726,16 +734,16 @@ func TestServer_TakeSnapshot_LeoReportsCaptureCursor(t *testing.T) {
 		}
 	}
 
-	resp, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	resp, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 1,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 	// Queried LEO was 100, but Capture saw cursor at 150.
-	// resp.Leo must be 150 (the real alignment), not 100.
-	if resp.Leo != 150 {
-		t.Errorf("resp.Leo = %d, want 150 (snap.JournalOffset after Apply race, not queried LEO 100)", resp.Leo)
+	// resp.Msg.Leo must be 150 (the real alignment), not 100.
+	if resp.Msg.Leo != 150 {
+		t.Errorf("resp.Msg.Leo = %d, want 150 (snap.JournalOffset after Apply race, not queried LEO 100)", resp.Msg.Leo)
 	}
 }
 
@@ -759,9 +767,9 @@ func TestServer_TakeSnapshot_SingleflightLeaderCancelDoesNotKillFollower(t *test
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
-		_, err := srv.TakeSnapshot(ctx, &tradedumprpc.TakeSnapshotRequest{
+		_, err := srv.TakeSnapshot(ctx, connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 			VshardId: 0, RequesterEpoch: 1,
-		})
+		}))
 		leaderErr <- err
 	}()
 	// Let leader enter singleflight.
@@ -770,17 +778,17 @@ func TestServer_TakeSnapshot_SingleflightLeaderCancelDoesNotKillFollower(t *test
 	// Follower: generous 2s deadline. Must succeed after leader
 	// gives up and work eventually completes.
 	followerResult := make(chan struct {
-		resp *tradedumprpc.TakeSnapshotResponse
+		resp *connect.Response[tradedumprpc.TakeSnapshotResponse]
 		err  error
 	}, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		resp, err := srv.TakeSnapshot(ctx, &tradedumprpc.TakeSnapshotRequest{
+		resp, err := srv.TakeSnapshot(ctx, connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 			VshardId: 0, RequesterEpoch: 1,
-		})
+		}))
 		followerResult <- struct {
-			resp *tradedumprpc.TakeSnapshotResponse
+			resp *connect.Response[tradedumprpc.TakeSnapshotResponse]
 			err  error
 		}{resp, err}
 	}()
@@ -790,8 +798,8 @@ func TestServer_TakeSnapshot_SingleflightLeaderCancelDoesNotKillFollower(t *test
 	// Verify leader times out first.
 	select {
 	case err := <-leaderErr:
-		if st, _ := status.FromError(err); st.Code() != codes.DeadlineExceeded {
-			t.Fatalf("leader expected DeadlineExceeded, got %v (msg=%v)", st.Code(), st.Message())
+		if got := connect.CodeOf(err); got != connect.CodeDeadlineExceeded {
+			t.Fatalf("leader expected DeadlineExceeded, got %v (msg=%v)", got, connectErrMsg(err))
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("leader did not time out in 200ms")
@@ -807,7 +815,7 @@ func TestServer_TakeSnapshot_SingleflightLeaderCancelDoesNotKillFollower(t *test
 		if r.err != nil {
 			t.Fatalf("follower err (leader cancel leaked into shared work): %v", r.err)
 		}
-		if r.resp == nil || r.resp.Leo != 100 {
+		if r.resp == nil || r.resp.Msg.Leo != 100 {
 			t.Fatalf("follower resp = %+v, want non-nil with Leo=100", r.resp)
 		}
 	case <-time.After(3 * time.Second):
@@ -842,23 +850,23 @@ func TestServer_TakeSnapshot_SnapshotContentValid(t *testing.T) {
 	// PublishedOffset is now 10 (last kafkaOffset + 1).
 	admin.set(0, 10)
 
-	resp, err := srv.TakeSnapshot(context.Background(), &tradedumprpc.TakeSnapshotRequest{
+	resp, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
 		VshardId: 0, RequesterEpoch: 1,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
-	if resp.CounterSeq != 10 {
-		t.Errorf("resp.CounterSeq = %d, want 10", resp.CounterSeq)
+	if resp.Msg.CounterSeq != 10 {
+		t.Errorf("resp.Msg.CounterSeq = %d, want 10", resp.Msg.CounterSeq)
 	}
-	if resp.Leo != 10 {
-		t.Errorf("resp.Leo = %d, want 10", resp.Leo)
+	if resp.Msg.Leo != 10 {
+		t.Errorf("resp.Msg.Leo = %d, want 10", resp.Msg.Leo)
 	}
 
 	// Decode uploaded blob and assert matching content via the
 	// countersnap.LoadPath path (same code Counter uses to read
 	// an on-demand snapshot, so we exercise the real round-trip).
-	snap, err := countersnap.LoadPath(context.Background(), blob, resp.SnapshotKey+".pb")
+	snap, err := countersnap.LoadPath(context.Background(), blob, resp.Msg.SnapshotKey+".pb")
 	if err != nil {
 		t.Fatalf("LoadPath uploaded blob: %v", err)
 	}

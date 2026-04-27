@@ -5,9 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
@@ -50,17 +49,18 @@ func newTriggerHandlerEnv(t *testing.T, partitionCount int) *triggerHandlerEnv {
 // is missing — production wiring fallback contract.
 func TestTakeTriggerSnapshot_NoBackendUnimplemented(t *testing.T) {
 	srv := New(Config{Logger: zap.NewNop()})
-	_, err := srv.TakeTriggerSnapshot(context.Background(),
-		&tradedumprpc.TakeTriggerSnapshotRequest{RequesterNodeId: "trigger-0"})
-	if got := status.Code(err); got != codes.Unimplemented {
+	_, err := srv.TakeTriggerSnapshot(context.Background(), connect.NewRequest(
+		&tradedumprpc.TakeTriggerSnapshotRequest{RequesterNodeId: "trigger-0"}))
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
 		t.Fatalf("code = %s, want Unimplemented", got)
 	}
 }
 
 func TestTakeTriggerSnapshot_NilRequestInvalidArgument(t *testing.T) {
 	env := newTriggerHandlerEnv(t, 1)
-	_, err := env.server.TakeTriggerSnapshot(context.Background(), nil)
-	if got := status.Code(err); got != codes.InvalidArgument {
+	_, err := env.server.TakeTriggerSnapshot(context.Background(),
+		connect.NewRequest((*tradedumprpc.TakeTriggerSnapshotRequest)(nil)))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("code = %s, want InvalidArgument", got)
 	}
 }
@@ -78,22 +78,22 @@ func TestTakeTriggerSnapshot_HappyPath(t *testing.T) {
 	env.admin.set(0, 1) // shadow next = 1
 	env.admin.set(1, 5) // shadow next = 5
 
-	resp, err := env.server.TakeTriggerSnapshot(context.Background(),
-		&tradedumprpc.TakeTriggerSnapshotRequest{RequesterNodeId: "trigger-0"})
+	resp, err := env.server.TakeTriggerSnapshot(context.Background(), connect.NewRequest(
+		&tradedumprpc.TakeTriggerSnapshotRequest{RequesterNodeId: "trigger-0"}))
 	if err != nil {
 		t.Fatalf("TakeTriggerSnapshot: %v", err)
 	}
-	if resp.SnapshotKey == "" {
+	if resp.Msg.SnapshotKey == "" {
 		t.Fatal("empty snapshot_key")
 	}
-	if got := resp.TriggerEventOffsets[0]; got != 1 {
+	if got := resp.Msg.TriggerEventOffsets[0]; got != 1 {
 		t.Errorf("trigger_event_offsets[0] = %d, want 1", got)
 	}
-	if got := resp.TriggerEventOffsets[1]; got != 5 {
+	if got := resp.Msg.TriggerEventOffsets[1]; got != 5 {
 		t.Errorf("trigger_event_offsets[1] = %d, want 5", got)
 	}
 
-	loaded, err := triggersnap.Load(context.Background(), env.store, resp.SnapshotKey)
+	loaded, err := triggersnap.Load(context.Background(), env.store, resp.Msg.SnapshotKey)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -111,9 +111,9 @@ func TestTakeTriggerSnapshot_DeadlineExceededWhenShadowLags(t *testing.T) {
 	env.admin.set(0, 100) // LEO = 100
 	// Shadow has consumed nothing; waitAppliedTo will time out.
 
-	_, err := env.server.TakeTriggerSnapshot(context.Background(),
-		&tradedumprpc.TakeTriggerSnapshotRequest{RequesterNodeId: "trigger-0"})
-	if got := status.Code(err); got != codes.DeadlineExceeded {
+	_, err := env.server.TakeTriggerSnapshot(context.Background(), connect.NewRequest(
+		&tradedumprpc.TakeTriggerSnapshotRequest{RequesterNodeId: "trigger-0"}))
+	if got := connect.CodeOf(err); got != connect.CodeDeadlineExceeded {
 		t.Fatalf("code = %s, want DeadlineExceeded", got)
 	}
 }
@@ -123,9 +123,9 @@ func TestTakeTriggerSnapshot_LEOErrorUnavailable(t *testing.T) {
 	env := newTriggerHandlerEnv(t, 1)
 	env.admin.setErr(0, errFromMsg("kafka down"))
 
-	_, err := env.server.TakeTriggerSnapshot(context.Background(),
-		&tradedumprpc.TakeTriggerSnapshotRequest{RequesterNodeId: "trigger-0"})
-	if got := status.Code(err); got != codes.Unavailable {
+	_, err := env.server.TakeTriggerSnapshot(context.Background(), connect.NewRequest(
+		&tradedumprpc.TakeTriggerSnapshotRequest{RequesterNodeId: "trigger-0"}))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 		t.Fatalf("code = %s, want Unavailable", got)
 	}
 }
@@ -150,7 +150,7 @@ func apply(t *testing.T, eng *triggershadow.Engine, id uint64, status eventpb.Tr
 	}
 }
 
-type errMsg string
+type errFromString string
 
-func (e errMsg) Error() string  { return string(e) }
-func errFromMsg(s string) error { return errMsg(s) }
+func (e errFromString) Error() string { return string(e) }
+func errFromMsg(s string) error       { return errFromString(s) }

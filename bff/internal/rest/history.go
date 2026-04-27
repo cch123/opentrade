@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"connectrpc.com/connect"
+
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 	"github.com/xargin/opentrade/pkg/auth"
 )
@@ -44,18 +46,18 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 		Cursor:   q.Get("cursor"),
 		Limit:    parseInt32Query(q.Get("limit")),
 	}
-	resp, err := s.history.ListOrders(r.Context(), req)
+	resp, err := s.history.ListOrders(r.Context(), connect.NewRequest(req))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
-	out := make([]map[string]any, 0, len(resp.Orders))
-	for _, o := range resp.Orders {
+	out := make([]map[string]any, 0, len(resp.Msg.Orders))
+	for _, o := range resp.Msg.Orders {
 		out = append(out, orderToJSON(o))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"orders":      out,
-		"next_cursor": resp.NextCursor,
+		"next_cursor": resp.Msg.NextCursor,
 	})
 }
 
@@ -82,18 +84,18 @@ func (s *Server) handleListTrades(w http.ResponseWriter, r *http.Request) {
 		Cursor:  q.Get("cursor"),
 		Limit:   parseInt32Query(q.Get("limit")),
 	}
-	resp, err := s.history.ListTrades(r.Context(), req)
+	resp, err := s.history.ListTrades(r.Context(), connect.NewRequest(req))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
-	out := make([]map[string]any, 0, len(resp.Trades))
-	for _, t := range resp.Trades {
+	out := make([]map[string]any, 0, len(resp.Msg.Trades))
+	for _, t := range resp.Msg.Trades {
 		out = append(out, tradeToJSON(t))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"trades":      out,
-		"next_cursor": resp.NextCursor,
+		"next_cursor": resp.Msg.NextCursor,
 	})
 }
 
@@ -129,18 +131,18 @@ func (s *Server) handleListAccountLogs(w http.ResponseWriter, r *http.Request) {
 		Cursor:   q.Get("cursor"),
 		Limit:    parseInt32Query(q.Get("limit")),
 	}
-	resp, err := s.history.ListAccountLogs(r.Context(), req)
+	resp, err := s.history.ListAccountLogs(r.Context(), connect.NewRequest(req))
 	if err != nil {
-		writeGRPCError(w, err)
+		writeConnectError(w, err)
 		return
 	}
-	out := make([]map[string]any, 0, len(resp.Logs))
-	for _, l := range resp.Logs {
+	out := make([]map[string]any, 0, len(resp.Msg.Logs))
+	for _, l := range resp.Msg.Logs {
 		out = append(out, accountLogToJSON(l))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"logs":        out,
-		"next_cursor": resp.NextCursor,
+		"next_cursor": resp.Msg.NextCursor,
 	})
 }
 

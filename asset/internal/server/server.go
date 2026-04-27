@@ -1,5 +1,5 @@
-// Package server adapts asset-service's internal Service to two gRPC
-// surfaces:
+// Package server adapts asset-service's internal Service to two
+// Connect-Go surfaces:
 //
 //   - AssetHolder  (api/rpc/assetholder): TransferOut / TransferIn /
 //     CompensateTransferOut. asset-service implements this
@@ -15,8 +15,7 @@ import (
 	"errors"
 	"fmt"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 
 	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
@@ -27,9 +26,8 @@ import (
 	"github.com/xargin/opentrade/pkg/transferledger"
 )
 
-// AssetHolderServer implements assetholderrpc.AssetHolderServer.
+// AssetHolderServer satisfies assetholderrpcconnect.AssetHolderHandler.
 type AssetHolderServer struct {
-	assetholderrpc.UnimplementedAssetHolderServer
 	svc *service.Service
 }
 
@@ -39,77 +37,79 @@ func NewAssetHolderServer(svc *service.Service) *AssetHolderServer {
 }
 
 // TransferOut debits the funding wallet for (user_id, asset).
-func (s *AssetHolderServer) TransferOut(ctx context.Context, req *assetholderrpc.TransferOutRequest) (*assetholderrpc.TransferOutResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *AssetHolderServer) TransferOut(ctx context.Context, req *connect.Request[assetholderrpc.TransferOutRequest]) (*connect.Response[assetholderrpc.TransferOutResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	hreq, err := buildHolderReq(req.UserId, req.TransferId, req.Asset, req.Amount, req.PeerBiz, req.Memo, "")
+	hreq, err := buildHolderReq(m.UserId, m.TransferId, m.Asset, m.Amount, m.PeerBiz, m.Memo, "")
 	if err != nil {
 		return nil, err
 	}
 	res, err := s.svc.TransferOut(ctx, hreq)
 	if err != nil {
-		return nil, holderServiceErrToStatus(err)
+		return nil, holderServiceErrToConnect(err)
 	}
-	return &assetholderrpc.TransferOutResponse{
+	return connect.NewResponse(&assetholderrpc.TransferOutResponse{
 		Status:         holderStatusToProto(res.Status),
 		RejectReason:   rejectReasonToProto(res.RejectReason),
 		AvailableAfter: res.BalanceAfter.Available.String(),
 		FrozenAfter:    res.BalanceAfter.Frozen.String(),
-	}, nil
+	}), nil
 }
 
 // TransferIn credits the funding wallet.
-func (s *AssetHolderServer) TransferIn(ctx context.Context, req *assetholderrpc.TransferInRequest) (*assetholderrpc.TransferInResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *AssetHolderServer) TransferIn(ctx context.Context, req *connect.Request[assetholderrpc.TransferInRequest]) (*connect.Response[assetholderrpc.TransferInResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	hreq, err := buildHolderReq(req.UserId, req.TransferId, req.Asset, req.Amount, req.PeerBiz, req.Memo, "")
+	hreq, err := buildHolderReq(m.UserId, m.TransferId, m.Asset, m.Amount, m.PeerBiz, m.Memo, "")
 	if err != nil {
 		return nil, err
 	}
 	res, err := s.svc.TransferIn(ctx, hreq)
 	if err != nil {
-		return nil, holderServiceErrToStatus(err)
+		return nil, holderServiceErrToConnect(err)
 	}
-	return &assetholderrpc.TransferInResponse{
+	return connect.NewResponse(&assetholderrpc.TransferInResponse{
 		Status:         holderStatusToProto(res.Status),
 		RejectReason:   rejectReasonToProto(res.RejectReason),
 		AvailableAfter: res.BalanceAfter.Available.String(),
 		FrozenAfter:    res.BalanceAfter.Frozen.String(),
-	}, nil
+	}), nil
 }
 
 // CompensateTransferOut reverses a previously-debited TransferOut.
-func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *assetholderrpc.CompensateTransferOutRequest) (*assetholderrpc.CompensateTransferOutResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *connect.Request[assetholderrpc.CompensateTransferOutRequest]) (*connect.Response[assetholderrpc.CompensateTransferOutResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	hreq, err := buildHolderReq(req.UserId, req.TransferId, req.Asset, req.Amount, req.PeerBiz, "", req.CompensateCause)
+	hreq, err := buildHolderReq(m.UserId, m.TransferId, m.Asset, m.Amount, m.PeerBiz, "", m.CompensateCause)
 	if err != nil {
 		return nil, err
 	}
 	res, err := s.svc.Compensate(ctx, hreq)
 	if err != nil {
-		return nil, holderServiceErrToStatus(err)
+		return nil, holderServiceErrToConnect(err)
 	}
-	return &assetholderrpc.CompensateTransferOutResponse{
+	return connect.NewResponse(&assetholderrpc.CompensateTransferOutResponse{
 		Status:         holderStatusToProto(res.Status),
 		RejectReason:   rejectReasonToProto(res.RejectReason),
 		AvailableAfter: res.BalanceAfter.Available.String(),
 		FrozenAfter:    res.BalanceAfter.Frozen.String(),
-	}, nil
+	}), nil
 }
 
 // ---------------------------------------------------------------------------
 // AssetService surface (M3a: QueryFundingBalance only)
 // ---------------------------------------------------------------------------
 
-// AssetServer implements assetrpc.AssetServiceServer. Transfer +
+// AssetServer satisfies assetrpcconnect.AssetServiceHandler. Transfer +
 // QueryTransfer are wired in M3b via the saga orchestrator;
 // QueryFundingBalance uses the funding service directly.
 type AssetServer struct {
-	assetrpc.UnimplementedAssetServiceServer
 	svc  *service.Service
 	orch *saga.Orchestrator
 }
@@ -127,34 +127,35 @@ func NewAssetServer(svc *service.Service, orch *saga.Orchestrator) *AssetServer 
 // cancelled — the caller observes the outcome in TransferResponse.state
 // on the same request. Non-terminal outcomes still return successfully
 // with terminal=false so the client can follow up via QueryTransfer.
-func (s *AssetServer) Transfer(ctx context.Context, req *assetrpc.TransferRequest) (*assetrpc.TransferResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *AssetServer) Transfer(ctx context.Context, req *connect.Request[assetrpc.TransferRequest]) (*connect.Response[assetrpc.TransferResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
 	if s.orch == nil {
-		return nil, status.Error(codes.FailedPrecondition, "saga orchestrator not configured")
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("saga orchestrator not configured"))
 	}
-	if err := validateTransferAmount(req.Amount); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+	if err := validateTransferAmount(m.Amount); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	out, err := s.orch.Transfer(ctx, saga.TransferInput{
-		UserID:     req.UserId,
-		TransferID: req.TransferId,
-		FromBiz:    req.FromBiz,
-		ToBiz:      req.ToBiz,
-		Asset:      req.Asset,
-		Amount:     req.Amount,
-		Memo:       req.Memo,
+		UserID:     m.UserId,
+		TransferID: m.TransferId,
+		FromBiz:    m.FromBiz,
+		ToBiz:      m.ToBiz,
+		Asset:      m.Asset,
+		Amount:     m.Amount,
+		Memo:       m.Memo,
 	})
 	if err != nil {
-		return nil, sagaErrToStatus(err)
+		return nil, sagaErrToConnect(err)
 	}
-	return &assetrpc.TransferResponse{
+	return connect.NewResponse(&assetrpc.TransferResponse{
 		TransferId:   out.TransferID,
 		State:        sagaStateToProto(out.State),
 		RejectReason: out.Reason,
 		Terminal:     out.Terminal,
-	}, nil
+	}), nil
 }
 
 // QueryTransfer returns the current state of a saga. Used by BFF
@@ -162,24 +163,25 @@ func (s *AssetServer) Transfer(ctx context.Context, req *assetrpc.TransferReques
 // reconciliation jobs. When req.UserId is non-empty, the result is
 // guarded against cross-user access — a row belonging to a different
 // user returns NOT_FOUND.
-func (s *AssetServer) QueryTransfer(ctx context.Context, req *assetrpc.QueryTransferRequest) (*assetrpc.QueryTransferResponse, error) {
-	if req == nil || req.TransferId == "" {
-		return nil, status.Error(codes.InvalidArgument, "transfer_id required")
+func (s *AssetServer) QueryTransfer(ctx context.Context, req *connect.Request[assetrpc.QueryTransferRequest]) (*connect.Response[assetrpc.QueryTransferResponse], error) {
+	m := req.Msg
+	if m == nil || m.TransferId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("transfer_id required"))
 	}
 	if s.orch == nil {
-		return nil, status.Error(codes.FailedPrecondition, "saga orchestrator not configured")
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("saga orchestrator not configured"))
 	}
-	e, err := s.orch.QueryEntry(ctx, req.TransferId)
+	e, err := s.orch.QueryEntry(ctx, m.TransferId)
 	if err != nil {
 		if errors.Is(err, transferledger.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "unknown transfer_id")
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("unknown transfer_id"))
 		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if req.UserId != "" && e.UserID != req.UserId {
-		return nil, status.Error(codes.NotFound, "unknown transfer_id")
+	if m.UserId != "" && e.UserID != m.UserId {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("unknown transfer_id"))
 	}
-	return &assetrpc.QueryTransferResponse{
+	return connect.NewResponse(&assetrpc.QueryTransferResponse{
 		TransferId:      e.TransferID,
 		UserId:          e.UserID,
 		FromBiz:         e.FromBiz,
@@ -190,37 +192,38 @@ func (s *AssetServer) QueryTransfer(ctx context.Context, req *assetrpc.QueryTran
 		RejectReason:    e.RejectReason,
 		CreatedAtUnixMs: e.CreatedAtMs,
 		UpdatedAtUnixMs: e.UpdatedAtMs,
-	}, nil
+	}), nil
 }
 
 // ListTransfers pages a user's saga rows newest-first by created_at_ms.
 // Replaced the trade-dump `transfers` projection post ADR-0065.
-func (s *AssetServer) ListTransfers(ctx context.Context, req *assetrpc.ListTransfersRequest) (*assetrpc.ListTransfersResponse, error) {
-	if req == nil || req.UserId == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id required")
+func (s *AssetServer) ListTransfers(ctx context.Context, req *connect.Request[assetrpc.ListTransfersRequest]) (*connect.Response[assetrpc.ListTransfersResponse], error) {
+	m := req.Msg
+	if m == nil || m.UserId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	if s.orch == nil {
-		return nil, status.Error(codes.FailedPrecondition, "saga orchestrator not configured")
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("saga orchestrator not configured"))
 	}
-	states, err := buildListStates(req)
+	states, err := buildListStates(m)
 	if err != nil {
 		return nil, err
 	}
 	filter := transferledger.ListFilter{
-		UserID:  req.UserId,
-		FromBiz: req.FromBiz,
-		ToBiz:   req.ToBiz,
-		Asset:   req.Asset,
+		UserID:  m.UserId,
+		FromBiz: m.FromBiz,
+		ToBiz:   m.ToBiz,
+		Asset:   m.Asset,
 		States:  states,
-		SinceMs: req.SinceMs,
-		UntilMs: req.UntilMs,
+		SinceMs: m.SinceMs,
+		UntilMs: m.UntilMs,
 	}
-	entries, next, err := s.orch.ListTransfers(ctx, filter, req.Cursor, int(req.Limit))
+	entries, next, err := s.orch.ListTransfers(ctx, filter, m.Cursor, int(m.Limit))
 	if err != nil {
 		if errors.Is(err, transferledger.ErrInvalidCursor) {
-			return nil, status.Error(codes.InvalidArgument, "invalid cursor")
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid cursor"))
 		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	out := &assetrpc.ListTransfersResponse{
 		Transfers: make([]*assetrpc.Transfer, 0, len(entries)),
@@ -231,11 +234,11 @@ func (s *AssetServer) ListTransfers(ctx context.Context, req *assetrpc.ListTrans
 	if next != (transferledger.Cursor{}) {
 		cur, err := transferledger.EncodeCursor(next)
 		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
+			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		out.NextCursor = cur
 	}
-	return out, nil
+	return connect.NewResponse(out), nil
 }
 
 // buildListStates folds the scope enum to concrete states and merges
@@ -246,7 +249,7 @@ func buildListStates(req *assetrpc.ListTransfersRequest) ([]transferledger.State
 		out := make([]transferledger.State, 0, len(req.States))
 		for _, s := range req.States {
 			if !isKnownState(s) {
-				return nil, status.Errorf(codes.InvalidArgument, "unknown state %q", s)
+				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown state %q", s))
 			}
 			out = append(out, transferledger.State(s))
 		}
@@ -289,13 +292,14 @@ func entryToProtoTransfer(e transferledger.Entry) *assetrpc.Transfer {
 // "" returns every tracked asset; when asset is given and the user has
 // no record the response includes a single zero-valued entry (same
 // shape as counter's QueryBalance).
-func (s *AssetServer) QueryFundingBalance(ctx context.Context, req *assetrpc.QueryFundingBalanceRequest) (*assetrpc.QueryFundingBalanceResponse, error) {
-	if req == nil || req.UserId == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+func (s *AssetServer) QueryFundingBalance(ctx context.Context, req *connect.Request[assetrpc.QueryFundingBalanceRequest]) (*connect.Response[assetrpc.QueryFundingBalanceResponse], error) {
+	m := req.Msg
+	if m == nil || m.UserId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
 	}
-	all, err := s.svc.QueryFundingBalance(ctx, req.UserId, req.Asset)
+	all, err := s.svc.QueryFundingBalance(ctx, m.UserId, m.Asset)
 	if err != nil {
-		return nil, holderServiceErrToStatus(err)
+		return nil, holderServiceErrToConnect(err)
 	}
 	out := &assetrpc.QueryFundingBalanceResponse{
 		Balances: make([]*assetrpc.FundingBalance, 0, len(all)),
@@ -308,7 +312,7 @@ func (s *AssetServer) QueryFundingBalance(ctx context.Context, req *assetrpc.Que
 			Version:   b.Balance.Version,
 		})
 	}
-	return out, nil
+	return connect.NewResponse(out), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -323,20 +327,20 @@ func (s *AssetServer) QueryFundingBalance(ctx context.Context, req *assetrpc.Que
 // handling).
 func buildHolderReq(userID, transferID, asset, amount, peerBiz, memo, compensateCause string) (service.HolderRequest, error) {
 	if userID == "" {
-		return service.HolderRequest{}, status.Error(codes.InvalidArgument, "user_id required")
+		return service.HolderRequest{}, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	if transferID == "" {
-		return service.HolderRequest{}, status.Error(codes.InvalidArgument, "transfer_id required")
+		return service.HolderRequest{}, connect.NewError(connect.CodeInvalidArgument, errors.New("transfer_id required"))
 	}
 	if asset == "" {
-		return service.HolderRequest{}, status.Error(codes.InvalidArgument, "asset required")
+		return service.HolderRequest{}, connect.NewError(connect.CodeInvalidArgument, errors.New("asset required"))
 	}
 	amt, err := dec.Parse(amount)
 	if err != nil {
-		return service.HolderRequest{}, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid amount %q: %v", amount, err))
+		return service.HolderRequest{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid amount %q: %v", amount, err))
 	}
 	if amt.Sign() <= 0 {
-		return service.HolderRequest{}, status.Error(codes.InvalidArgument, "amount must be positive")
+		return service.HolderRequest{}, connect.NewError(connect.CodeInvalidArgument, errors.New("amount must be positive"))
 	}
 	return service.HolderRequest{
 		UserID:          userID,
@@ -382,11 +386,11 @@ func rejectReasonToProto(err error) assetholderrpc.RejectReason {
 	return assetholderrpc.RejectReason_REJECT_REASON_INTERNAL
 }
 
-func holderServiceErrToStatus(err error) error {
+func holderServiceErrToConnect(err error) error {
 	if errors.Is(err, service.ErrIdempotencyConflict) {
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
-	return status.Error(codes.Internal, err.Error())
+	return connect.NewError(connect.CodeInternal, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -439,13 +443,13 @@ func ledgerStateToProto(s transferledger.State) assetrpc.SagaState {
 	return assetrpc.SagaState_SAGA_STATE_UNSPECIFIED
 }
 
-// sagaErrToStatus maps orchestrator errors to gRPC status codes.
+// sagaErrToConnect maps orchestrator errors to Connect codes.
 // Business errors (invalid shape) are InvalidArgument; unknown
 // biz_line surfaces as FailedPrecondition; anything else is Internal.
-func sagaErrToStatus(err error) error {
+func sagaErrToConnect(err error) error {
 	switch {
 	case errors.Is(err, saga.ErrInvalidRequest), errors.Is(err, saga.ErrSameBiz):
-		return status.Error(codes.InvalidArgument, err.Error())
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	return status.Error(codes.Internal, err.Error())
+	return connect.NewError(connect.CodeInternal, err)
 }

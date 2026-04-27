@@ -29,9 +29,8 @@ import (
 	"sync"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
@@ -1281,16 +1280,17 @@ func (e *Engine) graduateLocked(c *Trigger) {
 	}
 }
 
-// cleanRejectReason pulls a compact string out of a gRPC error, falling
-// back to err.Error() for non-gRPC failures.
+// cleanRejectReason pulls a compact string out of a Connect error,
+// falling back to err.Error() for non-Connect failures.
 func cleanRejectReason(err error) string {
 	if err == nil {
 		return ""
 	}
-	if st, ok := status.FromError(err); ok {
-		msg := st.Message()
-		if msg == "" && st.Code() != codes.OK {
-			msg = st.Code().String()
+	var cerr *connect.Error
+	if errors.As(err, &cerr) {
+		msg := cerr.Message()
+		if msg == "" {
+			msg = cerr.Code().String()
 		}
 		return msg
 	}

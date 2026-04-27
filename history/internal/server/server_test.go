@@ -6,9 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/DATA-DOG/go-sqlmock"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
@@ -20,10 +19,10 @@ func TestGetOrder_InvalidArgs(t *testing.T) {
 	defer db.Close()
 	s := New(mysqlstore.NewStoreWithDB(db, time.Second))
 
-	if _, err := s.GetOrder(context.Background(), &historypb.GetOrderRequest{}); status.Code(err) != codes.InvalidArgument {
+	if _, err := s.GetOrder(context.Background(), connect.NewRequest(&historypb.GetOrderRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("empty user_id: got %v", err)
 	}
-	if _, err := s.GetOrder(context.Background(), &historypb.GetOrderRequest{UserId: "u1"}); status.Code(err) != codes.InvalidArgument {
+	if _, err := s.GetOrder(context.Background(), connect.NewRequest(&historypb.GetOrderRequest{UserId: "u1"})); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("zero order_id: got %v", err)
 	}
 }
@@ -40,9 +39,9 @@ func TestGetOrder_NotFoundMapsToCode(t *testing.T) {
 		WithArgs(uint64(1), "u1").
 		WillReturnRows(sqlmock.NewRows(nil))
 
-	_, err = s.GetOrder(context.Background(), &historypb.GetOrderRequest{UserId: "u1", OrderId: 1})
-	if status.Code(err) != codes.NotFound {
-		t.Fatalf("code = %v want NotFound; err = %v", status.Code(err), err)
+	_, err = s.GetOrder(context.Background(), connect.NewRequest(&historypb.GetOrderRequest{UserId: "u1", OrderId: 1}))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("code = %v want NotFound; err = %v", connect.CodeOf(err), err)
 	}
 }
 
@@ -67,10 +66,10 @@ func TestListOrders_ScopeTranslatesToStatuses(t *testing.T) {
 	mock.ExpectQuery(`status IN \(\?,\?,\?,\?\)`).
 		WillReturnRows(sqlmock.NewRows(cols))
 
-	_, err = s.ListOrders(context.Background(), &historypb.ListOrdersRequest{
+	_, err = s.ListOrders(context.Background(), connect.NewRequest(&historypb.ListOrdersRequest{
 		UserId: "u1",
 		Scope:  historypb.OrderScope_ORDER_SCOPE_OPEN,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("ListOrders: %v", err)
 	}
@@ -98,11 +97,11 @@ func TestListOrders_ExplicitStatusesWinOverScope(t *testing.T) {
 	mock.ExpectQuery(`status IN \(\?\)`).
 		WillReturnRows(sqlmock.NewRows(cols))
 
-	_, err = s.ListOrders(context.Background(), &historypb.ListOrdersRequest{
+	_, err = s.ListOrders(context.Background(), connect.NewRequest(&historypb.ListOrdersRequest{
 		UserId:   "u1",
 		Scope:    historypb.OrderScope_ORDER_SCOPE_ALL,
 		Statuses: []historypb.OrderStatus{historypb.OrderStatus_ORDER_STATUS_FILLED},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("ListOrders: %v", err)
 	}
@@ -116,12 +115,12 @@ func TestListOrders_InvalidCursorMapsToInvalidArgument(t *testing.T) {
 	defer db.Close()
 	s := New(mysqlstore.NewStoreWithDB(db, time.Second))
 
-	_, err := s.ListOrders(context.Background(), &historypb.ListOrdersRequest{
+	_, err := s.ListOrders(context.Background(), connect.NewRequest(&historypb.ListOrdersRequest{
 		UserId: "u1",
 		Cursor: "!!!", // not valid base64
-	})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, err = %v", status.Code(err), err)
+	}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("code = %v, err = %v", connect.CodeOf(err), err)
 	}
 }
 

@@ -6,16 +6,15 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
+	"github.com/xargin/opentrade/pkg/counterstate"
 )
 
 type fakePub struct {
@@ -49,31 +48,31 @@ func newServer(t *testing.T) *Server {
 
 func TestQueryBalanceReturnsZeroForUnknownAsset(t *testing.T) {
 	s := newServer(t)
-	resp, err := s.QueryBalance(context.Background(), &counterrpc.QueryBalanceRequest{
+	resp, err := s.QueryBalance(context.Background(), connect.NewRequest(&counterrpc.QueryBalanceRequest{
 		UserId: "u1", Asset: "USDT",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Balances) != 1 || resp.Balances[0].Available != "0" {
-		t.Fatalf("balance = %+v", resp.Balances)
+	if len(resp.Msg.Balances) != 1 || resp.Msg.Balances[0].Available != "0" {
+		t.Fatalf("balance = %+v", resp.Msg.Balances)
 	}
 }
 
 func TestPlaceOrderWithoutOrderDepsReturnsUnavailable(t *testing.T) {
 	s := newServer(t)
 	// newServer wires Transfer only; PlaceOrder requires SetOrderDeps.
-	_, err := s.PlaceOrder(context.Background(), &counterrpc.PlaceOrderRequest{
+	_, err := s.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{
 		UserId: "u1", Symbol: "BTC-USDT",
 		Side:      eventpb.Side_SIDE_BUY,
 		OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
 		Tif:       eventpb.TimeInForce_TIME_IN_FORCE_GTC,
 		Price:     "100", Qty: "1",
-	})
+	}))
 	if err == nil {
 		t.Fatal("expected Unavailable")
 	}
-	if status.Code(err) != codes.Unavailable {
-		t.Fatalf("code = %s, want Unavailable", status.Code(err))
+	if connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("code = %s, want Unavailable", connect.CodeOf(err))
 	}
 }

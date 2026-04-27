@@ -23,11 +23,10 @@ import (
 	"sync"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
@@ -197,10 +196,8 @@ type Config struct {
 	Trigger *TriggerBackend
 }
 
-// Server implements tradedumprpc.TradeDumpSnapshotServer.
+// Server satisfies tradedumprpcconnect.TradeDumpSnapshotHandler.
 type Server struct {
-	tradedumprpc.UnimplementedTradeDumpSnapshotServer
-
 	cfg               Config
 	sem               *semaphore.Weighted
 	sf                singleflight.Group
@@ -274,10 +271,11 @@ func (s *Server) hasFullBackend() bool {
 // path.
 func (s *Server) TakeSnapshot(
 	ctx context.Context,
-	req *tradedumprpc.TakeSnapshotRequest,
-) (*tradedumprpc.TakeSnapshotResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+	req *connect.Request[tradedumprpc.TakeSnapshotRequest],
+) (*connect.Response[tradedumprpc.TakeSnapshotResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
 
 	// M1b compatibility: if any backend dep is missing, stay in
@@ -285,29 +283,29 @@ func (s *Server) TakeSnapshot(
 	// full path by supplying stub Shadow / Admin / BlobStore.
 	if !s.hasFullBackend() {
 		s.cfg.Logger.Info("TakeSnapshot hit without full backend (skeleton mode)",
-			zap.Uint32("vshard_id", req.VshardId),
-			zap.String("requester_node_id", req.RequesterNodeId),
-			zap.Uint64("requester_epoch", req.RequesterEpoch))
-		return nil, status.Error(codes.Unimplemented,
-			"TakeSnapshot backend not wired (Shadow/Admin/BlobStore missing)")
+			zap.Uint32("vshard_id", m.VshardId),
+			zap.String("requester_node_id", m.RequesterNodeId),
+			zap.Uint64("requester_epoch", m.RequesterEpoch))
+		return nil, connect.NewError(connect.CodeUnimplemented,
+			errors.New("TakeSnapshot backend not wired (Shadow/Admin/BlobStore missing)"))
 	}
 
-	partition := int32(req.VshardId)
+	partition := int32(m.VshardId)
 
 	// Ownership check first — if this instance doesn't own the
 	// vshard, fail fast with FAILED_PRECONDITION. Counter then
 	// retries via cluster routing or falls back.
 	eng, ok := s.cfg.Shadow.ShadowEngine(partition)
 	if !ok {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"vshard %d not owned by this trade-dump instance", partition)
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("vshard %d not owned by this trade-dump instance", partition))
 	}
 
 	// Epoch validation. Defense in depth over ADR-0058 lock.
-	if ok, lastSeen := s.epoch.CheckAndAdvance(partition, req.RequesterEpoch); !ok {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"stale epoch %d for vshard %d (last_seen=%d)",
-			req.RequesterEpoch, partition, lastSeen)
+	if ok, lastSeen := s.epoch.CheckAndAdvance(partition, m.RequesterEpoch); !ok {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("stale epoch %d for vshard %d (last_seen=%d)",
+				m.RequesterEpoch, partition, lastSeen))
 	}
 
 	// Singleflight by vshard: same-vshard concurrent requests
@@ -325,7 +323,7 @@ func (s *Server) TakeSnapshot(
 	// Internal timeouts (sem acquire bound below + WaitApplyTimeout
 	// + franz-go / kadm request deadlines + BlobStore client
 	// timeouts) bound the detached work duration. Server shutdown
-	// is handled by gRPC GracefulStop draining handler goroutines.
+	// is handled by http.Server.Shutdown draining handler goroutines.
 	sfKey := fmt.Sprintf("vshard-%d", partition)
 	ch := s.sf.DoChan(sfKey, func() (any, error) {
 		workCtx, cancel := context.WithTimeout(context.Background(), s.workTimeout)
@@ -337,15 +335,15 @@ func (s *Server) TakeSnapshot(
 		if res.Err != nil {
 			return nil, res.Err
 		}
-		return res.Val.(*tradedumprpc.TakeSnapshotResponse), nil
+		return connect.NewResponse(res.Val.(*tradedumprpc.TakeSnapshotResponse)), nil
 	case <-ctx.Done():
 		// Caller gave up. Inner work continues so other waiters
 		// (or future same-epoch calls hitting the singleflight
 		// cache window) still observe a result.
 		if cerr := ctx.Err(); errors.Is(cerr, context.DeadlineExceeded) {
-			return nil, status.Error(codes.DeadlineExceeded, cerr.Error())
+			return nil, connect.NewError(connect.CodeDeadlineExceeded, cerr)
 		}
-		return nil, status.Error(codes.Canceled, ctx.Err().Error())
+		return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
 	}
 }
 
@@ -370,8 +368,8 @@ func (s *Server) takeSnapshotOnce(
 	semCtx, cancelSem := context.WithTimeout(ctx, s.semAcquireTimeout)
 	if err := s.sem.Acquire(semCtx, 1); err != nil {
 		cancelSem()
-		return nil, status.Error(codes.ResourceExhausted,
-			"in-flight TakeSnapshot limit reached")
+		return nil, connect.NewError(connect.CodeResourceExhausted,
+			errors.New("in-flight TakeSnapshot limit reached"))
 	}
 	cancelSem()
 	defer s.sem.Release(1)
@@ -382,15 +380,15 @@ func (s *Server) takeSnapshotOnce(
 	leo, err := s.cfg.Admin.ListEndOffset(ctx, s.cfg.JournalTopic, partition)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, status.Errorf(codes.DeadlineExceeded,
-				"leo_query_timeout: %v", err)
+			return nil, connect.NewError(connect.CodeDeadlineExceeded,
+				fmt.Errorf("leo_query_timeout: %v", err))
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-			return nil, status.Errorf(codes.Canceled,
-				"leo_query_canceled: %v", err)
+			return nil, connect.NewError(connect.CodeCanceled,
+				fmt.Errorf("leo_query_canceled: %v", err))
 		}
-		return nil, status.Errorf(codes.Unavailable,
-			"leo_query_fail: %v", err)
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("leo_query_fail: %v", err))
 	}
 
 	// 2. Wait for shadow to apply up to LEO. Bounded by configured
@@ -406,9 +404,9 @@ func (s *Server) takeSnapshotOnce(
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 			reason = "caller_canceled"
 		}
-		return nil, status.Errorf(codes.DeadlineExceeded,
-			"%s: target=%d published=%d err=%v",
-			reason, leo, eng.PublishedOffset(), err)
+		return nil, connect.NewError(connect.CodeDeadlineExceeded,
+			fmt.Errorf("%s: target=%d published=%d err=%v",
+				reason, leo, eng.PublishedOffset(), err))
 	}
 
 	// 3. Capture + serialize + upload.
@@ -435,15 +433,15 @@ func (s *Server) takeSnapshotOnce(
 
 	if err := countersnap.Save(ctx, s.cfg.BlobStore, key, snap, s.cfg.SnapshotFormat); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, status.Errorf(codes.DeadlineExceeded,
-				"snapshot_upload_timeout: %v", err)
+			return nil, connect.NewError(connect.CodeDeadlineExceeded,
+				fmt.Errorf("snapshot_upload_timeout: %v", err))
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-			return nil, status.Errorf(codes.Canceled,
-				"snapshot_upload_canceled: %v", err)
+			return nil, connect.NewError(connect.CodeCanceled,
+				fmt.Errorf("snapshot_upload_canceled: %v", err))
 		}
-		return nil, status.Errorf(codes.Unavailable,
-			"s3_upload_error: %v", err)
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("s3_upload_error: %v", err))
 	}
 
 	s.cfg.Logger.Info("on-demand snapshot produced",

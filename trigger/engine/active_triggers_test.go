@@ -6,9 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
@@ -125,7 +124,7 @@ func TestTriggerCap_RestoreRebuildsIndex(t *testing.T) {
 // in TRIGGER_STATUS_EXPIRED_IN_MATCH (not the generic REJECTED).
 func TestTryFire_CounterMaxOpenLimitOrders_RoutesToExpiredInMatch(t *testing.T) {
 	placer := &fakePlacer{respFn: func(_ *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
-		return nil, status.Error(codes.FailedPrecondition, string(etcdcfg.RejectMaxOpenLimitOrders))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(string(etcdcfg.RejectMaxOpenLimitOrders)))
 	}}
 	e := newEngineWithCap(0, nil, placer)
 	id, _, _, err := e.Place(context.Background(), goodReq())
@@ -152,7 +151,7 @@ func TestTryFire_CounterMaxOpenLimitOrders_RoutesToExpiredInMatch(t *testing.T) 
 // behaviour for errors other than the ADR-0054 cap.
 func TestTryFire_GenericCounterReject_StaysAsRejected(t *testing.T) {
 	placer := &fakePlacer{respFn: func(_ *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
-		return nil, status.Error(codes.FailedPrecondition, "insufficient_balance")
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("insufficient_balance"))
 	}}
 	e := newEngineWithCap(0, nil, placer)
 	id, _, _, err := e.Place(context.Background(), goodReq())

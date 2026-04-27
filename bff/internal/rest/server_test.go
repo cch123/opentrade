@@ -4,15 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
@@ -35,29 +34,59 @@ type fakeCounter struct {
 	myCancelFn    func(*counterrpc.CancelMyOrdersRequest) (*counterrpc.CancelMyOrdersResponse, error)
 }
 
-func (f *fakeCounter) PlaceOrder(_ context.Context, req *counterrpc.PlaceOrderRequest, _ ...grpc.CallOption) (*counterrpc.PlaceOrderResponse, error) {
-	return f.placeFn(req)
+func (f *fakeCounter) PlaceOrder(_ context.Context, req *connect.Request[counterrpc.PlaceOrderRequest]) (*connect.Response[counterrpc.PlaceOrderResponse], error) {
+	resp, err := f.placeFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeCounter) CancelOrder(_ context.Context, req *counterrpc.CancelOrderRequest, _ ...grpc.CallOption) (*counterrpc.CancelOrderResponse, error) {
-	return f.cancelFn(req)
+func (f *fakeCounter) CancelOrder(_ context.Context, req *connect.Request[counterrpc.CancelOrderRequest]) (*connect.Response[counterrpc.CancelOrderResponse], error) {
+	resp, err := f.cancelFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeCounter) QueryOrder(_ context.Context, req *counterrpc.QueryOrderRequest, _ ...grpc.CallOption) (*counterrpc.QueryOrderResponse, error) {
-	return f.queryFn(req)
+func (f *fakeCounter) QueryOrder(_ context.Context, req *connect.Request[counterrpc.QueryOrderRequest]) (*connect.Response[counterrpc.QueryOrderResponse], error) {
+	resp, err := f.queryFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeCounter) QueryBalance(_ context.Context, req *counterrpc.QueryBalanceRequest, _ ...grpc.CallOption) (*counterrpc.QueryBalanceResponse, error) {
-	return f.balanceFn(req)
+func (f *fakeCounter) QueryBalance(_ context.Context, req *connect.Request[counterrpc.QueryBalanceRequest]) (*connect.Response[counterrpc.QueryBalanceResponse], error) {
+	resp, err := f.balanceFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeCounter) AdminCancelOrders(_ context.Context, req *counterrpc.AdminCancelOrdersRequest, _ ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error) {
+func (f *fakeCounter) Reserve(_ context.Context, _ *connect.Request[counterrpc.ReserveRequest]) (*connect.Response[counterrpc.ReserveResponse], error) {
+	return connect.NewResponse(&counterrpc.ReserveResponse{}), nil
+}
+func (f *fakeCounter) ReleaseReservation(_ context.Context, _ *connect.Request[counterrpc.ReleaseReservationRequest]) (*connect.Response[counterrpc.ReleaseReservationResponse], error) {
+	return connect.NewResponse(&counterrpc.ReleaseReservationResponse{}), nil
+}
+func (f *fakeCounter) AdminCancelOrders(_ context.Context, req *connect.Request[counterrpc.AdminCancelOrdersRequest]) (*connect.Response[counterrpc.AdminCancelOrdersResponse], error) {
 	if f.adminCancelFn == nil {
-		return &counterrpc.AdminCancelOrdersResponse{}, nil
+		return connect.NewResponse(&counterrpc.AdminCancelOrdersResponse{}), nil
 	}
-	return f.adminCancelFn(req)
+	resp, err := f.adminCancelFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeCounter) CancelMyOrders(_ context.Context, req *counterrpc.CancelMyOrdersRequest, _ ...grpc.CallOption) (*counterrpc.CancelMyOrdersResponse, error) {
+func (f *fakeCounter) CancelMyOrders(_ context.Context, req *connect.Request[counterrpc.CancelMyOrdersRequest]) (*connect.Response[counterrpc.CancelMyOrdersResponse], error) {
 	if f.myCancelFn == nil {
-		return &counterrpc.CancelMyOrdersResponse{}, nil
+		return connect.NewResponse(&counterrpc.CancelMyOrdersResponse{}), nil
 	}
-	return f.myCancelFn(req)
+	resp, err := f.myCancelFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // fakeAsset is the test double for client.Asset (ADR-0057 M4). Only the
@@ -71,29 +100,45 @@ type fakeAsset struct {
 	fundingBalFn    func(*assetrpc.QueryFundingBalanceRequest) (*assetrpc.QueryFundingBalanceResponse, error)
 }
 
-func (f *fakeAsset) Transfer(_ context.Context, req *assetrpc.TransferRequest, _ ...grpc.CallOption) (*assetrpc.TransferResponse, error) {
+func (f *fakeAsset) Transfer(_ context.Context, req *connect.Request[assetrpc.TransferRequest]) (*connect.Response[assetrpc.TransferResponse], error) {
 	if f.transferFn == nil {
-		return &assetrpc.TransferResponse{TransferId: req.TransferId}, nil
+		return connect.NewResponse(&assetrpc.TransferResponse{TransferId: req.Msg.TransferId}), nil
 	}
-	return f.transferFn(req)
+	resp, err := f.transferFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeAsset) QueryTransfer(_ context.Context, req *assetrpc.QueryTransferRequest, _ ...grpc.CallOption) (*assetrpc.QueryTransferResponse, error) {
+func (f *fakeAsset) QueryTransfer(_ context.Context, req *connect.Request[assetrpc.QueryTransferRequest]) (*connect.Response[assetrpc.QueryTransferResponse], error) {
 	if f.queryTransferFn == nil {
-		return &assetrpc.QueryTransferResponse{TransferId: req.TransferId}, nil
+		return connect.NewResponse(&assetrpc.QueryTransferResponse{TransferId: req.Msg.TransferId}), nil
 	}
-	return f.queryTransferFn(req)
+	resp, err := f.queryTransferFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeAsset) ListTransfers(_ context.Context, req *assetrpc.ListTransfersRequest, _ ...grpc.CallOption) (*assetrpc.ListTransfersResponse, error) {
+func (f *fakeAsset) ListTransfers(_ context.Context, req *connect.Request[assetrpc.ListTransfersRequest]) (*connect.Response[assetrpc.ListTransfersResponse], error) {
 	if f.listTransfersFn == nil {
-		return &assetrpc.ListTransfersResponse{}, nil
+		return connect.NewResponse(&assetrpc.ListTransfersResponse{}), nil
 	}
-	return f.listTransfersFn(req)
+	resp, err := f.listTransfersFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeAsset) QueryFundingBalance(_ context.Context, req *assetrpc.QueryFundingBalanceRequest, _ ...grpc.CallOption) (*assetrpc.QueryFundingBalanceResponse, error) {
+func (f *fakeAsset) QueryFundingBalance(_ context.Context, req *connect.Request[assetrpc.QueryFundingBalanceRequest]) (*connect.Response[assetrpc.QueryFundingBalanceResponse], error) {
 	if f.fundingBalFn == nil {
-		return &assetrpc.QueryFundingBalanceResponse{}, nil
+		return connect.NewResponse(&assetrpc.QueryFundingBalanceResponse{}), nil
 	}
-	return f.fundingBalFn(req)
+	resp, err := f.fundingBalFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func newServer(fc *fakeCounter) *Server {
@@ -109,8 +154,8 @@ func newServerWithAsset(fc *fakeCounter, fa *fakeAsset) *Server {
 		asset = fa
 	}
 	return NewServer(Config{
-		UserRateLimit:  100, UserRateWindow: time.Second,
-		IPRateLimit:    100, IPRateWindow:   time.Second,
+		UserRateLimit: 100, UserRateWindow: time.Second,
+		IPRateLimit: 100, IPRateWindow: time.Second,
 		RequestTimeout: time.Second,
 	}, fc, asset, nil, nil, nil, zap.NewNop())
 }
@@ -129,9 +174,9 @@ func TestPlaceOrderHappyPath(t *testing.T) {
 				t.Fatalf("side = %v", req.Side)
 			}
 			return &counterrpc.PlaceOrderResponse{
-				OrderId:         100,
-				ClientOrderId:   req.ClientOrderId,
-				Accepted:        true,
+				OrderId:          100,
+				ClientOrderId:    req.ClientOrderId,
+				Accepted:         true,
 				ReceivedTsUnixMs: 12345,
 			}, nil
 		},
@@ -267,8 +312,8 @@ func TestPlaceOrder_ReferencePriceFilledFromDepthCache(t *testing.T) {
 		},
 	}
 	srv := NewServer(Config{
-		UserRateLimit:  100, UserRateWindow: time.Second,
-		IPRateLimit:    100, IPRateWindow:   time.Second,
+		UserRateLimit: 100, UserRateWindow: time.Second,
+		IPRateLimit: 100, IPRateWindow: time.Second,
 		RequestTimeout: time.Second,
 	}, fc, nil, cache, nil, nil, zap.NewNop())
 
@@ -323,8 +368,8 @@ func TestPlaceOrder_ReferencePriceEmptyWhenSnapshotMissing(t *testing.T) {
 		},
 	}
 	srv := NewServer(Config{
-		UserRateLimit:  100, UserRateWindow: time.Second,
-		IPRateLimit:    100, IPRateWindow:   time.Second,
+		UserRateLimit: 100, UserRateWindow: time.Second,
+		IPRateLimit: 100, IPRateWindow: time.Second,
 		RequestTimeout: time.Second,
 	}, fc, nil, cache, nil, nil, zap.NewNop())
 
@@ -429,10 +474,10 @@ func TestCancelOrderAndQuery(t *testing.T) {
 	}
 }
 
-func TestGRPCErrorMapping(t *testing.T) {
+func TestConnectErrorMapping(t *testing.T) {
 	fc := &fakeCounter{
 		placeFn: func(_ *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
-			return nil, status.Error(codes.FailedPrecondition, "insufficient balance")
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("insufficient balance"))
 		},
 	}
 	srv := newServer(fc)

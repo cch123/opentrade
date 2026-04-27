@@ -3,26 +3,27 @@ package tradedumpclient
 import (
 	"context"
 	"errors"
-	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"google.golang.org/protobuf/proto"
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
+	"github.com/xargin/opentrade/api/gen/rpc/tradedump/tradedumprpcconnect"
 )
 
-// fakeStub implements tradedumprpc.TradeDumpSnapshotClient so unit
-// tests can drive Client without a live trade-dump server.
+// fakeStub implements tradedumprpcconnect.TradeDumpSnapshotClient so
+// unit tests can drive Client without a live trade-dump server.
 type fakeStub struct {
-	tradedumprpc.TradeDumpSnapshotClient // embed to fail closed on
+	tradedumprpcconnect.TradeDumpSnapshotClient // embed to fail closed on
 	// unintended method calls
 
 	calls    atomic.Int64
@@ -34,11 +35,10 @@ type fakeStub struct {
 
 func (f *fakeStub) TakeSnapshot(
 	ctx context.Context,
-	req *tradedumprpc.TakeSnapshotRequest,
-	_ ...grpc.CallOption,
-) (*tradedumprpc.TakeSnapshotResponse, error) {
+	req *connect.Request[tradedumprpc.TakeSnapshotRequest],
+) (*connect.Response[tradedumprpc.TakeSnapshotResponse], error) {
 	f.calls.Add(1)
-	reqCopy := proto.Clone(req).(*tradedumprpc.TakeSnapshotRequest)
+	reqCopy := proto.Clone(req.Msg).(*tradedumprpc.TakeSnapshotRequest)
 	f.lastReq.Store(reqCopy)
 	if f.delay > 0 {
 		select {
@@ -50,7 +50,7 @@ func (f *fakeStub) TakeSnapshot(
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.response, nil
+	return connect.NewResponse(f.response), nil
 }
 
 // -----------------------------------------------------------------------------
@@ -59,22 +59,21 @@ func (f *fakeStub) TakeSnapshot(
 
 func TestIsFallbackCode(t *testing.T) {
 	cases := []struct {
-		code codes.Code
+		code connect.Code
 		want bool
 	}{
 		// Fallback triggers per ADR-0064 §4.
-		{codes.Unimplemented, true},
-		{codes.Unavailable, true},
-		{codes.DeadlineExceeded, true},
-		{codes.Canceled, true},
-		{codes.FailedPrecondition, true},
-		{codes.ResourceExhausted, true},
+		{connect.CodeUnimplemented, true},
+		{connect.CodeUnavailable, true},
+		{connect.CodeDeadlineExceeded, true},
+		{connect.CodeCanceled, true},
+		{connect.CodeFailedPrecondition, true},
+		{connect.CodeResourceExhausted, true},
 		// Fatal — really wrong.
-		{codes.Internal, false},
-		{codes.Unknown, false},
-		{codes.InvalidArgument, false},
-		{codes.DataLoss, false},
-		{codes.OK, false}, // not an error, shouldn't be queried but documented
+		{connect.CodeInternal, false},
+		{connect.CodeUnknown, false},
+		{connect.CodeInvalidArgument, false},
+		{connect.CodeDataLoss, false},
 	}
 	for _, tc := range cases {
 		if got := IsFallbackCode(tc.code); got != tc.want {
@@ -123,17 +122,17 @@ func TestClient_TakeSnapshot_HappyPath(t *testing.T) {
 // to branch — if this mapping breaks, worker.Run would crash
 // instead of falling back.
 func TestClient_TakeSnapshot_FallbackCodesMap(t *testing.T) {
-	fallbackCodes := []codes.Code{
-		codes.Unimplemented,
-		codes.Unavailable,
-		codes.DeadlineExceeded,
-		codes.Canceled,
-		codes.FailedPrecondition,
-		codes.ResourceExhausted,
+	fallbackCodes := []connect.Code{
+		connect.CodeUnimplemented,
+		connect.CodeUnavailable,
+		connect.CodeDeadlineExceeded,
+		connect.CodeCanceled,
+		connect.CodeFailedPrecondition,
+		connect.CodeResourceExhausted,
 	}
 	for _, code := range fallbackCodes {
 		t.Run(code.String(), func(t *testing.T) {
-			stub := &fakeStub{err: status.Error(code, "simulated")}
+			stub := &fakeStub{err: connect.NewError(code, errors.New("simulated"))}
 			c := NewFromStub(stub, zap.NewNop())
 			_, err := c.TakeSnapshot(context.Background(), 0, "", 0)
 			if err == nil {
@@ -142,8 +141,8 @@ func TestClient_TakeSnapshot_FallbackCodesMap(t *testing.T) {
 			if !errors.Is(err, ErrFallback) {
 				t.Fatalf("errors.Is(err, ErrFallback) = false for code %s; err=%v", code, err)
 			}
-			// Underlying error message (the gRPC status) must be preserved
-			// so operators can tell WHY fallback was taken.
+			// Underlying error message must be preserved so operators
+			// can tell WHY fallback was taken.
 			if !strings.Contains(err.Error(), "simulated") {
 				t.Fatalf("err does not preserve underlying msg: %v", err)
 			}
@@ -156,15 +155,15 @@ func TestClient_TakeSnapshot_FallbackCodesMap(t *testing.T) {
 // NOT be wrapped in ErrFallback. Worker.Run treats those as startup
 // fatal.
 func TestClient_TakeSnapshot_FatalCodesSurface(t *testing.T) {
-	fatalCodes := []codes.Code{
-		codes.Internal,
-		codes.Unknown,
-		codes.InvalidArgument,
-		codes.DataLoss,
+	fatalCodes := []connect.Code{
+		connect.CodeInternal,
+		connect.CodeUnknown,
+		connect.CodeInvalidArgument,
+		connect.CodeDataLoss,
 	}
 	for _, code := range fatalCodes {
 		t.Run(code.String(), func(t *testing.T) {
-			stub := &fakeStub{err: status.Error(code, "bad")}
+			stub := &fakeStub{err: connect.NewError(code, errors.New("bad"))}
 			c := NewFromStub(stub, zap.NewNop())
 			_, err := c.TakeSnapshot(context.Background(), 0, "", 0)
 			if err == nil {
@@ -173,9 +172,9 @@ func TestClient_TakeSnapshot_FatalCodesSurface(t *testing.T) {
 			if errors.Is(err, ErrFallback) {
 				t.Fatalf("fatal code %s should NOT map to ErrFallback; got %v", code, err)
 			}
-			// Status code must survive round-trip so worker can log it.
-			if got := status.Code(err); got != code {
-				t.Fatalf("status code = %s, want %s", got, code)
+			// Connect code must survive round-trip so worker can log it.
+			if got := connect.CodeOf(err); got != code {
+				t.Fatalf("connect code = %s, want %s", got, code)
 			}
 		})
 	}
@@ -203,34 +202,27 @@ func TestClient_TakeSnapshot_CtxCancelMapsToFallback(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Dial / Close — transport integration via a real loopback gRPC
+// Dial / Close — transport integration via a real loopback h2c
 // server with no registered service so we hit "Unimplemented".
 // -----------------------------------------------------------------------------
 
 func TestClient_Dial_AndClose_ErrFallbackOnUnimplemented(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	srv := grpc.NewServer() // empty — TakeSnapshot → codes.Unimplemented
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(lis) }()
-	t.Cleanup(func() {
-		srv.GracefulStop()
-		<-serveErr
-	})
+	// Empty mux — any /opentrade.rpc.tradedump.TradeDumpSnapshot/* path
+	// returns 404, which Connect maps to CodeUnimplemented.
+	mux := http.NewServeMux()
+	srv := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
+	srv.EnableHTTP2 = true
+	srv.Start()
+	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	endpoint := strings.TrimPrefix(srv.URL, "http://")
 
-	c, err := Dial(ctx, lis.Addr().String(), zap.NewNop())
+	c, err := Dial(context.Background(), endpoint, zap.NewNop())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	// Override default grpc.Dial's lazy resolver: force a connect
-	// by setting a short call deadline.
 	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer callCancel()
 	_, err = c.TakeSnapshot(callCtx, 0, "node-A", 1)
@@ -247,11 +239,4 @@ func TestDial_EmptyEndpointErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty endpoint")
 	}
-}
-
-func TestDial_InsecureCredentialsImport(t *testing.T) {
-	// Defensive: verify we can construct insecure credentials in
-	// this environment (import cycle sanity). Trivial but catches
-	// build / dep regressions.
-	_ = insecure.NewCredentials()
 }

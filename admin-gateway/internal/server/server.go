@@ -16,10 +16,11 @@ import (
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
 
-	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/admin-gateway/internal/counterclient"
+	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
@@ -562,18 +563,18 @@ func (s *Server) handleCancelOrders(w http.ResponseWriter, r *http.Request) {
 	if body.UserID != "" {
 		// Single shard: xxhash-route the user (same fn BFF uses).
 		shardID := shard.Index(body.UserID, s.shardedCounter.Shards())
-		resp, err := s.shardedCounter.Shard(shardID).AdminCancelOrders(ctx, req)
+		resp, err := s.shardedCounter.Shard(shardID).AdminCancelOrders(ctx, connect.NewRequest(req))
 		rpcErr = err
 		if resp != nil {
-			totalCancelled = resp.Cancelled
-			totalSkipped = resp.Skipped
+			totalCancelled = resp.Msg.Cancelled
+			totalSkipped = resp.Msg.Skipped
 			shardResults = append(shardResults, map[string]any{
-				"shard_id": resp.ShardId, "cancelled": resp.Cancelled, "skipped": resp.Skipped,
+				"shard_id": resp.Msg.ShardId, "cancelled": resp.Msg.Cancelled, "skipped": resp.Msg.Skipped,
 			})
 		}
 	} else {
 		// Symbol-only: fan-out, per-shard counts visible to caller.
-		results, err := s.shardedCounter.BroadcastAdminCancelOrders(ctx, req)
+		results, err := s.shardedCounter.BroadcastAdminCancelOrders(ctx, connect.NewRequest(req))
 		rpcErr = err
 		for i, r := range results {
 			if r == nil {

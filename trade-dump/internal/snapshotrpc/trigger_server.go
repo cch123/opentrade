@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
@@ -59,18 +58,19 @@ type TriggerBackend struct {
 // EOS/fence dance, and uses no requester_epoch.
 func (s *Server) TakeTriggerSnapshot(
 	ctx context.Context,
-	req *tradedumprpc.TakeTriggerSnapshotRequest,
-) (*tradedumprpc.TakeTriggerSnapshotResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+	req *connect.Request[tradedumprpc.TakeTriggerSnapshotRequest],
+) (*connect.Response[tradedumprpc.TakeTriggerSnapshotResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
 	tb := s.cfg.Trigger
 	if tb == nil || tb.Shadow == nil || tb.Admin == nil || tb.BlobStore == nil ||
 		tb.Topic == "" || tb.PartitionCount <= 0 {
 		s.cfg.Logger.Info("TakeTriggerSnapshot hit without trigger backend",
-			zap.String("requester_node_id", req.RequesterNodeId))
-		return nil, status.Error(codes.Unimplemented,
-			"TakeTriggerSnapshot backend not wired (trigger pipeline disabled)")
+			zap.String("requester_node_id", m.RequesterNodeId))
+		return nil, connect.NewError(connect.CodeUnimplemented,
+			errors.New("TakeTriggerSnapshot backend not wired (trigger pipeline disabled)"))
 	}
 
 	// Singleflight key is constant — single shadow engine, so two
@@ -86,12 +86,12 @@ func (s *Server) TakeTriggerSnapshot(
 		if res.Err != nil {
 			return nil, res.Err
 		}
-		return res.Val.(*tradedumprpc.TakeTriggerSnapshotResponse), nil
+		return connect.NewResponse(res.Val.(*tradedumprpc.TakeTriggerSnapshotResponse)), nil
 	case <-ctx.Done():
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, status.Error(codes.DeadlineExceeded, ctx.Err().Error())
+			return nil, connect.NewError(connect.CodeDeadlineExceeded, ctx.Err())
 		}
-		return nil, status.Error(codes.Canceled, ctx.Err().Error())
+		return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
 	}
 }
 
@@ -106,8 +106,8 @@ func (s *Server) takeTriggerSnapshotOnce(
 	for part := int32(0); part < int32(tb.PartitionCount); part++ {
 		leo, err := tb.Admin.ListEndOffset(ctx, tb.Topic, part)
 		if err != nil {
-			return nil, status.Errorf(codes.Unavailable,
-				"list end offset partition %d: %v", part, err)
+			return nil, connect.NewError(connect.CodeUnavailable,
+				fmt.Errorf("list end offset partition %d: %v", part, err))
 		}
 		targets[part] = leo
 	}
@@ -120,10 +120,10 @@ func (s *Server) takeTriggerSnapshotOnce(
 	defer cancel()
 	if err := tb.Shadow.WaitAppliedTo(waitCtx, targets, 5*time.Millisecond); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, status.Errorf(codes.DeadlineExceeded,
-				"shadow apply did not reach LEO within %s", s.cfg.WaitApplyTimeout)
+			return nil, connect.NewError(connect.CodeDeadlineExceeded,
+				fmt.Errorf("shadow apply did not reach LEO within %s", s.cfg.WaitApplyTimeout))
 		}
-		return nil, status.Errorf(codes.Internal, "wait applied: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("wait applied: %v", err))
 	}
 
 	// Step 3: Capture + Save.
@@ -131,7 +131,7 @@ func (s *Server) takeTriggerSnapshotOnce(
 	snap := tb.Shadow.Capture(now.UnixMilli(), false)
 	key := fmt.Sprintf("%strigger-ondemand-%d", tb.KeyPrefix, now.UnixMilli())
 	if err := triggersnap.Save(ctx, tb.BlobStore, key, snap, tb.SnapshotFormat); err != nil {
-		return nil, status.Errorf(codes.Internal, "save snapshot: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save snapshot: %v", err))
 	}
 
 	// Build response. Copy the maps so caller mutations don't ripple

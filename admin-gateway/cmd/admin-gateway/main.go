@@ -16,13 +16,13 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
-	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/admin-gateway/internal/counterclient"
 	"github.com/xargin/opentrade/admin-gateway/internal/rollout"
 	"github.com/xargin/opentrade/admin-gateway/internal/server"
+	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
@@ -85,15 +85,13 @@ func main() {
 	// Counter shard clients — admin needs the full shard list to fan
 	// out symbol-only cancels, same xxhash routing as BFF for user-
 	// scoped cancels.
-	conns, shardClients, err := dialAllShards(rootCtx, cfg.CounterShards)
+	httpClients, shardClients, err := dialAllShards(rootCtx, cfg.CounterShards)
 	if err != nil {
 		logger.Fatal("dial counter shards", zap.Error(err))
 	}
 	defer func() {
-		for i, c := range conns {
-			if err := c.Close(); err != nil {
-				logger.Debug("close shard conn", zap.Int("shard", i), zap.Error(err))
-			}
+		for _, hc := range httpClients {
+			hc.CloseIdleConnections()
 		}
 	}()
 	sharded, err := counterclient.NewSharded(shardClients)
@@ -215,22 +213,22 @@ func main() {
 	logger.Info("admin-gateway shutdown complete")
 }
 
-// dialAllShards opens one grpc.ClientConn per shard endpoint in order.
-func dialAllShards(ctx context.Context, endpoints []string) ([]*grpc.ClientConn, []counterclient.Counter, error) {
-	conns := make([]*grpc.ClientConn, 0, len(endpoints))
+// dialAllShards opens one h2c http.Client per shard endpoint in order.
+func dialAllShards(ctx context.Context, endpoints []string) ([]*http.Client, []counterclient.Counter, error) {
+	httpClients := make([]*http.Client, 0, len(endpoints))
 	clients := make([]counterclient.Counter, 0, len(endpoints))
 	for i, ep := range endpoints {
-		conn, c, err := counterclient.Dial(ctx, ep)
+		hc, c, err := counterclient.Dial(ctx, ep)
 		if err != nil {
-			for _, prior := range conns {
-				_ = prior.Close()
+			for _, prior := range httpClients {
+				prior.CloseIdleConnections()
 			}
 			return nil, nil, fmt.Errorf("shard %d (%s): %w", i, ep, err)
 		}
-		conns = append(conns, conn)
+		httpClients = append(httpClients, hc)
 		clients = append(clients, c)
 	}
-	return conns, clients, nil
+	return httpClients, clients, nil
 }
 
 // newEtcdShim adapts *etcdcfg.EtcdSource to server.EtcdSource. EtcdSource
@@ -249,13 +247,13 @@ func (s etcdSrcShim) Delete(ctx context.Context, symbol string) (bool, int64, er
 	return s.s.Delete(ctx, symbol)
 }
 
-// rolloutCancellerShim drops the variadic grpc.CallOption tail so
-// *counterclient.Sharded satisfies rollout.CounterCanceller without
-// dragging grpc into the rollout package.
+// rolloutCancellerShim adapts *counterclient.Sharded to
+// rollout.CounterCanceller (plain proto signature) so the rollout
+// package doesn't need to know about Connect.
 type rolloutCancellerShim struct{ s *counterclient.Sharded }
 
 func (s rolloutCancellerShim) BroadcastAdminCancelOrders(ctx context.Context, req *counterrpc.AdminCancelOrdersRequest) ([]*counterrpc.AdminCancelOrdersResponse, error) {
-	return s.s.BroadcastAdminCancelOrders(ctx, req)
+	return s.s.BroadcastAdminCancelOrders(ctx, connect.NewRequest(req))
 }
 
 // ---------------------------------------------------------------------------

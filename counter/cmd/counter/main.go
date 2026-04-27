@@ -21,7 +21,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -35,16 +34,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
-	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
-	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	"github.com/xargin/opentrade/api/gen/rpc/assetholder/assetholderrpcconnect"
+	"github.com/xargin/opentrade/api/gen/rpc/counter/counterrpcconnect"
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/server"
 	"github.com/xargin/opentrade/counter/internal/symregistry"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
 	"github.com/xargin/opentrade/counter/internal/worker"
+	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
 	sharedmetrics "github.com/xargin/opentrade/pkg/metrics"
@@ -252,26 +251,24 @@ func main() {
 		}
 	}()
 
-	grpcServer := grpc.NewServer()
-	counterrpc.RegisterCounterServiceServer(grpcServer, server.New(mgr, logger))
+	rpcMux := http.NewServeMux()
+	counterPath, counterHandler := counterrpcconnect.NewCounterServiceHandler(server.New(mgr, logger))
+	rpcMux.Handle(counterPath, counterHandler)
 	// Counter's AssetHolder surface (ADR-0057) shares the same Router so
 	// each user's asset-service calls land on the same vshard as their
 	// order + balance traffic.
-	assetholderrpc.RegisterAssetHolderServer(grpcServer, server.NewAssetHolderServer(mgr))
-
-	lis, err := net.Listen("tcp", cfg.GRPCAddr)
-	if err != nil {
-		logger.Fatal("listen", zap.Error(err))
-	}
+	holderPath, holderHandler := assetholderrpcconnect.NewAssetHolderHandler(server.NewAssetHolderServer(mgr))
+	rpcMux.Handle(holderPath, holderHandler)
+	rpcSrv := connectx.NewH2CServer(cfg.GRPCAddr, rpcMux)
 
 	wg.Add(1)
 	grpcDone := make(chan struct{})
 	go func() {
 		defer wg.Done()
 		defer close(grpcDone)
-		logger.Info("gRPC listening", zap.String("addr", cfg.GRPCAddr))
-		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			logger.Error("grpc Serve", zap.Error(err))
+		logger.Info("gRPC (Connect/h2c) listening", zap.String("addr", cfg.GRPCAddr))
+		if err := rpcSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("rpc Serve", zap.Error(err))
 		}
 	}()
 
@@ -315,7 +312,11 @@ func main() {
 	}
 
 	// Stop gRPC first so no new RPC arrives while workers are draining.
-	grpcServer.GracefulStop()
+	rpcShutdownCtx, rpcShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := rpcSrv.Shutdown(rpcShutdownCtx); err != nil {
+		logger.Warn("rpc shutdown", zap.Error(err))
+	}
+	rpcShutdownCancel()
 	<-grpcDone
 
 	// Manager → cluster: stopping the manager lets every VShardWorker

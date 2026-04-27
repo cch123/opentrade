@@ -19,7 +19,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -27,13 +27,14 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
-	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	"github.com/xargin/opentrade/api/gen/rpc/counter/counterrpcconnect"
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
+	"github.com/xargin/opentrade/api/gen/rpc/tradedump/tradedumprpcconnect"
+	"github.com/xargin/opentrade/api/gen/rpc/trigger/triggerrpcconnect"
+	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
@@ -216,16 +217,14 @@ func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
 // Called directly in HA-disabled mode; called once per leadership cycle
 // under --ha-mode=auto.
 func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
-	counterConns, counterClients, err := dialCounterShards(ctx, cfg.CounterShards)
+	counterHTTPClients, counterClients, err := dialCounterShards(ctx, cfg.CounterShards)
 	if err != nil {
 		logger.Error("dial counter shards", zap.Error(err))
 		return
 	}
 	defer func() {
-		for i, c := range counterConns {
-			if err := c.Close(); err != nil {
-				logger.Debug("close counter conn", zap.Int("shard", i), zap.Error(err))
-			}
+		for _, c := range counterHTTPClients {
+			c.CloseIdleConnections()
 		}
 	}()
 	placer, err := counterclient.NewSharded(counterClients)
@@ -314,26 +313,27 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 
 	svc := service.New(eng)
-	grpcSrv := grpc.NewServer()
-	condrpc.RegisterTriggerServiceServer(grpcSrv, server.New(svc, nil))
+	mux := http.NewServeMux()
+	triggerPath, triggerHandler := triggerrpcconnect.NewTriggerServiceHandler(server.New(svc, nil))
+	mux.Handle(triggerPath, triggerHandler)
+	httpSrv := connectx.NewH2CServer(cfg.GRPCAddr, mux)
 
-	lis, err := net.Listen("tcp", cfg.GRPCAddr)
-	if err != nil {
-		logger.Error("listen", zap.Error(err))
-		return
-	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		logger.Info("gRPC listening", zap.String("addr", cfg.GRPCAddr))
-		if err := grpcSrv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		logger.Info("gRPC (Connect/h2c) listening", zap.String("addr", cfg.GRPCAddr))
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("grpc serve", zap.Error(err))
 		}
 	}()
 
 	<-ctx.Done()
 	logger.Info("primary shutting down")
-	grpcSrv.GracefulStop()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("grpc shutdown", zap.Error(err))
+	}
+	shutdownCancel()
 	mdCons.Close()
 	wg.Wait()
 	// No final snapshot write — trade-dump's shadow pipeline is the
@@ -414,25 +414,18 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
-	dialCtx, dialCancel := context.WithTimeout(ctx, timeout)
-	defer dialCancel()
-	conn, err := grpc.DialContext(dialCtx,
-		cfg.TradeDumpEndpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
+	httpClient := connectx.NewH2CClient()
+	defer httpClient.CloseIdleConnections()
+	cli := tradedumprpcconnect.NewTradeDumpSnapshotClient(
+		httpClient,
+		connectx.BaseURL(cfg.TradeDumpEndpoint),
+		connect.WithGRPC(),
 	)
-	if err != nil {
-		logger.Warn("trade-dump dial failed; cold path", zap.Error(err))
-		return nil, false, nil
-	}
-	defer func() { _ = conn.Close() }()
-
-	cli := tradedumprpc.NewTradeDumpSnapshotClient(conn)
 	rpcCtx, rpcCancel := context.WithTimeout(ctx, timeout)
 	defer rpcCancel()
-	resp, err := cli.TakeTriggerSnapshot(rpcCtx, &tradedumprpc.TakeTriggerSnapshotRequest{
+	resp, err := cli.TakeTriggerSnapshot(rpcCtx, connect.NewRequest(&tradedumprpc.TakeTriggerSnapshotRequest{
 		RequesterNodeId: cfg.InstanceID,
-	})
+	}))
 	if err != nil {
 		logger.Warn("TakeTriggerSnapshot RPC failed; cold path",
 			zap.String("endpoint", cfg.TradeDumpEndpoint),
@@ -440,21 +433,21 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 		return nil, false, nil
 	}
 
-	// trade-dump writes the on-demand snapshot at resp.SnapshotKey
+	// trade-dump writes the on-demand snapshot at resp.Msg.SnapshotKey
 	// in the shared BlobStore (ADR-0067 M4). Load probes .pb / .json
 	// extensions internally.
-	r, err := snapshot.Load(ctx, store, resp.SnapshotKey, eng)
+	r, err := snapshot.Load(ctx, store, resp.Msg.SnapshotKey, eng)
 	if err != nil {
 		logger.Warn("hot-path snapshot load failed; cold path",
-			zap.String("key", resp.SnapshotKey), zap.Error(err))
+			zap.String("key", resp.Msg.SnapshotKey), zap.Error(err))
 		return nil, false, nil
 	}
 	logger.Info("trigger state restored from on-demand snapshot (hot path)",
-		zap.String("key", resp.SnapshotKey),
+		zap.String("key", resp.Msg.SnapshotKey),
 		zap.Int64("taken_at_ms", r.TakenAtMs),
 		zap.Int("pending", r.Pending),
 		zap.Int("terminals", r.Terminals),
-		zap.Int("trigger_event_partitions", len(resp.TriggerEventOffsets)),
+		zap.Int("trigger_event_partitions", len(resp.Msg.TriggerEventOffsets)),
 		zap.Int("market_partitions", len(r.Offsets)))
 	return r.Offsets, true, nil
 }
@@ -518,21 +511,21 @@ func runMarketCheckpointTicker(ctx context.Context, cfg Config, eng *engine.Engi
 // Counter dial
 // ---------------------------------------------------------------------------
 
-func dialCounterShards(ctx context.Context, endpoints []string) ([]*grpc.ClientConn, []counterrpc.CounterServiceClient, error) {
-	conns := make([]*grpc.ClientConn, 0, len(endpoints))
-	clients := make([]counterrpc.CounterServiceClient, 0, len(endpoints))
+func dialCounterShards(ctx context.Context, endpoints []string) ([]*http.Client, []counterrpcconnect.CounterServiceClient, error) {
+	httpClients := make([]*http.Client, 0, len(endpoints))
+	clients := make([]counterrpcconnect.CounterServiceClient, 0, len(endpoints))
 	for i, ep := range endpoints {
-		conn, c, err := counterclient.Dial(ctx, ep)
+		hc, c, err := counterclient.Dial(ctx, ep)
 		if err != nil {
-			for _, prior := range conns {
-				_ = prior.Close()
+			for _, prior := range httpClients {
+				prior.CloseIdleConnections()
 			}
 			return nil, nil, fmt.Errorf("shard %d (%s): %w", i, ep, err)
 		}
-		conns = append(conns, conn)
+		httpClients = append(httpClients, hc)
 		clients = append(clients, c)
 	}
-	return conns, clients, nil
+	return httpClients, clients, nil
 }
 
 // ---------------------------------------------------------------------------

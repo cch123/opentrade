@@ -23,7 +23,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -35,17 +34,16 @@ import (
 	_ "github.com/go-sql-driver/mysql" // MySQL driver for pkg/transferledger
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
-	assetrpc "github.com/xargin/opentrade/api/gen/rpc/asset"
-	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
+	"github.com/xargin/opentrade/api/gen/rpc/asset/assetrpcconnect"
+	"github.com/xargin/opentrade/api/gen/rpc/assetholder/assetholderrpcconnect"
 	"github.com/xargin/opentrade/asset/internal/holder"
 	assetmetrics "github.com/xargin/opentrade/asset/internal/metrics"
 	"github.com/xargin/opentrade/asset/internal/saga"
 	"github.com/xargin/opentrade/asset/internal/server"
 	"github.com/xargin/opentrade/asset/internal/service"
 	"github.com/xargin/opentrade/asset/internal/store"
+	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/logx"
 	"github.com/xargin/opentrade/pkg/metrics"
 	"github.com/xargin/opentrade/pkg/transferledger"
@@ -116,13 +114,13 @@ func main() {
 
 	registry := holder.NewRegistry()
 	registry.Register("funding", holder.NewLocalFundingClient(svc))
-	peerConns, err := registerPeerHolders(registry, cfg.PeerHolders)
+	peerHTTP, err := registerPeerHolders(registry, cfg.PeerHolders)
 	if err != nil {
 		logger.Fatal("peer holders init", zap.Error(err))
 	}
 	defer func() {
-		for _, c := range peerConns {
-			_ = c.Close()
+		if peerHTTP != nil {
+			peerHTTP.CloseIdleConnections()
 		}
 	}()
 
@@ -172,28 +170,30 @@ func main() {
 		}()
 	}
 
-	grpcServer := grpc.NewServer()
-	assetholderrpc.RegisterAssetHolderServer(grpcServer, server.NewAssetHolderServer(svc))
-	assetrpc.RegisterAssetServiceServer(grpcServer, server.NewAssetServer(svc, orch))
-
-	lis, err := net.Listen("tcp", cfg.GRPCAddr)
-	if err != nil {
-		logger.Fatal("listen", zap.Error(err))
-	}
+	rpcMux := http.NewServeMux()
+	holderPath, holderHandler := assetholderrpcconnect.NewAssetHolderHandler(server.NewAssetHolderServer(svc))
+	rpcMux.Handle(holderPath, holderHandler)
+	assetPath, assetHandler := assetrpcconnect.NewAssetServiceHandler(server.NewAssetServer(svc, orch))
+	rpcMux.Handle(assetPath, assetHandler)
+	rpcSrv := connectx.NewH2CServer(cfg.GRPCAddr, rpcMux)
 
 	var grpcWG sync.WaitGroup
 	grpcWG.Add(1)
 	go func() {
 		defer grpcWG.Done()
-		logger.Info("gRPC listening", zap.String("addr", cfg.GRPCAddr))
-		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			logger.Error("grpc Serve", zap.Error(err))
+		logger.Info("gRPC (Connect/h2c) listening", zap.String("addr", cfg.GRPCAddr))
+		if err := rpcSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("rpc Serve", zap.Error(err))
 		}
 	}()
 
 	<-rootCtx.Done()
 	logger.Info("asset shutting down")
-	grpcServer.GracefulStop()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := rpcSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("rpc shutdown", zap.Error(err))
+	}
+	shutdownCancel()
 	grpcWG.Wait()
 	reconcilerWG.Wait()
 	if cfg.MetricsAddr != "" {
@@ -205,28 +205,23 @@ func main() {
 	logger.Info("asset shutdown complete")
 }
 
-// registerPeerHolders dials each peer biz_line and registers the
-// resulting Client. Returns the list of opened conns so the caller can
-// Close() them on shutdown. "funding" is skipped because asset-service
-// is itself the funding holder — a misconfiguration that targets it is
-// a hard error.
-func registerPeerHolders(reg *holder.Registry, peers map[string]string) ([]*grpc.ClientConn, error) {
+// registerPeerHolders wires each peer biz_line to a Connect-based
+// AssetHolder client and registers it. Returns the shared *http.Client
+// so the caller can drop idle connections on shutdown. "funding" is
+// skipped because asset-service is itself the funding holder — a
+// misconfiguration that targets it is a hard error.
+func registerPeerHolders(reg *holder.Registry, peers map[string]string) (*http.Client, error) {
 	if len(peers) == 0 {
 		return nil, nil
 	}
-	var conns []*grpc.ClientConn
+	httpClient := connectx.NewH2CClient()
 	for biz, addr := range peers {
 		if biz == "funding" {
-			return conns, fmt.Errorf("holder: 'funding' cannot be a peer (this service IS the funding holder)")
+			return httpClient, fmt.Errorf("holder: 'funding' cannot be a peer (this service IS the funding holder)")
 		}
-		c, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			return conns, fmt.Errorf("dial peer %s (%s): %w", biz, addr, err)
-		}
-		conns = append(conns, c)
-		reg.Register(biz, holder.NewGRPCClientWithConn(c))
+		reg.Register(biz, holder.NewGRPCClientFromHTTP(httpClient, connectx.BaseURL(addr)))
 	}
-	return conns, nil
+	return httpClient, nil
 }
 
 func parseFlags() Config {

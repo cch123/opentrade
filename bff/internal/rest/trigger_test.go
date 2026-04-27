@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	"github.com/xargin/opentrade/pkg/auth"
 )
 
-// fakeTrigger lets tests drive the server without a live gRPC service.
+// fakeTrigger lets tests drive the server without a live trigger service.
 type fakeTrigger struct {
 	placeFn    func(*condrpc.PlaceTriggerRequest) (*condrpc.PlaceTriggerResponse, error)
 	cancelFn   func(*condrpc.CancelTriggerRequest) (*condrpc.CancelTriggerResponse, error)
@@ -25,20 +25,40 @@ type fakeTrigger struct {
 	placeOCOFn func(*condrpc.PlaceOCORequest) (*condrpc.PlaceOCOResponse, error)
 }
 
-func (f *fakeTrigger) PlaceTrigger(_ context.Context, req *condrpc.PlaceTriggerRequest, _ ...grpc.CallOption) (*condrpc.PlaceTriggerResponse, error) {
-	return f.placeFn(req)
+func (f *fakeTrigger) PlaceTrigger(_ context.Context, req *connect.Request[condrpc.PlaceTriggerRequest]) (*connect.Response[condrpc.PlaceTriggerResponse], error) {
+	resp, err := f.placeFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeTrigger) CancelTrigger(_ context.Context, req *condrpc.CancelTriggerRequest, _ ...grpc.CallOption) (*condrpc.CancelTriggerResponse, error) {
-	return f.cancelFn(req)
+func (f *fakeTrigger) CancelTrigger(_ context.Context, req *connect.Request[condrpc.CancelTriggerRequest]) (*connect.Response[condrpc.CancelTriggerResponse], error) {
+	resp, err := f.cancelFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeTrigger) QueryTrigger(_ context.Context, req *condrpc.QueryTriggerRequest, _ ...grpc.CallOption) (*condrpc.QueryTriggerResponse, error) {
-	return f.queryFn(req)
+func (f *fakeTrigger) QueryTrigger(_ context.Context, req *connect.Request[condrpc.QueryTriggerRequest]) (*connect.Response[condrpc.QueryTriggerResponse], error) {
+	resp, err := f.queryFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeTrigger) ListTriggers(_ context.Context, req *condrpc.ListTriggersRequest, _ ...grpc.CallOption) (*condrpc.ListTriggersResponse, error) {
-	return f.listFn(req)
+func (f *fakeTrigger) ListTriggers(_ context.Context, req *connect.Request[condrpc.ListTriggersRequest]) (*connect.Response[condrpc.ListTriggersResponse], error) {
+	resp, err := f.listFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
-func (f *fakeTrigger) PlaceOCO(_ context.Context, req *condrpc.PlaceOCORequest, _ ...grpc.CallOption) (*condrpc.PlaceOCOResponse, error) {
-	return f.placeOCOFn(req)
+func (f *fakeTrigger) PlaceOCO(_ context.Context, req *connect.Request[condrpc.PlaceOCORequest]) (*connect.Response[condrpc.PlaceOCOResponse], error) {
+	resp, err := f.placeOCOFn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func newCondServer(fc *fakeTrigger) *Server {

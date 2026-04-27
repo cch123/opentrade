@@ -24,7 +24,6 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
 	"github.com/xargin/opentrade/bff/internal/client"
 	"github.com/xargin/opentrade/bff/internal/clusterview"
@@ -130,33 +129,33 @@ func main() {
 		logger.Fatal("auth middleware", zap.Error(err))
 	}
 
-	condConn, condClient, err := maybeDialTrigger(rootCtx, cfg.TriggerAddr, logger)
+	condHTTP, condClient, err := maybeDialTrigger(rootCtx, cfg.TriggerAddr, logger)
 	if err != nil {
 		logger.Fatal("dial trigger", zap.Error(err))
 	}
 	defer func() {
-		if condConn != nil {
-			_ = condConn.Close()
+		if condHTTP != nil {
+			condHTTP.CloseIdleConnections()
 		}
 	}()
 
-	histConn, histClient, err := maybeDialHistory(rootCtx, cfg.HistoryAddr, logger)
+	histHTTP, histClient, err := maybeDialHistory(rootCtx, cfg.HistoryAddr, logger)
 	if err != nil {
 		logger.Fatal("dial history", zap.Error(err))
 	}
 	defer func() {
-		if histConn != nil {
-			_ = histConn.Close()
+		if histHTTP != nil {
+			histHTTP.CloseIdleConnections()
 		}
 	}()
 
-	assetConn, assetClient, err := maybeDialAsset(rootCtx, cfg.AssetAddr, logger)
+	assetHTTP, assetClient, err := maybeDialAsset(rootCtx, cfg.AssetAddr, logger)
 	if err != nil {
 		logger.Fatal("dial asset", zap.Error(err))
 	}
 	defer func() {
-		if assetConn != nil {
-			_ = assetConn.Close()
+		if assetHTTP != nil {
+			assetHTTP.CloseIdleConnections()
 		}
 	}()
 
@@ -221,53 +220,54 @@ func main() {
 	logger.Info("bff shutdown complete")
 }
 
-// maybeDialTrigger dials the trigger service when addr is set.
-// Returns (nil, nil, nil) when disabled so the REST layer falls back to
-// 503 on /v1/trigger endpoints. Errors are fatal so misconfigured
-// prod doesn't silently lose trigger-order traffic.
-func maybeDialTrigger(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.Trigger, error) {
+// maybeDialTrigger wires a Connect client for the trigger service when
+// addr is set. Returns (nil, nil, nil) when disabled so the REST layer
+// falls back to 503 on /v1/trigger endpoints. Errors are fatal so
+// misconfigured prod doesn't silently lose trigger-order traffic.
+func maybeDialTrigger(ctx context.Context, addr string, logger *zap.Logger) (*http.Client, client.Trigger, error) {
 	if addr == "" {
 		logger.Info("trigger endpoint disabled (empty --trigger)")
 		return nil, nil, nil
 	}
-	conn, c, err := client.DialTrigger(ctx, addr)
+	hc, c, err := client.DialTrigger(ctx, addr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("trigger dial %s: %w", addr, err)
 	}
 	logger.Info("trigger endpoint configured", zap.String("addr", addr))
-	return conn, c, nil
+	return hc, c, nil
 }
 
-// maybeDialHistory dials the history service when addr is set. Returns
-// (nil, nil, nil) when disabled; the REST layer then 503s on
-// /v1/orders, /v1/trades, /v1/account-logs (ADR-0046).
-func maybeDialHistory(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.History, error) {
+// maybeDialHistory wires a Connect client for the history service when
+// addr is set. Returns (nil, nil, nil) when disabled; the REST layer
+// then 503s on /v1/orders, /v1/trades, /v1/account-logs (ADR-0046).
+func maybeDialHistory(ctx context.Context, addr string, logger *zap.Logger) (*http.Client, client.History, error) {
 	if addr == "" {
 		logger.Info("history endpoint disabled (empty --history)")
 		return nil, nil, nil
 	}
-	conn, c, err := client.DialHistory(ctx, addr)
+	hc, c, err := client.DialHistory(ctx, addr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("history dial %s: %w", addr, err)
 	}
 	logger.Info("history endpoint configured", zap.String("addr", addr))
-	return conn, c, nil
+	return hc, c, nil
 }
 
-// maybeDialAsset dials the asset service when addr is set. Returns
-// (nil, nil, nil) when disabled; the REST layer then 503s on the
-// ADR-0057 endpoints (/v1/transfer, /v1/funding-balance, ...).
-func maybeDialAsset(ctx context.Context, addr string, logger *zap.Logger) (*grpc.ClientConn, client.Asset, error) {
+// maybeDialAsset wires a Connect client for the asset service when
+// addr is set. Returns (nil, nil, nil) when disabled; the REST layer
+// then 503s on the ADR-0057 endpoints (/v1/transfer,
+// /v1/funding-balance, ...).
+func maybeDialAsset(ctx context.Context, addr string, logger *zap.Logger) (*http.Client, client.Asset, error) {
 	if addr == "" {
 		logger.Info("asset endpoint disabled (empty --asset)")
 		return nil, nil, nil
 	}
-	conn, c, err := client.DialAsset(ctx, addr)
+	hc, c, err := client.DialAsset(ctx, addr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("asset dial %s: %w", addr, err)
 	}
 	logger.Info("asset endpoint configured", zap.String("addr", addr))
-	return conn, c, nil
+	return hc, c, nil
 }
 
 // buildAuthMiddleware turns the flag set into a configured auth middleware.
@@ -326,29 +326,26 @@ func startMarketCache(_ context.Context, cfg Config, logger *zap.Logger) (*marke
 // buildCounter picks between the legacy static-shard routing and the
 // ADR-0058 vshard routing based on --clustering-mode. Returns the
 // Counter impl plus a close function the caller MUST defer — close
-// tears down every cached gRPC connection and, for the vshard path,
-// stops the etcd watcher goroutine.
+// drops every cached h2c http.Client's idle conns and, for the vshard
+// path, stops the etcd watcher goroutine.
 func buildCounter(ctx context.Context, cfg Config, logger *zap.Logger) (client.Counter, func(), error) {
 	if cfg.ClusteringMode == "enabled" {
 		return buildVShardCounter(ctx, cfg, logger)
 	}
-	conns, clients, err := dialAllShards(ctx, cfg.CounterShards)
+	httpClients, clients, err := dialAllShards(ctx, cfg.CounterShards)
 	if err != nil {
 		return nil, nil, err
 	}
 	c, err := client.NewSharded(clients)
 	if err != nil {
-		for _, conn := range conns {
-			_ = conn.Close()
+		for _, hc := range httpClients {
+			hc.CloseIdleConnections()
 		}
 		return nil, nil, err
 	}
 	closer := func() {
-		for i, conn := range conns {
-			if err := conn.Close(); err != nil {
-				logger.Debug("close shard conn",
-					zap.Int("shard", i), zap.Error(err))
-			}
+		for _, hc := range httpClients {
+			hc.CloseIdleConnections()
 		}
 	}
 	return c, closer, nil
@@ -406,24 +403,24 @@ func buildVShardCounter(ctx context.Context, cfg Config, logger *zap.Logger) (cl
 	return c, closer, nil
 }
 
-// dialAllShards walks endpoints left-to-right and dials each as a separate
-// grpc.ClientConn, returning them alongside a matching Counter slice. Caller
-// owns both slices' lifetime.
-func dialAllShards(ctx context.Context, endpoints []string) ([]*grpc.ClientConn, []client.Counter, error) {
-	conns := make([]*grpc.ClientConn, 0, len(endpoints))
+// dialAllShards walks endpoints left-to-right and wires a Connect
+// client for each, returning the matching *http.Client slice (one per
+// shard, owned by the caller) alongside the Counter clients.
+func dialAllShards(ctx context.Context, endpoints []string) ([]*http.Client, []client.Counter, error) {
+	httpClients := make([]*http.Client, 0, len(endpoints))
 	clients := make([]client.Counter, 0, len(endpoints))
 	for i, ep := range endpoints {
-		conn, c, err := client.Dial(ctx, ep)
+		hc, c, err := client.Dial(ctx, ep)
 		if err != nil {
-			for _, prior := range conns {
-				_ = prior.Close()
+			for _, prior := range httpClients {
+				prior.CloseIdleConnections()
 			}
 			return nil, nil, fmt.Errorf("shard %d (%s): %w", i, ep, err)
 		}
-		conns = append(conns, conn)
+		httpClients = append(httpClients, hc)
 		clients = append(clients, c)
 	}
-	return conns, clients, nil
+	return httpClients, clients, nil
 }
 
 // ---------------------------------------------------------------------------

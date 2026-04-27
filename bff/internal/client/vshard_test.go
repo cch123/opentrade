@@ -4,9 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"connectrpc.com/connect"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/bff/internal/clusterview"
@@ -37,8 +36,8 @@ func TestVShardCounter_RequiresUserID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	_, err = v.PlaceOrder(context.Background(), &counterrpc.PlaceOrderRequest{UserId: ""})
-	if status.Code(err) != codes.InvalidArgument {
+	_, err = v.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: ""}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("empty user_id = %v, want InvalidArgument", err)
 	}
 }
@@ -53,8 +52,8 @@ func TestVShardCounter_NoActiveOwnerIsFailedPrecondition(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	_, err = v.PlaceOrder(context.Background(), &counterrpc.PlaceOrderRequest{UserId: "alice"})
-	if status.Code(err) != codes.FailedPrecondition {
+	_, err = v.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: "alice"}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Errorf("no owner = %v, want FailedPrecondition", err)
 	}
 }
@@ -67,10 +66,10 @@ func TestVShardCounter_AdminCancelRequiresUserID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	_, err = v.AdminCancelOrders(context.Background(), &counterrpc.AdminCancelOrdersRequest{
+	_, err = v.AdminCancelOrders(context.Background(), connect.NewRequest(&counterrpc.AdminCancelOrdersRequest{
 		Symbol: "BTC-USDT",
-	})
-	if status.Code(err) != codes.InvalidArgument {
+	}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("symbol-only = %v, want InvalidArgument", err)
 	}
 }

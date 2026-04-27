@@ -1,25 +1,18 @@
 .PHONY: proto build test vet tidy clean dev-up dev-down
 
 GO ?= go
-PROTOC ?= protoc
+BUF ?= buf
 
 MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset
 
 # ---------------------------------------------------------------------------
-# Proto generation
+# Proto generation (buf + Connect Go remote plugins)
 # ---------------------------------------------------------------------------
 
-PROTO_DIR := api
-PROTO_FILES := $(shell find $(PROTO_DIR) -name '*.proto' 2>/dev/null)
 PROTO_GO_OUT := api/gen
 
-proto: ## Generate Go code from .proto files
-	@mkdir -p $(PROTO_GO_OUT)
-	$(PROTOC) \
-		--go_out=$(PROTO_GO_OUT) --go_opt=paths=source_relative \
-		--go-grpc_out=$(PROTO_GO_OUT) --go-grpc_opt=paths=source_relative \
-		-I $(PROTO_DIR) \
-		$(PROTO_FILES)
+proto: ## Generate Go code from .proto files via buf (protobuf-go + connectrpc/go)
+	$(BUF) generate
 	@echo "proto generated into $(PROTO_GO_OUT)"
 
 # ---------------------------------------------------------------------------

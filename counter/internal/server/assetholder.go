@@ -5,17 +5,16 @@ import (
 	"errors"
 	"fmt"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 
 	assetholderrpc "github.com/xargin/opentrade/api/gen/rpc/assetholder"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/service"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
 // AssetHolderServer wires Counter's internal service into the
-// AssetHolder gRPC contract defined in api/rpc/assetholder/
+// AssetHolder Connect handler defined in api/rpc/assetholder/
 // assetholder.proto (ADR-0057). Counter implements the biz_line=spot
 // slot of the saga; asset-service orchestrates the cross-biz_line flow
 // and calls these methods on Counter as one leg of each saga.
@@ -26,8 +25,6 @@ import (
 // existing per-user sequencer + ring-buffer dedup + counter-journal
 // publisher take care of idempotency and durability.
 type AssetHolderServer struct {
-	assetholderrpc.UnimplementedAssetHolderServer
-
 	router Router
 }
 
@@ -44,12 +41,12 @@ func NewAssetHolderServer(router Router) *AssetHolderServer {
 // node doesn't (yet) own the user's vshard.
 func (s *AssetHolderServer) routeOrFail(userID string) (*service.Service, error) {
 	if userID == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	svc, ok := s.router.Lookup(userID)
 	if !ok {
-		return nil, status.Error(codes.FailedPrecondition,
-			"service: user does not belong to this node")
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("service: user does not belong to this node"))
 	}
 	return svc, nil
 }
@@ -59,17 +56,18 @@ func (s *AssetHolderServer) routeOrFail(userID string) (*service.Service, error)
 // translates to counterstate.TransferRequest{Type: Withdraw, SagaTransferID:
 // req.TransferId}; Counter's existing business logic handles precision,
 // underflow rejection, and counter-journal emission.
-func (s *AssetHolderServer) TransferOut(ctx context.Context, req *assetholderrpc.TransferOutRequest) (*assetholderrpc.TransferOutResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *AssetHolderServer) TransferOut(ctx context.Context, req *connect.Request[assetholderrpc.TransferOutRequest]) (*connect.Response[assetholderrpc.TransferOutResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
 	internalReq, err := holderRequestToEngine(holderRequestInput{
-		UserID:     req.UserId,
-		TransferID: req.TransferId,
-		Asset:      req.Asset,
-		Amount:     req.Amount,
-		PeerBiz:    req.PeerBiz,
-		Memo:       req.Memo,
+		UserID:     m.UserId,
+		TransferID: m.TransferId,
+		Asset:      m.Asset,
+		Amount:     m.Amount,
+		PeerBiz:    m.PeerBiz,
+		Memo:       m.Memo,
 		Direction:  counterstate.TransferWithdraw,
 	})
 	if err != nil {
@@ -83,28 +81,29 @@ func (s *AssetHolderServer) TransferOut(ctx context.Context, req *assetholderrpc
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-	return &assetholderrpc.TransferOutResponse{
+	return connect.NewResponse(&assetholderrpc.TransferOutResponse{
 		Status:         holderStatusToProto(res.Status),
 		RejectReason:   rejectReasonToProto(res.RejectReason),
 		AvailableAfter: res.BalanceAfter.Available.String(),
 		FrozenAfter:    res.BalanceAfter.Frozen.String(),
-	}, nil
+	}), nil
 }
 
 // TransferIn credits (user_id, asset) by amount. It is the "to" leg of
 // an asset-service saga when Counter is the destination biz_line.
 // Internally mirrors TransferOut with Direction = Deposit.
-func (s *AssetHolderServer) TransferIn(ctx context.Context, req *assetholderrpc.TransferInRequest) (*assetholderrpc.TransferInResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *AssetHolderServer) TransferIn(ctx context.Context, req *connect.Request[assetholderrpc.TransferInRequest]) (*connect.Response[assetholderrpc.TransferInResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
 	internalReq, err := holderRequestToEngine(holderRequestInput{
-		UserID:     req.UserId,
-		TransferID: req.TransferId,
-		Asset:      req.Asset,
-		Amount:     req.Amount,
-		PeerBiz:    req.PeerBiz,
-		Memo:       req.Memo,
+		UserID:     m.UserId,
+		TransferID: m.TransferId,
+		Asset:      m.Asset,
+		Amount:     m.Amount,
+		PeerBiz:    m.PeerBiz,
+		Memo:       m.Memo,
 		Direction:  counterstate.TransferDeposit,
 	})
 	if err != nil {
@@ -118,12 +117,12 @@ func (s *AssetHolderServer) TransferIn(ctx context.Context, req *assetholderrpc.
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-	return &assetholderrpc.TransferInResponse{
+	return connect.NewResponse(&assetholderrpc.TransferInResponse{
 		Status:         holderStatusToProto(res.Status),
 		RejectReason:   rejectReasonToProto(res.RejectReason),
 		AvailableAfter: res.BalanceAfter.Available.String(),
 		FrozenAfter:    res.BalanceAfter.Frozen.String(),
-	}, nil
+	}), nil
 }
 
 // CompensateTransferOut reverses a previously-CONFIRMED TransferOut on
@@ -140,17 +139,18 @@ func (s *AssetHolderServer) TransferIn(ctx context.Context, req *assetholderrpc.
 // "<saga>-compensate") so the compensate credit is not collapsed with a
 // possible earlier in/out under the same id. That policy lives in
 // asset-service; Counter just honours whatever transfer_id it receives.
-func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *assetholderrpc.CompensateTransferOutRequest) (*assetholderrpc.CompensateTransferOutResponse, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "nil request")
+func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *connect.Request[assetholderrpc.CompensateTransferOutRequest]) (*connect.Response[assetholderrpc.CompensateTransferOutResponse], error) {
+	m := req.Msg
+	if m == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nil request"))
 	}
-	memo := fmt.Sprintf("compensate: peer=%s cause=%s", req.PeerBiz, req.CompensateCause)
+	memo := fmt.Sprintf("compensate: peer=%s cause=%s", m.PeerBiz, m.CompensateCause)
 	internalReq, err := holderRequestToEngine(holderRequestInput{
-		UserID:     req.UserId,
-		TransferID: req.TransferId,
-		Asset:      req.Asset,
-		Amount:     req.Amount,
-		PeerBiz:    req.PeerBiz,
+		UserID:     m.UserId,
+		TransferID: m.TransferId,
+		Asset:      m.Asset,
+		Amount:     m.Amount,
+		PeerBiz:    m.PeerBiz,
 		Memo:       memo,
 		Direction:  counterstate.TransferDeposit,
 	})
@@ -165,12 +165,12 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *asse
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-	return &assetholderrpc.CompensateTransferOutResponse{
+	return connect.NewResponse(&assetholderrpc.CompensateTransferOutResponse{
 		Status:         holderStatusToProto(res.Status),
 		RejectReason:   rejectReasonToProto(res.RejectReason),
 		AvailableAfter: res.BalanceAfter.Available.String(),
 		FrozenAfter:    res.BalanceAfter.Frozen.String(),
-	}, nil
+	}), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +222,7 @@ func holderRequestToEngine(in holderRequestInput) (counterstate.TransferRequest,
 }
 
 func holderArgumentError(err error) error {
-	return status.Error(codes.InvalidArgument, err.Error())
+	return connect.NewError(connect.CodeInvalidArgument, err)
 }
 
 // holderStatusToProto maps counterstate.TransferStatus to the AssetHolder

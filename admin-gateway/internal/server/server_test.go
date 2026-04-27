@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
-	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/admin-gateway/internal/counterclient"
+	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/dec"
@@ -28,12 +28,16 @@ type recordingCounter struct {
 	hits int
 }
 
-func (r *recordingCounter) AdminCancelOrders(_ context.Context, req *counterrpc.AdminCancelOrdersRequest, _ ...grpc.CallOption) (*counterrpc.AdminCancelOrdersResponse, error) {
+func (r *recordingCounter) AdminCancelOrders(_ context.Context, req *connect.Request[counterrpc.AdminCancelOrdersRequest]) (*connect.Response[counterrpc.AdminCancelOrdersResponse], error) {
 	r.hits++
 	if r.fn == nil {
-		return &counterrpc.AdminCancelOrdersResponse{}, nil
+		return connect.NewResponse(&counterrpc.AdminCancelOrdersResponse{}), nil
 	}
-	return r.fn(req)
+	resp, err := r.fn(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func newTestServer(t *testing.T, shardFns ...func(*counterrpc.AdminCancelOrdersRequest) (*counterrpc.AdminCancelOrdersResponse, error)) (*Server, *etcdcfg.MemorySource, string, []*recordingCounter) {

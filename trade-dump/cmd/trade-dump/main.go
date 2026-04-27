@@ -23,7 +23,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -37,9 +37,9 @@ import (
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
-	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
+	"github.com/xargin/opentrade/api/gen/rpc/tradedump/tradedumprpcconnect"
+	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/logx"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
 	"github.com/xargin/opentrade/trade-dump/internal/mysqlsink/consumer"
@@ -357,7 +357,7 @@ func main() {
 	//   - KeyPrefix: matches the SnapshotKeyFormat root (no prefix
 	//     in the default pipeline config — on-demand keys live
 	//     alongside "vshard-NNN.pb" as "vshard-NNN-ondemand-*.pb").
-	var grpcSrv *grpc.Server
+	var rpcSrv *http.Server
 	grpcDone := make(chan struct{})
 	var grpcAdminClient *kgo.Client
 	wantGRPC := (wantSnap && snapPipe != nil) || (wantTriggerSnap && triggerSnapPipe != nil)
@@ -371,7 +371,7 @@ func main() {
 	default:
 		// Dedicated admin client — separate from pipeline's consumer
 		// so ListEndOffsets traffic is isolated. Closed during
-		// shutdown after GracefulStop drains handler goroutines.
+		// shutdown after http.Server.Shutdown drains handlers.
 		grpcAdminClient, err = kgo.NewClient(
 			kgo.SeedBrokers(cfg.Brokers...),
 			kgo.ClientID(cfg.InstanceID+"-ondemand-admin"),
@@ -386,11 +386,6 @@ func main() {
 			logger.Fatal("grpc snapshot store init", zap.Error(err))
 		}
 
-		lis, err := net.Listen("tcp", cfg.GRPCAddr)
-		if err != nil {
-			logger.Fatal("grpc listen", zap.Error(err), zap.String("addr", cfg.GRPCAddr))
-		}
-		grpcSrv = grpc.NewServer()
 		rpcCfg := snapshotrpc.Config{
 			Logger:       logger,
 			Admin:        admin,
@@ -422,17 +417,21 @@ func main() {
 				SnapshotFormat: cfg.SnapshotFormat,
 			}
 		}
-		tradedumprpc.RegisterTradeDumpSnapshotServer(grpcSrv, snapshotrpc.New(rpcCfg))
+		mux := http.NewServeMux()
+		path, handler := tradedumprpcconnect.NewTradeDumpSnapshotHandler(snapshotrpc.New(rpcCfg))
+		mux.Handle(path, handler)
+		rpcSrv = connectx.NewH2CServer(cfg.GRPCAddr, mux)
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer close(grpcDone)
-			logger.Info("grpc listening",
+			logger.Info("grpc (Connect/h2c) listening",
 				zap.String("addr", cfg.GRPCAddr),
 				zap.Int("concurrency", cfg.OnDemandConcurrency),
 				zap.Duration("wait_apply_timeout", cfg.OnDemandWaitApplyTimeout))
-			if err := grpcSrv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-				logger.Error("grpc Serve", zap.Error(err))
+			if err := rpcSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("rpc Serve", zap.Error(err))
 				stop()
 			}
 		}()
@@ -467,8 +466,12 @@ func main() {
 
 	<-rootCtx.Done()
 	logger.Info("shutdown initiated")
-	if grpcSrv != nil {
-		grpcSrv.GracefulStop()
+	if rpcSrv != nil {
+		rpcShutdownCtx, rpcShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := rpcSrv.Shutdown(rpcShutdownCtx); err != nil {
+			logger.Warn("rpc shutdown", zap.Error(err))
+		}
+		rpcShutdownCancel()
 		<-grpcDone
 		// Close the dedicated admin client after Serve returns so
 		// any in-flight ListEndOffsets from draining handlers
