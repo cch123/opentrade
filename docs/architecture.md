@@ -683,8 +683,7 @@ opentrade/
 │   ├── go.mod
 │   ├── cmd/
 │   │   ├── counter/main.go           # vshard cluster member; ADR-0058 移除 legacy --total-shards
-│   │   ├── counter-migrate/          # ADR-0058 vshard 在线再平衡工具 (runbook-counter §8)
-│   │   └── counter-reshard/          # 已废弃 — 老 --total-shards 模型遗留, ADR-0058 后用不到
+│   │   └── counter-migrate/          # ADR-0058 vshard 在线再平衡工具 (runbook-counter §8)
 │   ├── engine/                       # 账户/订单状态机 + journal apply
 │   │                                 #   (脱 internal, ADR-0061 M1; trade-dump shadow engine 复用)
 │   ├── snapshot/                     # Capture/Restore wire
