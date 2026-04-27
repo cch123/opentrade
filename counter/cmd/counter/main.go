@@ -71,11 +71,15 @@ type Config struct {
 	EtcdEndpoints []string
 	LeaseTTL      int
 
-	// Snapshot storage (ADR-0058 phase 1)
+	// Snapshot store Counter reads from on startup (ADR-0061 / ADR-
+	// 0064). Trade-dump's shadow pipeline is the sole producer; Counter
+	// only loads from this store and never writes to it. Backend choice
+	// here must point at the same fs dir / S3 bucket+prefix that
+	// trade-dump writes.
 	SnapshotBackend    string
 	SnapshotDir        string
-	SnapshotInterval   time.Duration
-	SnapshotFormat     snapshot.Format
+	SnapshotInterval   time.Duration  // deprecated / no-op since ADR-0061 Phase B
+	SnapshotFormat     snapshot.Format // deprecated / no-op since ADR-0061 Phase B
 	SnapshotS3Bucket   string
 	SnapshotS3Prefix   string
 	SnapshotS3Region   string
@@ -358,9 +362,13 @@ func startSymbolRegistry(ctx context.Context, cfg Config, logger *zap.Logger) fu
 	return registry.Get
 }
 
-// newSnapshotStore picks the BlobStore implementation based on
-// --snapshot-backend. S3 credentials come from the AWS SDK default
-// config chain (env vars, shared profile, IAM role), so no AK/SK ever
+// newSnapshotStore opens the BlobStore handle Counter uses to LOAD
+// snapshots produced by trade-dump's shadow pipeline (ADR-0061 / ADR-
+// 0064). Counter is read-only on this store; trade-dump is the sole
+// producer, so the fs dir / S3 bucket+prefix configured here must
+// match what trade-dump writes. Picks fs vs s3 based on
+// --snapshot-backend; S3 credentials come from the AWS SDK default
+// config chain (env vars, shared profile, IAM role) so no AK/SK ever
 // crosses the CLI.
 func newSnapshotStore(ctx context.Context, cfg Config, logger *zap.Logger) (snapshot.BlobStore, error) {
 	switch cfg.SnapshotBackend {
@@ -434,10 +442,10 @@ func parseFlags() Config {
 	flag.StringVar(&etcdStr, "etcd", "", "comma-separated etcd endpoints (required)")
 	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "etcd session TTL seconds (node lease + coordinator election)")
 
-	flag.StringVar(&cfg.SnapshotBackend, "snapshot-backend", cfg.SnapshotBackend, "snapshot backend: fs (local dir) | s3 (S3-compatible object store). ADR-0058 phase 1.")
-	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "local directory for snapshots (used when --snapshot-backend=fs)")
-	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "periodic snapshot cadence per vshard (0 disables; only final shutdown snapshot runs)")
-	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "snapshot on-disk encoding: proto (default) | json (debug). ADR-0049. Env OPENTRADE_SNAPSHOT_FORMAT overrides.")
+	flag.StringVar(&cfg.SnapshotBackend, "snapshot-backend", cfg.SnapshotBackend, "shared snapshot backend Counter loads from on startup: fs (local dir) | s3 (S3-compatible object store). Must point at the same store trade-dump writes (ADR-0061 / ADR-0064).")
+	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "directory holding snapshots trade-dump produces; counter reads from here (used when --snapshot-backend=fs)")
+	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "(deprecated / no-op since ADR-0061 Phase B — trade-dump's shadow pipeline is now the sole snapshot producer)")
+	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "(deprecated / no-op since ADR-0061 Phase B — counter never writes snapshots and Load probes both .pb / .json per ADR-0049)")
 	flag.StringVar(&cfg.SnapshotS3Bucket, "snapshot-s3-bucket", cfg.SnapshotS3Bucket, "S3 bucket (required when --snapshot-backend=s3)")
 	flag.StringVar(&cfg.SnapshotS3Prefix, "snapshot-s3-prefix", cfg.SnapshotS3Prefix, "S3 key prefix; trailing slash optional (empty = bucket root)")
 	flag.StringVar(&cfg.SnapshotS3Region, "snapshot-s3-region", cfg.SnapshotS3Region, "S3 region (empty = AWS SDK default config chain)")
