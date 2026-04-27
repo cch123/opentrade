@@ -78,8 +78,6 @@ type Config struct {
 	// trade-dump writes.
 	SnapshotBackend    string
 	SnapshotDir        string
-	SnapshotInterval   time.Duration  // deprecated / no-op since ADR-0061 Phase B
-	SnapshotFormat     snapshot.Format // deprecated / no-op since ADR-0061 Phase B
 	SnapshotS3Bucket   string
 	SnapshotS3Prefix   string
 	SnapshotS3Region   string
@@ -417,15 +415,13 @@ func parseFlags() Config {
 		LeaseTTL:                  10,
 		SnapshotBackend:           "fs",
 		SnapshotDir:               "./data/counter",
-		SnapshotInterval:          60 * time.Second,
-		SnapshotFormat:            snapshot.FormatProto,
 		DedupTTL:                  24 * time.Hour,
 		DefaultMaxOpenLimitOrders: 100,
 		MetricsAddr:               ":9101",
 		Env:                       "dev",
 		LogLevel:                  "info",
 	}
-	var brokersStr, etcdStr, snapshotFormatStr string
+	var brokersStr, etcdStr string
 
 	flag.StringVar(&cfg.NodeID, "node-id", "", "cluster node id (required)")
 	flag.StringVar(&cfg.NodeEndpoint, "node-endpoint", "", "advertised RPC endpoint for this node in /cex/counter/nodes (default = --grpc-addr)")
@@ -444,8 +440,6 @@ func parseFlags() Config {
 
 	flag.StringVar(&cfg.SnapshotBackend, "snapshot-backend", cfg.SnapshotBackend, "shared snapshot backend Counter loads from on startup: fs (local dir) | s3 (S3-compatible object store). Must point at the same store trade-dump writes (ADR-0061 / ADR-0064).")
 	flag.StringVar(&cfg.SnapshotDir, "snapshot-dir", cfg.SnapshotDir, "directory holding snapshots trade-dump produces; counter reads from here (used when --snapshot-backend=fs)")
-	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", cfg.SnapshotInterval, "(deprecated / no-op since ADR-0061 Phase B — trade-dump's shadow pipeline is now the sole snapshot producer)")
-	flag.StringVar(&snapshotFormatStr, "snapshot-format", cfg.SnapshotFormat.String(), "(deprecated / no-op since ADR-0061 Phase B — counter never writes snapshots and Load probes both .pb / .json per ADR-0049)")
 	flag.StringVar(&cfg.SnapshotS3Bucket, "snapshot-s3-bucket", cfg.SnapshotS3Bucket, "S3 bucket (required when --snapshot-backend=s3)")
 	flag.StringVar(&cfg.SnapshotS3Prefix, "snapshot-s3-prefix", cfg.SnapshotS3Prefix, "S3 key prefix; trailing slash optional (empty = bucket root)")
 	flag.StringVar(&cfg.SnapshotS3Region, "snapshot-s3-region", cfg.SnapshotS3Region, "S3 region (empty = AWS SDK default config chain)")
@@ -470,17 +464,6 @@ func parseFlags() Config {
 	cfg.EtcdEndpoints = splitCSV(etcdStr)
 	cfg.DefaultMaxOpenLimitOrders = uint32(defaultMaxOpenLimitOrders)
 
-	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
-		snapshotFormatStr = envFmt
-	}
-	if snapshotFormatStr != "" {
-		f, err := snapshot.ParseFormat(snapshotFormatStr)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-		cfg.SnapshotFormat = f
-	}
 	if cfg.NodeEndpoint == "" {
 		cfg.NodeEndpoint = cfg.GRPCAddr
 	}

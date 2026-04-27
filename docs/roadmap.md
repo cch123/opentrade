@@ -57,7 +57,7 @@
 - ~~**市价单 MARKET（服务端原生）**~~ — ✅ 两条路径落地（[ADR-0035](./adr/0035-market-orders-native-server-side.md)）：(A) 服务端原生 `type=market` + `qty`(sell) / `quote_qty`(buy)；(B) BFF 可选滑点保护：`type=market + slippage_bps + last_price` → 翻译成 LIMIT+IOC。客户端用法文档见 [docs/market-orders.md](./market-orders.md)
 - ~~**Counter 对账**~~ — ✅ `counter/internal/reconcile` 每小时对比内存 vs `accounts` 表，差异日志 + 汇总（[ADR-0008 §对账](./adr/0008-sidecar-persistence-trade-dump.md)）；`--mysql-dsn` 空时禁用
 - ~~**Quote state snapshot**~~ — ✅ 本地 JSON snapshot + 每 partition offset 随状态原子推进，重启热恢复（[ADR-0036](./adr/0036-quote-state-snapshot.md)）
-- ~~**Counter re-shard 工具**~~ — ✅ `counter/cmd/counter-reshard`：读 N 份旧 snapshot，按新 hash 写 M 份新 snapshot；账户/订单按 `shard.Index(user, M)` 路由，dedup 丢弃，ShardSeq 取 max（runbook: [docs/counter-reshard.md](./counter-reshard.md)）
+- ~~**Counter re-shard 工具**~~ — ⚠️ 已废弃（superseded by ADR-0058）：`counter/cmd/counter-reshard` 是老 `--total-shards` 模型的离线 reshard 工具，ADR-0058 vshard 模型把 shard 数量固定为 256 vshard，扩缩容只改 vshard→node 的 assignment，不再需要重写 snapshot。在线 vshard 再平衡见 [docs/runbook-counter.md §8](./runbook-counter.md#8-vshard-扩容--再平衡-adr-0058) 和 `counter/cmd/counter-migrate`。工具二进制保留为历史遗留，下次清理可删。
 - ~~**trade-event consumer 的显式 shard filter**~~ — ✅ Counter 每个 trade-event handler 在进 sequencer 之前 `OwnsUser` 判定，非 owned 走 debug 日志 skip（[ADR-0027 备选方案 D](./adr/0027-counter-sharding-rollout.md)）
 - ~~**BFF auth 升级到 JWT / API-Key**~~ — ✅ `--auth-mode=header|jwt|api-key|mixed`；HS256 JWT + BN 风格 HMAC-SHA256 API-Key，无外部依赖（[ADR-0039](./adr/0039-bff-auth-jwt-apikey.md)）
 - ~~**MVP-14b 触发单资金预留**~~ — ✅ Counter `Reserve` / `ReleaseReservation` RPC + `PlaceOrder(reservation_id)` 原子消费；snapshot 持久化；触发不再因余额不足 reject（[ADR-0041](./adr/0041-counter-reservations.md)）

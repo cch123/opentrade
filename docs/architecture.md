@@ -643,8 +643,8 @@ opentrade/
 │   ├── go.mod
 │   ├── cmd/
 │   │   ├── counter/main.go
-│   │   ├── counter-migrate/          # ADR-0058 vshard 迁移工具
-│   │   └── counter-reshard/          # 旧 shard → vshard 迁移（一次性）
+│   │   ├── counter-migrate/          # ADR-0058 vshard 在线再平衡工具（runbook-counter §8）
+│   │   └── counter-reshard/          # 已废弃 — 老 --total-shards 模型的离线 reshard，ADR-0058 后用不到
 │   ├── engine/                       # 账户/订单状态机 + journal apply
 │   │                                 #   (脱 internal，ADR-0061 M1；
 │   │                                 #   trade-dump shadow engine 复用)
