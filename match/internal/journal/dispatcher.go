@@ -11,9 +11,10 @@ import (
 // owned by this Match instance.
 var ErrUnknownSymbol = errors.New("journal: unknown symbol")
 
-// Dispatcher routes sequencer.Events to the correct per-symbol worker. It is
-// safe for concurrent reads (PickWorker); mutations (Register / Unregister)
-// must happen at startup / reconfiguration time with no concurrent dispatch.
+// Dispatcher routes sequencer.Events to the correct per-symbol worker. Dispatch
+// holds the read lock until the event is actually enqueued, so Unregister cannot
+// close a worker inbox after a consumer has picked the worker but before it has
+// submitted the event.
 type Dispatcher struct {
 	mu      sync.RWMutex
 	workers map[string]*sequencer.SymbolWorker
@@ -58,7 +59,9 @@ func (d *Dispatcher) Dispatch(evt *sequencer.Event) error {
 	if evt.Symbol == "" {
 		return errors.New("journal: event has no symbol")
 	}
-	w := d.PickWorker(evt.Symbol)
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	w := d.workers[evt.Symbol]
 	if w == nil {
 		return ErrUnknownSymbol
 	}

@@ -57,30 +57,43 @@ func (p *MarketDataProducer) Close() { p.client.Close() }
 
 // Publish synchronously sends one MarketDataEvent. Returns the first error.
 func (p *MarketDataProducer) Publish(ctx context.Context, evt *eventpb.MarketDataEvent) error {
+	return p.PublishBatch(ctx, []*eventpb.MarketDataEvent{evt})
+}
+
+func (p *MarketDataProducer) encodeRecord(evt *eventpb.MarketDataEvent) (*kgo.Record, error) {
 	if evt == nil {
-		return errors.New("producer: nil event")
+		return nil, errors.New("producer: nil event")
 	}
 	payload, err := proto.Marshal(evt)
 	if err != nil {
-		return fmt.Errorf("marshal market-data: %w", err)
+		return nil, fmt.Errorf("marshal market-data: %w", err)
 	}
-	rec := &kgo.Record{
+	return &kgo.Record{
 		Topic: p.topic,
 		Key:   []byte(evt.Symbol),
 		Value: payload,
-	}
-	return p.client.ProduceSync(ctx, rec).FirstErr()
+	}, nil
 }
 
-// PublishBatch sends every event in order; returns the first failure.
-// Partial failures still advance through the batch — callers that need
-// strict all-or-nothing semantics should use a Kafka transaction (MVP does
-// not need this).
+// PublishBatch sends the whole batch through one ProduceSync call. The events
+// remain independent Kafka records, but a single sync point lets franz-go fill
+// its produce request more efficiently than one ack wait per market-data frame.
+// Callers that need strict all-or-nothing semantics should use a Kafka
+// transaction (Quote's market-data projection does not require one).
 func (p *MarketDataProducer) PublishBatch(ctx context.Context, evts []*eventpb.MarketDataEvent) error {
+	if len(evts) == 0 {
+		return nil
+	}
+	recs := make([]*kgo.Record, 0, len(evts))
 	for _, evt := range evts {
-		if err := p.Publish(ctx, evt); err != nil {
+		rec, err := p.encodeRecord(evt)
+		if err != nil {
 			return err
 		}
+		recs = append(recs, rec)
+	}
+	if err := p.client.ProduceSync(ctx, recs...).FirstErr(); err != nil {
+		return fmt.Errorf("produce market-data: %w", err)
 	}
 	return nil
 }

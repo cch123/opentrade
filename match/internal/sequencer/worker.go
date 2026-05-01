@@ -18,7 +18,7 @@ var ErrSymbolMismatch = errors.New("sequencer: symbol mismatch")
 // Config configures a SymbolWorker.
 type Config struct {
 	Symbol  string
-	Inbox   int           // channel capacity; default 2048
+	Inbox   int // channel capacity; default 2048
 	STPMode engine.STPMode
 }
 
@@ -39,8 +39,8 @@ type SymbolWorker struct {
 	mu       sync.Mutex
 	book     *orderbook.Book
 	matchSeq uint64
-	bookSeq  uint64           // per-symbol monotonic orderbook seq (ADR-0055)
-	offsets  map[int32]int64  // partition → next-to-consume offset (ADR-0048)
+	bookSeq  uint64          // per-symbol monotonic orderbook seq (ADR-0055)
+	offsets  map[int32]int64 // partition → next-to-consume offset (ADR-0048)
 
 	inbox    chan *Event
 	outbox   chan<- *Output
@@ -101,6 +101,17 @@ func (w *SymbolWorker) WithStateLocked(f func(book *orderbook.Book, matchSeq uin
 	f(w.book, w.matchSeq, w.offsets)
 }
 
+// WithStateLockedErr is the error-returning form of WithStateLocked. It exists
+// for snapshot barriers that need to perform I/O while holding the state lock:
+// the caller can flush producer output first, then capture book+offsets in the
+// same critical section so recovery never observes state ahead of committed
+// trade-event output.
+func (w *SymbolWorker) WithStateLockedErr(f func(book *orderbook.Book, matchSeq uint64, offsets map[int32]int64) error) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return f(w.book, w.matchSeq, w.offsets)
+}
+
 // Offsets returns a copy of the per-partition next-to-consume offsets. Safe
 // to call while Run is dispatching (takes mu).
 func (w *SymbolWorker) Offsets() map[int32]int64 {
@@ -155,12 +166,31 @@ func (w *SymbolWorker) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			w.drainInbox()
 			return
 		case evt, ok := <-w.inbox:
 			if !ok {
 				return
 			}
 			w.handle(evt)
+		}
+	}
+}
+
+// drainInbox applies every event already queued when shutdown wins the select.
+// Registry.RemoveSymbol closes the inbox before cancelling the worker context;
+// draining here preserves the "close means finish accepted work" contract even
+// if ctx.Done and the closed inbox become ready at the same time.
+func (w *SymbolWorker) drainInbox() {
+	for {
+		select {
+		case evt, ok := <-w.inbox:
+			if !ok {
+				return
+			}
+			w.handle(evt)
+		default:
+			return
 		}
 	}
 }

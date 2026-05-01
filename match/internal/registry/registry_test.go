@@ -12,7 +12,9 @@ import (
 
 	"github.com/xargin/opentrade/match/internal/engine"
 	"github.com/xargin/opentrade/match/internal/journal"
+	"github.com/xargin/opentrade/match/internal/orderbook"
 	"github.com/xargin/opentrade/match/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/dec"
 )
 
 func newFixture(t *testing.T) (*Registry, *journal.Dispatcher, chan *sequencer.Output, *atomic.Int64, *atomic.Int64) {
@@ -198,6 +200,61 @@ func TestRemoveSymbol_WaitsForWorkerDone(t *testing.T) {
 	}
 	if atomic.LoadInt32(&observed) != 1 {
 		t.Error("snapshot callback not invoked")
+	}
+}
+
+func TestRemoveSymbol_DrainsAcceptedInboxBeforeSnapshot(t *testing.T) {
+	dispatcher := journal.NewDispatcher()
+	outbox := make(chan *sequencer.Output, 16)
+	var finalMatchSeq atomic.Uint64
+
+	reg, err := New(context.Background(), Config{
+		Factory: func(symbol string) *sequencer.SymbolWorker {
+			return sequencer.NewSymbolWorker(sequencer.Config{
+				Symbol:  symbol,
+				Inbox:   16,
+				STPMode: engine.STPNone,
+			}, outbox, nil)
+		},
+		Snapshot: func(w *sequencer.SymbolWorker) {
+			// Snapshot is the migration handoff point; it must observe every
+			// event that was already accepted into the worker inbox before the
+			// registry closed the symbol.
+			finalMatchSeq.Store(w.MatchSeq())
+		},
+		Dispatcher: dispatcher,
+		Logger:     zap.NewNop(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.AddSymbol("BTC-USDT"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := dispatcher.Dispatch(&sequencer.Event{
+			Kind:   sequencer.EventOrderPlaced,
+			Symbol: "BTC-USDT",
+			Order: &orderbook.Order{
+				ID:        uint64(i + 1),
+				UserID:    "user-1",
+				Symbol:    "BTC-USDT",
+				Side:      orderbook.Bid,
+				Type:      orderbook.Limit,
+				TIF:       orderbook.GTC,
+				Price:     dec.New("100").Add(dec.FromInt(int64(i))),
+				Qty:       dec.New("1"),
+				Remaining: dec.New("1"),
+			},
+		}); err != nil {
+			t.Fatalf("dispatch %d: %v", i, err)
+		}
+	}
+	if err := reg.RemoveSymbol("BTC-USDT"); err != nil {
+		t.Fatalf("RemoveSymbol: %v", err)
+	}
+	if got, want := finalMatchSeq.Load(), uint64(5); got != want {
+		t.Fatalf("snapshot saw match_seq_id=%d, want %d", got, want)
 	}
 }
 

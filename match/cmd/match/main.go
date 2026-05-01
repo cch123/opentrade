@@ -39,6 +39,7 @@ import (
 
 	"github.com/xargin/opentrade/match/internal/engine"
 	"github.com/xargin/opentrade/match/internal/journal"
+	"github.com/xargin/opentrade/match/internal/orderbook"
 	"github.com/xargin/opentrade/match/internal/registry"
 	"github.com/xargin/opentrade/match/internal/sequencer"
 	"github.com/xargin/opentrade/match/internal/snapshot"
@@ -685,12 +686,22 @@ const (
 // On flush failure the snapshot is skipped (not written with stale offsets)
 // and the caller sees the error; next periodic tick will retry.
 func writeSnapshot(ctx context.Context, w *sequencer.SymbolWorker, producer *journal.TradeProducer, cfg Config, ts int64) error {
-	flushCtx, cancel := context.WithTimeout(ctx, snapshotFlushTimeout)
-	defer cancel()
-	if err := producer.FlushAndWait(flushCtx); err != nil {
-		return fmt.Errorf("flush before snapshot: %w", err)
+	var snap *snapshot.SymbolSnapshot
+	if err := w.WithStateLockedErr(func(book *orderbook.Book, matchSeq uint64, offsets map[int32]int64) error {
+		flushCtx, cancel := context.WithTimeout(ctx, snapshotFlushTimeout)
+		defer cancel()
+		if err := producer.FlushAndWait(flushCtx); err != nil {
+			return fmt.Errorf("flush before snapshot: %w", err)
+		}
+		// Keep the flush and capture under the same worker lock. If another
+		// order-event were allowed between these two operations, the snapshot
+		// could record a newer offset than the trade-event batch durably
+		// committed to Kafka, causing recovery to skip output.
+		snap = snapshot.CaptureState(w.Symbol(), book, matchSeq, offsets, ts)
+		return nil
+	}); err != nil {
+		return err
 	}
-	snap := snapshot.Capture(w, ts)
 	return snapshot.Save(snapshotPath(cfg, w.Symbol()), snap, cfg.SnapshotFormat)
 }
 

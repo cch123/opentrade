@@ -137,21 +137,17 @@ func (p *TradeProducer) PublishBatch(ctx context.Context, batch []*sequencer.Out
 		return err
 	}
 	if !p.transactional {
-		for _, rec := range records {
-			if err := p.client.ProduceSync(ctx, rec).FirstErr(); err != nil {
-				return fmt.Errorf("produce trade-event: %w", err)
-			}
+		if err := p.client.ProduceSync(ctx, records...).FirstErr(); err != nil {
+			return fmt.Errorf("produce trade-event: %w", err)
 		}
 		return nil
 	}
 	if err := p.client.BeginTransaction(); err != nil {
 		return fmt.Errorf("begin txn: %w", err)
 	}
-	for _, rec := range records {
-		if err := p.client.ProduceSync(ctx, rec).FirstErr(); err != nil {
-			_ = p.client.EndTransaction(ctx, kgo.TryAbort)
-			return fmt.Errorf("produce trade-event: %w", err)
-		}
+	if err := p.client.ProduceSync(ctx, records...).FirstErr(); err != nil {
+		_ = p.client.EndTransaction(ctx, kgo.TryAbort)
+		return fmt.Errorf("produce trade-event: %w", err)
 	}
 	if err := p.client.Flush(ctx); err != nil {
 		_ = p.client.EndTransaction(ctx, kgo.TryAbort)

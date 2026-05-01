@@ -91,10 +91,8 @@ func (p *MarketDataProducer) PublishBatch(ctx context.Context, batch []*sequence
 			Value: payload,
 		})
 	}
-	for _, rec := range recs {
-		if err := p.client.ProduceSync(ctx, rec).FirstErr(); err != nil {
-			return fmt.Errorf("produce market-data: %w", err)
-		}
+	if err := p.client.ProduceSync(ctx, recs...).FirstErr(); err != nil {
+		return fmt.Errorf("produce market-data: %w", err)
 	}
 	return nil
 }

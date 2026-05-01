@@ -140,11 +140,13 @@ func (r *Registry) RemoveSymbol(symbol string) error {
 	r.mu.Unlock()
 
 	r.cfg.Dispatcher.Unregister(symbol)
-	// Close inbox so Run drains and exits naturally. Also cancel the ctx
-	// so Run stops even if the inbox is being spammed.
+	// Close inbox so Run drains already accepted work and exits naturally.
+	// The worker context is cancelled only after Done closes; cancelling first
+	// would let ctx.Done win the worker select and discard buffered events
+	// during symbol migration.
 	h.worker.Close()
-	h.cancel()
 	<-h.done
+	h.cancel()
 
 	if r.cfg.Snapshot != nil {
 		r.cfg.Snapshot(h.worker)

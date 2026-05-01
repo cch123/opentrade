@@ -113,22 +113,32 @@ type SymbolSnapshot struct {
 // snapshot file thus becomes the authoritative consumer position on restart;
 // callers do NOT pass offsets explicitly anymore.
 func Capture(w *sequencer.SymbolWorker, timestampMS int64) *SymbolSnapshot {
+	var snap *SymbolSnapshot
+	w.WithStateLocked(func(book *orderbook.Book, matchSeq uint64, offsets map[int32]int64) {
+		snap = CaptureState(w.Symbol(), book, matchSeq, offsets, timestampMS)
+	})
+	return snap
+}
+
+// CaptureState serializes already-locked worker state. Callers must guarantee
+// the book and offsets cannot mutate for the duration of the call; this lets
+// the Match main loop combine "flush producer output" and "capture state" in
+// one worker critical section for ADR-0048's output barrier.
+func CaptureState(symbol string, book *orderbook.Book, matchSeq uint64, offsets map[int32]int64, timestampMS int64) *SymbolSnapshot {
 	snap := &SymbolSnapshot{
 		Version:     Version,
-		Symbol:      w.Symbol(),
+		Symbol:      symbol,
+		MatchSeqID:  matchSeq,
+		Offsets:     offsetsMapToSlice(offsets),
 		TimestampMS: timestampMS,
 	}
-	w.WithStateLocked(func(book *orderbook.Book, matchSeq uint64, offsets map[int32]int64) {
-		snap.MatchSeqID = matchSeq
-		snap.Offsets = offsetsMapToSlice(offsets)
-		book.Walk(orderbook.Bid, func(o *orderbook.Order) bool {
-			snap.Orders = append(snap.Orders, toSnapshot(o))
-			return true
-		})
-		book.Walk(orderbook.Ask, func(o *orderbook.Order) bool {
-			snap.Orders = append(snap.Orders, toSnapshot(o))
-			return true
-		})
+	book.Walk(orderbook.Bid, func(o *orderbook.Order) bool {
+		snap.Orders = append(snap.Orders, toSnapshot(o))
+		return true
+	})
+	book.Walk(orderbook.Ask, func(o *orderbook.Order) bool {
+		snap.Orders = append(snap.Orders, toSnapshot(o))
+		return true
 	})
 	return snap
 }
