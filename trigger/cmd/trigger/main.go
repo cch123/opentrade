@@ -36,9 +36,11 @@ import (
 	"github.com/xargin/opentrade/api/gen/rpc/trigger/triggerrpcconnect"
 	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/election"
+	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
 	snapshotpkg "github.com/xargin/opentrade/pkg/snapshot"
+	"github.com/xargin/opentrade/pkg/symregistry"
 	"github.com/xargin/opentrade/trigger/engine"
 	"github.com/xargin/opentrade/trigger/internal/consumer"
 	"github.com/xargin/opentrade/trigger/internal/counterclient"
@@ -212,6 +214,45 @@ func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
 	}
 }
 
+// startSymbolRegistry wires the ADR-0054 per-(user, symbol) active-trigger
+// cap lookup when --etcd-symbol-prefix is set and etcd is reachable. It
+// returns nil when the prefix is empty (lookup disabled), when --etcd has no
+// endpoints, or when the etcd dial fails; the engine treats a nil
+// SymbolLookup as compat mode (only the default cap applies) rather than
+// refusing triggers. Mirrors counter's startSymbolRegistry (ADR-0053). The
+// watcher goroutine is bound to ctx, so under --ha-mode=auto it tears down
+// when this instance is demoted.
+func startSymbolRegistry(ctx context.Context, cfg Config, logger *zap.Logger) engine.SymbolLookup {
+	if cfg.EtcdSymbolPrefix == "" {
+		return nil
+	}
+	if len(cfg.EtcdEndpoints) == 0 {
+		logger.Warn("symbol registry: --etcd-symbol-prefix set but --etcd empty; per-symbol trigger cap stays in compat mode")
+		return nil
+	}
+	symSrc, err := etcdcfg.NewEtcdSource(etcdcfg.EtcdConfig{
+		Endpoints: cfg.EtcdEndpoints,
+		Prefix:    cfg.EtcdSymbolPrefix,
+	})
+	if err != nil {
+		logger.Warn("symbol registry: etcd dial failed, per-symbol trigger cap stays in compat mode",
+			zap.Error(err))
+		return nil
+	}
+	registry := symregistry.New()
+	go func() {
+		defer func() { _ = symSrc.Close() }()
+		if err := registry.Run(ctx, symSrc); err != nil &&
+			!errors.Is(err, context.Canceled) {
+			logger.Error("symbol registry watch exited", zap.Error(err))
+		}
+	}()
+	logger.Info("symbol registry wired for per-symbol trigger cap",
+		zap.Strings("etcd", cfg.EtcdEndpoints),
+		zap.String("prefix", cfg.EtcdSymbolPrefix))
+	return registry.Get
+}
+
 // runPrimary brings up the full trigger stack (gRPC server +
 // market-data consumer + snapshot ticker) and blocks until ctx is done.
 // Called directly in HA-disabled mode; called once per leadership cycle
@@ -239,12 +280,11 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		return
 	}
 
+	symbolLookup := startSymbolRegistry(ctx, cfg, logger)
 	eng := engine.New(engine.Config{
 		TerminalHistoryLimit:          cfg.TerminalHistoryLimit,
 		DefaultMaxActiveTriggerOrders: cfg.DefaultMaxActiveTriggerOrders,
-		// SymbolLookup left nil for MVP — only the default cap applies.
-		// Per-symbol override via etcd SymbolConfig is backlog (see
-		// ADR-0054 backlog memory).
+		SymbolLookup:                  symbolLookup,
 	}, idg, placer, placer, logger)
 
 	var jProducer *journal.Producer

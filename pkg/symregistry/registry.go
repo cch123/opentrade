@@ -1,11 +1,13 @@
-// Package symregistry is counter's per-symbol config cache backed by an
-// etcdcfg.Source. Counter queries it during PlaceOrder to enforce ADR-0053
-// precision filters (M3). Updates arrive via a background Watch goroutine.
+// Package symregistry is a shared per-symbol config cache backed by an
+// etcdcfg.Source. Consumers query it for SymbolConfig lookups: counter
+// enforces ADR-0053 precision filters during PlaceOrder, trigger enforces
+// the ADR-0054 per-(user, symbol) active-trigger cap. Updates arrive via a
+// background Watch goroutine.
 //
 // This is intentionally minimal — a sync.RWMutex-guarded map + seed +
-// watch loop. Match has its own (richer) registry for shard ownership;
-// counter only needs "symbol → SymbolConfig" lookup, so we avoid the
-// extra coupling by keeping a small dedicated type here.
+// watch loop. Match has its own (richer) registry for shard ownership; the
+// SymbolConfig consumers only need "symbol → SymbolConfig" lookup, so we
+// keep a small dedicated type here in pkg/ for reuse.
 package symregistry
 
 import (

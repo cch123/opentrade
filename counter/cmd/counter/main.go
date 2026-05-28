@@ -40,7 +40,7 @@ import (
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/server"
-	"github.com/xargin/opentrade/counter/internal/symregistry"
+	"github.com/xargin/opentrade/pkg/symregistry"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
 	"github.com/xargin/opentrade/counter/internal/worker"
 	"github.com/xargin/opentrade/pkg/connectx"
