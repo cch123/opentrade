@@ -132,6 +132,12 @@
 | [0045](0045-trigger-trailing-stop.md) | 触发单 Trailing Stop | Accepted |
 | [0047](0047-trigger-long-term-history.md) | 触发单长期历史（trigger-event + 投影） | Accepted |
 
+### 衍生品 / 合约
+
+| 编号 | 标题 | 状态 |
+|---|---|---|
+| [0068](0068-usdt-linear-perp.md) | USDT 本位线性永续合约（perp）— 仓位 / 保证金 / 标记价 / 资金费 / 强平 | Accepted |
+
 ### 工程与基础设施
 
 | 编号 | 标题 | 状态 |
