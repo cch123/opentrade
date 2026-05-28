@@ -1,0 +1,39 @@
+name: CI
+
+# Enforces the README §贡献约定 quality bar automatically: every module
+# builds, vets, and unit-tests, plus the race detector on the
+# concurrency-heavy modules. Unit tests are hermetic (in-memory etcd/Kafka
+# fakes, sqlmock) so no service containers are needed; the docker-compose
+# smoke path (deploy/scripts/smoke.sh) stays a separate manual gate.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: build / vet / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # go.work is the single source of truth for the toolchain version.
+          go-version-file: go.work
+          cache-dependency-path: |
+            **/go.sum
+            go.work.sum
+
+      - name: build
+        run: make build
+
+      - name: vet
+        run: make vet
+
+      - name: test
+        run: make test
+
+      - name: test -race (concurrency-heavy modules)
+        run: make test-race

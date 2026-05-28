@@ -1,9 +1,15 @@
-.PHONY: proto build test vet tidy clean dev-up dev-down
+.PHONY: proto build test test-race vet tidy clean dev-up dev-down
 
 GO ?= go
 BUF ?= buf
 
 MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset
+
+# Concurrency-heavy modules worth running under the race detector. README
+# §贡献约定 names counter/match/push/trigger; pkg is added because it houses
+# the shared concurrency primitives (election, kafka pump, symregistry).
+# Kept narrower than MODULES so race runs stay fast.
+RACE_MODULES := pkg counter match push trigger
 
 # ---------------------------------------------------------------------------
 # Proto generation (buf + Connect Go remote plugins)
@@ -29,6 +35,12 @@ test: ## Run all tests
 	@for m in $(MODULES); do \
 		echo ">> test $$m"; \
 		(cd $$m && $(GO) test ./...) || exit 1; \
+	done
+
+test-race: ## Run tests under -race on concurrency-heavy modules (RACE_MODULES)
+	@for m in $(RACE_MODULES); do \
+		echo ">> test -race $$m"; \
+		(cd $$m && $(GO) test ./... -race) || exit 1; \
 	done
 
 vet: ## Run go vet
