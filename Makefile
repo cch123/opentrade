@@ -3,13 +3,13 @@
 GO ?= go
 BUF ?= buf
 
-MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset
+MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset perp-counter
 
 # Concurrency-heavy modules worth running under the race detector. README
 # §贡献约定 names counter/match/push/trigger; pkg is added because it houses
 # the shared concurrency primitives (election, kafka pump, symregistry).
 # Kept narrower than MODULES so race runs stay fast.
-RACE_MODULES := pkg counter match push trigger
+RACE_MODULES := pkg counter match push trigger perp-counter
 
 # ---------------------------------------------------------------------------
 # Proto generation (buf + Connect Go remote plugins)

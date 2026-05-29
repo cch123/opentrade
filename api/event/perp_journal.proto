@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package opentrade.event;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/event;event";
+
+// -----------------------------------------------------------------------------
+// perp-journal — perp-counter's normalized WAL (ADR-0068, mirrors ADR-0004
+// counter-journal). Partition key: user_id.
+//
+// Consumed by: perp-counter backup (state replay), trade-dump (perp MySQL
+// projections — positions / perp_settlements / funding / liquidations, M7),
+// push (user private perp stream).
+//
+// perp_seq_id is the perp-counter-shard-scoped monotonic sequence (ADR-0051
+// typed-producer naming), used downstream as the per-row idempotency guard.
+// -----------------------------------------------------------------------------
+
+// Post-change snapshot of a position, embedded in events so replay/audit
+// needs no cross-referencing (mirrors BalanceSnapshot). Side is unset and
+// size "0" when the position is flat after the change.
+message PerpPositionSnapshot {
+  string user_id = 1;
+  string symbol = 2;
+  Side side = 3;
+  string size = 4;          // decimal
+  string entry_price = 5;   // decimal
+  string margin = 6;        // decimal USDT
+  string leverage = 7;      // decimal
+  string realized_pnl = 8;  // cumulative, decimal
+  uint64 version = 9;
+}
+
+message PerpJournalEvent {
+  EventMeta meta = 1;
+  uint64 perp_seq_id = 2;
+
+  oneof payload {
+    PerpOrderStatusEvent order_status = 10;
+    PerpSettlementEvent  settlement   = 11;
+    PerpMarginEvent      margin        = 12;
+    PerpFundingEvent     funding      = 13;
+    PerpLiquidationEvent liquidation  = 14;
+  }
+}
+
+// Order lifecycle transition (analogous to counter OrderStatusEvent).
+message PerpOrderStatusEvent {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string symbol = 3;
+  InternalOrderStatus old_status = 4;
+  InternalOrderStatus new_status = 5;
+  string filled_qty = 6;
+  bool reduce_only = 7;
+  RejectReason reject_reason = 8; // set when new_status = REJECTED
+}
+
+// A fill applied to a position (open / increase / reduce / close / flip).
+// Cash effects mirror perpstate.FillResult.
+message PerpSettlementEvent {
+  string user_id = 1;
+  uint64 order_id = 2;
+  string trade_id = 3;
+  string symbol = 4;
+  Side fill_side = 5;
+  string price = 10;            // execution price
+  string qty = 11;
+  string realized_pnl = 12;     // booked by this fill (pre-fee)
+  string fee = 13;
+  string margin_added = 14;     // IM committed (open/increase)
+  string margin_released = 15;  // margin returned to wallet (reduce/close)
+  PerpPositionSnapshot position_after = 20;
+}
+
+// Futures-wallet margin balance change.
+message PerpMarginEvent {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_TRANSFER_IN = 1;  // funding -> futures (asset-service saga, ADR-0057)
+    KIND_TRANSFER_OUT = 2; // futures -> funding
+    KIND_RESERVE = 3;      // IM hold on PlaceOrder (ADR-0041)
+    KIND_RELEASE = 4;      // IM release on cancel / reject
+  }
+  string user_id = 1;
+  Kind kind = 2;
+  string asset = 3;            // USDT
+  string amount = 4;
+  string available_after = 5;
+  string reserved_after = 6;
+  string ref_id = 7;           // transfer_id / order_id / reservation_id
+}
+
+// Funding settlement for a position at a funding boundary (ADR-0068 §7).
+message PerpFundingEvent {
+  string user_id = 1;
+  string symbol = 2;
+  string funding_round_id = 3;
+  string funding_rate = 4;
+  string mark_price = 5;
+  string payment = 6;          // signed margin delta (negative = position paid)
+  PerpPositionSnapshot position_after = 10;
+}
+
+// Liquidation of a position (ADR-0068 §8).
+message PerpLiquidationEvent {
+  string user_id = 1;
+  string symbol = 2;
+  uint64 liq_order_id = 3;
+  string bankruptcy_price = 4;
+  string mark_price = 5;
+  string closed_qty = 6;
+  string realized_pnl = 7;
+  string insurance_delta = 8;  // + surplus into fund / - fund covers deficit
+  bool adl_queued = 9;         // true when fund couldn't cover -> ADL queue (MVP: alert only)
+  PerpPositionSnapshot position_after = 10;
+}

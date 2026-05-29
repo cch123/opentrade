@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package opentrade.event;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/event;event";
+
+// -----------------------------------------------------------------------------
+// mark-price topic (ADR-0068 §5). Produced by the markprice service from the
+// spot index + perp basis; consumed by perp-counter for unrealized PnL,
+// liquidation judgement, and funding settlement.
+//
+// Two payload shapes share the topic (keyed by symbol):
+//   - MarkTick:    high-frequency mark / index / funding-rate estimate.
+//   - FundingTick: emitted once per funding interval boundary, the marker
+//                  perp-counter keys funding settlement off (ADR-0068 §7).
+// -----------------------------------------------------------------------------
+
+message MarkPriceEvent {
+  EventMeta meta = 1;
+  string symbol = 2;
+
+  oneof payload {
+    MarkTick    tick    = 10;
+    FundingTick funding = 11;
+  }
+}
+
+message MarkTick {
+  string mark_price = 1;    // decimal; the price unrealized PnL + liq use
+  string index_price = 2;   // decimal; spot-derived anchor
+  string funding_rate = 3;  // decimal; current estimate (not yet settled)
+  int64 ts_unix_ms = 4;
+}
+
+message FundingTick {
+  string funding_round_id = 1; // e.g. "BTC-USDT-PERP:1748505600"; idempotency key
+  string funding_rate = 2;     // settled rate for this round
+  string mark_price = 3;       // mark at the boundary
+  int64 ts_unix_ms = 4;
+}

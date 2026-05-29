@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package opentrade.rpc.perp;
+
+import "event/common.proto";
+
+option go_package = "github.com/xargin/opentrade/api/gen/rpc/perp;perprpc";
+
+// -----------------------------------------------------------------------------
+// perp-counter gRPC service (ADR-0068 §2, A1: independent service). Called by
+// BFF (PlaceOrder / Cancel / Query) for USDT-margined linear perpetuals.
+// Matching outcome is asynchronous (ADR-0007) — delivered via WS / Query.
+//
+// The futures margin wallet is funded out-of-band via the asset-service
+// funding→futures saga (ADR-0057 biz_line=futures); perp-counter implements
+// the AssetHolder contract for that (not on this service surface).
+// -----------------------------------------------------------------------------
+
+service PerpService {
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  rpc QueryOrder(QueryOrderRequest) returns (QueryOrderResponse);
+  rpc QueryPositions(QueryPositionsRequest) returns (QueryPositionsResponse);
+  rpc QueryMargin(QueryMarginRequest) returns (QueryMarginResponse);
+}
+
+// MarginMode mirrors perpstate.MarginMode (ADR-0068 §3.1). MVP implements
+// ISOLATED only; CROSS is reserved so the wire shape is stable when cross
+// margin lands as an additive change.
+enum MarginMode {
+  MARGIN_MODE_UNSPECIFIED = 0;
+  MARGIN_MODE_ISOLATED = 1;
+  MARGIN_MODE_CROSS = 2; // reserved (future)
+}
+
+message PlaceOrderRequest {
+  string user_id = 1;
+  string client_order_id = 2;                 // optional idempotency key
+  string symbol = 3;                          // e.g. BTC-USDT-PERP
+  opentrade.event.Side side = 4;
+  opentrade.event.OrderType order_type = 5;
+  opentrade.event.TimeInForce tif = 6;
+  string price = 7;                           // empty for market
+  string qty = 8;                             // base qty
+  string leverage = 9;                        // decimal, e.g. "10"
+  bool reduce_only = 10;                      // close-only; never increases a position
+  MarginMode margin_mode = 11;                // MVP: ISOLATED
+}
+
+message PlaceOrderResponse {
+  uint64 order_id = 1;
+  string client_order_id = 2;
+  bool accepted = 3;                          // false = dedup hit or rejected
+  string reject_reason = 4;                   // e.g. "insufficient_margin"
+  int64 received_ts_unix_ms = 5;
+}
+
+message CancelOrderRequest {
+  string user_id = 1;
+  uint64 order_id = 2;
+}
+
+message CancelOrderResponse {
+  uint64 order_id = 1;
+  bool accepted = 2;
+}
+
+message QueryOrderRequest {
+  string user_id = 1;
+  uint64 order_id = 2;
+}
+
+message QueryOrderResponse {
+  uint64 order_id = 1;
+  string client_order_id = 2;
+  string symbol = 3;
+  opentrade.event.Side side = 4;
+  opentrade.event.OrderType order_type = 5;
+  opentrade.event.TimeInForce tif = 6;
+  string price = 7;
+  string qty = 8;
+  string filled_qty = 9;
+  bool reduce_only = 10;
+  opentrade.event.InternalOrderStatus status = 11;
+  int64 created_at_unix_ms = 12;
+  int64 updated_at_unix_ms = 13;
+}
+
+message QueryPositionsRequest {
+  string user_id = 1;
+  string symbol = 2; // empty = all symbols
+}
+
+message QueryPositionsResponse {
+  repeated Position positions = 1;
+}
+
+// Position is the query view; size/entry/margin are authoritative state,
+// while mark_price / unrealized_pnl / liq_price / margin_ratio are derived
+// at query time from the latest mark (ADR-0068 invariant #2).
+message Position {
+  string symbol = 1;
+  opentrade.event.Side side = 2;
+  string size = 3;
+  string entry_price = 4;
+  string margin = 5;
+  string leverage = 6;
+  MarginMode margin_mode = 7;
+  string mark_price = 8;
+  string unrealized_pnl = 9;
+  string realized_pnl = 10;
+  string liq_price = 11;
+  string margin_ratio = 12;
+}
+
+message QueryMarginRequest {
+  string user_id = 1;
+}
+
+message QueryMarginResponse {
+  string asset = 1;            // "USDT"
+  string available = 2;        // free margin balance
+  string reserved = 3;         // IM held against open orders (ADR-0041 reservation)
+  string position_margin = 4;  // sum of margin locked in positions
+  string unrealized_pnl = 5;   // sum across positions at latest mark
+}

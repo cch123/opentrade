@@ -13,6 +13,7 @@ use (
 	./history
 	./asset
 	./admin-gateway
+	./perp-counter
 	./tools/tui
 	./tools/web
 	./tools/precision-cli
