@@ -124,3 +124,33 @@ func TestEngine_SnapshotRoundTrip(t *testing.T) {
 	}
 	eq(t, p.Entry, "200", "restored entry")
 }
+
+func TestEngine_ApplyFillWithSeq_GuardsReplay(t *testing.T) {
+	e := New()
+	e.Deposit("u1", d("1000"))
+	e.Reserve("u1", d("10"))
+	buy1 := func() perpstate.Fill {
+		return perpstate.Fill{Side: perpstate.SideBuy, Price: d("100"), Qty: d("1")}
+	}
+
+	if _, ok := e.ApplyFillWithSeq("u1", "BTC-USDT-PERP", d("10"), 5, buy1()); !ok {
+		t.Fatal("seq 5 should apply")
+	}
+	p, _ := e.PositionOf("u1", "BTC-USDT-PERP")
+	eq(t, p.Size, "1", "size after first apply")
+
+	if _, ok := e.ApplyFillWithSeq("u1", "BTC-USDT-PERP", d("10"), 5, buy1()); ok {
+		t.Fatal("replay of seq 5 must be skipped")
+	}
+	if _, ok := e.ApplyFillWithSeq("u1", "BTC-USDT-PERP", d("10"), 3, buy1()); ok {
+		t.Fatal("older seq 3 must be skipped")
+	}
+	p, _ = e.PositionOf("u1", "BTC-USDT-PERP")
+	eq(t, p.Size, "1", "size unchanged after skipped replays")
+
+	if _, ok := e.ApplyFillWithSeq("u1", "BTC-USDT-PERP", d("10"), 6, buy1()); !ok {
+		t.Fatal("newer seq 6 should apply")
+	}
+	p, _ = e.PositionOf("u1", "BTC-USDT-PERP")
+	eq(t, p.Size, "2", "size after seq 6")
+}

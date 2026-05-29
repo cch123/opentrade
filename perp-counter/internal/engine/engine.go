@@ -149,7 +149,38 @@ func (e *Engine) ApplyFill(user, symbol string, leverage dec.Decimal, f perpstat
 		p.Leverage = leverage
 	}
 	res := p.ApplyFill(f)
+	e.routeCashLocked(user, res)
+	return res
+}
 
+// ApplyFillWithSeq applies a fill guarded by the per-(user, symbol) match_seq
+// watermark (ADR-0068 invariant #3): a fill whose seq <= the stored watermark
+// is a replay and is skipped (applied=false); on apply the watermark
+// advances. seq == 0 bypasses the guard (in-process tests / legacy). Guard +
+// apply + advance + cash routing all happen under one lock — no TOCTOU
+// between checking the watermark and mutating the position.
+func (e *Engine) ApplyFillWithSeq(user, symbol string, leverage dec.Decimal, seq uint64, f perpstate.Fill) (perpstate.FillResult, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	p := e.positionLocked(user, symbol)
+	if seq != 0 && seq <= p.LastMatchSeq {
+		return perpstate.FillResult{}, false
+	}
+	if p.Leverage.Sign() == 0 {
+		p.Leverage = leverage
+	}
+	res := p.ApplyFill(f)
+	if seq != 0 {
+		p.LastMatchSeq = seq
+	}
+	e.routeCashLocked(user, res)
+	return res, true
+}
+
+// routeCashLocked moves a fill's cash effects between wallet and position
+// margin. Caller holds e.mu. Flat positions are retained (size 0) so their
+// match_seq watermark + realized history survive; queries filter them out.
+func (e *Engine) routeCashLocked(user string, res perpstate.FillResult) {
 	w := e.walletLocked(user)
 	if res.MarginAdded.Sign() > 0 {
 		fromReserved := dec.Min(res.MarginAdded, w.Reserved)
@@ -162,14 +193,6 @@ func (e *Engine) ApplyFill(user, symbol string, leverage dec.Decimal, f perpstat
 		w.Available = w.Available.Add(res.MarginReleased)
 	}
 	w.Available = w.Available.Add(res.Realized).Sub(res.Fee)
-
-	if p.IsFlat() {
-		delete(e.positions[user], symbol)
-		if len(e.positions[user]) == 0 {
-			delete(e.positions, user)
-		}
-	}
-	return res
 }
 
 // ApplyFunding settles one funding interval against (user, symbol) at the
@@ -229,6 +252,23 @@ func (e *Engine) PositionOf(user, symbol string) (perpstate.Position, bool) {
 	}
 	p := bySym[symbol]
 	if p == nil || p.IsFlat() {
+		return perpstate.Position{}, false
+	}
+	return *p, true
+}
+
+// PositionRaw returns a copy of the stored position, including a flat one
+// (size 0, retained for its match_seq watermark). ok=false only when the
+// position was never created. Used to build post-change journal snapshots.
+func (e *Engine) PositionRaw(user, symbol string) (perpstate.Position, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	bySym := e.positions[user]
+	if bySym == nil {
+		return perpstate.Position{}, false
+	}
+	p := bySym[symbol]
+	if p == nil {
 		return perpstate.Position{}, false
 	}
 	return *p, true

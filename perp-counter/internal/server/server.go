@@ -13,6 +13,7 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
+	"github.com/xargin/opentrade/perp-counter/internal/service"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
@@ -20,27 +21,38 @@ import (
 // Server satisfies perprpcconnect.PerpServiceHandler.
 type Server struct {
 	eng        *engine.Engine
+	svc        *service.Service
 	defaultMMR dec.Decimal // maintenance margin rate for derived liq/ratio (M6: per-symbol)
 }
 
 // New wires a Server. A zero defaultMMR disables the derived liq-price field.
-func New(eng *engine.Engine, defaultMMR dec.Decimal) *Server {
-	return &Server{eng: eng, defaultMMR: defaultMMR}
+func New(eng *engine.Engine, svc *service.Service, defaultMMR dec.Decimal) *Server {
+	return &Server{eng: eng, svc: svc, defaultMMR: defaultMMR}
 }
 
-func (s *Server) PlaceOrder(_ context.Context, _ *connect.Request[perprpc.PlaceOrderRequest]) (*connect.Response[perprpc.PlaceOrderResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented,
-		errors.New("perp PlaceOrder pending Match dispatch + sequencer (ADR-0068 M3)"))
+func (s *Server) PlaceOrder(_ context.Context, req *connect.Request[perprpc.PlaceOrderRequest]) (*connect.Response[perprpc.PlaceOrderResponse], error) {
+	resp, err := s.svc.PlaceOrder(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
 }
 
-func (s *Server) CancelOrder(_ context.Context, _ *connect.Request[perprpc.CancelOrderRequest]) (*connect.Response[perprpc.CancelOrderResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented,
-		errors.New("perp CancelOrder pending Match dispatch (ADR-0068 M3)"))
+func (s *Server) CancelOrder(_ context.Context, req *connect.Request[perprpc.CancelOrderRequest]) (*connect.Response[perprpc.CancelOrderResponse], error) {
+	resp, err := s.svc.CancelOrder(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
 }
 
-func (s *Server) QueryOrder(_ context.Context, _ *connect.Request[perprpc.QueryOrderRequest]) (*connect.Response[perprpc.QueryOrderResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented,
-		errors.New("perp QueryOrder pending order store (ADR-0068 M3)"))
+func (s *Server) QueryOrder(_ context.Context, req *connect.Request[perprpc.QueryOrderRequest]) (*connect.Response[perprpc.QueryOrderResponse], error) {
+	resp, ok := s.svc.QueryOrder(req.Msg)
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound,
+			errors.New("order not found (live orders only; terminal via history)"))
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (s *Server) QueryPositions(_ context.Context, req *connect.Request[perprpc.QueryPositionsRequest]) (*connect.Response[perprpc.QueryPositionsResponse], error) {
