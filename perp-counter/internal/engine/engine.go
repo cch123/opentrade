@@ -212,6 +212,41 @@ func (e *Engine) ApplyFunding(user, symbol string, rate dec.Decimal) dec.Decimal
 	return p.ApplyFunding(e.marks[symbol], rate)
 }
 
+// FundingResult is one position's funding settlement outcome.
+type FundingResult struct {
+	UserID   string
+	Symbol   string
+	Payment  dec.Decimal        // signed margin delta (negative = position paid)
+	Position perpstate.Position // post-settlement copy (for the journal)
+}
+
+// SettleFunding applies one funding round to every non-flat position in
+// symbol at the current mark (ADR-0068 §7). The per-position
+// funding_round_seen watermark makes it idempotent: a round_id <= the
+// watermark is skipped (replay / restart safe, ADR-0068 invariant #3).
+// round_id is the funding boundary's unix seconds (monotonic per symbol).
+// Returns the per-position results sorted by user for deterministic journaling.
+func (e *Engine) SettleFunding(symbol string, roundID int64, rate dec.Decimal) []FundingResult {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	mark := e.marks[symbol]
+	var out []FundingResult
+	for user, bySym := range e.positions {
+		p := bySym[symbol]
+		if p == nil || p.IsFlat() {
+			continue
+		}
+		if roundID <= p.FundingRoundSeen {
+			continue // already settled this round
+		}
+		delta := p.ApplyFunding(mark, rate)
+		p.FundingRoundSeen = roundID
+		out = append(out, FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out
+}
+
 // AddInsurance adjusts a symbol's insurance fund (ADR-0068 §9). delta may be
 // negative (fund covers a shortfall). Returns the new balance.
 func (e *Engine) AddInsurance(symbol string, delta dec.Decimal) dec.Decimal {
@@ -228,6 +263,46 @@ func (e *Engine) InsuranceFund(symbol string) dec.Decimal {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.insurance[symbol]
+}
+
+// LiquidationCandidate is a position that breached maintenance margin and is
+// up for liquidation (ADR-0068 §8).
+type LiquidationCandidate struct {
+	UserID          string
+	Symbol          string
+	Side            perpstate.Side
+	Size            dec.Decimal
+	Mark            dec.Decimal
+	BankruptcyPrice dec.Decimal // where the reduce_only liquidation order is placed
+}
+
+// LiquidatablePositions scans every non-flat position in symbol at the
+// current mark and returns those whose isolated collateral pool breaches the
+// maintenance margin rate (ADR-0068 §8). It keys off the CollateralPool seam
+// (perpstate.Isolated) — invariant #6 — so cross margin reuses this path. The
+// method is read-only; the liquidation flow (cancel the position's orders →
+// submit the bankruptcy reduce_only order → book insurance) runs in the
+// per-user sequencer once Match is wired.
+func (e *Engine) LiquidatablePositions(symbol string, mmr dec.Decimal) []LiquidationCandidate {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	mark := e.marks[symbol]
+	marks := map[string]dec.Decimal{symbol: mark}
+	var out []LiquidationCandidate
+	for user, bySym := range e.positions {
+		p := bySym[symbol]
+		if p == nil || p.IsFlat() {
+			continue
+		}
+		if perpstate.Isolated(p).Liquidatable(marks, mmr) {
+			out = append(out, LiquidationCandidate{
+				UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
+				Mark: mark, BankruptcyPrice: p.BankruptcyPrice(),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out
 }
 
 // WalletOf returns a copy of the user's wallet.

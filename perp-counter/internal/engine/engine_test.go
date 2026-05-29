@@ -154,3 +154,65 @@ func TestEngine_ApplyFillWithSeq_GuardsReplay(t *testing.T) {
 	p, _ = e.PositionOf("u1", "BTC-USDT-PERP")
 	eq(t, p.Size, "2", "size after seq 6")
 }
+
+// openPos opens a position with ample wallet, reserving + filling once.
+func openPos(e *Engine, user, sym string, side perpstate.Side, price, qty, lev string) {
+	e.Deposit(user, d("100000"))
+	e.Reserve(user, perpstate.InitMargin(d(price), d(qty), d(lev)))
+	e.ApplyFill(user, sym, d(lev), perpstate.Fill{Side: side, Price: d(price), Qty: d(qty)})
+}
+
+func TestEngine_SettleFunding(t *testing.T) {
+	e := New()
+	openPos(e, "u1", "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10")  // long, margin 10
+	openPos(e, "u2", "BTC-USDT-PERP", perpstate.SideSell, "100", "1", "10") // short, margin 10
+	e.SetMark("BTC-USDT-PERP", d("100"))
+
+	// rate 0.0001, notional 100 → payment 0.01: long pays, short receives.
+	res := e.SettleFunding("BTC-USDT-PERP", 1000, d("0.0001"))
+	if len(res) != 2 {
+		t.Fatalf("want 2 funding results, got %d", len(res))
+	}
+	eq(t, res[0].Payment, "-0.01", "u1 (long) pays")   // sorted by user: u1 first
+	eq(t, res[1].Payment, "0.01", "u2 (short) receives")
+	p1, _ := e.PositionOf("u1", "BTC-USDT-PERP")
+	eq(t, p1.Margin, "9.99", "u1 margin after funding")
+	p2, _ := e.PositionOf("u2", "BTC-USDT-PERP")
+	eq(t, p2.Margin, "10.01", "u2 margin after funding")
+
+	// Replay same round → skipped, margins unchanged.
+	if res := e.SettleFunding("BTC-USDT-PERP", 1000, d("0.0001")); len(res) != 0 {
+		t.Fatalf("replay round must settle nothing, got %d", len(res))
+	}
+	p1, _ = e.PositionOf("u1", "BTC-USDT-PERP")
+	eq(t, p1.Margin, "9.99", "u1 margin unchanged after replay")
+
+	// New round applies again.
+	if res := e.SettleFunding("BTC-USDT-PERP", 2000, d("0.0001")); len(res) != 2 {
+		t.Fatalf("new round should settle 2, got %d", len(res))
+	}
+}
+
+func TestEngine_LiquidatablePositions(t *testing.T) {
+	e := New()
+	openPos(e, "u1", "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10") // long, margin 10
+	mmr := d("0.005")
+
+	e.SetMark("BTC-USDT-PERP", d("100"))
+	if got := e.LiquidatablePositions("BTC-USDT-PERP", mmr); len(got) != 0 {
+		t.Fatalf("healthy long at entry should not be liquidatable, got %d", len(got))
+	}
+	e.SetMark("BTC-USDT-PERP", d("95"))
+	if got := e.LiquidatablePositions("BTC-USDT-PERP", mmr); len(got) != 0 {
+		t.Fatalf("long at 95 (ratio ~0.0526) should be safe, got %d", len(got))
+	}
+	e.SetMark("BTC-USDT-PERP", d("90"))
+	got := e.LiquidatablePositions("BTC-USDT-PERP", mmr)
+	if len(got) != 1 {
+		t.Fatalf("long at 90 (equity 0) should be liquidatable, got %d", len(got))
+	}
+	eq(t, got[0].BankruptcyPrice, "90", "bankruptcy price 100-10/1")
+	if got[0].Side != perpstate.SideBuy {
+		t.Fatalf("candidate side = %v, want buy", got[0].Side)
+	}
+}
