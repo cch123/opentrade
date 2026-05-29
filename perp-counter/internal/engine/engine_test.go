@@ -216,3 +216,37 @@ func TestEngine_LiquidatablePositions(t *testing.T) {
 		t.Fatalf("candidate side = %v, want buy", got[0].Side)
 	}
 }
+
+func TestEngine_ForceClose(t *testing.T) {
+	// Filled exactly at bankruptcy (90) → zero insurance impact.
+	e := New()
+	openPos(e, "u1", "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10") // margin 10, bankruptcy 90
+	delta, ok := e.ForceClose("u1", "BTC-USDT-PERP", d("90"))
+	if !ok {
+		t.Fatal("force close should succeed")
+	}
+	eq(t, delta, "0", "equity at bankruptcy is 0")
+	eq(t, e.InsuranceFund("BTC-USDT-PERP"), "0", "fund unchanged at bankruptcy")
+	if _, exists := e.PositionOf("u1", "BTC-USDT-PERP"); exists {
+		t.Fatal("position should be wiped")
+	}
+
+	// Filled better than bankruptcy (92) → surplus 2 into the fund.
+	e = New()
+	openPos(e, "u1", "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10")
+	delta, _ = e.ForceClose("u1", "BTC-USDT-PERP", d("92")) // realized -8, equity 2
+	eq(t, delta, "2", "surplus to insurance")
+	eq(t, e.InsuranceFund("BTC-USDT-PERP"), "2", "fund grows by surplus")
+
+	// Filled past bankruptcy (88) → deficit 2, fund covers (goes negative).
+	e = New()
+	openPos(e, "u1", "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10")
+	delta, _ = e.ForceClose("u1", "BTC-USDT-PERP", d("88")) // realized -12, equity -2
+	eq(t, delta, "-2", "deficit drawn from insurance")
+	eq(t, e.InsuranceFund("BTC-USDT-PERP"), "-2", "fund covers the shortfall")
+
+	// No position → ok=false.
+	if _, ok := e.ForceClose("u2", "BTC-USDT-PERP", d("100")); ok {
+		t.Fatal("force close with no position should be ok=false")
+	}
+}

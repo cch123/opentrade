@@ -305,6 +305,44 @@ func (e *Engine) LiquidatablePositions(symbol string, mmr dec.Decimal) []Liquida
 	return out
 }
 
+// ForceClose liquidates a position fully at fillPrice (the price the
+// bankruptcy reduce_only order filled at, ADR-0068 §8). The position is
+// wiped and its equity at fillPrice (margin + realized) settles into the
+// symbol's insurance fund: a surplus (filled better than bankruptcy) adds to
+// the fund, a deficit (filled past bankruptcy) draws it down. Isolated — only
+// this position's margin is at risk; the wallet's free balance is untouched.
+// Returns the signed insurance delta; ok=false when there's nothing to close.
+//
+// The order cancellation + Match dispatch of the bankruptcy order happen in
+// the service layer; this is the settlement once the liquidation fill is
+// known.
+func (e *Engine) ForceClose(user, symbol string, fillPrice dec.Decimal) (insuranceDelta dec.Decimal, ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bySym := e.positions[user]
+	if bySym == nil {
+		return zero, false
+	}
+	p := bySym[symbol]
+	if p == nil || p.IsFlat() {
+		return zero, false
+	}
+	var realized dec.Decimal
+	if p.Side == perpstate.SideBuy {
+		realized = fillPrice.Sub(p.Entry).Mul(p.Size)
+	} else {
+		realized = p.Entry.Sub(fillPrice).Mul(p.Size)
+	}
+	equity := p.Margin.Add(realized)
+	p.Realized = p.Realized.Add(realized)
+	p.Size = zero
+	p.Entry = zero
+	p.Margin = zero
+	p.Side = 0
+	e.insurance[symbol] = e.insurance[symbol].Add(equity)
+	return equity, true
+}
+
 // WalletOf returns a copy of the user's wallet.
 func (e *Engine) WalletOf(user string) Wallet {
 	e.mu.RLock()
