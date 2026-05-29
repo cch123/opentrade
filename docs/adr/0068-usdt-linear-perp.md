@@ -16,6 +16,26 @@
 
 OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-transfer-saga.md)）不写兼容层。
 
+## 实现进度 (2026-05-29)
+
+逻辑核心已落地并入 CI（离线 `make build/vet` + 各模块 `test -race` 全绿）。Kafka / 跨服务集成层**待真实基础设施**（broker / etcd / MySQL + perp-aware Match + BFF）就绪再接——不盲写未验证的资金相关集成代码。
+
+| 里程碑 | 范围 | 状态 | commit |
+|---|---|---|---|
+| M1 | perp proto（PerpService/perp-journal/mark-price）+ perp-counter 模块骨架 | ✅ | `453fddb` |
+| M2 | 仓位/保证金/资金费/强平代数（`pkg/perpstate`） | ✅ | `e036dba` |
+| M3 | 前置保证金闸门 + reduce_only + 成交结算 + matchSeq 守卫 + 自成交 | ✅ | `d4f9f2b` |
+| M4 | markprice mark/funding 计算核心 + 服务骨架 | ✅ | `c078001` |
+| M5 | 资金费扫描结算（funding_round_seen 幂等） | ✅ | `18a1897` |
+| M6 | 强平检测（collateral pool health 破 mmr） | ✅ | `18a1897` |
+
+**待集成（需 broker/etcd/MySQL 才能 build + verify，故暂未写）**：
+- perp-counter ↔ Match：order-event 生产 + trade-event 消费（`Dispatcher` / `Journal` 接口已留，main 用 no-op）
+- markprice：现货 market-data 消费 + mark-price 生产；perp-counter 消费 mark-tick / funding-tick
+- 强平**执行**流：撤单 → 破产价 reduce_only 单 → 保险基金结算（检测已就绪）
+- snapshot 持久化（`pkg/snapshot` + 绑 offset，ADR-0048）+ cold-standby HA
+- **M7 接入面**：AssetHolder（funding→futures）、BFF perp REST/WS、push perp 私有流、trade-dump perp 投影、history perp 查询
+
 ## 术语 (Glossary)
 
 | 本 ADR 字段 | 含义 | 业界对标（仅供读者映射，不取其实现细节） |
