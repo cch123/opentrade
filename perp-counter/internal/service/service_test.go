@@ -2,12 +2,14 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
 type fakeDispatcher struct {
@@ -194,5 +196,72 @@ func TestHandleTrade_SelfTradeAppliesBothLegs(t *testing.T) {
 	// applied (if the maker leg were dropped by the guard, u1 would be long 1).
 	if _, ok := eng.PositionOf("u1", "BTC-USDT-PERP"); ok {
 		t.Fatal("self-trade should net flat (both legs applied)")
+	}
+}
+
+func TestCancelOrder_MarksPendingCancelAndDispatches(t *testing.T) {
+	svc, eng, disp, _ := newSvc()
+	eng.Deposit("u1", dec.New("1000"))
+	r, _ := svc.PlaceOrder(placeReq("u1", "BTC-USDT-PERP", eventpb.Side_SIDE_BUY, "100", "1", "10", false))
+	resp, err := svc.CancelOrder(&perprpc.CancelOrderRequest{UserId: "u1", OrderId: r.OrderId})
+	if err != nil || !resp.Accepted {
+		t.Fatalf("cancel: err=%v accepted=%v", err, resp.Accepted)
+	}
+	if disp.cancels != 1 {
+		t.Fatalf("dispatch cancel count = %d, want 1", disp.cancels)
+	}
+	q, ok := svc.QueryOrder(&perprpc.QueryOrderRequest{UserId: "u1", OrderId: r.OrderId})
+	if !ok || q.Status != eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL {
+		t.Fatalf("status after cancel = %v ok=%v, want PENDING_CANCEL", q.GetStatus(), ok)
+	}
+}
+
+func TestPlaceOrder_ReduceOnlyHappyPath(t *testing.T) {
+	svc, eng, disp, _ := newSvc()
+	eng.Deposit("u1", dec.New("1000"))
+	// Existing long 1 @100 (as if already settled from a prior fill).
+	eng.Reserve("u1", dec.New("10"))
+	eng.ApplyFill("u1", "BTC-USDT-PERP", dec.New("10"),
+		perpstate.Fill{Side: perpstate.SideBuy, Price: dec.New("100"), Qty: dec.New("1")})
+	before := eng.WalletOf("u1")
+
+	// reduce_only sell is opposite the long → accepted, and reserves no new IM.
+	resp, _ := svc.PlaceOrder(placeReq("u1", "BTC-USDT-PERP", eventpb.Side_SIDE_SELL, "100", "1", "10", true))
+	if !resp.Accepted {
+		t.Fatalf("reduce_only opposite an existing position should be accepted, got reason=%s", resp.RejectReason)
+	}
+	if after := eng.WalletOf("u1"); after.Reserved.Cmp(before.Reserved) != 0 {
+		t.Fatalf("reduce_only must not reserve new IM: before=%s after=%s", before.Reserved, after.Reserved)
+	}
+	if len(disp.orders) != 1 {
+		t.Fatalf("reduce_only order should dispatch, got %d", len(disp.orders))
+	}
+}
+
+func TestOrderLifecycle_PartialThenFull(t *testing.T) {
+	svc, eng, _, _ := newSvc()
+	eng.Deposit("u1", dec.New("10000"))
+	eng.Deposit("u2", dec.New("10000"))
+	rT, _ := svc.PlaceOrder(placeReq("u1", "BTC-USDT-PERP", eventpb.Side_SIDE_BUY, "100", "2", "10", false))
+	rM, _ := svc.PlaceOrder(placeReq("u2", "BTC-USDT-PERP", eventpb.Side_SIDE_SELL, "100", "2", "10", false))
+	trade := func(seq uint64, filled string, st eventpb.InternalOrderStatus) *eventpb.Trade {
+		return &eventpb.Trade{
+			TradeId: fmt.Sprintf("t%d", seq), Symbol: "BTC-USDT-PERP", Price: "100", Qty: "1",
+			MakerUserId: "u2", MakerOrderId: rM.OrderId, TakerUserId: "u1", TakerOrderId: rT.OrderId,
+			TakerSide: eventpb.Side_SIDE_BUY, MakerStatusAfter: st, TakerStatusAfter: st,
+			MakerFilledQtyAfter: filled, TakerFilledQtyAfter: filled,
+		}
+	}
+	svc.HandleTrade(trade(1, "1", eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED), 1)
+	p, _ := eng.PositionOf("u1", "BTC-USDT-PERP")
+	eqd(t, p.Size, "1", "size after partial fill")
+	if svc.OrderCount() != 2 {
+		t.Fatalf("both orders still live after partial, have %d", svc.OrderCount())
+	}
+	svc.HandleTrade(trade(2, "2", eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED), 2)
+	p, _ = eng.PositionOf("u1", "BTC-USDT-PERP")
+	eqd(t, p.Size, "2", "size after full fill")
+	if svc.OrderCount() != 0 {
+		t.Fatalf("orders evicted after fill, have %d", svc.OrderCount())
 	}
 }
