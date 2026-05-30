@@ -33,9 +33,18 @@ const (
 type TIF uint8
 
 const (
-	TIFGTC      TIF = 1
-	TIFIOC      TIF = 2
-	TIFFOK      TIF = 3
+	// GTC keeps any unfilled remainder live on the book. It is the default
+	// resting-order policy, so cancellation or terminal settlement must be
+	// driven by a later user or matching-engine event.
+	TIFGTC TIF = 1
+	// IOC takes immediately available liquidity and expires the unfilled
+	// remainder instead of inserting it into the book.
+	TIFIOC TIF = 2
+	// FOK requires the full quantity to fill immediately; partial execution
+	// is rejected so callers do not observe a partially-filled order.
+	TIFFOK TIF = 3
+	// PostOnly must rest as maker liquidity. If it would cross the book and
+	// take liquidity, the order is rejected rather than executed as taker.
 	TIFPostOnly TIF = 4
 )
 
@@ -43,15 +52,41 @@ const (
 type OrderStatus uint8
 
 const (
-	OrderStatusUnspecified     OrderStatus = 0
-	OrderStatusPendingNew      OrderStatus = 1
-	OrderStatusNew             OrderStatus = 2
+	// OrderStatusUnspecified is the zero-value guardrail. It is not a valid
+	// lifecycle state for accepted orders, but keeps proto / restore defaults
+	// distinguishable from a real pending order.
+	OrderStatusUnspecified OrderStatus = 0
+	// OrderStatusPendingNew means Counter accepted and journaled the freeze,
+	// but the matching engine has not acknowledged the order yet. Keeping
+	// this separate from NEW lets recovery and admin flows tell "not on book
+	// yet" apart from "live on book".
+	OrderStatusPendingNew OrderStatus = 1
+	// OrderStatusNew means the matching engine accepted the order and any
+	// remaining quantity is active. This is still non-terminal, so COID dedup
+	// and active-limit indexes must continue treating the order as live.
+	OrderStatusNew OrderStatus = 2
+	// OrderStatusPartiallyFilled keeps execution history visible while the
+	// unfilled remainder remains active. It stays non-terminal because later
+	// fills, cancels, or expiries may still arrive.
 	OrderStatusPartiallyFilled OrderStatus = 3
-	OrderStatusFilled          OrderStatus = 4
-	OrderStatusPendingCancel   OrderStatus = 5
-	OrderStatusCanceled        OrderStatus = 6
-	OrderStatusRejected        OrderStatus = 7
-	OrderStatusExpired         OrderStatus = 8
+	// OrderStatusFilled is terminal: no remaining quantity can execute, and
+	// active-order indexes can release the clientOrderId / limit slot.
+	OrderStatusFilled OrderStatus = 4
+	// OrderStatusPendingCancel records that Counter has published a cancel
+	// request but final matching-engine resolution has not arrived. The prior
+	// active state is kept on the Order so external status can remain stable.
+	OrderStatusPendingCancel OrderStatus = 5
+	// OrderStatusCanceled is terminal after cancellation wins the race with
+	// fills. Any residual frozen funds should be released by the paired
+	// unfreeze path before consumers observe the final state.
+	OrderStatusCanceled OrderStatus = 6
+	// OrderStatusRejected is terminal for orders rejected after Counter
+	// accepted the request, so replay can close the order and release active
+	// indexes without treating it as a user-side validation reject.
+	OrderStatusRejected OrderStatus = 7
+	// OrderStatusExpired is terminal for time-in-force or engine expiry. It
+	// is separate from CANCELED because the user did not request removal.
+	OrderStatusExpired OrderStatus = 8
 )
 
 // IsTerminal reports whether status is a final state (FILLED / CANCELED /
