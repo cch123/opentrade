@@ -1,12 +1,9 @@
 package index
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -41,9 +38,9 @@ func RunExternalSources(ctx context.Context, book *SourceBook, sources []SourceC
 			go runReconnecting(ctx, src.Name, logger, func(ctx context.Context) error {
 				return runOKX(ctx, book, src.Name, symbol)
 			})
-		case "huobi", "htx":
+		case "bybit":
 			go runReconnecting(ctx, src.Name, logger, func(ctx context.Context) error {
-				return runHuobi(ctx, book, src.Name, symbol)
+				return runBybit(ctx, book, src.Name, symbol)
 			})
 		default:
 			logger.Warn("unsupported external index source venue",
@@ -140,48 +137,67 @@ func runOKX(ctx context.Context, book *SourceBook, name, symbol string) error {
 	}
 }
 
-func runHuobi(ctx context.Context, book *SourceBook, name, symbol string) error {
-	conn, _, err := websocket.Dial(ctx, "wss://api.huobi.pro/ws", nil)
+func runBybit(ctx context.Context, book *SourceBook, name, symbol string) error {
+	conn, _, err := websocket.Dial(ctx, "wss://stream.bybit.com/v5/public/linear", nil)
 	if err != nil {
 		return err
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
-	sub := map[string]string{"sub": "market." + strings.ToLower(symbol) + ".bbo", "id": name}
+	// Bybit v5 linear public streams use explicit subscribe messages. Tickers
+	// provide best bid/ask without maintaining a depth book locally, which is
+	// enough for the composite index's exchange-agnostic mid-price input.
+	sub := map[string]any{"op": "subscribe", "args": []string{"tickers." + symbol}}
 	body, _ := json.Marshal(sub)
 	if err := conn.Write(ctx, websocket.MessageText, body); err != nil {
 		return err
 	}
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	defer stopHeartbeat()
+	go bybitHeartbeat(heartbeatCtx, conn)
+
+	var lastBid, lastAsk string
 	for {
 		_, payload, err := conn.Read(ctx)
 		if err != nil {
 			return err
 		}
-		payload, err = maybeGunzip(payload)
-		if err != nil {
-			continue
-		}
 		var msg struct {
-			Ping int64 `json:"ping"`
-			Ts   int64 `json:"ts"`
-			Tick struct {
-				Bid []json.RawMessage `json:"bid"`
-				Ask []json.RawMessage `json:"ask"`
-			} `json:"tick"`
+			Topic string `json:"topic"`
+			Ts    int64  `json:"ts"`
+			Data  struct {
+				Bid string `json:"bid1Price"`
+				Ask string `json:"ask1Price"`
+			} `json:"data"`
 		}
-		if err := json.Unmarshal(payload, &msg); err != nil {
+		if err := json.Unmarshal(payload, &msg); err != nil || msg.Topic != "tickers."+symbol {
 			continue
 		}
-		if msg.Ping > 0 {
-			pong, _ := json.Marshal(map[string]int64{"pong": msg.Ping})
-			_ = conn.Write(ctx, websocket.MessageText, pong)
-			continue
+		// The ticker stream can send delta messages that omit unchanged fields.
+		// Carry the last non-empty side so a one-sided delta still refreshes the
+		// mid once both sides have been observed.
+		if msg.Data.Bid != "" {
+			lastBid = msg.Data.Bid
 		}
-		bid, okBid := firstDecimal(msg.Tick.Bid)
-		ask, okAsk := firstDecimal(msg.Tick.Ask)
-		if !okBid || !okAsk {
-			continue
+		if msg.Data.Ask != "" {
+			lastAsk = msg.Data.Ask
 		}
-		upsertMid(book, name, bid.String(), ask.String(), msg.Ts)
+		upsertMid(book, name, lastBid, lastAsk, msg.Ts)
+	}
+}
+
+func bybitHeartbeat(ctx context.Context, conn *websocket.Conn) {
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			body, _ := json.Marshal(map[string]string{"op": "ping"})
+			if err := conn.Write(ctx, websocket.MessageText, body); err != nil {
+				return
+			}
+		}
 	}
 }
 
@@ -206,34 +222,4 @@ func parseMs(s string) int64 {
 		return time.Now().UnixMilli()
 	}
 	return v
-}
-
-func maybeGunzip(payload []byte) ([]byte, error) {
-	r, err := gzip.NewReader(bytes.NewReader(payload))
-	if err != nil {
-		return payload, nil
-	}
-	defer r.Close()
-	out, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func firstDecimal(raw []json.RawMessage) (dec.Decimal, bool) {
-	if len(raw) == 0 {
-		return zero, false
-	}
-	var s string
-	if err := json.Unmarshal(raw[0], &s); err == nil {
-		d, err := dec.Parse(s)
-		return d, err == nil
-	}
-	var n json.Number
-	if err := json.Unmarshal(raw[0], &n); err == nil {
-		d, err := dec.Parse(n.String())
-		return d, err == nil
-	}
-	return zero, false
 }

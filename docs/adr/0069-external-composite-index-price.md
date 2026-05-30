@@ -127,7 +127,7 @@ MVP 用 perp-pricing 的配置承载（flag + 一个 per-symbol 的 JSON，参�
       { "name": "self:BTC-USDT",     "weight": 1 },   // 自家现货
       { "name": "binance:BTCUSDT",   "weight": 2 },
       { "name": "okx:BTC-USDT",      "weight": 1 },
-      { "name": "huobi:btcusdt",     "weight": 1 }
+      { "name": "bybit:BTCUSDT",     "weight": 1 }
     ]
   }
 }
@@ -215,7 +215,7 @@ perp-counter 消费侧：`index_stale=true` → 跳过该 symbol 的 `scanLiquid
 ### 落地要点
 
 - 新增 `perp-pricing/internal/index`：`IndexSource` 接口、`SourceBook`（并发安全 latest 价表，镜像 `MidBook`）、`Composite(snapshot, cfg) (index, stale, degraded)` 纯函数（失活/quorum/离群/加权全在这，独立单测）。
-- 外部 adapter（`internal/index/binance`、`okx`、`huobi`）：ws 订阅 + 重连 + 写 `SourceBook`，镜像参考实现的 channel adapter。
+- 外部 adapter（`internal/index/binance`、`okx`、`bybit`）：ws 订阅 + 重连 + 写 `SourceBook`，镜像参考实现的 channel adapter。
 - `runTickLoop` 改一行：`spotMid` → `index := composite.Eval(...)`；据 `stale/degraded` 设置 `MarkTick` 的两个布尔位；stale 时沿用上一有效 index（last-good index）算 mark（仅展示）且 funding 不结算。
 - perp-counter perp-pricing 消费侧：`index_stale=true` → 跳过 `scanLiquidations(symbol)`（保留 `SetMark`），打点 + 告警。
 
@@ -239,7 +239,7 @@ perp-counter 消费侧：`index_stale=true` → 跳过该 symbol 的 `scanLiquid
 #### 图 1 — composite index 计算（源 fan-in → 过滤 → 加权 → 输入 mark）
 
 ```
- 外部所 ws (binance/okx/huobi)        perp-pricing                          perp-counter
+ 外部所 ws (binance/okx/bybit)        perp-pricing                          perp-counter
    │ ticker push                  ┌── SourceBook (并发安全, 各源最新 price,ts)
    ├─────────────────────────────►│   self:BTC-USDT 也是一个源(现货 market-data)
    │                              │
