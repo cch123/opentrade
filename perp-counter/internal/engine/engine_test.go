@@ -173,7 +173,7 @@ func TestEngine_SettleFunding(t *testing.T) {
 	if len(res) != 2 {
 		t.Fatalf("want 2 funding results, got %d", len(res))
 	}
-	eq(t, res[0].Payment, "-0.01", "u1 (long) pays")   // sorted by user: u1 first
+	eq(t, res[0].Payment, "-0.01", "u1 (long) pays") // sorted by user: u1 first
 	eq(t, res[1].Payment, "0.01", "u2 (short) receives")
 	p1, _ := e.PositionOf("u1", "BTC-USDT-PERP")
 	eq(t, p1.Margin, "9.99", "u1 margin after funding")
