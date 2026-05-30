@@ -3,7 +3,7 @@
 GO ?= go
 BUF ?= buf
 
-MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset perp-counter perp-pricing
+MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset perp-counter perp-risk perp-pricing
 
 # Concurrency-heavy modules worth running under the race detector. README
 # §贡献约定 names counter/match/push/trigger; pkg is added because it houses

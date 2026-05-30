@@ -11,6 +11,7 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/perprisk"
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
@@ -165,8 +166,8 @@ func (s *Service) advanceLiquidation(liq *liquidation) {
 		old := o.Status
 		o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED
 		o.UpdatedMs = s.now()
-		s.emitBackstopLiquidation(o, cur, remaining, res, insDelta)
-		if s.eng.InsuranceFund(o.Symbol).Sign() < 0 {
+		s.emitTakeover(o, cur, remaining, res, insDelta)
+		if s.shouldRunLocalADL(o.Symbol) {
 			s.runADL(o.UserID, o.Symbol, cur.side, cur.bankruptcy)
 		}
 		s.emitOrderStatus(o, old, o.Status)
@@ -204,7 +205,7 @@ func (s *Service) settleLiquidationFill(o *Order, liq *liquidation, side perpsta
 	}
 	o.UpdatedMs = s.now()
 	s.emitLiquidation(o, liq, t, res, insDelta)
-	if s.eng.InsuranceFund(o.Symbol).Sign() < 0 {
+	if s.shouldRunLocalADL(o.Symbol) {
 		s.runADL(o.UserID, o.Symbol, liq.side, liq.bankruptcy)
 	}
 	if o.Status != old {
@@ -229,7 +230,7 @@ func (s *Service) emitLiquidation(o *Order, liq *liquidation, t *eventpb.Trade, 
 			BankruptcyPrice: liq.bankruptcy.String(), MarkPrice: s.eng.MarkOf(o.Symbol).String(),
 			ClosedQty: t.GetQty(), RealizedPnl: res.Realized.String(),
 			InsuranceDelta: insDelta.String(),
-			AdlQueued:      s.eng.InsuranceFund(o.Symbol).Sign() < 0,
+			AdlQueued:      s.adlQueued(o.Symbol),
 			Partial:        liq.mode == liquidationPartial,
 			Backstop:       false,
 			RiskTier:       liq.tier,
@@ -238,24 +239,30 @@ func (s *Service) emitLiquidation(o *Order, liq *liquidation, t *eventpb.Trade, 
 	})
 }
 
-func (s *Service) emitBackstopLiquidation(o *Order, liq *liquidation, qty dec.Decimal, res perpstate.FillResult, insDelta dec.Decimal) {
+func (s *Service) emitTakeover(o *Order, liq *liquidation, qty dec.Decimal, res perpstate.FillResult, insDelta dec.Decimal) {
+	takeoverNotional := qty.Mul(liq.bankruptcy)
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
-		Payload: &eventpb.PerpJournalEvent_Liquidation{Liquidation: &eventpb.PerpLiquidationEvent{
+		Payload: &eventpb.PerpJournalEvent_Takeover{Takeover: &eventpb.PerpTakeoverEvent{
 			UserId: o.UserID, Symbol: o.Symbol, LiqOrderId: o.OrderID,
 			BankruptcyPrice: liq.bankruptcy.String(), MarkPrice: s.eng.MarkOf(o.Symbol).String(),
 			ClosedQty: qty.String(), RealizedPnl: res.Realized.String(),
-			InsuranceDelta: insDelta.String(),
-			AdlQueued:      s.eng.InsuranceFund(o.Symbol).Sign() < 0,
-			Partial:        liq.mode == liquidationPartial,
-			Backstop:       true,
-			RiskTier:       liq.tier,
-			PositionAfter:  s.positionSnap(o.UserID, o.Symbol),
+			InsuranceDelta:   insDelta.String(),
+			TakeoverNotional: takeoverNotional.String(),
+			BackstopUserId:   s.cfg.BackstopAccount,
+			InventorySide:    toEventSide(liq.side),
+			Partial:          liq.mode == liquidationPartial,
+			RiskTier:         liq.tier,
+			AdlQueued:        s.adlQueued(o.Symbol),
+			PositionAfter:    s.positionSnap(o.UserID, o.Symbol),
 		}},
 	})
 }
 
 func (s *Service) runADL(liquidatedUser, symbol string, liquidatedSide perpstate.Side, bankruptcy dec.Decimal) {
+	if s.cfg.RiskCoordinatorEnabled {
+		return
+	}
 	deficit := s.eng.InsuranceFund(symbol).Neg()
 	if deficit.Sign() <= 0 {
 		return
@@ -278,7 +285,8 @@ func (s *Service) runADL(liquidatedUser, symbol string, liquidatedSide perpstate
 			continue
 		}
 		s.seq.do(cand.UserID, func() {
-			res, insDelta, applied := s.eng.ApplyAdlClose(cand.UserID, symbol, qty, bankruptcy, round)
+			res, insDelta, applied := s.eng.ApplyAdlCloseGuarded(cand.UserID, symbol, qty, bankruptcy,
+				cand.Side, cand.LastMatchSeq, cand.PositionVersion, round, true)
 			if !applied {
 				return
 			}
@@ -286,6 +294,52 @@ func (s *Service) runADL(liquidatedUser, symbol string, liquidatedSide perpstate
 			deficit = s.eng.InsuranceFund(symbol).Neg()
 		})
 	}
+}
+
+func (s *Service) shouldRunLocalADL(symbol string) bool {
+	return !s.cfg.RiskCoordinatorEnabled && s.eng.InsuranceFund(symbol).Sign() < 0
+}
+
+func (s *Service) adlQueued(symbol string) bool {
+	if s.cfg.RiskCoordinatorEnabled {
+		return false
+	}
+	return s.eng.InsuranceFund(symbol).Sign() < 0
+}
+
+// ExecuteAdlTask is the shard-side ADR-0071 entrypoint for the external
+// perp-risk coordinator. The task enters the owning user's sequencer and is
+// applied only if the coordinator's observed side/PosSeq/PositionVersion still
+// match the current position; this is the cross-shard TOCTOU guard that
+// replaces the old same-process candidate read.
+func (s *Service) ExecuteAdlTask(task perprisk.ADLTask) bool {
+	applied := false
+	s.seq.do(task.UserID, func() {
+		res, insDelta, ok := s.eng.ApplyAdlCloseGuarded(task.UserID, task.Symbol, task.Qty, task.Price,
+			task.Side, task.PosSeq, task.PositionVersion, task.AdlRound, true)
+		if !ok {
+			return
+		}
+		s.emitADL(task.UserID, task.Symbol, task.Price, task.Qty, res, insDelta, task.AdlRound)
+		applied = true
+	})
+	return applied
+}
+
+// ADLCandidates is the shard-local candidate source for ADR-0071. The external
+// coordinator asks every shard for candidates scoped to one bankruptcy/ADL
+// price, then dispatches version-stamped tasks back to the owning shard.
+func (s *Service) ADLCandidates(symbol string, adlPrice dec.Decimal, excludeUser string) []perprisk.ADLCandidate {
+	src := s.eng.SelectAnyAdlCandidates(symbol, adlPrice, excludeUser)
+	out := make([]perprisk.ADLCandidate, 0, len(src))
+	for _, c := range src {
+		out = append(out, perprisk.ADLCandidate{
+			UserID: c.UserID, Symbol: c.Symbol, Side: c.Side,
+			Size: c.Size, Score: c.Score, SacrificePerQty: c.SacrificePerQty,
+			PosSeq: c.LastMatchSeq, PositionVersion: c.PositionVersion,
+		})
+	}
+	return out
 }
 
 func (s *Service) emitADL(user, symbol string, price, qty dec.Decimal, res perpstate.FillResult, insDelta dec.Decimal, round uint64) {

@@ -1,8 +1,10 @@
 // Package engine is perp-counter's stateful container around pkg/perpstate
 // (ADR-0068 A1). It holds per-user USDT futures-margin wallets,
-// per-(user, symbol) positions, the latest mark per symbol, and per-symbol
-// insurance funds, and routes the cash effects of fills / funding between
-// the wallet and position margin.
+// per-(user, symbol) positions, the latest mark per symbol, and a local
+// insurance-fund cache used by the single-instance fallback. ADR-0071 moves the
+// authoritative fund to perp-risk once perp-counter is sharded; shards still
+// compute InsuranceDelta here so the journal stream remains the recovery and
+// coordinator input.
 //
 // Map access is mutex-guarded for safety. Per-user write serialization
 // (ADR-0068 invariant #1: all of a user's position mutations happen on one
@@ -356,8 +358,11 @@ func (e *Engine) SettleFundingUser(user, symbol string, roundID int64, rate dec.
 	return FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p}, true
 }
 
-// AddInsurance adjusts a symbol's insurance fund (ADR-0068 §9). delta may be
-// negative (fund covers a shortfall). Returns the new balance.
+// AddInsurance adjusts the local insurance cache. In a single-instance
+// deployment this cache is equivalent to the global fund; in an ADR-0071
+// sharded deployment it is deliberately non-authoritative and exists only so
+// legacy tests / local fallback flows can fold the same InsuranceDelta that the
+// perp-risk coordinator consumes from perp-journal.
 func (e *Engine) AddInsurance(symbol string, delta dec.Decimal) dec.Decimal {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -367,7 +372,9 @@ func (e *Engine) AddInsurance(symbol string, delta dec.Decimal) dec.Decimal {
 	return cur
 }
 
-// InsuranceFund returns a symbol's insurance balance.
+// InsuranceFund returns the local insurance cache. Callers must not use this as
+// a global deficit signal when an external perp-risk coordinator is enabled
+// (ADR-0071 invariant #12/#15); the service layer owns that deployment guard.
 func (e *Engine) InsuranceFund(symbol string) dec.Decimal {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -565,6 +572,7 @@ type ADLCandidate struct {
 	Size            dec.Decimal
 	Score           dec.Decimal
 	SacrificePerQty dec.Decimal
+	LastMatchSeq    uint64
 	PositionVersion uint64
 }
 
@@ -573,20 +581,32 @@ type ADLCandidate struct {
 // Candidates that would not give up mark-to-ADL-price profit are skipped because
 // they cannot repair the insurance deficit.
 func (e *Engine) SelectAdlCandidates(symbol string, liquidatedSide perpstate.Side, adlPrice dec.Decimal, excludeUser string) []ADLCandidate {
+	return e.selectAdlCandidates(symbol, liquidatedSide.Opposite(), adlPrice, excludeUser)
+}
+
+// SelectAnyAdlCandidates is the ADR-0071 coordinator-facing ranking query. The
+// coordinator may not know the liquidated side from older journal records, so
+// the shard reports every profitable position that would surrender value at the
+// requested ADL price. The eventual task is still version-checked before
+// mutation, so a stale candidate report cannot directly move funds.
+func (e *Engine) SelectAnyAdlCandidates(symbol string, adlPrice dec.Decimal, excludeUser string) []ADLCandidate {
+	return e.selectAdlCandidates(symbol, 0, adlPrice, excludeUser)
+}
+
+func (e *Engine) selectAdlCandidates(symbol string, wantSide perpstate.Side, adlPrice dec.Decimal, excludeUser string) []ADLCandidate {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	mark := e.marks[symbol]
 	if mark.Sign() <= 0 {
 		return nil
 	}
-	wantSide := liquidatedSide.Opposite()
 	var out []ADLCandidate
 	for user, bySym := range e.positions {
 		if user == excludeUser {
 			continue
 		}
 		p := bySym[symbol]
-		if p == nil || p.IsFlat() || p.Side != wantSide {
+		if p == nil || p.IsFlat() || (wantSide != 0 && p.Side != wantSide) {
 			continue
 		}
 		upnl := p.UnrealizedPnL(mark)
@@ -606,7 +626,7 @@ func (e *Engine) SelectAdlCandidates(symbol string, liquidatedSide perpstate.Sid
 		out = append(out, ADLCandidate{
 			UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
 			Score: profitRate.Mul(effLev), SacrificePerQty: sacrificePerQty,
-			PositionVersion: p.Version,
+			LastMatchSeq: p.LastMatchSeq, PositionVersion: p.Version,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -623,6 +643,15 @@ func (e *Engine) SelectAdlCandidates(symbol string, liquidatedSide perpstate.Sid
 // adverse ADL price is credited to insurance as the profit they gave up. The
 // adlRound guard makes replayed internal tasks idempotent after snapshot/replay.
 func (e *Engine) ApplyAdlClose(user, symbol string, qty, adlPrice dec.Decimal, adlRound uint64) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+	return e.ApplyAdlCloseGuarded(user, symbol, qty, adlPrice, 0, 0, 0, adlRound, false)
+}
+
+// ApplyAdlCloseGuarded executes an ADR-0071 coordinator task. expectedSide,
+// expectedPosSeq, and expectedVersion are the shard read-view stamps the
+// coordinator observed. Checking all three is intentional: LastMatchSeq catches
+// fills from Match, while Position.Version also catches local mutations such as
+// funding or an earlier ADL that can leave LastMatchSeq unchanged.
+func (e *Engine) ApplyAdlCloseGuarded(user, symbol string, qty, adlPrice dec.Decimal, expectedSide perpstate.Side, expectedPosSeq, expectedVersion, adlRound uint64, enforceObserved bool) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	bySym := e.positions[user]
@@ -632,6 +661,14 @@ func (e *Engine) ApplyAdlClose(user, symbol string, qty, adlPrice dec.Decimal, a
 	p := bySym[symbol]
 	if p == nil || p.IsFlat() {
 		return perpstate.FillResult{}, zero, false
+	}
+	if enforceObserved {
+		if expectedSide != 0 && p.Side != expectedSide {
+			return perpstate.FillResult{}, zero, false
+		}
+		if p.LastMatchSeq != expectedPosSeq || p.Version != expectedVersion {
+			return perpstate.FillResult{}, zero, false
+		}
 	}
 	if adlRound != 0 && adlRound <= p.LastAdlRound {
 		return perpstate.FillResult{}, zero, false

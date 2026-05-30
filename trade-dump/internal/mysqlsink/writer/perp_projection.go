@@ -19,7 +19,8 @@ import (
 // -----------------------------------------------------------------------------
 
 // PerpPositionRow mirrors `perp_positions` (one per user+symbol; upserted from
-// the PerpPositionSnapshot embedded in settlement / funding / liquidation).
+// the PerpPositionSnapshot embedded in settlement / funding / liquidation /
+// takeover).
 type PerpPositionRow struct {
 	UserID      string
 	Symbol      string
@@ -160,6 +161,8 @@ func BuildPerpBatch(events []*eventpb.PerpJournalEvent) PerpBatch {
 			appendPerpFunding(&b, p.Funding, seq, ts)
 		case *eventpb.PerpJournalEvent_Liquidation:
 			appendPerpLiquidation(&b, p.Liquidation, seq, ts)
+		case *eventpb.PerpJournalEvent_Takeover:
+			appendPerpTakeover(&b, p.Takeover, seq, ts)
 		case *eventpb.PerpJournalEvent_Adl:
 			appendPerpADL(&b, p.Adl, seq, ts)
 		}
@@ -208,6 +211,23 @@ func appendPerpLiquidation(b *PerpBatch, e *eventpb.PerpLiquidationEvent, seq ui
 	if e == nil {
 		return
 	}
+	b.Liquidations = append(b.Liquidations, PerpLiquidationRow{
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(), LiqOrderID: e.GetLiqOrderId(),
+		BankruptcyPrice: e.GetBankruptcyPrice(), MarkPrice: e.GetMarkPrice(), ClosedQty: e.GetClosedQty(),
+		RealizedPnl: defaultZero(e.GetRealizedPnl()), InsuranceDelta: defaultZero(e.GetInsuranceDelta()),
+		AdlQueued: e.GetAdlQueued(), TsUnixMs: ts,
+	})
+	appendPerpPosition(b, e.GetPositionAfter(), seq, ts)
+}
+
+func appendPerpTakeover(b *PerpBatch, e *eventpb.PerpTakeoverEvent, seq uint64, ts int64) {
+	if e == nil {
+		return
+	}
+	// MySQL has one liquidation ledger today. A takeover is still the user's
+	// forced close, while the extra inventory/loan fields are coordinator
+	// accounting, so preserving the user-facing row here keeps history queries
+	// contiguous until a dedicated takeover ledger is introduced.
 	b.Liquidations = append(b.Liquidations, PerpLiquidationRow{
 		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(), LiqOrderID: e.GetLiqOrderId(),
 		BankruptcyPrice: e.GetBankruptcyPrice(), MarkPrice: e.GetMarkPrice(), ClosedQty: e.GetClosedQty(),

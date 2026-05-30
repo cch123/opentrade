@@ -139,7 +139,7 @@
 | [0068](0068-usdt-linear-perp.md) | USDT 本位线性永续合约（perp）— 仓位 / 保证金 / 标记价 / 资金费 / 强平 | Accepted |
 | [0069](0069-external-composite-index-price.md) | 外部多源复合指数价（composite index price） | Accepted / Implemented |
 | [0070](0070-perp-liquidation-hardening.md) | perp 强平进阶 — 阶梯风险限额 + 部分强平 + 兜底接管 + ADL 自动执行 | Proposed |
-| [0071](0071-perp-sharded-insurance-and-cross-shard-adl.md) | perp 分片化风控 — 全局保险基金 + 跨 shard ADL（协调器决策 / shard 版本戳执行） | Proposed |
+| [0071](0071-perp-sharded-insurance-and-cross-shard-adl.md) | perp 分片化风控 — 全局保险基金 + 跨 shard ADL（协调器决策 / shard 版本戳执行） | Accepted / MVP Implemented |
 | [0072](0072-perp-liquidation-scan-index.md) | 强平扫描改为强平价排序索引 — 阈值穿越查询取代每 tick 全量评估 | Proposed |
 
 ### 工程与基础设施

@@ -17,6 +17,8 @@ func perpEvt(seq uint64, payload any) *eventpb.PerpJournalEvent {
 		e.Payload = &eventpb.PerpJournalEvent_Funding{Funding: p}
 	case *eventpb.PerpLiquidationEvent:
 		e.Payload = &eventpb.PerpJournalEvent_Liquidation{Liquidation: p}
+	case *eventpb.PerpTakeoverEvent:
+		e.Payload = &eventpb.PerpJournalEvent_Takeover{Takeover: p}
 	case *eventpb.PerpMarginEvent:
 		e.Payload = &eventpb.PerpJournalEvent_Margin{Margin: p}
 	}
@@ -82,6 +84,23 @@ func TestBuildPerpBatch_FundingAndLiquidationAndMargin(t *testing.T) {
 	// Funding + liquidation each carried a position snapshot.
 	if len(b.Positions) != 2 {
 		t.Fatalf("want 2 positions from funding+liquidation, got %d", len(b.Positions))
+	}
+}
+
+func TestBuildPerpBatch_TakeoverProjectsLiquidationHistory(t *testing.T) {
+	b := BuildPerpBatch([]*eventpb.PerpJournalEvent{
+		perpEvt(11, &eventpb.PerpTakeoverEvent{
+			UserId: "u2", Symbol: "BTC-USDT-PERP", LiqOrderId: 201,
+			BankruptcyPrice: "90", MarkPrice: "89", ClosedQty: "1",
+			RealizedPnl: "-10", InsuranceDelta: "-2", TakeoverNotional: "90",
+			BackstopUserId: "backstop", AdlQueued: true, PositionAfter: posSnap("u2", "BTC-USDT-PERP", "0", "0"),
+		}),
+	})
+	if len(b.Liquidations) != 1 || b.Liquidations[0].PerpSeqID != 11 || b.Liquidations[0].InsuranceDelta != "-2" || !b.Liquidations[0].AdlQueued {
+		t.Fatalf("takeover liquidation-history row wrong: %+v", b.Liquidations)
+	}
+	if len(b.Positions) != 1 || b.Positions[0].UserID != "u2" || b.Positions[0].Size != "0" {
+		t.Fatalf("takeover position row wrong: %+v", b.Positions)
 	}
 }
 

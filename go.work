@@ -14,6 +14,7 @@ use (
 	./asset
 	./admin-gateway
 	./perp-counter
+	./perp-risk
 	./perp-pricing
 	./tools/tui
 	./tools/web

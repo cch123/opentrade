@@ -41,6 +41,8 @@ func journalPartitionKey(evt *eventpb.PerpJournalEvent) string {
 		return p.Funding.GetUserId()
 	case *eventpb.PerpJournalEvent_Liquidation:
 		return p.Liquidation.GetUserId()
+	case *eventpb.PerpJournalEvent_Takeover:
+		return p.Takeover.GetUserId()
 	case *eventpb.PerpJournalEvent_Adl:
 		return p.Adl.GetUserId()
 	default:

@@ -6,6 +6,7 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/perprisk"
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
@@ -230,14 +231,17 @@ func TestLiquidation_BackstopClosesInFlightOrder(t *testing.T) {
 	if svc.OrderCount() != 0 {
 		t.Fatalf("backstopped order should be evicted, have %d", svc.OrderCount())
 	}
-	foundBackstop := false
+	foundTakeover := false
 	for _, e := range jr.evts {
-		if l := e.GetLiquidation(); l != nil && l.GetBackstop() {
-			foundBackstop = true
+		if tk := e.GetTakeover(); tk != nil {
+			foundTakeover = true
+			if tk.GetBackstopUserId() != "backstop" || tk.GetTakeoverNotional() == "" || tk.GetInventorySide() != eventpb.Side_SIDE_BUY {
+				t.Fatalf("takeover event missing backstop accounting fields: %+v", tk)
+			}
 		}
 	}
-	if !foundBackstop {
-		t.Fatal("expected liquidation journal to mark backstop=true")
+	if !foundTakeover {
+		t.Fatal("expected takeover journal event for backstop escalation")
 	}
 }
 
@@ -263,5 +267,86 @@ func TestLiquidation_DeficitTriggersADL(t *testing.T) {
 	}
 	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 1 {
 		t.Fatalf("expected one ADL journal event, got %d", n)
+	}
+}
+
+func TestExecuteAdlTask_RejectsStaleObservedPosition(t *testing.T) {
+	svc, eng, _, jr := newLiqSvcWithConfig(Config{
+		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
+		RiskCoordinatorEnabled: true, ProducerID: "perp-shard-0",
+	})
+	openPosition(eng, "winner", perpSym, perpstate.SideSell, "100", "1", "10")
+	eng.SetMark(perpSym, dec.New("85"))
+	pos, ok := eng.PositionOf("winner", perpSym)
+	if !ok {
+		t.Fatal("winner position missing")
+	}
+
+	if svc.ExecuteAdlTask(perprisk.ADLTask{
+		UserID: "winner", Symbol: perpSym, Side: perpstate.SideSell,
+		Qty: dec.New("1"), Price: dec.New("90"),
+		PosSeq: 99, PositionVersion: pos.Version, AdlRound: 1,
+	}) {
+		t.Fatal("stale pos_seq task must be rejected")
+	}
+	if svc.ExecuteAdlTask(perprisk.ADLTask{
+		UserID: "winner", Symbol: perpSym, Side: perpstate.SideBuy,
+		Qty: dec.New("1"), Price: dec.New("90"),
+		PosSeq: pos.LastMatchSeq, PositionVersion: pos.Version, AdlRound: 1,
+	}) {
+		t.Fatal("side-mismatch task must be rejected")
+	}
+	_ = eng.ApplyFunding("winner", perpSym, dec.New("0"))
+	if svc.ExecuteAdlTask(perprisk.ADLTask{
+		UserID: "winner", Symbol: perpSym, Side: perpstate.SideSell,
+		Qty: dec.New("1"), Price: dec.New("90"),
+		PosSeq: pos.LastMatchSeq, PositionVersion: pos.Version, AdlRound: 1,
+	}) {
+		t.Fatal("stale position_version task must be rejected")
+	}
+	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 0 {
+		t.Fatalf("stale task emitted %d ADL events, want 0", n)
+	}
+	pos, ok = eng.PositionOf("winner", perpSym)
+	if !ok {
+		t.Fatal("winner position missing after stale rejections")
+	}
+	if !svc.ExecuteAdlTask(perprisk.ADLTask{
+		UserID: "winner", Symbol: perpSym, Side: perpstate.SideSell,
+		Qty: dec.New("1"), Price: dec.New("90"),
+		PosSeq: pos.LastMatchSeq, PositionVersion: pos.Version, AdlRound: 1,
+	}) {
+		t.Fatal("matching observed-position task should apply")
+	}
+	if _, ok := eng.PositionOf("winner", perpSym); ok {
+		t.Fatal("matching ADL task should close the one-lot winner")
+	}
+	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 1 {
+		t.Fatalf("matching task emitted %d ADL events, want 1", n)
+	}
+}
+
+func TestRiskCoordinatorMode_DisablesLocalADLDecision(t *testing.T) {
+	svc, eng, disp, jr := newLiqSvcWithConfig(Config{
+		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
+		RiskCoordinatorEnabled: true, ProducerID: "perp-shard-0",
+	})
+	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
+	openPosition(eng, "u2", perpSym, perpstate.SideSell, "100", "1", "10")
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90"))
+	bankID := disp.orders[0].GetPlaced().GetOrderId()
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "85"))
+
+	liqFill(svc, bankID, "85", "1", 5)
+	if got := eng.InsuranceFund(perpSym); got.Cmp(dec.New("-5")) != 0 {
+		t.Fatalf("local cache should still fold delta for journal parity, got %s", got)
+	}
+	if _, ok := eng.PositionOf("u2", perpSym); !ok {
+		t.Fatal("external coordinator mode must not run local same-process ADL")
+	}
+	for _, e := range jr.evts {
+		if l := e.GetLiquidation(); l != nil && l.GetAdlQueued() {
+			t.Fatal("shard must not mark adl_queued from local fund when perp-risk is authoritative")
+		}
 	}
 }

@@ -60,6 +60,8 @@ type Config struct {
 	TargetMarginBuffer string
 	BackstopAccount    string
 	BackstopAfterTicks int
+	VShardCount        int
+	RiskCoordinator    bool
 	IDGenShard         int
 	Env                string
 	LogLevel           string
@@ -126,6 +128,9 @@ func main() {
 	if err != nil {
 		logger.Fatal("invalid --risk-tiers", zap.Error(err))
 	}
+	if err := validateConfig(cfg); err != nil {
+		logger.Fatal("invalid config", zap.Error(err))
+	}
 	idg, err := idgen.NewGenerator(cfg.IDGenShard)
 	if err != nil {
 		logger.Fatal("idgen", zap.Error(err))
@@ -141,6 +146,13 @@ func main() {
 		return
 	}
 	runElectionLoop(rootCtx, cfg, d, etcd, logger)
+}
+
+func validateConfig(cfg Config) error {
+	if cfg.VShardCount > 1 && !cfg.RiskCoordinator {
+		return errors.New("ADR-0071 guard: multi-vshard perp-counter requires --risk-coordinator-enabled so global insurance/ADL are not decided from shard-local state")
+	}
+	return nil
 }
 
 // runElectionLoop campaigns for the shard's leader key and runs the primary
@@ -256,6 +268,7 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		MaxLeverage: d.maxLev, MMR: d.mmr, RiskTiers: d.riskTiers,
 		LiquidationFeeRate: d.liqFeeRate, TargetMarginBuffer: d.targetBuffer,
 		BackstopAccount: cfg.BackstopAccount, BackstopAfterTicks: cfg.BackstopAfterTicks,
+		RiskCoordinatorEnabled: cfg.RiskCoordinator,
 	})
 	if restored != nil {
 		svc.Restore(restored.Service)
@@ -301,12 +314,16 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 	// biz_line=futures AssetHolder (ADR-0057): funding→futures margin deposits.
 	holderPath, holderHandler := assetholderrpcconnect.NewAssetHolderHandler(server.NewAssetHolderServer(svc))
 	mux.Handle(holderPath, holderHandler)
+	if cfg.RiskCoordinator {
+		server.RegisterRiskHandlers(mux, svc)
+	}
 	httpSrv := connectx.NewH2CServer(cfg.GRPCAddr, mux)
 
 	logger.Info("perp-counter primary up (ADR-0068)",
 		zap.String("grpc", cfg.GRPCAddr), zap.Strings("brokers", brokers),
 		zap.String("trade_topic", cfg.TradeTopic), zap.String("mark_topic", cfg.MarkPriceTopic),
-		zap.Bool("transactional", cfg.TransactionalID != ""), zap.String("ha", cfg.HAMode))
+		zap.Bool("transactional", cfg.TransactionalID != ""), zap.String("ha", cfg.HAMode),
+		zap.Int("vshard_count", cfg.VShardCount), zap.Bool("risk_coordinator", cfg.RiskCoordinator))
 
 	if cfg.SnapshotPath != "" {
 		if err := snapshot.EnsureDir(cfg.SnapshotPath); err != nil {
@@ -427,6 +444,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TargetMarginBuffer, "target-margin-buffer", "0", "partial liquidation target buffer added above tier MMR")
 	flag.StringVar(&cfg.BackstopAccount, "backstop-account", "__perp_backstop__", "system account that receives internal backstop inventory")
 	flag.IntVar(&cfg.BackstopAfterTicks, "backstop-after-ticks", 2, "mark ticks to wait before escalating an in-flight liquidation to backstop")
+	flag.IntVar(&cfg.VShardCount, "vshard-count", 1, "perp-counter user vshard count; values >1 require --risk-coordinator-enabled (ADR-0071)")
+	flag.BoolVar(&cfg.RiskCoordinator, "risk-coordinator-enabled", false, "disable shard-local ADL decisions because perp-risk owns global insurance/ADL (ADR-0071)")
 	flag.IntVar(&cfg.IDGenShard, "idgen-shard", 0, "snowflake shard id for perp order ids (avoid collisions with counter)")
 	flag.StringVar(&cfg.Env, "env", "dev", "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "log level")

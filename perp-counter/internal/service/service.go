@@ -73,6 +73,12 @@ type Config struct {
 	BackstopAccount    string
 	BackstopAfterTicks int
 
+	// ADR-0071: when the global perp-risk coordinator is enabled, this shard
+	// must stop treating its local insurance cache as the authority for ADL
+	// decisions. The shard still emits InsuranceDelta and can execute
+	// version-stamped ADL tasks, but deficit detection belongs to perp-risk.
+	RiskCoordinatorEnabled bool
+
 	Clock func() time.Time // nil → time.Now
 }
 
