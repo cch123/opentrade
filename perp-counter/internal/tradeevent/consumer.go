@@ -1,4 +1,4 @@
-package journal
+package tradeevent
 
 import (
 	"context"
@@ -12,51 +12,51 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
-// TradeHandler is the service-side sink for each decoded perp-trade-event
-// record. The service's HandleTradeEvent satisfies it structurally.
-type TradeHandler interface {
+// Handler is the perp-counter service sink for each decoded perp-trade-event
+// record. Match owns this inbound stream; perp-counter consumes it to settle
+// positions and advance order lifecycle state.
+type Handler interface {
 	HandleTradeEvent(evt *eventpb.TradeEvent, partition int32, offset int64)
 }
 
-// TradeConsumerConfig configures the perp-trade-event consumer. Match's perp
-// deployment publishes fills/lifecycle events here (separate from the spot
-// `trade-event` topic — perp is physically isolated, ADR-0068 §0).
-type TradeConsumerConfig struct {
+// ConsumerConfig configures the perp-trade-event consumer. Match's perp
+// deployment publishes fills/lifecycle events here, physically isolated from
+// spot's trade-event topic (ADR-0068 §0).
+type ConsumerConfig struct {
 	Brokers  []string
 	ClientID string
 	GroupID  string
 	Topic    string // default "perp-trade-event"
 
 	// InitialOffsets seeds the per-partition resume position from a snapshot
-	// (ADR-0048). Nil → cold start (every partition AtStart; the position
-	// match_seq watermark + terminal-order eviction make replay idempotent).
+	// (ADR-0048). Nil means cold start: every partition begins AtStart, with
+	// position match_seq and terminal-order eviction absorbing replay.
 	InitialOffsets map[int32]int64
 }
 
-// TradeConsumer reads perp-trade-event and drives the service's settlement +
-// order-lifecycle handlers. Like counter (ADR-0048), the snapshot is the
-// authoritative position, so offsets are never committed back to the broker —
-// the consumer group is used only for partition assignment.
-type TradeConsumer struct {
+// Consumer reads perp-trade-event and drives the service's settlement and
+// order-lifecycle handlers. The snapshot is the authoritative position, so
+// offsets are not committed back to the broker; the group is only used for
+// partition assignment.
+type Consumer struct {
 	cli     *kgo.Client
-	handler TradeHandler
+	handler Handler
 	logger  *zap.Logger
 	topic   string
 }
 
-// NewTradeConsumer builds a ReadCommitted consumer-group client. A single
-// perp-counter MVP instance joins the group and is assigned every partition, so
-// all perp users settle locally; multi-instance user sharding is the HA
-// milestone (ADR-0068).
-func NewTradeConsumer(cfg TradeConsumerConfig, handler TradeHandler, logger *zap.Logger) (*TradeConsumer, error) {
+// NewConsumer builds a ReadCommitted consumer-group client. The single-instance
+// MVP joins the group and receives every partition; later HA/sharding keeps the
+// same API while changing assignment topology.
+func NewConsumer(cfg ConsumerConfig, handler Handler, logger *zap.Logger) (*Consumer, error) {
 	if len(cfg.Brokers) == 0 {
-		return nil, errors.New("journal: no brokers")
+		return nil, errors.New("tradeevent: no brokers")
 	}
 	if cfg.GroupID == "" {
-		return nil, errors.New("journal: GroupID required")
+		return nil, errors.New("tradeevent: GroupID required")
 	}
 	if handler == nil {
-		return nil, errors.New("journal: handler required")
+		return nil, errors.New("tradeevent: handler required")
 	}
 	if cfg.Topic == "" {
 		cfg.Topic = "perp-trade-event"
@@ -92,11 +92,11 @@ func NewTradeConsumer(cfg TradeConsumerConfig, handler TradeHandler, logger *zap
 	if err != nil {
 		return nil, fmt.Errorf("kgo.NewClient: %w", err)
 	}
-	return &TradeConsumer{cli: cli, handler: handler, logger: logger, topic: cfg.Topic}, nil
+	return &Consumer{cli: cli, handler: handler, logger: logger, topic: cfg.Topic}, nil
 }
 
 // Run polls and dispatches until ctx is cancelled or the client is closed.
-func (c *TradeConsumer) Run(ctx context.Context) error {
+func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		fetches := c.cli.PollFetches(ctx)
 		if fetches.IsClientClosed() {
@@ -114,9 +114,9 @@ func (c *TradeConsumer) Run(ctx context.Context) error {
 }
 
 // Close shuts down the underlying client.
-func (c *TradeConsumer) Close() { c.cli.Close() }
+func (c *Consumer) Close() { c.cli.Close() }
 
-func (c *TradeConsumer) handleRecord(rec *kgo.Record) {
+func (c *Consumer) handleRecord(rec *kgo.Record) {
 	var pb eventpb.TradeEvent
 	if err := proto.Unmarshal(rec.Value, &pb); err != nil {
 		c.logger.Error("decode perp trade-event",

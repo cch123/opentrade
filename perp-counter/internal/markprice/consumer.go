@@ -1,4 +1,4 @@
-package journal
+package markprice
 
 import (
 	"context"
@@ -12,46 +12,45 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
-// MarkPriceHandler is the service sink for decoded mark-price records. The
-// service's HandleMarkPriceEvent satisfies it.
-type MarkPriceHandler interface {
+// Handler is the perp-counter service sink for decoded mark-price records. The
+// markprice service owns this stream; perp-counter consumes it for mark updates,
+// funding, and liquidation scans.
+type Handler interface {
 	HandleMarkPriceEvent(evt *eventpb.MarkPriceEvent)
 }
 
-// MarkPriceConsumerConfig configures the mark-price consumer (ADR-0068 §5).
-type MarkPriceConsumerConfig struct {
+// ConsumerConfig configures the mark-price consumer (ADR-0068 §5).
+type ConsumerConfig struct {
 	Brokers  []string
 	ClientID string
 	GroupID  string
 	Topic    string // default "mark-price"
 }
 
-// MarkPriceConsumer reads the mark-price stream and drives mark updates +
-// funding settlement. Unlike the trade-event consumer (snapshot-authoritative
-// offset, ADR-0048), the mark stream carries no event-sourced state of its own:
-// marks are last-writer-wins and funding is idempotent via funding_round_seen.
-// So it uses a consumer group with commit-after-process — a restart resumes
-// from the committed offset (no replay storm, no missed funding round) and the
-// at-least-once overlap is absorbed by the funding watermark.
-type MarkPriceConsumer struct {
+// Consumer reads the mark-price stream and drives mark updates plus funding
+// settlement. Unlike perp-trade-event, marks are not the source of snapshot
+// replay state: marks are last-writer-wins and funding is guarded by
+// funding_round_seen. This reader commits after processing so restart resumes
+// from the broker's committed offset while at-least-once overlap remains safe.
+type Consumer struct {
 	cli     *kgo.Client
-	handler MarkPriceHandler
+	handler Handler
 	logger  *zap.Logger
 	topic   string
 }
 
-// NewMarkPriceConsumer builds a ReadCommitted consumer-group client that resets
-// to the newest offset on a cold join (a brand-new perp-counter has no
-// positions, so there is no past funding to settle).
-func NewMarkPriceConsumer(cfg MarkPriceConsumerConfig, handler MarkPriceHandler, logger *zap.Logger) (*MarkPriceConsumer, error) {
+// NewConsumer builds a ReadCommitted consumer-group client that resets to the
+// newest offset on a cold join. A brand-new perp-counter has no positions, so
+// there is no historical funding to settle.
+func NewConsumer(cfg ConsumerConfig, handler Handler, logger *zap.Logger) (*Consumer, error) {
 	if len(cfg.Brokers) == 0 {
-		return nil, errors.New("journal: no brokers")
+		return nil, errors.New("markprice: no brokers")
 	}
 	if cfg.GroupID == "" {
-		return nil, errors.New("journal: GroupID required")
+		return nil, errors.New("markprice: GroupID required")
 	}
 	if handler == nil {
-		return nil, errors.New("journal: handler required")
+		return nil, errors.New("markprice: handler required")
 	}
 	if cfg.Topic == "" {
 		cfg.Topic = "mark-price"
@@ -68,14 +67,13 @@ func NewMarkPriceConsumer(cfg MarkPriceConsumerConfig, handler MarkPriceHandler,
 	if err != nil {
 		return nil, fmt.Errorf("kgo.NewClient: %w", err)
 	}
-	return &MarkPriceConsumer{cli: cli, handler: handler, logger: logger, topic: cfg.Topic}, nil
+	return &Consumer{cli: cli, handler: handler, logger: logger, topic: cfg.Topic}, nil
 }
 
 // Run polls, processes, then commits each batch until ctx is cancelled or the
 // client closes. Committing only after processing means a crash mid-batch
-// redelivers the uncommitted tail (idempotency-safe), never skipping a funding
-// round.
-func (c *MarkPriceConsumer) Run(ctx context.Context) error {
+// redelivers the uncommitted tail and never skips a funding round.
+func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		fetches := c.cli.PollFetches(ctx)
 		if fetches.IsClientClosed() {
@@ -96,9 +94,9 @@ func (c *MarkPriceConsumer) Run(ctx context.Context) error {
 }
 
 // Close shuts down the client.
-func (c *MarkPriceConsumer) Close() { c.cli.Close() }
+func (c *Consumer) Close() { c.cli.Close() }
 
-func (c *MarkPriceConsumer) handleRecord(rec *kgo.Record) {
+func (c *Consumer) handleRecord(rec *kgo.Record) {
 	var pb eventpb.MarkPriceEvent
 	if err := proto.Unmarshal(rec.Value, &pb); err != nil {
 		c.logger.Error("decode mark-price",

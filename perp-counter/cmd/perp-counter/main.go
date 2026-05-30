@@ -36,9 +36,11 @@ import (
 	"github.com/xargin/opentrade/api/gen/rpc/perp/perprpcconnect"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/perp-counter/internal/journal"
+	"github.com/xargin/opentrade/perp-counter/internal/markprice"
 	"github.com/xargin/opentrade/perp-counter/internal/server"
 	"github.com/xargin/opentrade/perp-counter/internal/service"
 	"github.com/xargin/opentrade/perp-counter/internal/snapshot"
+	"github.com/xargin/opentrade/perp-counter/internal/tradeevent"
 	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/election"
@@ -239,11 +241,11 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 	}
 
 	var (
-		consumer     *journal.TradeConsumer
-		markConsumer *journal.MarkPriceConsumer
+		consumer     *tradeevent.Consumer
+		markConsumer *markprice.Consumer
 	)
 	if len(brokers) > 0 {
-		consumer, err = journal.NewTradeConsumer(journal.TradeConsumerConfig{
+		consumer, err = tradeevent.NewConsumer(tradeevent.ConsumerConfig{
 			Brokers:        brokers,
 			ClientID:       cfg.InstanceID,
 			GroupID:        cfg.ConsumerGroup,
@@ -256,7 +258,7 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		}
 		defer consumer.Close()
 
-		markConsumer, err = journal.NewMarkPriceConsumer(journal.MarkPriceConsumerConfig{
+		markConsumer, err = markprice.NewConsumer(markprice.ConsumerConfig{
 			Brokers:  brokers,
 			ClientID: cfg.InstanceID + "-mark",
 			GroupID:  cfg.MarkPriceGroup,

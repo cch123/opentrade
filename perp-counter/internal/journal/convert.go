@@ -1,12 +1,11 @@
-// Package journal wires perp-counter to Kafka: it produces order-event records
-// to Match (order-event-<symbol>, ADR-0050) and the perp-journal WAL, and
-// consumes Match's perp-trade-event stream back into the service (ADR-0068 §1/§2).
+// Package journal wires perp-counter's outbound Kafka records: order-event
+// records to Match (order-event-<symbol>, ADR-0050) and the perp-journal WAL.
 //
 // The adapters here are deliberately thin and symbol-agnostic — the service
 // builds every wire event (it owns the perp domain types), so this package only
 // touches protobuf envelopes + Kafka. That keeps the dependency one-way
-// (service defines the Dispatcher / Journal / TradeHandler interfaces; this
-// package satisfies them structurally without importing the service).
+// (service defines the Dispatcher / Journal interfaces; this package satisfies
+// them structurally without importing the service).
 //
 // This file holds the pure, Kafka-free helpers so they unit-test on their own.
 package journal

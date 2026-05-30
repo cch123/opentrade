@@ -4,14 +4,7 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
-
-	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
-
-// nopHandler satisfies TradeHandler for constructor tests.
-type nopHandler struct{}
-
-func (nopHandler) HandleTradeEvent(*eventpb.TradeEvent, int32, int64) {}
 
 func TestNewProducer_RejectsEmptyBrokers(t *testing.T) {
 	if _, err := NewProducer(ProducerConfig{}, zap.NewNop()); err == nil {
@@ -51,31 +44,5 @@ func TestNewProducer_TransactionalMode(t *testing.T) {
 	defer p.Close()
 	if !p.transactional {
 		t.Error("non-empty TransactionalID should enable transactional mode")
-	}
-}
-
-func TestNewTradeConsumer_Validation(t *testing.T) {
-	logger := zap.NewNop()
-	if _, err := NewTradeConsumer(TradeConsumerConfig{GroupID: "g", Topic: "t"}, nopHandler{}, logger); err == nil {
-		t.Error("expected error for empty brokers")
-	}
-	if _, err := NewTradeConsumer(TradeConsumerConfig{Brokers: []string{"localhost:9092"}, Topic: "t"}, nopHandler{}, logger); err == nil {
-		t.Error("expected error for empty group")
-	}
-	if _, err := NewTradeConsumer(TradeConsumerConfig{Brokers: []string{"localhost:9092"}, GroupID: "g"}, nil, logger); err == nil {
-		t.Error("expected error for nil handler")
-	}
-}
-
-func TestNewTradeConsumer_DefaultsTopic(t *testing.T) {
-	c, err := NewTradeConsumer(TradeConsumerConfig{
-		Brokers: []string{"localhost:9092"}, GroupID: "perp-counter",
-	}, nopHandler{}, zap.NewNop())
-	if err != nil {
-		t.Fatalf("NewTradeConsumer: %v", err)
-	}
-	defer c.Close()
-	if c.topic != "perp-trade-event" {
-		t.Errorf("default topic = %q, want perp-trade-event", c.topic)
 	}
 }
