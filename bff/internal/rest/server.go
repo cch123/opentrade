@@ -10,10 +10,10 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/bff/internal/client"
 	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/bff/internal/ratelimit"
+	"github.com/xargin/opentrade/pkg/auth"
 )
 
 // Config bundles runtime knobs.
@@ -33,13 +33,14 @@ type Config struct {
 
 // Server is the BFF HTTP server.
 type Server struct {
-	cfg         Config
-	counter     client.Counter
-	asset       client.Asset
+	cfg     Config
+	counter client.Counter
+	asset   client.Asset
 	trigger client.Trigger
-	history     client.History
-	market      *marketcache.Cache
-	logger      *zap.Logger
+	history client.History
+	perp    client.Perp
+	market  *marketcache.Cache
+	logger  *zap.Logger
 
 	userLimiter *ratelimit.SlidingWindow
 	ipLimiter   *ratelimit.SlidingWindow
@@ -54,7 +55,7 @@ func NewServer(cfg Config, counter client.Counter, asset client.Asset, market *m
 		cfg:         cfg,
 		counter:     counter,
 		asset:       asset,
-		trigger: trigger,
+		trigger:     trigger,
 		history:     history,
 		market:      market,
 		logger:      logger,
@@ -63,9 +64,18 @@ func NewServer(cfg Config, counter client.Counter, asset client.Asset, market *m
 	}
 }
 
+// SetPerp wires the perp-counter client (ADR-0068 M7). Optional — left nil the
+// /v1/perp/* routes return 503. A setter (not a NewServer arg) keeps the
+// constructor signature stable for existing callers / tests.
+func (s *Server) SetPerp(perp client.Perp) { s.perp = perp }
+
 // Handler returns the top-level http.Handler with middleware chain applied.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/perp/order", s.handlePerpPlaceOrder)
+	mux.HandleFunc("DELETE /v1/perp/order/{order_id}", s.handlePerpCancelOrder)
+	mux.HandleFunc("GET /v1/perp/positions", s.handlePerpPositions)
+	mux.HandleFunc("GET /v1/perp/margin", s.handlePerpMargin)
 	mux.HandleFunc("POST /v1/order", s.handlePlaceOrder)
 	mux.HandleFunc("DELETE /v1/order/{order_id}", s.handleCancelOrder)
 	mux.HandleFunc("DELETE /v1/orders", s.handleCancelMyOrders)

@@ -73,6 +73,7 @@ type Config struct {
 	// /v1/transfer, /v1/transfer/{id}, /v1/funding-balance endpoints
 	// with 503.
 	AssetAddr string
+	PerpAddr  string
 
 	// Counter routing mode (ADR-0058 phase 5). "disabled" keeps the
 	// legacy --counter-shards list; "enabled" ignores it and routes
@@ -159,6 +160,16 @@ func main() {
 		}
 	}()
 
+	perpHTTP, perpClient, err := maybeDialPerp(rootCtx, cfg.PerpAddr, logger)
+	if err != nil {
+		logger.Fatal("dial perp", zap.Error(err))
+	}
+	defer func() {
+		if perpHTTP != nil {
+			perpHTTP.CloseIdleConnections()
+		}
+	}()
+
 	srv := rest.NewServer(rest.Config{
 		Addr:           cfg.HTTPAddr,
 		UserRateLimit:  cfg.UserRateLimit,
@@ -167,6 +178,9 @@ func main() {
 		IPRateWindow:   cfg.IPRateWindow,
 		AuthMiddleware: authMW,
 	}, counter, assetClient, mdCache, condClient, histClient, logger)
+	if perpClient != nil {
+		srv.SetPerp(perpClient)
+	}
 
 	outer := http.NewServeMux()
 	if cfg.PushWSURL != "" {
@@ -267,6 +281,22 @@ func maybeDialAsset(ctx context.Context, addr string, logger *zap.Logger) (*http
 		return nil, nil, fmt.Errorf("asset dial %s: %w", addr, err)
 	}
 	logger.Info("asset endpoint configured", zap.String("addr", addr))
+	return hc, c, nil
+}
+
+// maybeDialPerp wires a Connect client for perp-counter when addr is set.
+// Returns (nil, nil, nil) when disabled; the REST layer then 503s on the
+// /v1/perp/* endpoints (ADR-0068 M7).
+func maybeDialPerp(ctx context.Context, addr string, logger *zap.Logger) (*http.Client, client.Perp, error) {
+	if addr == "" {
+		logger.Info("perp endpoint disabled (empty --perp)")
+		return nil, nil, nil
+	}
+	hc, c, err := client.DialPerp(ctx, addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("perp dial %s: %w", addr, err)
+	}
+	logger.Info("perp endpoint configured", zap.String("addr", addr))
 	return hc, c, nil
 }
 
@@ -476,6 +506,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TriggerAddr, "trigger", "", "Trigger service gRPC endpoint (empty disables /v1/trigger; ADR-0040)")
 	flag.StringVar(&cfg.HistoryAddr, "history", "", "History service gRPC endpoint (empty disables /v1/orders,/v1/trades,/v1/account-logs; ADR-0046)")
 	flag.StringVar(&cfg.AssetAddr, "asset", "", "Asset service gRPC endpoint (empty disables /v1/transfer,/v1/funding-balance; ADR-0057)")
+	flag.StringVar(&cfg.PerpAddr, "perp", "", "perp-counter gRPC endpoint (empty disables /v1/perp/*; ADR-0068 M7)")
 	flag.StringVar(&cfg.ClusteringMode, "clustering-mode", cfg.ClusteringMode, "counter routing mode: disabled (use --counter-shards) | enabled (watch etcd for ADR-0058 vshard routing)")
 	flag.StringVar(&etcdCSV, "etcd", "", "comma-separated etcd endpoints (required when --clustering-mode=enabled)")
 	flag.IntVar(&cfg.VShardCount, "vshard-count", cfg.VShardCount, "ADR-0058 vshard count (must match counter --vshard-count)")
