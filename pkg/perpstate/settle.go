@@ -44,7 +44,9 @@ func (p *Position) ApplyFill(f Fill) FillResult {
 	if p.IsFlat() || f.Side == p.Side {
 		im := initMargin(f.Price, f.Qty, p.Leverage)
 		newSize := p.Size.Add(f.Qty)
-		// weighted-average entry = (entry*size + price*qty) / newSize
+		// Increasing a linear perp position does not realize PnL; it only moves
+		// the average entry. Realization is reserved for opposite-side fills so
+		// wallet accounting can treat "add" and "reduce" as separate cash flows.
 		p.Entry = p.Entry.Mul(p.Size).Add(f.Price.Mul(f.Qty)).Div(newSize)
 		p.Size = newSize
 		p.Side = f.Side
@@ -71,7 +73,9 @@ func (p *Position) ApplyFill(f Fill) FillResult {
 
 	if p.Size.Sign() == 0 {
 		// Fully closed. Reset entry; if the fill overshoots, flip into a new
-		// position on f.Side with the remaining qty at the fill price.
+		// position on f.Side with the remaining qty at the fill price. The new
+		// leg gets fresh initial margin; the closed leg's realized PnL and
+		// released margin stay separate in FillResult for the service to route.
 		p.Entry = zero
 		remaining := f.Qty.Sub(closeQty)
 		if remaining.Sign() > 0 {

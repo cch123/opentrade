@@ -268,6 +268,11 @@ func (e *Engine) ApplyFillWithSeq(user, symbol string, leverage dec.Decimal, seq
 func (e *Engine) routeCashLocked(user string, res perpstate.FillResult) {
 	w := e.walletLocked(user)
 	if res.MarginAdded.Sign() > 0 {
+		// The normal path consumes the reservation taken at PlaceOrder. The
+		// Available fallback is deliberate: old fixtures and some internal
+		// recovery paths can apply fills without a matching reservation, and
+		// making the position/margin state authoritative is safer than dropping
+		// a fill after Match has executed it.
 		fromReserved := dec.Min(res.MarginAdded, w.Reserved)
 		w.Reserved = w.Reserved.Sub(fromReserved)
 		if rem := res.MarginAdded.Sub(fromReserved); rem.Sign() > 0 {
@@ -609,6 +614,10 @@ func (e *Engine) BackstopTakeover(user, symbol string, qty, price dec.Decimal, b
 	closeQty := dec.Min(qty, p.Size)
 	fillSide := p.Side.Opposite()
 	if partial && closeQty.Cmp(p.Size) < 0 {
+		// Partial backstop follows the same accounting as partial Match fills:
+		// the surviving position keeps its released equity, and insurance only
+		// receives the liquidation fee. Full takeover wipes the position and
+		// sends the final equity surplus/deficit to insurance.
 		res = reducePositionKeepingEquity(p, price, closeQty, liqFeeRate)
 		insuranceDelta = res.Fee
 	} else {
@@ -761,6 +770,11 @@ func reducePositionKeepingEquity(p *perpstate.Position, price, closeQty, liqFeeR
 	if closeQty.Cmp(p.Size) >= 0 {
 		return p.ApplyFill(perpstate.Fill{Side: p.Side.Opposite(), Price: price, Qty: closeQty, Fee: res.Fee})
 	}
+	// Partial liquidation is not a user withdrawal. We realize the closed
+	// slice's PnL into the remaining isolated margin and report no
+	// MarginReleased, so the wallet cannot reclaim collateral while the
+	// position is still in distress. The only cash extracted is the configured
+	// liquidation fee, which the caller routes to insurance.
 	if p.Side == perpstate.SideBuy {
 		res.Realized = price.Sub(p.Entry).Mul(closeQty)
 	} else {

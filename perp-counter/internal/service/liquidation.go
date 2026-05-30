@@ -78,6 +78,10 @@ func (s *Service) beginLiquidation(cand engine.LiquidationCandidate) {
 		price := c.BankruptcyPrice
 		mode := liquidationFull
 		if reduceQty := s.eng.ReduceToTarget(c.UserID, c.Symbol, s.risk.MMRFunc(), s.cfg.TargetMarginBuffer); reduceQty.Sign() > 0 && reduceQty.Cmp(c.Size) < 0 {
+			// Partial liquidation prefers the smaller close at liq price when it
+			// restores health. If the solver cannot find such a slice, the flow
+			// falls back to full bankruptcy close so liquidation always makes
+			// finite progress.
 			qty = reduceQty
 			price = c.LiqPrice
 			mode = liquidationPartial
@@ -199,6 +203,10 @@ func (s *Service) settleLiquidationFill(o *Order, liq *liquidation, side perpsta
 		return // replay
 	}
 	old := o.Status
+	// Match is the source of truth for cumulative filled qty/status. The
+	// settlement math is guarded by match_seq, but order lifecycle must still
+	// mirror Match's post-fill view so later cancels release only the real
+	// unfilled remainder.
 	if filledAfter != "" {
 		o.FilledQty = dec.New(filledAfter)
 	}
@@ -280,6 +288,10 @@ func (s *Service) runADL(liquidatedUser, symbol string, liquidatedSide perpstate
 		}
 		qty := cand.Size
 		if cand.SacrificePerQty.Sign() > 0 {
+			// Close only the quantity needed to cover the current deficit. ADL is
+			// intentionally incremental because every forced close is visible user
+			// impact; after each task we re-read the insurance fund before moving
+			// to the next ranked candidate.
 			needQty := deficit.Div(cand.SacrificePerQty)
 			qty = dec.Min(qty, needQty)
 		}

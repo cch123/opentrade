@@ -335,6 +335,9 @@ func (c *Coordinator) BorrowWorkingCapital(req BorrowRequest) (BorrowResult, err
 
 	if req.RefID != "" {
 		if existing, ok := c.loans[req.RefID]; ok {
+			// Borrow refs are idempotency keys from the takeover event. Returning
+			// zero borrowed on replay avoids double-debiting the global fund while
+			// still exposing the loan that was already consuming symbol quota.
 			return BorrowResult{
 				Requested: req.Amount, Borrowed: zero, GlobalAvailable: dec.Max(c.funds[req.Coin], zero),
 				SymbolLimit: c.symbolLimitLocked(req.Symbol, dec.Max(c.funds[req.Coin], zero)),
@@ -346,6 +349,9 @@ func (c *Coordinator) BorrowWorkingCapital(req BorrowRequest) (BorrowResult, err
 	available := dec.Max(c.funds[req.Coin], zero)
 	st := c.quotas[req.Symbol]
 	if st.day != req.Day {
+		// Quotas reset on the caller-supplied business day, not on wall clock in
+		// this pure package. That keeps replay deterministic and lets deployment
+		// policy decide whether the day is UTC or exchange-local.
 		st = quotaState{day: req.Day, used: zero}
 	}
 	limit := c.symbolLimitLocked(req.Symbol, available)
@@ -396,6 +402,8 @@ func (c *Coordinator) RepayWorkingCapitalRef(refID string, amount dec.Decimal) e
 		return errors.New("perprisk: working-capital loan not found")
 	}
 	remaining := loan.principal.Sub(loan.repaid)
+	// Over-repayment is clamped instead of rejected so external inventory
+	// unwinders can be at-least-once without accidentally minting fund balance.
 	move := dec.Min(amount, remaining)
 	if move.Sign() <= 0 {
 		return nil
@@ -473,6 +481,9 @@ func PlanADL(deficit, price dec.Decimal, adlRound uint64, candidates []ADLCandid
 		if cand.Size.Sign() <= 0 || cand.SacrificePerQty.Sign() <= 0 {
 			continue
 		}
+		// SacrificePerQty is the insurance improvement from closing one base
+		// unit at price. Dividing remaining deficit by that value minimizes user
+		// impact while preserving deterministic task sizing.
 		qty := dec.Min(cand.Size, remaining.Div(cand.SacrificePerQty))
 		if qty.Sign() <= 0 {
 			continue

@@ -288,6 +288,10 @@ func (h *handler) ApplyJournalEventAt(evt *eventpb.PerpJournalEvent, partition i
 		return applied, err
 	}
 	if delta.Backstop && delta.TakeoverNotional.Sign() > 0 {
+		// A backstop takeover moves risk from a liquidated user into system
+		// inventory. Borrowing working capital here makes that exposure visible
+		// to the global fund/quota model instead of leaving it as a shard-local
+		// side effect.
 		if _, err := h.coord.BorrowWorkingCapital(perprisk.BorrowRequest{
 			Coin: delta.Coin, Symbol: delta.Symbol, Day: time.Now().UTC().Format("2006-01-02"),
 			RefID: "takeover:" + delta.RefID, Amount: delta.TakeoverNotional,
@@ -339,6 +343,9 @@ func (h *handler) planAndDispatchADL(ctx context.Context, delta perprisk.Insuran
 			sources[taskKey(cand.UserID, cand.Symbol, cand.PosSeq, cand.PositionVersion)] = endpoint
 		}
 	}
+	// Reserve one round for the whole plan, not one per shard. The round is the
+	// replay guard visible to every owning shard; sharing it lets logs and
+	// snapshots reconstruct one deficit-repair attempt across all tasks.
 	round := h.coord.ReserveAdlRound()
 	tasks := perprisk.PlanADL(deficit, delta.Price, round, all)
 	for _, task := range tasks {

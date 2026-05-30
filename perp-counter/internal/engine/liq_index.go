@@ -26,6 +26,11 @@ type sideLiqTree struct {
 	root *liqNode
 }
 
+// The side tree is a deterministic treap keyed by (liqPrice,user,symbol). A
+// balanced stdlib tree does not exist in Go, and a heap alone cannot delete or
+// update arbitrary positions cheaply. The treap keeps O(log n) expected
+// upsert/delete/range behavior while the hash-derived priority makes snapshot
+// restore and tests stable.
 type liqNode struct {
 	entry    liqIndexEntry
 	priority uint64
@@ -73,6 +78,9 @@ func (idx *liqIndex) upsert(user, symbol string, p *perpstate.Position, mmrOf pe
 	if p.Side != perpstate.SideBuy && p.Side != perpstate.SideSell {
 		return
 	}
+	// The index stores the trigger price, not the current health. That keeps
+	// mark ticks cheap; the caller still rechecks the full CollateralPool before
+	// acting so stale tier config or mark gaps only create harmless candidates.
 	entry := liqIndexEntry{
 		userID: user, symbol: symbol, side: p.Side,
 		liqPrice: p.LiqPrice(mmrOf),
@@ -245,6 +253,9 @@ func compareLiqEntry(a, b liqIndexEntry) int {
 	if cmp := a.liqPrice.Cmp(b.liqPrice); cmp != 0 {
 		return cmp
 	}
+	// userID/symbol make the tree key total. Without this tie-breaker, two
+	// positions at the same liq price would overwrite each other and a scan
+	// could silently miss one account.
 	if a.userID < b.userID {
 		return -1
 	}

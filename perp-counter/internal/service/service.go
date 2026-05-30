@@ -178,7 +178,9 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 	resp := &perprpc.PlaceOrderResponse{ReceivedTsUnixMs: s.now()}
 	s.seq.do(req.GetUserId(), func() {
 		// reduce_only must close, never increase: requires an existing
-		// position on the side opposite this order.
+		// position on the side opposite this order. This is intentionally only
+		// the admission gate; the settlement side still needs its own clamp once
+		// Match fills can arrive after the position has changed.
 		if req.GetReduceOnly() {
 			pos, ok := s.eng.PositionOf(req.GetUserId(), req.GetSymbol())
 			if !ok || pos.Side == side {
@@ -190,6 +192,10 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 		if !req.GetReduceOnly() {
 			imPrice := price
 			if isMarket {
+				// Market orders have no limit price to bound exposure, so the MVP
+				// reserves initial margin at the current mark. That may reject
+				// aggressively, but it keeps the counter service independent from
+				// order-book liquidity and avoids using last-trade noise for margin.
 				imPrice = s.eng.MarkOf(req.GetSymbol())
 				if imPrice.Sign() <= 0 {
 					resp = s.reject(req, "no_mark_for_market_order")
@@ -219,6 +225,10 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 		s.putOrder(o)
 
 		if err := s.dispatch.DispatchOrder(o.Symbol, s.placedOrderEvent(o)); err != nil {
+			// Dispatch failure means Match never became responsible for the
+			// order, so the reservation must be undone synchronously. Once the
+			// event is accepted by Match, all later release paths are driven by
+			// trade-event lifecycle records for replay safety.
 			if reservedIM.Sign() > 0 {
 				s.eng.Release(req.GetUserId(), reservedIM)
 			}
