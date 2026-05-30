@@ -42,6 +42,15 @@
 
 ### 待办
 
+- **【Perp 合约产品化缺口】对齐成熟合约系统的功能面** — 2026-05-31 对比 `/Users/xargin/bybit-leaked` 后整理。当前 perp 已有 USDT 线性永续、逐仓仓位、保证金预占、mark/funding、强平、部分强平/backstop/ADL/perp-risk 等核心骨架，但离成熟合约产品还缺以下面向生产/产品的能力：
+  1. **合约 SymbolConfig 产品化**：把 perp 的合约类型、合约状态、base/quote/settle coin、symbol alias、min/max price、max order qty、risk tiers、funding 参数、liq fee、maker/taker fee 等纳入 per-symbol 动态配置，而不是主要靠 `perp-counter` 启动参数。
+  2. **合约品类扩展**：USDT linear perp 之外，补 inverse perp、dated futures、交割/预期结算价、settle 流程、多结算币模型。
+  3. **账户与保证金模式**：实现 cross margin、unified margin / portfolio margin 的后续路径；补保证金模式切换、加减逐仓保证金、自动追加保证金、持仓级杠杆设置、risk_id 设置、客户最大杠杆等操作面。
+  4. **持仓模式**：补 hedge / both-side position mode、`position_idx`、双边仓净额规则，以及 ADL / 强平在双边仓下的特殊处理。
+  5. **订单与持仓产品 API**：补 amend order、batch create/cancel、cancel all / by coin、pre-create 试算、close all position、block trade、force add/sub position、swap/transfer position、`close_on_trigger`、TP/SL/TrailingStop 与 perp 持仓语义的集成。
+  6. **手续费与财务记账**：补 maker/taker 费率、用户/币种/symbol 费率覆盖、负 maker rebate、fee rule id、平台手续费账户入账、平仓手续费预占、累计交易手续费/资金费统计。
+  7. **订单准入风控与价格保护**：补 symbol 级 min/max price、last-price 价格带、动态 buy/sell collar、异常价格拒绝或自动修正、min notional / max qty / open interest / position value 限制、客户可交易 symbol 白名单。
+  8. **reduce_only 结算时硬约束**：现状主要在下单时检查是否有反向仓位；成交回流时还需要 clamp/reject/expire，防止状态变化后 reduce-only fill 反向开仓。
 - **Match / Counter 延迟 + 吞吐 benchmark** — 验证是否接近 20w TPS / 10ms P99（[architecture.md §18.3](./architecture.md)）
 - **【Match】原生滑点保护 / protected-market order** — 现状 ADR-0035 路径 B
   由 BFF 用 `last_price + slippage_bps` 翻译成 `LIMIT IOC`，只能硬保证不超过
