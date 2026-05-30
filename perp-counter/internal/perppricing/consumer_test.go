@@ -1,4 +1,4 @@
-package markprice
+package perppricing
 
 import (
 	"testing"
@@ -12,7 +12,7 @@ import (
 // perp-counter service package.
 type nopHandler struct{}
 
-func (nopHandler) HandleMarkPriceEvent(*eventpb.MarkPriceEvent) {}
+func (nopHandler) HandlePerpPriceEvent(*eventpb.PerpPriceEvent) {}
 
 func TestNewConsumer_Validation(t *testing.T) {
 	logger := zap.NewNop()

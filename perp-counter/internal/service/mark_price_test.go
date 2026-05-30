@@ -8,19 +8,19 @@ import (
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
-func markTickEvt(symbol, mark string) *eventpb.MarkPriceEvent {
-	return &eventpb.MarkPriceEvent{Symbol: symbol, Payload: &eventpb.MarkPriceEvent_Tick{
+func markTickEvt(symbol, mark string) *eventpb.PerpPriceEvent {
+	return &eventpb.PerpPriceEvent{Symbol: symbol, Payload: &eventpb.PerpPriceEvent_Tick{
 		Tick: &eventpb.MarkTick{MarkPrice: mark, IndexPrice: mark, FundingRate: "0", TsUnixMs: 1}}}
 }
 
-func staleMarkTickEvt(symbol, mark string) *eventpb.MarkPriceEvent {
+func staleMarkTickEvt(symbol, mark string) *eventpb.PerpPriceEvent {
 	evt := markTickEvt(symbol, mark)
 	evt.GetTick().IndexStale = true
 	return evt
 }
 
-func fundingTickEvt(symbol, roundUnixSec, rate, mark string) *eventpb.MarkPriceEvent {
-	return &eventpb.MarkPriceEvent{Symbol: symbol, Payload: &eventpb.MarkPriceEvent_Funding{
+func fundingTickEvt(symbol, roundUnixSec, rate, mark string) *eventpb.PerpPriceEvent {
+	return &eventpb.PerpPriceEvent{Symbol: symbol, Payload: &eventpb.PerpPriceEvent_Funding{
 		Funding: &eventpb.FundingTick{
 			FundingRoundId: symbol + ":" + roundUnixSec, FundingRate: rate, MarkPrice: mark, TsUnixMs: 1}}}
 }
@@ -41,13 +41,13 @@ func openPosition(eng interface {
 
 func TestHandleMarkTick_SetsMark(t *testing.T) {
 	svc, eng, _, _ := newSvc()
-	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "12345.5"))
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "12345.5"))
 	if got := eng.MarkOf(perpSym); got.String() != "12345.5" {
 		t.Fatalf("mark = %s, want 12345.5", got.String())
 	}
 	// Garbage / non-positive marks are ignored.
-	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "nonsense"))
-	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "0"))
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "nonsense"))
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "0"))
 	if got := eng.MarkOf(perpSym); got.String() != "12345.5" {
 		t.Fatalf("mark should be unchanged by bad ticks, got %s", got.String())
 	}
@@ -57,7 +57,7 @@ func TestHandleMarkTick_StaleIndexSkipsLiquidation(t *testing.T) {
 	svc, eng, disp, _ := newLiqSvc()
 	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
 
-	svc.HandleMarkPriceEvent(staleMarkTickEvt(perpSym, "90"))
+	svc.HandlePerpPriceEvent(staleMarkTickEvt(perpSym, "90"))
 	if got := eng.MarkOf(perpSym); got.String() != "90" {
 		t.Fatalf("stale tick should still update display mark, got %s", got)
 	}
@@ -65,7 +65,7 @@ func TestHandleMarkTick_StaleIndexSkipsLiquidation(t *testing.T) {
 		t.Fatalf("stale index must not dispatch liquidation orders, got %d", len(disp.orders))
 	}
 
-	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "90"))
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90"))
 	if len(disp.orders) != 1 {
 		t.Fatalf("fresh tick should resume liquidation scan, got %d orders", len(disp.orders))
 	}
@@ -81,7 +81,7 @@ func TestHandleFundingTick_SettlesBothSidesZeroSum(t *testing.T) {
 	p2Before, _ := eng.PositionOf("u2", perpSym)
 	sumBefore := p1Before.Margin.Add(p2Before.Margin)
 
-	svc.HandleMarkPriceEvent(fundingTickEvt(perpSym, "1748505600", "0.01", "100"))
+	svc.HandlePerpPriceEvent(fundingTickEvt(perpSym, "1748505600", "0.01", "100"))
 
 	p1, _ := eng.PositionOf("u1", perpSym)
 	p2, _ := eng.PositionOf("u2", perpSym)
@@ -97,7 +97,7 @@ func TestHandleFundingTick_SettlesBothSidesZeroSum(t *testing.T) {
 	}
 
 	// Idempotent: replaying the same round settles nobody again.
-	svc.HandleMarkPriceEvent(fundingTickEvt(perpSym, "1748505600", "0.01", "100"))
+	svc.HandlePerpPriceEvent(fundingTickEvt(perpSym, "1748505600", "0.01", "100"))
 	p1b, _ := eng.PositionOf("u1", perpSym)
 	if p1b.Margin.Cmp(p1.Margin) != 0 {
 		t.Fatalf("replayed funding round must not re-settle: %s -> %s", p1.Margin, p1b.Margin)
@@ -113,7 +113,7 @@ func TestHandleFundingTick_MalformedRoundIDSkipped(t *testing.T) {
 	eng.SetMark(perpSym, dec.New("100"))
 	before, _ := eng.PositionOf("u1", perpSym)
 	// No ":<seconds>" suffix → cannot guard idempotency → skip.
-	svc.HandleMarkPriceEvent(&eventpb.MarkPriceEvent{Symbol: perpSym, Payload: &eventpb.MarkPriceEvent_Funding{
+	svc.HandlePerpPriceEvent(&eventpb.PerpPriceEvent{Symbol: perpSym, Payload: &eventpb.PerpPriceEvent_Funding{
 		Funding: &eventpb.FundingTick{FundingRoundId: "no-round", FundingRate: "0.01", MarkPrice: "100"}}})
 	after, _ := eng.PositionOf("u1", perpSym)
 	if before.Margin.Cmp(after.Margin) != 0 {

@@ -36,7 +36,7 @@ import (
 	"github.com/xargin/opentrade/api/gen/rpc/perp/perprpcconnect"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/perp-counter/internal/journal"
-	"github.com/xargin/opentrade/perp-counter/internal/markprice"
+	"github.com/xargin/opentrade/perp-counter/internal/perppricing"
 	"github.com/xargin/opentrade/perp-counter/internal/server"
 	"github.com/xargin/opentrade/perp-counter/internal/service"
 	"github.com/xargin/opentrade/perp-counter/internal/snapshot"
@@ -242,7 +242,7 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 
 	var (
 		consumer     *tradeevent.Consumer
-		markConsumer *markprice.Consumer
+		markConsumer *perppricing.Consumer
 	)
 	if len(brokers) > 0 {
 		consumer, err = tradeevent.NewConsumer(tradeevent.ConsumerConfig{
@@ -258,7 +258,7 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		}
 		defer consumer.Close()
 
-		markConsumer, err = markprice.NewConsumer(markprice.ConsumerConfig{
+		markConsumer, err = perppricing.NewConsumer(perppricing.ConsumerConfig{
 			Brokers:  brokers,
 			ClientID: cfg.InstanceID + "-mark",
 			GroupID:  cfg.MarkPriceGroup,

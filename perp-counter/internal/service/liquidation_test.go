@@ -36,7 +36,7 @@ func liqFill(svc *Service, bankruptcyID uint64, price, qty string, matchSeq uint
 func triggerLiquidation(t *testing.T, svc *Service, eng *engine.Engine, disp *fakeDispatcher) uint64 {
 	t.Helper()
 	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
-	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "90")) // ratio (10-10)/90 = 0 <= 0.05
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90")) // ratio (10-10)/90 = 0 <= 0.05
 	if len(disp.orders) != 1 {
 		t.Fatalf("expected one bankruptcy order dispatched, got %d", len(disp.orders))
 	}
@@ -110,8 +110,8 @@ func TestLiquidation_OneOrderPerPosition(t *testing.T) {
 	svc, eng, disp, _ := newLiqSvc()
 	triggerLiquidation(t, svc, eng, disp)
 	// A second mark tick while the takeover is in flight must NOT dispatch again.
-	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "90"))
-	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "88"))
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90"))
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "88"))
 	if len(disp.orders) != 1 {
 		t.Fatalf("liquidation must place exactly one bankruptcy order, got %d", len(disp.orders))
 	}
@@ -121,7 +121,7 @@ func TestLiquidation_PartialFillThenClose(t *testing.T) {
 	svc, eng, disp, _ := newLiqSvc()
 	// Long 2 @ 100 lev 10 → margin 20, bankruptcy 90.
 	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "2", "10")
-	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "90"))
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90"))
 	bankID := disp.orders[0].GetPlaced().GetOrderId()
 
 	// Partial fill 1 of 2 at bankruptcy: position still open, guard held.

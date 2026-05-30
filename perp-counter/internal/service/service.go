@@ -76,7 +76,7 @@ type Service struct {
 	seq      *userSeq
 
 	// snapshotMu is the ADR-0048 capture barrier. Both consumer entry points
-	// (HandleTradeEvent, HandleMarkPriceEvent) hold it RLocked for the duration
+	// (HandleTradeEvent, HandlePerpPriceEvent) hold it RLocked for the duration
 	// of a mutation; Capture takes it Locked so the engine state + order store +
 	// consumed offsets are a single consistent image with no handler mid-flight.
 	snapshotMu sync.RWMutex

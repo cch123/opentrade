@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.34.0
-// source: event/mark_price.proto
+// source: event/perp_price.proto
 
 package event
 
@@ -21,34 +21,34 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type MarkPriceEvent struct {
+type PerpPriceEvent struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Meta   *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
 	Symbol string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
-	//	*MarkPriceEvent_Tick
-	//	*MarkPriceEvent_Funding
-	Payload       isMarkPriceEvent_Payload `protobuf_oneof:"payload"`
+	//	*PerpPriceEvent_Tick
+	//	*PerpPriceEvent_Funding
+	Payload       isPerpPriceEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *MarkPriceEvent) Reset() {
-	*x = MarkPriceEvent{}
-	mi := &file_event_mark_price_proto_msgTypes[0]
+func (x *PerpPriceEvent) Reset() {
+	*x = PerpPriceEvent{}
+	mi := &file_event_perp_price_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *MarkPriceEvent) String() string {
+func (x *PerpPriceEvent) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*MarkPriceEvent) ProtoMessage() {}
+func (*PerpPriceEvent) ProtoMessage() {}
 
-func (x *MarkPriceEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_mark_price_proto_msgTypes[0]
+func (x *PerpPriceEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_event_perp_price_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -59,65 +59,65 @@ func (x *MarkPriceEvent) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use MarkPriceEvent.ProtoReflect.Descriptor instead.
-func (*MarkPriceEvent) Descriptor() ([]byte, []int) {
-	return file_event_mark_price_proto_rawDescGZIP(), []int{0}
+// Deprecated: Use PerpPriceEvent.ProtoReflect.Descriptor instead.
+func (*PerpPriceEvent) Descriptor() ([]byte, []int) {
+	return file_event_perp_price_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *MarkPriceEvent) GetMeta() *EventMeta {
+func (x *PerpPriceEvent) GetMeta() *EventMeta {
 	if x != nil {
 		return x.Meta
 	}
 	return nil
 }
 
-func (x *MarkPriceEvent) GetSymbol() string {
+func (x *PerpPriceEvent) GetSymbol() string {
 	if x != nil {
 		return x.Symbol
 	}
 	return ""
 }
 
-func (x *MarkPriceEvent) GetPayload() isMarkPriceEvent_Payload {
+func (x *PerpPriceEvent) GetPayload() isPerpPriceEvent_Payload {
 	if x != nil {
 		return x.Payload
 	}
 	return nil
 }
 
-func (x *MarkPriceEvent) GetTick() *MarkTick {
+func (x *PerpPriceEvent) GetTick() *MarkTick {
 	if x != nil {
-		if x, ok := x.Payload.(*MarkPriceEvent_Tick); ok {
+		if x, ok := x.Payload.(*PerpPriceEvent_Tick); ok {
 			return x.Tick
 		}
 	}
 	return nil
 }
 
-func (x *MarkPriceEvent) GetFunding() *FundingTick {
+func (x *PerpPriceEvent) GetFunding() *FundingTick {
 	if x != nil {
-		if x, ok := x.Payload.(*MarkPriceEvent_Funding); ok {
+		if x, ok := x.Payload.(*PerpPriceEvent_Funding); ok {
 			return x.Funding
 		}
 	}
 	return nil
 }
 
-type isMarkPriceEvent_Payload interface {
-	isMarkPriceEvent_Payload()
+type isPerpPriceEvent_Payload interface {
+	isPerpPriceEvent_Payload()
 }
 
-type MarkPriceEvent_Tick struct {
+type PerpPriceEvent_Tick struct {
 	Tick *MarkTick `protobuf:"bytes,10,opt,name=tick,proto3,oneof"`
 }
 
-type MarkPriceEvent_Funding struct {
+type PerpPriceEvent_Funding struct {
 	Funding *FundingTick `protobuf:"bytes,11,opt,name=funding,proto3,oneof"`
 }
 
-func (*MarkPriceEvent_Tick) isMarkPriceEvent_Payload() {}
+func (*PerpPriceEvent_Tick) isPerpPriceEvent_Payload() {}
 
-func (*MarkPriceEvent_Funding) isMarkPriceEvent_Payload() {}
+func (*PerpPriceEvent_Funding) isPerpPriceEvent_Payload() {}
 
 type MarkTick struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -133,7 +133,7 @@ type MarkTick struct {
 
 func (x *MarkTick) Reset() {
 	*x = MarkTick{}
-	mi := &file_event_mark_price_proto_msgTypes[1]
+	mi := &file_event_perp_price_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -145,7 +145,7 @@ func (x *MarkTick) String() string {
 func (*MarkTick) ProtoMessage() {}
 
 func (x *MarkTick) ProtoReflect() protoreflect.Message {
-	mi := &file_event_mark_price_proto_msgTypes[1]
+	mi := &file_event_perp_price_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -158,7 +158,7 @@ func (x *MarkTick) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkTick.ProtoReflect.Descriptor instead.
 func (*MarkTick) Descriptor() ([]byte, []int) {
-	return file_event_mark_price_proto_rawDescGZIP(), []int{1}
+	return file_event_perp_price_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *MarkTick) GetMarkPrice() string {
@@ -215,7 +215,7 @@ type FundingTick struct {
 
 func (x *FundingTick) Reset() {
 	*x = FundingTick{}
-	mi := &file_event_mark_price_proto_msgTypes[2]
+	mi := &file_event_perp_price_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -227,7 +227,7 @@ func (x *FundingTick) String() string {
 func (*FundingTick) ProtoMessage() {}
 
 func (x *FundingTick) ProtoReflect() protoreflect.Message {
-	mi := &file_event_mark_price_proto_msgTypes[2]
+	mi := &file_event_perp_price_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -240,7 +240,7 @@ func (x *FundingTick) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FundingTick.ProtoReflect.Descriptor instead.
 func (*FundingTick) Descriptor() ([]byte, []int) {
-	return file_event_mark_price_proto_rawDescGZIP(), []int{2}
+	return file_event_perp_price_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *FundingTick) GetFundingRoundId() string {
@@ -271,12 +271,12 @@ func (x *FundingTick) GetTsUnixMs() int64 {
 	return 0
 }
 
-var File_event_mark_price_proto protoreflect.FileDescriptor
+var File_event_perp_price_proto protoreflect.FileDescriptor
 
-const file_event_mark_price_proto_rawDesc = "" +
+const file_event_perp_price_proto_rawDesc = "" +
 	"\n" +
-	"\x16event/mark_price.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xce\x01\n" +
-	"\x0eMarkPriceEvent\x12.\n" +
+	"\x16event/perp_price.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xce\x01\n" +
+	"\x0ePerpPriceEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12/\n" +
 	"\x04tick\x18\n" +
@@ -303,28 +303,28 @@ const file_event_mark_price_proto_rawDesc = "" +
 	"ts_unix_ms\x18\x04 \x01(\x03R\btsUnixMsB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
 var (
-	file_event_mark_price_proto_rawDescOnce sync.Once
-	file_event_mark_price_proto_rawDescData []byte
+	file_event_perp_price_proto_rawDescOnce sync.Once
+	file_event_perp_price_proto_rawDescData []byte
 )
 
-func file_event_mark_price_proto_rawDescGZIP() []byte {
-	file_event_mark_price_proto_rawDescOnce.Do(func() {
-		file_event_mark_price_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_event_mark_price_proto_rawDesc), len(file_event_mark_price_proto_rawDesc)))
+func file_event_perp_price_proto_rawDescGZIP() []byte {
+	file_event_perp_price_proto_rawDescOnce.Do(func() {
+		file_event_perp_price_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_event_perp_price_proto_rawDesc), len(file_event_perp_price_proto_rawDesc)))
 	})
-	return file_event_mark_price_proto_rawDescData
+	return file_event_perp_price_proto_rawDescData
 }
 
-var file_event_mark_price_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
-var file_event_mark_price_proto_goTypes = []any{
-	(*MarkPriceEvent)(nil), // 0: opentrade.event.MarkPriceEvent
+var file_event_perp_price_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_event_perp_price_proto_goTypes = []any{
+	(*PerpPriceEvent)(nil), // 0: opentrade.event.PerpPriceEvent
 	(*MarkTick)(nil),       // 1: opentrade.event.MarkTick
 	(*FundingTick)(nil),    // 2: opentrade.event.FundingTick
 	(*EventMeta)(nil),      // 3: opentrade.event.EventMeta
 }
-var file_event_mark_price_proto_depIdxs = []int32{
-	3, // 0: opentrade.event.MarkPriceEvent.meta:type_name -> opentrade.event.EventMeta
-	1, // 1: opentrade.event.MarkPriceEvent.tick:type_name -> opentrade.event.MarkTick
-	2, // 2: opentrade.event.MarkPriceEvent.funding:type_name -> opentrade.event.FundingTick
+var file_event_perp_price_proto_depIdxs = []int32{
+	3, // 0: opentrade.event.PerpPriceEvent.meta:type_name -> opentrade.event.EventMeta
+	1, // 1: opentrade.event.PerpPriceEvent.tick:type_name -> opentrade.event.MarkTick
+	2, // 2: opentrade.event.PerpPriceEvent.funding:type_name -> opentrade.event.FundingTick
 	3, // [3:3] is the sub-list for method output_type
 	3, // [3:3] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
@@ -332,31 +332,31 @@ var file_event_mark_price_proto_depIdxs = []int32{
 	0, // [0:3] is the sub-list for field type_name
 }
 
-func init() { file_event_mark_price_proto_init() }
-func file_event_mark_price_proto_init() {
-	if File_event_mark_price_proto != nil {
+func init() { file_event_perp_price_proto_init() }
+func file_event_perp_price_proto_init() {
+	if File_event_perp_price_proto != nil {
 		return
 	}
 	file_event_common_proto_init()
-	file_event_mark_price_proto_msgTypes[0].OneofWrappers = []any{
-		(*MarkPriceEvent_Tick)(nil),
-		(*MarkPriceEvent_Funding)(nil),
+	file_event_perp_price_proto_msgTypes[0].OneofWrappers = []any{
+		(*PerpPriceEvent_Tick)(nil),
+		(*PerpPriceEvent_Funding)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_mark_price_proto_rawDesc), len(file_event_mark_price_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_perp_price_proto_rawDesc), len(file_event_perp_price_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_event_mark_price_proto_goTypes,
-		DependencyIndexes: file_event_mark_price_proto_depIdxs,
-		MessageInfos:      file_event_mark_price_proto_msgTypes,
+		GoTypes:           file_event_perp_price_proto_goTypes,
+		DependencyIndexes: file_event_perp_price_proto_depIdxs,
+		MessageInfos:      file_event_perp_price_proto_msgTypes,
 	}.Build()
-	File_event_mark_price_proto = out.File
-	file_event_mark_price_proto_goTypes = nil
-	file_event_mark_price_proto_depIdxs = nil
+	File_event_perp_price_proto = out.File
+	file_event_perp_price_proto_goTypes = nil
+	file_event_perp_price_proto_depIdxs = nil
 }

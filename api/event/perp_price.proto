@@ -7,7 +7,7 @@ import "event/common.proto";
 option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 
 // -----------------------------------------------------------------------------
-// mark-price topic (ADR-0068 §5). Produced by the markprice service from the
+// perp-price topic (ADR-0068 §5). Produced by the perp-pricing service from the
 // spot index + perp basis; consumed by perp-counter for unrealized PnL,
 // liquidation judgement, and funding settlement.
 //
@@ -17,7 +17,7 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 //                  perp-counter keys funding settlement off (ADR-0068 §7).
 // -----------------------------------------------------------------------------
 
-message MarkPriceEvent {
+message PerpPriceEvent {
   EventMeta meta = 1;
   string symbol = 2;
 

@@ -1,4 +1,4 @@
-package markprice
+package perppricing
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 // markprice service owns this stream; perp-counter consumes it for mark updates,
 // funding, and liquidation scans.
 type Handler interface {
-	HandleMarkPriceEvent(evt *eventpb.MarkPriceEvent)
+	HandlePerpPriceEvent(evt *eventpb.PerpPriceEvent)
 }
 
 // ConsumerConfig configures the perp-price consumer (ADR-0068 §5).
@@ -97,11 +97,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 func (c *Consumer) Close() { c.cli.Close() }
 
 func (c *Consumer) handleRecord(rec *kgo.Record) {
-	var pb eventpb.MarkPriceEvent
+	var pb eventpb.PerpPriceEvent
 	if err := proto.Unmarshal(rec.Value, &pb); err != nil {
 		c.logger.Error("decode perp-price",
 			zap.String("topic", rec.Topic), zap.Int64("offset", rec.Offset), zap.Error(err))
 		return
 	}
-	c.handler.HandleMarkPriceEvent(&pb)
+	c.handler.HandlePerpPriceEvent(&pb)
 }

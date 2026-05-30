@@ -15,10 +15,10 @@ import (
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-// HandleMarkPriceEvent routes a decoded mark-price record. MarkTick sets the
+// HandlePerpPriceEvent routes a decoded mark-price record. MarkTick sets the
 // symbol mark (and, once wired, triggers the liquidation scan); FundingTick
 // settles the round.
-func (s *Service) HandleMarkPriceEvent(evt *eventpb.MarkPriceEvent) {
+func (s *Service) HandlePerpPriceEvent(evt *eventpb.PerpPriceEvent) {
 	if evt == nil {
 		return
 	}
@@ -28,7 +28,7 @@ func (s *Service) HandleMarkPriceEvent(evt *eventpb.MarkPriceEvent) {
 	defer s.snapshotMu.RUnlock()
 	symbol := evt.GetSymbol()
 	switch p := evt.Payload.(type) {
-	case *eventpb.MarkPriceEvent_Tick:
+	case *eventpb.PerpPriceEvent_Tick:
 		mark, err := dec.Parse(p.Tick.GetMarkPrice())
 		if err != nil || mark.Sign() <= 0 {
 			return
@@ -40,7 +40,7 @@ func (s *Service) HandleMarkPriceEvent(evt *eventpb.MarkPriceEvent) {
 		if !p.Tick.GetIndexStale() {
 			s.onMarkTick(symbol)
 		}
-	case *eventpb.MarkPriceEvent_Funding:
+	case *eventpb.PerpPriceEvent_Funding:
 		f := p.Funding
 		rate, err := dec.Parse(f.GetFundingRate())
 		if err != nil {

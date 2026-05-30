@@ -21,7 +21,7 @@ type MarkProducerConfig struct {
 	Topic      string // default "perp-price"
 }
 
-// MarkProducer publishes MarkPriceEvent (MarkTick / FundingTick) keyed by
+// MarkProducer publishes PerpPriceEvent (MarkTick / FundingTick) keyed by
 // symbol. Idempotent mode: the perp-price stream is a high-frequency estimate,
 // so a dropped tick is recovered by the next one (ADR-0068 §5) — no transaction
 // needed. The funding watermark (funding_round_seen) on the perp-counter side
@@ -59,10 +59,10 @@ func NewMarkProducer(cfg MarkProducerConfig, logger *zap.Logger) (*MarkProducer,
 // The stale/degraded bits are part of ADR-0069's safety contract: consumers
 // may keep displaying the frozen mark when stale, but must not liquidate.
 func (p *MarkProducer) PublishMarkTick(ctx context.Context, symbol string, mark, index, fundingEst dec.Decimal, tsMs int64, indexStale, indexDegraded bool) error {
-	return p.publish(ctx, symbol, &eventpb.MarkPriceEvent{
+	return p.publish(ctx, symbol, &eventpb.PerpPriceEvent{
 		Meta:   &eventpb.EventMeta{TsUnixMs: tsMs, ProducerId: p.cfg.ProducerID},
 		Symbol: symbol,
-		Payload: &eventpb.MarkPriceEvent_Tick{Tick: &eventpb.MarkTick{
+		Payload: &eventpb.PerpPriceEvent_Tick{Tick: &eventpb.MarkTick{
 			MarkPrice: mark.String(), IndexPrice: index.String(),
 			FundingRate: fundingEst.String(), TsUnixMs: tsMs,
 			IndexStale: indexStale, IndexDegraded: indexDegraded,
@@ -74,17 +74,17 @@ func (p *MarkProducer) PublishMarkTick(ctx context.Context, symbol string, mark,
 // (ADR-0068 §7). roundID is the boundary's unix seconds; funding_round_id is the
 // idempotency key perp-counter settles on.
 func (p *MarkProducer) PublishFundingTick(ctx context.Context, symbol string, roundID int64, rate, mark dec.Decimal, tsMs int64) error {
-	return p.publish(ctx, symbol, &eventpb.MarkPriceEvent{
+	return p.publish(ctx, symbol, &eventpb.PerpPriceEvent{
 		Meta:   &eventpb.EventMeta{TsUnixMs: tsMs, ProducerId: p.cfg.ProducerID},
 		Symbol: symbol,
-		Payload: &eventpb.MarkPriceEvent_Funding{Funding: &eventpb.FundingTick{
+		Payload: &eventpb.PerpPriceEvent_Funding{Funding: &eventpb.FundingTick{
 			FundingRoundId: FundingRoundID(symbol, roundID),
 			FundingRate:    rate.String(), MarkPrice: mark.String(), TsUnixMs: tsMs,
 		}},
 	})
 }
 
-func (p *MarkProducer) publish(ctx context.Context, symbol string, evt *eventpb.MarkPriceEvent) error {
+func (p *MarkProducer) publish(ctx context.Context, symbol string, evt *eventpb.PerpPriceEvent) error {
 	payload, err := proto.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal perp-price: %w", err)
