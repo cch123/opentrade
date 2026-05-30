@@ -393,12 +393,12 @@ ratio ≤ maint_margin_ratio → 触发强平
 显式声明 scope 边界，避免实施时偷偷塞进本 ADR：
 
 - ~~账户架构岔路最终拍板~~ ✅ 已定 A1（2026-05-29，新建独立 perp-counter）；状态已转 Accepted。
-- **外部 composite index**：MVP 自家现货，何时/如何引入多所加权指数 + 离群剔除。
+- **外部 composite index**：MVP 自家现货，何时/如何引入多所加权指数 + 离群剔除。→ **已展开为 [ADR-0069](./0069-external-composite-index-price.md)（Proposed）**：多源加权 + 中位数离群剔除 + quorum 仲裁 + 指数失活时冻结强平。
 - **cross margin / 统一保证金 / 组合保证金**：逐仓之后的下一档，单独 ADR。
 - **perp 快照的生产者（self vs trade-dump shadow）**：现货已由 trade-dump 的 shadow 重放 counter-journal 独占产快照（[ADR-0061](./0061-trade-dump-snapshot-pipeline.md)；Counter 只读消费）。perp 当前落地的 `engine.Snapshot/Restore` 是 **perp-counter 自产**模型（绑 offset，[ADR-0048](./0048-snapshot-offset-atomicity.md)），本 ADR 正文也只引用了 0048、未引用 0061。待决策：是否让 perp 对齐 ADR-0061（trade-dump shadow 重放 perp-journal 产快照）——perp-journal 的 `PerpSettlement/Funding/Liquidation` 均带 `PerpPositionSnapshot`，信息足够 shadow 重建。**注**：快照的*内容*（所有仓位 + 保证金 + insurance_fund + 各幂等水位）已在 §决策 §3 + 不变量 #5 定死并实现，本条只决"谁产"。
-- **阶梯杠杆（risk tier）**：MMR/max_leverage 随仓位名义值收紧的分档表。
-- **完整 ADL 自动执行**：MVP 只算不执行，何时把自动减仓真正接上。
-- **强平手续费 / 清算者激励 / 部分强平**：MVP 单仓一次性破产价接管，部分强平（只平到回到 MM 以上）列后续。
+- **阶梯杠杆（risk tier）**：MMR/max_leverage 随仓位名义值收紧的分档表。→ **已展开为 [ADR-0070](./0070-perp-liquidation-hardening.md)（Proposed）§1**。
+- **完整 ADL 自动执行**：MVP 只算不执行，何时把自动减仓真正接上。→ **已展开为 [ADR-0070](./0070-perp-liquidation-hardening.md)（Proposed）§4**（跨 sequencer hand-off）。
+- **强平手续费 / 清算者激励 / 部分强平**：MVP 单仓一次性破产价接管，部分强平（只平到回到 MM 以上）列后续。→ **部分强平 + 兜底接管已展开为 [ADR-0070](./0070-perp-liquidation-hardening.md)（Proposed）§2/§3**；强平费率/清算者激励仍留 0070 开放问题。
 - **perp symbol 的上下架 / 风控参数运维面**：admin-gateway 是否要扩 perp 专属管理操作。
 
 ## 参考 (References)
