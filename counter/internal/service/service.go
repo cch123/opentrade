@@ -17,9 +17,9 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/shard"
 )
 
@@ -120,7 +120,7 @@ func (s *Service) SetSymbolLookup(fn SymbolLookup) {
 }
 
 // HandleTradeRecord is the Kafka-aware sibling of HandleTradeEvent.
-// Implements journal.TradeHandler for the synchronous consumer path
+// Implements tradeevent.Handler for the synchronous consumer path
 // used by tests and the pre-ADR-0060 loop; production runs the async
 // path through HandleTradeRecordAsync.
 //

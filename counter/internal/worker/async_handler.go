@@ -22,7 +22,7 @@ type asyncTradeService interface {
 }
 
 // asyncTradeHandler is the ADR-0060 replacement for the synchronous
-// TradeHandler. It dispatches trade-event records into the user
+// tradeevent.Handler. It dispatches trade-event records into the user
 // sequencer via Service.HandleTradeRecordAsync, registers each event
 // in pendingList before any fn runs, and signals the advancer
 // whenever a watermark-eligible transition happens (fn count hits 0
@@ -36,10 +36,10 @@ type asyncTradeService interface {
 // (M3 will wire the TECheckpointEvent publish; in M2 we only advance
 // the offset map so existing snapshot offset semantics are preserved).
 type asyncTradeHandler struct {
-	svc      asyncTradeService
-	pending  *pendingList
-	advance  chan<- struct{}
-	logger   *zap.Logger
+	svc     asyncTradeService
+	pending *pendingList
+	advance chan<- struct{}
+	logger  *zap.Logger
 }
 
 func newAsyncTradeHandler(svc asyncTradeService, pending *pendingList, advance chan<- struct{}, logger *zap.Logger) *asyncTradeHandler {
@@ -54,7 +54,7 @@ func newAsyncTradeHandler(svc asyncTradeService, pending *pendingList, advance c
 	}
 }
 
-// HandleTradeRecord implements the journal.TradeHandler interface from
+// HandleTradeRecord implements the tradeevent.Handler interface from
 // the trade-event consumer. Returns nil untriggerly — fn-level
 // failures surface via the async cb (logged; the Publish-5s-panic
 // upstream tears down the process on systemic failures). Returning

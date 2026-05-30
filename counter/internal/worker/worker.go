@@ -29,7 +29,6 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/clustering"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/journal"
@@ -37,8 +36,10 @@ import (
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
-	"github.com/xargin/opentrade/pkg/snapshot"
+	"github.com/xargin/opentrade/counter/internal/tradeevent"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/idgen"
+	"github.com/xargin/opentrade/pkg/snapshot"
 )
 
 const (
@@ -56,7 +57,6 @@ const (
 	// (Manager restart, CAS guard) and is re-surfaced into each
 	// Kafka record's headers for downstream audit.
 	TransactionalIDFormat = "counter-vshard-%03d"
-
 )
 
 // Config wires all per-vshard dependencies. Brokers / topics / store
@@ -173,8 +173,8 @@ func ParseStartupMode(s string) (StartupMode, error) {
 	case "on-demand":
 		return StartupModeOnDemand, nil
 	case "legacy":
-		return 0, fmt.Errorf("startup mode %q is no longer a valid value " +
-			"(ADR-0064 M4). Unset --trade-dump-endpoint instead to " +
+		return 0, fmt.Errorf("startup mode %q is no longer a valid value "+
+			"(ADR-0064 M4). Unset --trade-dump-endpoint instead to "+
 			"take the legacy recovery path", s)
 	}
 	return 0, fmt.Errorf("unknown startup mode %q (want auto|on-demand)", s)
@@ -253,11 +253,11 @@ func New(cfg Config) (*VShardWorker, error) {
 // Which path runs depends on (Config.OnDemandClient, Config.StartupMode):
 //
 //   - client set, Auto      (default) — try on-demand, fall back
-//                                        on ErrFallback
+//     on ErrFallback
 //   - client set, OnDemand             — on-demand only; fallback
-//                                        errors become fatal
+//     errors become fatal
 //   - client nil                        — skip on-demand, go
-//                                        straight to legacy
+//     straight to legacy
 //
 // (ADR-0064 M4 removed the explicit StartupModeLegacy value —
 // operators who want the legacy path unset --trade-dump-endpoint
@@ -326,12 +326,12 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	// Both paths produce local fresh state; install is deferred
 	// until Phase 2 so failure to populate is recoverable.
 	var (
-		state          *counterstate.ShardState
-		seq            *sequencer.UserSequencer
-		dt             *dedup.Table
-		offsets        map[int32]int64
-		journalOffset  int64
-		usedOnDemand   bool
+		state         *counterstate.ShardState
+		seq           *sequencer.UserSequencer
+		dt            *dedup.Table
+		offsets       map[int32]int64
+		journalOffset int64
+		usedOnDemand  bool
 	)
 
 	// ADR-0064 M4: on-demand is attempted whenever an OnDemandClient
@@ -438,7 +438,7 @@ func (w *VShardWorker) Run(ctx context.Context) (rerr error) {
 	w.pending = pending
 	asyncHandler := newAsyncTradeHandler(svc, pending, advanceSignal, logger)
 
-	consumer, err := journal.NewTradePartitionConsumer(journal.TradePartitionConsumerConfig{
+	consumer, err := tradeevent.NewPartitionConsumer(tradeevent.PartitionConsumerConfig{
 		Brokers:    w.cfg.Brokers,
 		ClientID:   fmt.Sprintf("%s-vshard-%03d-trade", w.cfg.NodeID, w.cfg.VShardID),
 		Topic:      w.cfg.TradeEventTopic,
@@ -586,4 +586,3 @@ func (w *VShardWorker) emitCheckpoint(
 		w.cfg.Metrics.RecordPendingSize(int32(w.cfg.VShardID), pending.Len())
 	}
 }
-
