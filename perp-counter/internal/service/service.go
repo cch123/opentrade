@@ -22,10 +22,14 @@ import (
 
 var zero = dec.FromInt(0)
 
-// Dispatcher forwards accepted orders / cancels to Match (order-event topic).
+// Dispatcher forwards order-event records to Match (order-event-<symbol>
+// topic, ADR-0050/0068 §1). The service builds the wire event so the
+// adapter stays a thin, symbol-agnostic Kafka producer (mirrors the
+// counter service → journal layering); symbol is passed alongside so the
+// adapter can derive the per-symbol topic without re-parsing the payload.
 type Dispatcher interface {
-	DispatchOrder(o Order) error
-	DispatchCancel(userID, symbol string, orderID uint64) error
+	DispatchOrder(symbol string, evt *eventpb.OrderEvent) error
+	DispatchCancel(symbol string, evt *eventpb.OrderEvent) error
 }
 
 // Journal emits perp-journal events (perp-counter's WAL, ADR-0068).
@@ -70,9 +74,11 @@ type Service struct {
 	nextID   func() uint64
 	seq      *userSeq
 
-	mu      sync.Mutex
-	orders  map[uint64]*Order
-	perpSeq uint64 // shard-scoped journal sequence (ADR-0051 style)
+	mu       sync.Mutex
+	orders   map[uint64]*Order
+	perpSeq  uint64          // shard-scoped perp-journal sequence (ADR-0051 style)
+	orderSeq uint64          // shard-scoped order-event sequence (separate stream from perpSeq)
+	offsets  map[int32]int64 // next-to-consume perp-trade-event offset per partition (ADR-0048 snapshot binding)
 }
 
 // New wires the service. nextID supplies order ids (snowflake in prod, a
@@ -90,6 +96,7 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	return &Service{
 		eng: eng, dispatch: dispatch, journal: journal, cfg: cfg,
 		nextID: nextID, seq: newUserSeq(), orders: map[uint64]*Order{},
+		offsets: map[int32]int64{},
 	}
 }
 
@@ -160,12 +167,12 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			Symbol: req.GetSymbol(), Side: side, Type: req.GetOrderType(), TIF: req.GetTif(),
 			Price: price, Qty: qty, Leverage: lev, ReduceOnly: req.GetReduceOnly(),
 			ReservedIM: reservedIM, FilledQty: zero,
-			Status: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
+			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			CreatedMs: s.now(), UpdatedMs: s.now(),
 		}
 		s.putOrder(o)
 
-		if err := s.dispatch.DispatchOrder(*o); err != nil {
+		if err := s.dispatch.DispatchOrder(o.Symbol, s.placedOrderEvent(o)); err != nil {
 			if reservedIM.Sign() > 0 {
 				s.eng.Release(req.GetUserId(), reservedIM)
 			}
@@ -192,7 +199,7 @@ func (s *Service) CancelOrder(req *perprpc.CancelOrderRequest) (*perprpc.CancelO
 		if o == nil || o.UserID != req.GetUserId() || isTerminal(o.Status) {
 			return
 		}
-		if err := s.dispatch.DispatchCancel(o.UserID, o.Symbol, o.OrderID); err != nil {
+		if err := s.dispatch.DispatchCancel(o.Symbol, s.cancelOrderEvent(o)); err != nil {
 			return
 		}
 		old := o.Status
@@ -285,6 +292,17 @@ func (s *Service) settleSelfTrade(t *eventpb.Trade, matchSeq uint64) {
 func (s *Service) afterFill(o *Order, t *eventpb.Trade, side perpstate.Side, res perpstate.FillResult,
 	statusAfter eventpb.InternalOrderStatus, filledAfter string) {
 	old := o.Status
+	// Drain this order's still-held initial margin by what this fill committed
+	// to position margin (engine.routeCash draws MarginAdded from Reserved
+	// first). What's left is the residual a later cancel/reject/expire must
+	// release — releasing the full original ReservedIM would double-count the
+	// part already converted to position_margin.
+	if res.MarginAdded.Sign() > 0 {
+		o.ReservedIM = o.ReservedIM.Sub(res.MarginAdded)
+		if o.ReservedIM.Sign() < 0 {
+			o.ReservedIM = zero
+		}
+	}
 	if filledAfter != "" {
 		o.FilledQty = dec.New(filledAfter)
 	}

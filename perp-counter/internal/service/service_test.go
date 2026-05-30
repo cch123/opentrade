@@ -13,19 +13,19 @@ import (
 )
 
 type fakeDispatcher struct {
-	orders    []Order
+	orders    []*eventpb.OrderEvent
 	cancels   int
 	failOrder bool
 }
 
-func (f *fakeDispatcher) DispatchOrder(o Order) error {
+func (f *fakeDispatcher) DispatchOrder(_ string, evt *eventpb.OrderEvent) error {
 	if f.failOrder {
 		return errors.New("dispatch boom")
 	}
-	f.orders = append(f.orders, o)
+	f.orders = append(f.orders, evt)
 	return nil
 }
-func (f *fakeDispatcher) DispatchCancel(string, string, uint64) error { f.cancels++; return nil }
+func (f *fakeDispatcher) DispatchCancel(string, *eventpb.OrderEvent) error { f.cancels++; return nil }
 
 type fakeJournal struct{ evts []*eventpb.PerpJournalEvent }
 
@@ -76,7 +76,7 @@ func TestPlaceOrder_ReservesAndDispatches(t *testing.T) {
 	w := eng.WalletOf("u1")
 	eqd(t, w.Reserved, "10", "reserved IM")
 	eqd(t, w.Available, "990", "available after reserve")
-	if len(disp.orders) != 1 || disp.orders[0].OrderID != resp.OrderId {
+	if len(disp.orders) != 1 || disp.orders[0].GetPlaced().GetOrderId() != resp.OrderId {
 		t.Fatalf("order not dispatched: %+v", disp.orders)
 	}
 	if jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetOrderStatus() != nil }) != 1 {

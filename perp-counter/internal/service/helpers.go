@@ -69,17 +69,62 @@ func (s *Service) nextPerpSeq() uint64 {
 	return s.perpSeq
 }
 
+// nextOrderSeq advances the order-event stream sequence (counter_seq_id). It is
+// kept separate from perpSeq so the perp-journal stream stays gapless — the two
+// topics carry independent monotonic sequences (ADR-0051).
+func (s *Service) nextOrderSeq() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.orderSeq++
+	return s.orderSeq
+}
+
 func (s *Service) meta() *eventpb.EventMeta {
 	return &eventpb.EventMeta{TsUnixMs: s.now(), ProducerId: s.cfg.ProducerID}
 }
 
+// placedOrderEvent builds the order-event Match consumes for a new order
+// (ADR-0050/0068 §1). leverage / reduce_only are intentionally NOT on the wire:
+// Match is margin-agnostic and treats the order as a plain limit/market order;
+// perp-counter keeps those in its own order store and applies them when the
+// fill returns. The symbol's `-PERP` suffix is the only thing distinguishing it
+// from a spot order to Match — exactly the "Match 原样复用" property (ADR-0068 §1).
+func (s *Service) placedOrderEvent(o *Order) *eventpb.OrderEvent {
+	return &eventpb.OrderEvent{
+		Meta:         s.meta(),
+		CounterSeqId: s.nextOrderSeq(),
+		Payload: &eventpb.OrderEvent_Placed{Placed: &eventpb.OrderPlaced{
+			UserId: o.UserID, OrderId: o.OrderID, ClientOrderId: o.ClientID,
+			Symbol: o.Symbol, Side: toEventSide(o.Side), OrderType: o.Type, Tif: o.TIF,
+			Price: o.Price.String(), Qty: o.Qty.String(),
+		}},
+	}
+}
+
+// cancelOrderEvent builds the cancel order-event for Match.
+func (s *Service) cancelOrderEvent(o *Order) *eventpb.OrderEvent {
+	return &eventpb.OrderEvent{
+		Meta:         s.meta(),
+		CounterSeqId: s.nextOrderSeq(),
+		Payload: &eventpb.OrderEvent_Cancel{Cancel: &eventpb.OrderCancel{
+			UserId: o.UserID, OrderId: o.OrderID, Symbol: o.Symbol,
+		}},
+	}
+}
+
 func (s *Service) emitOrderStatus(o *Order, oldSt, newSt eventpb.InternalOrderStatus) {
+	s.emitOrderStatusReason(o, oldSt, newSt, eventpb.RejectReason_REJECT_REASON_UNSPECIFIED)
+}
+
+// emitOrderStatusReason emits a perp-journal order-status transition, carrying
+// the Match reject reason when the new status is REJECTED / EXPIRED.
+func (s *Service) emitOrderStatusReason(o *Order, oldSt, newSt eventpb.InternalOrderStatus, reason eventpb.RejectReason) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_OrderStatus{OrderStatus: &eventpb.PerpOrderStatusEvent{
 			UserId: o.UserID, OrderId: o.OrderID, Symbol: o.Symbol,
 			OldStatus: oldSt, NewStatus: newSt, FilledQty: o.FilledQty.String(),
-			ReduceOnly: o.ReduceOnly,
+			ReduceOnly: o.ReduceOnly, RejectReason: reason,
 		}},
 	})
 }
@@ -159,8 +204,8 @@ func isTerminal(st eventpb.InternalOrderStatus) bool {
 
 type noopDispatcher struct{}
 
-func (noopDispatcher) DispatchOrder(Order) error                   { return nil }
-func (noopDispatcher) DispatchCancel(string, string, uint64) error { return nil }
+func (noopDispatcher) DispatchOrder(string, *eventpb.OrderEvent) error  { return nil }
+func (noopDispatcher) DispatchCancel(string, *eventpb.OrderEvent) error { return nil }
 
 type noopJournal struct{}
 
