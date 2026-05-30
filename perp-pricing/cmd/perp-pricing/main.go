@@ -1,4 +1,4 @@
-// Command markprice produces the mark-price topic (ADR-0068 §5): it tails the
+// Command markprice produces the perp-price topic (ADR-0068 §5): it tails the
 // spot + perp market-data OrderBook streams and emits MarkTick (high-frequency)
 // + FundingTick (at each funding boundary) for perp-counter. The mark is the
 // spot index + a capped EMA basis; the funding rate is the Binance method —
@@ -33,7 +33,9 @@ type Config struct {
 	InstanceID          string
 	Brokers             string
 	SpotSymbol          string
+	SpotSymbols         string
 	PerpSymbol          string
+	PerpSymbols         string
 	SpotMarketDataTopic string
 	PerpMarketDataTopic string
 	MarkTopic           string
@@ -41,6 +43,7 @@ type Config struct {
 	BasisCap            string
 	FundingRateCap      string
 	FundingInterval     string
+	FundingIntervals    string
 	TickInterval        string
 	ImpactNotional      string
 	InterestRateDaily   string
@@ -58,14 +61,17 @@ func main() {
 	flag.StringVar(&cfg.InstanceID, "instance-id", "markprice-0", "instance id (client id / producer id)")
 	flag.StringVar(&cfg.Brokers, "brokers", "localhost:9092", "comma-separated Kafka brokers")
 	flag.StringVar(&cfg.SpotSymbol, "spot-symbol", "BTC-USDT", "spot symbol used as the index source")
+	flag.StringVar(&cfg.SpotSymbols, "spot-symbols", "", "per-symbol spot mappings: PERP=SPOT[,PERP=SPOT...]")
 	flag.StringVar(&cfg.PerpSymbol, "perp-symbol", "BTC-USDT-PERP", "perp symbol to publish marks for")
+	flag.StringVar(&cfg.PerpSymbols, "perp-symbols", "", "comma-separated perp symbols; empty uses --perp-symbol")
 	flag.StringVar(&cfg.SpotMarketDataTopic, "spot-market-data-topic", "market-data", "spot OrderBook market-data topic (index source)")
 	flag.StringVar(&cfg.PerpMarketDataTopic, "perp-market-data-topic", "perp-market-data", "perp OrderBook market-data topic (basis source)")
-	flag.StringVar(&cfg.MarkTopic, "mark-topic", "mark-price", "mark-price topic to produce to")
+	flag.StringVar(&cfg.MarkTopic, "perp-price-topic", "perp-price", "perp-price topic to produce to")
 	flag.StringVar(&cfg.Alpha, "ema-alpha", "0.1", "EMA smoothing for the basis, (0,1]")
 	flag.StringVar(&cfg.BasisCap, "basis-cap", "0", "clamp on |mark-index| (absolute USDT); 0 = none")
 	flag.StringVar(&cfg.FundingRateCap, "funding-rate-cap", "0.0075", "clamp on |funding_rate| per interval")
 	flag.StringVar(&cfg.FundingInterval, "funding-interval", "8h", "funding settlement interval (aligned to UTC)")
+	flag.StringVar(&cfg.FundingIntervals, "funding-intervals", "", "per-symbol funding intervals: PERP=8h[,PERP=4h...]")
 	flag.StringVar(&cfg.TickInterval, "tick-interval", "1s", "how often to emit a MarkTick")
 	flag.StringVar(&cfg.ImpactNotional, "impact-notional", "20000", "impact margin notional (quote) the funding premium index is depth-weighted over (Binance method)")
 	flag.StringVar(&cfg.InterestRateDaily, "funding-interest-rate-daily", "0.0003", "daily interest-rate component of the funding rate (Binance default 0.03%/day)")
@@ -101,23 +107,11 @@ func main() {
 		logger.Fatal("at least one --brokers endpoint required")
 	}
 
-	c := calc.New(calc.Config{
-		Alpha:         dec.New(cfg.Alpha),
-		BasisCap:      dec.New(cfg.BasisCap),
-		InterestDaily: dec.New(cfg.InterestRateDaily),
-		IntervalMin:   int64(fundingInterval / time.Minute),
-		PremiumBand:   dec.New(cfg.PremiumBand),
-		FundingCap:    dec.New(cfg.FundingRateCap),
-	})
 	impactNotional := dec.New(cfg.ImpactNotional)
 	book := journal.NewBook()
-	indexCfg, selfSourceName, err := loadIndexConfig(cfg, indexMaxAge)
+	runtimes, err := buildSymbolRuntimes(cfg, fundingInterval, indexMaxAge, time.Now())
 	if err != nil {
-		logger.Fatal("index config", zap.Error(err))
-	}
-	indexEval, err := indexprice.NewEvaluator(indexCfg)
-	if err != nil {
-		logger.Fatal("index evaluator", zap.Error(err))
+		logger.Fatal("symbol runtime config", zap.Error(err))
 	}
 	indexBook := indexprice.NewSourceBook()
 
@@ -144,14 +138,13 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	indexprice.RunExternalSources(ctx, indexBook, indexCfg.Sources, logger)
+	indexprice.RunExternalSources(ctx, indexBook, collectIndexSources(runtimes), logger)
 
 	logger.Info("markprice starting (ADR-0068 §5)",
-		zap.String("spot_symbol", cfg.SpotSymbol), zap.String("perp_symbol", cfg.PerpSymbol),
+		zap.Strings("perp_symbols", runtimeSymbols(runtimes)),
+		zap.Strings("funding_intervals", runtimeFundingIntervals(runtimes)),
 		zap.String("mark_topic", cfg.MarkTopic), zap.Duration("tick", tickInterval),
-		zap.Duration("funding_interval", fundingInterval),
-		zap.Int("index_sources", len(indexCfg.Sources)), zap.Int("index_quorum", indexCfg.Quorum),
-		zap.Duration("index_source_max_age", indexCfg.SourceMaxAge))
+		zap.Duration("default_funding_interval", fundingInterval))
 
 	go func() {
 		if err := consumer.Run(ctx); err != nil && ctx.Err() == nil {
@@ -160,30 +153,47 @@ func main() {
 		}
 	}()
 
-	runTickLoop(ctx, cfg, tickInterval, fundingInterval, impactNotional,
-		book, indexBook, indexEval, indexCfg, selfSourceName, c, producer, logger)
+	runTickLoop(ctx, tickInterval, impactNotional, book, indexBook, runtimes, producer, logger)
 
 	logger.Info("markprice shutting down")
 	_ = logger.Sync()
 }
 
-// runTickLoop owns the Calc (single goroutine). Each tick it reads the latest
-// spot index + perp mid (for the mark) and the perp depth-weighted impact
-// prices (for the funding premium sample), emits a MarkTick, and on crossing a
-// funding boundary settles the round with one FundingTick. Blocks until ctx is
-// cancelled.
-func runTickLoop(ctx context.Context, cfg Config, tick, fundingInterval time.Duration, impactNotional dec.Decimal,
-	book *journal.Book, indexBook *indexprice.SourceBook, indexEval *indexprice.Evaluator, indexCfg indexprice.Config,
-	selfSourceName string, c *calc.Calc, producer *journal.MarkProducer, logger *zap.Logger) {
+type markPublisher interface {
+	PublishMarkTick(ctx context.Context, symbol string, mark, index, fundingEst dec.Decimal, tsMs int64, indexStale, indexDegraded bool) error
+	PublishFundingTick(ctx context.Context, symbol string, roundID int64, rate, mark dec.Decimal, tsMs int64) error
+}
+
+// symbolRuntime is the per-symbol state ADR-0068 requires for funding: the
+// premium accumulator, interest interval, index evaluator, and boundary cursor
+// must not be shared across symbols because exchanges can list contracts with
+// different funding cadences.
+type symbolRuntime struct {
+	PerpSymbol      string
+	SpotSymbol      string
+	FundingInterval time.Duration
+	Calc            *calc.Calc
+	IndexCfg        indexprice.Config
+	IndexEval       *indexprice.Evaluator
+	SelfSourceName  string
+
+	LastBoundary         time.Time
+	LastMark             dec.Decimal
+	LastStaleLogBoundary time.Time
+	SeenIndexState       bool
+	LastIndexStale       bool
+	LastIndexDegraded    bool
+}
+
+// runTickLoop owns all per-symbol Calc instances (single goroutine). Each tick
+// walks every configured symbol and advances its own mark/funding state; this
+// keeps symbols with different funding intervals deterministic without adding
+// cross-goroutine ordering questions.
+func runTickLoop(ctx context.Context, tick time.Duration, impactNotional dec.Decimal,
+	book *journal.Book, indexBook *indexprice.SourceBook, runtimes []*symbolRuntime,
+	producer markPublisher, logger *zap.Logger) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
-	// Seed the boundary with the current interval so we settle only when we
-	// cross into a NEW interval (no spurious settlement at startup).
-	lastBoundary := time.Now().UTC().Truncate(fundingInterval)
-	var lastMark dec.Decimal
-	var lastStaleLogBoundary time.Time
-	var seenIndexState bool
-	var lastIndexStale, lastIndexDegraded bool
 
 	for {
 		select {
@@ -191,68 +201,76 @@ func runTickLoop(ctx context.Context, cfg Config, tick, fundingInterval time.Dur
 			return
 		case <-ticker.C:
 			now := time.Now()
-			if spotMid, tsMs, ok := book.MidAt(cfg.SpotSymbol); ok {
-				indexBook.Upsert(selfSourceName, spotMid, tsMs)
-			}
-			idx := indexEval.Eval(now, indexBook.Snapshot(indexCfg.Sources))
-			if !idx.HasIndex {
-				continue // no last-good index yet — any mark would be fabricated
-			}
-			if !seenIndexState || idx.Stale != lastIndexStale || idx.Degraded != lastIndexDegraded {
-				level := logger.Info
-				if idx.Stale || idx.Degraded {
-					level = logger.Warn
-				}
-				level("index source state changed",
-					zap.Bool("stale", idx.Stale), zap.Bool("degraded", idx.Degraded),
-					zap.Int("live_sources", idx.LiveCount), zap.Int("used_sources", idx.UsedCount),
-					zap.Int("dropped_sources", idx.DroppedCount), zap.Int("quorum", indexCfg.Quorum))
-				seenIndexState = true
-				lastIndexStale, lastIndexDegraded = idx.Stale, idx.Degraded
-			}
-			indexPx := idx.Index
-			perpMid, okPerp := book.Mid(cfg.PerpSymbol)
-			if !okPerp {
-				perpMid = indexPx // no perp book yet → zero basis, mark == index
-			}
-			mark := c.Mark(indexPx, perpMid)
-			// Funding premium sample from the perp impact prices vs the index
-			// (skipped when the perp book is one-sided / absent). ADR-0069 also
-			// skips samples while stale so a frozen index cannot contaminate the
-			// next settled funding round.
-			if !idx.Stale {
-				if impactBid, impactAsk, okImp := book.ImpactPrices(cfg.PerpSymbol, impactNotional); okImp {
-					c.SamplePremium(impactBid, impactAsk, indexPx)
-				}
-			}
-			fundingEst := c.ForecastFundingRate()
-			lastMark = mark
-			if err := producer.PublishMarkTick(ctx, cfg.PerpSymbol, mark, indexPx, fundingEst, now.UnixMilli(), idx.Stale, idx.Degraded); err != nil && ctx.Err() == nil {
-				logger.Warn("publish mark tick", zap.Error(err))
-			}
-
-			if curBoundary := now.UTC().Truncate(fundingInterval); curBoundary.After(lastBoundary) {
-				if idx.Stale {
-					if !curBoundary.Equal(lastStaleLogBoundary) {
-						logger.Warn("funding round deferred because index is stale",
-							zap.String("round_id", journal.FundingRoundID(cfg.PerpSymbol, curBoundary.Unix())),
-							zap.Int("live_sources", idx.LiveCount), zap.Int("quorum", indexCfg.Quorum))
-						lastStaleLogBoundary = curBoundary
-					}
-					continue
-				}
-				rate := c.SettleFundingRate()
-				roundID := curBoundary.Unix()
-				if err := producer.PublishFundingTick(ctx, cfg.PerpSymbol, roundID, rate, lastMark, now.UnixMilli()); err != nil && ctx.Err() == nil {
-					logger.Warn("publish funding tick", zap.Error(err))
-				} else {
-					logger.Info("funding round settled",
-						zap.String("round_id", journal.FundingRoundID(cfg.PerpSymbol, roundID)),
-						zap.String("rate", rate.String()))
-				}
-				lastBoundary = curBoundary
+			for _, rt := range runtimes {
+				runSymbolTick(ctx, now, impactNotional, book, indexBook, rt, producer, logger)
 			}
 		}
+	}
+}
+
+func runSymbolTick(ctx context.Context, now time.Time, impactNotional dec.Decimal,
+	book *journal.Book, indexBook *indexprice.SourceBook, rt *symbolRuntime,
+	producer markPublisher, logger *zap.Logger) {
+	if spotMid, tsMs, ok := book.MidAt(rt.SpotSymbol); ok {
+		indexBook.Upsert(rt.SelfSourceName, spotMid, tsMs)
+	}
+	idx := rt.IndexEval.Eval(now, indexBook.Snapshot(rt.IndexCfg.Sources))
+	if !idx.HasIndex {
+		return // no last-good index yet — any mark would be fabricated
+	}
+	if !rt.SeenIndexState || idx.Stale != rt.LastIndexStale || idx.Degraded != rt.LastIndexDegraded {
+		level := logger.Info
+		if idx.Stale || idx.Degraded {
+			level = logger.Warn
+		}
+		level("index source state changed",
+			zap.String("symbol", rt.PerpSymbol),
+			zap.Bool("stale", idx.Stale), zap.Bool("degraded", idx.Degraded),
+			zap.Int("live_sources", idx.LiveCount), zap.Int("used_sources", idx.UsedCount),
+			zap.Int("dropped_sources", idx.DroppedCount), zap.Int("quorum", rt.IndexCfg.Quorum))
+		rt.SeenIndexState = true
+		rt.LastIndexStale, rt.LastIndexDegraded = idx.Stale, idx.Degraded
+	}
+	indexPx := idx.Index
+	perpMid, okPerp := book.Mid(rt.PerpSymbol)
+	if !okPerp {
+		perpMid = indexPx // no perp book yet → zero basis, mark == index
+	}
+	mark := rt.Calc.Mark(indexPx, perpMid)
+	// Funding premium sample from the perp impact prices vs the index (skipped
+	// when the perp book is one-sided / absent). ADR-0069 also skips samples
+	// while stale so a frozen index cannot contaminate that symbol's accumulator.
+	if !idx.Stale {
+		if impactBid, impactAsk, okImp := book.ImpactPrices(rt.PerpSymbol, impactNotional); okImp {
+			rt.Calc.SamplePremium(impactBid, impactAsk, indexPx)
+		}
+	}
+	fundingEst := rt.Calc.ForecastFundingRate()
+	rt.LastMark = mark
+	if err := producer.PublishMarkTick(ctx, rt.PerpSymbol, mark, indexPx, fundingEst, now.UnixMilli(), idx.Stale, idx.Degraded); err != nil && ctx.Err() == nil {
+		logger.Warn("publish mark tick", zap.String("symbol", rt.PerpSymbol), zap.Error(err))
+	}
+
+	if curBoundary := now.UTC().Truncate(rt.FundingInterval); curBoundary.After(rt.LastBoundary) {
+		if idx.Stale {
+			if !curBoundary.Equal(rt.LastStaleLogBoundary) {
+				logger.Warn("funding round deferred because index is stale",
+					zap.String("round_id", journal.FundingRoundID(rt.PerpSymbol, curBoundary.Unix())),
+					zap.Int("live_sources", idx.LiveCount), zap.Int("quorum", rt.IndexCfg.Quorum))
+				rt.LastStaleLogBoundary = curBoundary
+			}
+			return
+		}
+		rate := rt.Calc.SettleFundingRate()
+		roundID := curBoundary.Unix()
+		if err := producer.PublishFundingTick(ctx, rt.PerpSymbol, roundID, rate, rt.LastMark, now.UnixMilli()); err != nil && ctx.Err() == nil {
+			logger.Warn("publish funding tick", zap.String("symbol", rt.PerpSymbol), zap.Error(err))
+		} else {
+			logger.Info("funding round settled",
+				zap.String("round_id", journal.FundingRoundID(rt.PerpSymbol, roundID)),
+				zap.String("rate", rate.String()))
+		}
+		rt.LastBoundary = curBoundary
 	}
 }
 
@@ -268,8 +286,78 @@ type rawIndexSource struct {
 	Weight json.RawMessage `json:"weight"`
 }
 
-func loadIndexConfig(cfg Config, defaultMaxAge time.Duration) (indexprice.Config, string, error) {
-	selfName := "self:" + cfg.SpotSymbol
+func buildSymbolRuntimes(cfg Config, defaultFundingInterval, indexMaxAge time.Duration, now time.Time) ([]*symbolRuntime, error) {
+	symbols := splitCSV(cfg.PerpSymbols)
+	if len(symbols) == 0 {
+		symbols = splitCSV(cfg.PerpSymbol)
+	}
+	if len(symbols) == 0 {
+		return nil, fmt.Errorf("at least one perp symbol required")
+	}
+	symbolSet := map[string]struct{}{}
+	for _, sym := range symbols {
+		symbolSet[sym] = struct{}{}
+	}
+	spotOverrides, err := parseStringAssignments(cfg.SpotSymbols)
+	if err != nil {
+		return nil, fmt.Errorf("spot-symbols: %w", err)
+	}
+	fundingOverrides, err := parseDurationAssignments(cfg.FundingIntervals)
+	if err != nil {
+		return nil, fmt.Errorf("funding-intervals: %w", err)
+	}
+	for sym := range spotOverrides {
+		if _, ok := symbolSet[sym]; !ok {
+			return nil, fmt.Errorf("spot-symbols references unknown perp symbol %s", sym)
+		}
+	}
+	for sym := range fundingOverrides {
+		if _, ok := symbolSet[sym]; !ok {
+			return nil, fmt.Errorf("funding-intervals references unknown perp symbol %s", sym)
+		}
+	}
+
+	out := make([]*symbolRuntime, 0, len(symbols))
+	for _, perpSymbol := range symbols {
+		spotSymbol := spotSymbolFor(perpSymbol, cfg.SpotSymbol, spotOverrides, len(symbols) == 1)
+		fundingInterval := defaultFundingInterval
+		if override, ok := fundingOverrides[perpSymbol]; ok {
+			fundingInterval = override
+		}
+		indexCfg, selfSourceName, err := loadIndexConfig(cfg, perpSymbol, spotSymbol, indexMaxAge)
+		if err != nil {
+			return nil, err
+		}
+		indexEval, err := indexprice.NewEvaluator(indexCfg)
+		if err != nil {
+			return nil, err
+		}
+		// Each symbol gets its own Calc because funding premium TWAP and the
+		// interest-per-interval term depend on that symbol's settlement cadence.
+		c := calc.New(calc.Config{
+			Alpha:         dec.New(cfg.Alpha),
+			BasisCap:      dec.New(cfg.BasisCap),
+			InterestDaily: dec.New(cfg.InterestRateDaily),
+			IntervalMin:   int64(fundingInterval / time.Minute),
+			PremiumBand:   dec.New(cfg.PremiumBand),
+			FundingCap:    dec.New(cfg.FundingRateCap),
+		})
+		out = append(out, &symbolRuntime{
+			PerpSymbol:      perpSymbol,
+			SpotSymbol:      spotSymbol,
+			FundingInterval: fundingInterval,
+			Calc:            c,
+			IndexCfg:        indexCfg,
+			IndexEval:       indexEval,
+			SelfSourceName:  selfSourceName,
+			LastBoundary:    now.UTC().Truncate(fundingInterval),
+		})
+	}
+	return out, nil
+}
+
+func loadIndexConfig(cfg Config, perpSymbol, spotSymbol string, defaultMaxAge time.Duration) (indexprice.Config, string, error) {
+	selfName := "self:" + spotSymbol
 	out := indexprice.Config{
 		Quorum:        cfg.IndexQuorum,
 		SourceMaxAge:  defaultMaxAge,
@@ -295,9 +383,9 @@ func loadIndexConfig(cfg Config, defaultMaxAge time.Duration) (indexprice.Config
 	if err := json.Unmarshal(body, &bySymbol); err != nil {
 		return out, selfName, err
 	}
-	raw, ok := bySymbol[cfg.PerpSymbol]
+	raw, ok := bySymbol[perpSymbol]
 	if !ok {
-		return out, selfName, fmt.Errorf("missing index config for %s", cfg.PerpSymbol)
+		return out, selfName, fmt.Errorf("missing index config for %s", perpSymbol)
 	}
 	if raw.Quorum > 0 {
 		out.Quorum = raw.Quorum
@@ -322,6 +410,76 @@ func loadIndexConfig(cfg Config, defaultMaxAge time.Duration) (indexprice.Config
 		})
 	}
 	return out, selfName, out.Validate()
+}
+
+func collectIndexSources(runtimes []*symbolRuntime) []indexprice.SourceConfig {
+	seen := map[string]indexprice.SourceConfig{}
+	for _, rt := range runtimes {
+		for _, src := range rt.IndexCfg.Sources {
+			if _, ok := seen[src.Name]; !ok {
+				seen[src.Name] = src
+			}
+		}
+	}
+	out := make([]indexprice.SourceConfig, 0, len(seen))
+	for _, src := range seen {
+		out = append(out, src)
+	}
+	return out
+}
+
+func runtimeSymbols(runtimes []*symbolRuntime) []string {
+	out := make([]string, 0, len(runtimes))
+	for _, rt := range runtimes {
+		out = append(out, rt.PerpSymbol)
+	}
+	return out
+}
+
+func runtimeFundingIntervals(runtimes []*symbolRuntime) []string {
+	out := make([]string, 0, len(runtimes))
+	for _, rt := range runtimes {
+		out = append(out, rt.PerpSymbol+"="+rt.FundingInterval.String())
+	}
+	return out
+}
+
+func spotSymbolFor(perpSymbol, legacySpot string, overrides map[string]string, single bool) string {
+	if spot, ok := overrides[perpSymbol]; ok {
+		return spot
+	}
+	if single && legacySpot != "" {
+		return legacySpot
+	}
+	return strings.TrimSuffix(perpSymbol, "-PERP")
+}
+
+func parseStringAssignments(raw string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, part := range splitCSV(raw) {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok || strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+			return nil, fmt.Errorf("invalid assignment %q, want KEY=VALUE", part)
+		}
+		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return out, nil
+}
+
+func parseDurationAssignments(raw string) (map[string]time.Duration, error) {
+	rawMap, err := parseStringAssignments(raw)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]time.Duration{}
+	for sym, v := range rawMap {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("%s has invalid duration %q", sym, v)
+		}
+		out[sym] = d
+	}
+	return out, nil
 }
 
 func parseRawWeight(raw json.RawMessage) (dec.Decimal, error) {

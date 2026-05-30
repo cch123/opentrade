@@ -40,8 +40,8 @@ func TestNewMarkProducer_Validation(t *testing.T) {
 		t.Fatalf("valid config: %v", err)
 	}
 	defer p.Close()
-	if p.cfg.Topic != "mark-price" {
-		t.Errorf("default topic = %q, want mark-price", p.cfg.Topic)
+	if p.cfg.Topic != "perp-price" {
+		t.Errorf("default topic = %q, want perp-price", p.cfg.Topic)
 	}
 }
 

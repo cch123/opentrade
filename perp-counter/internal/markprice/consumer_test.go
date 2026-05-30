@@ -35,7 +35,7 @@ func TestNewConsumer_DefaultsTopic(t *testing.T) {
 		t.Fatalf("NewConsumer: %v", err)
 	}
 	defer c.Close()
-	if c.topic != "mark-price" {
-		t.Errorf("default topic = %q, want mark-price", c.topic)
+	if c.topic != "perp-price" {
+		t.Errorf("default topic = %q, want perp-price", c.topic)
 	}
 }

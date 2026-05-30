@@ -1,6 +1,6 @@
 # ADR-0069: 外部多源复合指数价（composite index price）
 
-- 状态: **Proposed**（2026-05-30 起草；从 [ADR-0068](./0068-usdt-linear-perp.md) 开放问题"外部 composite index"提升为独立 ADR）
+- 状态: **Accepted / Implemented**（2026-05-30 起草；2026-05-30 落地：perp-pricing 复合指数 + stale/degraded 闸门 + per-symbol funding interval）
 - 日期: 2026-05-30
 - 决策者: xargin, Claude
 - 相关 ADR: 0068（USDT 线性 perp，§5 标记价/指数价、§备选方案 B）、0021（Quote 行情 fanout）、0038（BFF market-data cache）、0055（Match 直出 orderbook）、0056（SymbolConfig via MySQL）、0031（cold-standby HA）

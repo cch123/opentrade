@@ -3,7 +3,7 @@
 // It serves the Connect/h2c gRPC read+write paths and, when --brokers is set,
 // is wired into Match over Kafka end to end: PlaceOrder/Cancel dispatch
 // order-event to Match's perp deployment; perp-trade-event flows back into
-// position settlement; mark-price drives unrealized PnL, funding, and
+// position settlement; perp-price drives unrealized PnL, funding, and
 // liquidation; and state is snapshotted with bound offsets for recovery
 // (ADR-0068 §1/§2/§5/§7/§8, ADR-0048).
 //
@@ -265,7 +265,7 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 			Topic:    cfg.MarkPriceTopic,
 		}, svc, logger)
 		if err != nil {
-			logger.Error("mark-price consumer", zap.Error(err))
+			logger.Error("perp-price consumer", zap.Error(err))
 			return
 		}
 		defer markConsumer.Close()
@@ -314,7 +314,7 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		go func() {
 			defer consumerWG.Done()
 			if err := markConsumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("mark-price consumer exited", zap.Error(err))
+				logger.Error("perp-price consumer exited", zap.Error(err))
 			}
 		}()
 	}
@@ -408,8 +408,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", "perp-trade-event", "perp trade-event topic consumed from Match (ADR-0068 §0 physical isolation)")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "perp-counter", "Kafka consumer group for perp-trade-event (stable across instances so partitions balance)")
 	flag.StringVar(&cfg.TransactionalID, "transactional-id", "", "stable Kafka transactional id for producer fencing (ADR-0032); empty = idempotent (dev). Set per shard in HA mode.")
-	flag.StringVar(&cfg.MarkPriceTopic, "mark-price-topic", "mark-price", "mark-price topic consumed from markprice (ADR-0068 §5)")
-	flag.StringVar(&cfg.MarkPriceGroup, "mark-price-group", "perp-counter-mark", "Kafka consumer group for the mark-price stream")
+	flag.StringVar(&cfg.MarkPriceTopic, "perp-price-topic", "perp-price", "perp-price topic consumed from perp-pricing (ADR-0068 §5)")
+	flag.StringVar(&cfg.MarkPriceGroup, "perp-price-group", "perp-counter-mark", "Kafka consumer group for the perp-price stream")
 	flag.StringVar(&cfg.SnapshotPath, "snapshot-path", "./data/perp-counter/snapshot.json", "snapshot file path (state + bound offsets, ADR-0048); empty disables")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", 60*time.Second, "how often to snapshot state + offsets")
 

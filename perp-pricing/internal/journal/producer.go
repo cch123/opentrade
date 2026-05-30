@@ -13,16 +13,16 @@ import (
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-// MarkProducerConfig configures the mark-price producer.
+// MarkProducerConfig configures the perp-price producer.
 type MarkProducerConfig struct {
 	Brokers    []string
 	ClientID   string
 	ProducerID string // stamped onto EventMeta.producer_id
-	Topic      string // default "mark-price"
+	Topic      string // default "perp-price"
 }
 
 // MarkProducer publishes MarkPriceEvent (MarkTick / FundingTick) keyed by
-// symbol. Idempotent mode: the mark-price stream is a high-frequency estimate,
+// symbol. Idempotent mode: the perp-price stream is a high-frequency estimate,
 // so a dropped tick is recovered by the next one (ADR-0068 §5) — no transaction
 // needed. The funding watermark (funding_round_seen) on the perp-counter side
 // makes a redelivered FundingTick safe too.
@@ -41,7 +41,7 @@ func NewMarkProducer(cfg MarkProducerConfig, logger *zap.Logger) (*MarkProducer,
 		return nil, errors.New("journal: ProducerID required")
 	}
 	if cfg.Topic == "" {
-		cfg.Topic = "mark-price"
+		cfg.Topic = "perp-price"
 	}
 	cli, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
@@ -87,7 +87,7 @@ func (p *MarkProducer) PublishFundingTick(ctx context.Context, symbol string, ro
 func (p *MarkProducer) publish(ctx context.Context, symbol string, evt *eventpb.MarkPriceEvent) error {
 	payload, err := proto.Marshal(evt)
 	if err != nil {
-		return fmt.Errorf("marshal mark-price: %w", err)
+		return fmt.Errorf("marshal perp-price: %w", err)
 	}
 	return p.cli.ProduceSync(ctx, &kgo.Record{
 		Topic: p.cfg.Topic, Key: []byte(symbol), Value: payload,

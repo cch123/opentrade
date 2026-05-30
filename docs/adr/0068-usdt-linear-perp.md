@@ -192,6 +192,7 @@ Position {
 - **标记价 `mark_price`**：抗插针，公式 MVP 取 `mark = index_price + clamp(EMA(perp_mid − index_price), ±cap)`（基差 EMA 限幅），参数可配。**未实现盈亏 + 强平判定一律用 mark，不用 perp 最新成交价**——这是防止"砸自己的 perp 盘口触发连环强平"的关键。
 - **资金费率 `funding_rate`**：按结算周期内 premium 的 TWAP 限幅，`funding_rate = clamp(TWAP(premium_index), ±cap)`（MVP 省掉利率项，后续可加）。
 - 产出 `mark-price` topic：`{symbol, mark_price, index_price, funding_rate, ts}`，高频 tick（如 1s）。资金费结算边界额外发一条 `FundingTick{symbol, funding_round_id, funding_rate, ts}`（§7）。
+- **资金费周期必须是 per-symbol**：`funding_interval` 是 SymbolConfig 的一部分，不是 `perp-pricing` 进程全局常量。一个 `perp-pricing` 进程可以同时服务多个 perp symbol，每个 symbol 独立维护 `Calc`、premium accumulator、`last_boundary` 和 `funding_interval`；不同 symbol 可以分别 8h / 4h / 1h 结算。这样避免为了不同周期强行拆多个进程，也符合 §6 的 per-symbol 风控参数归属。
 
 ### 6. SymbolConfig 扩展（perp 专属风控参数）
 
@@ -199,14 +200,14 @@ Position {
 
 ### 7. 资金费结算（多空互付）
 
-每 `funding_interval`（默认 UTC 00/08/16:00），`perp-pricing` 在边界 emit `FundingTick{funding_round_id, rate}`。perp-counter 消费后，对自己 owned 的、该 symbol 的每个仓位：
+每个 symbol 按自己的 `funding_interval`（默认 8h，UTC 对齐；例如 8h 对齐 00/08/16:00，4h 对齐 00/04/08/...）由 `perp-pricing` 在边界 emit `FundingTick{funding_round_id, rate}`。perp-counter 消费后，对自己 owned 的、该 symbol 的每个仓位：
 
 ```
 funding_payment = position_notional(at mark) × funding_rate
 rate > 0：多头付空头；rate < 0：反向。落进 realized_pnl / position_margin。
 ```
 
-幂等：每个仓位记 `funding_round_seen`，`funding_round_id ≤ seen` 跳过（重启/重放安全，和 LastMatchSeq 同构）。
+幂等：每个仓位记 `funding_round_seen`，`funding_round_id ≤ seen` 跳过（重启/重放安全，和 LastMatchSeq 同构）。`funding_round_id = "<symbol>:<boundary_unix_seconds>"`，所以不同 symbol 的不同结算周期天然分离；perp-counter 不需要知道周期配置，只信任 `FundingTick` 的 symbol + round id。
 
 ### 8. 强平引擎（内置 perp-counter，不单开读服务）
 
@@ -371,7 +372,7 @@ ratio ≤ maint_margin_ratio → 触发强平
 
 ### Flag（perp-counter）
 
-`--grpc-addr` / `--kafka-brokers` / `--journal-topic=perp-journal` / `--mark-price-topic=mark-price` / `--shard-*`（对齐 counter）/ `--snapshot-*` / `--etcd`（HA）/ `--insurance-fund-symbol-scope=per-symbol`。perp-pricing：`--index-source=spot-self` / `--mark-ema-alpha` / `--mark-basis-cap` / `--funding-interval=8h` / `--funding-rate-cap`。
+`--grpc-addr` / `--kafka-brokers` / `--journal-topic=perp-journal` / `--mark-price-topic=mark-price` / `--shard-*`（对齐 counter）/ `--snapshot-*` / `--etcd`（HA）/ `--insurance-fund-symbol-scope=per-symbol`。perp-pricing：`--perp-symbols=BTC-USDT-PERP,ETH-USDT-PERP` / `--spot-symbols=BTC-USDT-PERP=BTC-USDT,ETH-USDT-PERP=ETH-USDT` / `--funding-interval=8h`（默认）/ `--funding-intervals=ETH-USDT-PERP=4h`（per-symbol override）/ `--index-source=spot-self` / `--mark-ema-alpha` / `--mark-basis-cap` / `--funding-rate-cap`。
 
 ### 关键不变量（落地时逐条 audit 代码兑现）
 

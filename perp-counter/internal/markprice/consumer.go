@@ -12,22 +12,22 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
-// Handler is the perp-counter service sink for decoded mark-price records. The
+// Handler is the perp-counter service sink for decoded perp-price records. The
 // markprice service owns this stream; perp-counter consumes it for mark updates,
 // funding, and liquidation scans.
 type Handler interface {
 	HandleMarkPriceEvent(evt *eventpb.MarkPriceEvent)
 }
 
-// ConsumerConfig configures the mark-price consumer (ADR-0068 §5).
+// ConsumerConfig configures the perp-price consumer (ADR-0068 §5).
 type ConsumerConfig struct {
 	Brokers  []string
 	ClientID string
 	GroupID  string
-	Topic    string // default "mark-price"
+	Topic    string // default "perp-price"
 }
 
-// Consumer reads the mark-price stream and drives mark updates plus funding
+// Consumer reads the perp-price stream and drives mark updates plus funding
 // settlement. Unlike perp-trade-event, marks are not the source of snapshot
 // replay state: marks are last-writer-wins and funding is guarded by
 // funding_round_seen. This reader commits after processing so restart resumes
@@ -53,7 +53,7 @@ func NewConsumer(cfg ConsumerConfig, handler Handler, logger *zap.Logger) (*Cons
 		return nil, errors.New("markprice: handler required")
 	}
 	if cfg.Topic == "" {
-		cfg.Topic = "mark-price"
+		cfg.Topic = "perp-price"
 	}
 	cli, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
@@ -83,12 +83,12 @@ func (c *Consumer) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 		fetches.EachError(func(t string, p int32, err error) {
-			c.logger.Warn("mark-price fetch error",
+			c.logger.Warn("perp-price fetch error",
 				zap.String("topic", t), zap.Int32("partition", p), zap.Error(err))
 		})
 		fetches.EachRecord(c.handleRecord)
 		if err := c.cli.CommitUncommittedOffsets(ctx); err != nil && ctx.Err() == nil {
-			c.logger.Warn("commit mark-price offsets", zap.Error(err))
+			c.logger.Warn("commit perp-price offsets", zap.Error(err))
 		}
 	}
 }
@@ -99,7 +99,7 @@ func (c *Consumer) Close() { c.cli.Close() }
 func (c *Consumer) handleRecord(rec *kgo.Record) {
 	var pb eventpb.MarkPriceEvent
 	if err := proto.Unmarshal(rec.Value, &pb); err != nil {
-		c.logger.Error("decode mark-price",
+		c.logger.Error("decode perp-price",
 			zap.String("topic", rec.Topic), zap.Int64("offset", rec.Offset), zap.Error(err))
 		return
 	}
