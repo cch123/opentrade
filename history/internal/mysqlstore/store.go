@@ -628,12 +628,12 @@ func scanTrade(r rowScanner) (*historypb.Trade, error) {
 
 func scanTrigger(r rowScanner) (*historypb.Trigger, error) {
 	var (
-		c         historypb.Trigger
-		side      int8
-		typ       int8
-		tif       int8
-		status    int8
-		trailing  int8
+		c        historypb.Trigger
+		side     int8
+		typ      int8
+		tif      int8
+		status   int8
+		trailing int8
 	)
 	if err := r.Scan(
 		&c.Id, &c.ClientTriggerId, &c.UserId, &c.Symbol,

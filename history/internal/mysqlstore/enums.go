@@ -2,8 +2,8 @@ package mysqlstore
 
 import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 )
 
 // Conversion helpers between the int8 columns stored in MySQL (written by
