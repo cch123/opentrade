@@ -32,6 +32,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/xargin/opentrade/api/gen/rpc/assetholder/assetholderrpcconnect"
 	"github.com/xargin/opentrade/api/gen/rpc/perp/perprpcconnect"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/perp-counter/internal/journal"
@@ -271,6 +272,9 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 	mux := http.NewServeMux()
 	rpcPath, handler := perprpcconnect.NewPerpServiceHandler(server.New(eng, svc, d.mmr))
 	mux.Handle(rpcPath, handler)
+	// biz_line=futures AssetHolder (ADR-0057): funding→futures margin deposits.
+	holderPath, holderHandler := assetholderrpcconnect.NewAssetHolderHandler(server.NewAssetHolderServer(svc))
+	mux.Handle(holderPath, holderHandler)
 	httpSrv := connectx.NewH2CServer(cfg.GRPCAddr, mux)
 
 	logger.Info("perp-counter primary up (ADR-0068)",

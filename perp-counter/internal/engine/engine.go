@@ -24,6 +24,26 @@ type Wallet struct {
 	Reserved  dec.Decimal // initial margin held against open orders (ADR-0041)
 }
 
+// TransferStatus is the outcome of a futures-wallet transfer (AssetHolder
+// saga leg, ADR-0057).
+type TransferStatus uint8
+
+const (
+	// TransferConfirmed: the balance moved.
+	TransferConfirmed TransferStatus = iota + 1
+	// TransferRejected: business reject (insufficient balance). Terminal.
+	TransferRejected
+)
+
+// TransferOutcome is the cached result of a transfer, keyed by transfer_id for
+// idempotency (AssetHolder contract: a repeat returns the first outcome).
+type TransferOutcome struct {
+	Status         TransferStatus
+	AvailableAfter dec.Decimal
+	ReservedAfter  dec.Decimal
+	RejectReason   string
+}
+
 // Engine is the in-memory perp account state.
 type Engine struct {
 	mu        sync.RWMutex
@@ -31,6 +51,7 @@ type Engine struct {
 	positions map[string]map[string]*perpstate.Position
 	marks     map[string]dec.Decimal
 	insurance map[string]dec.Decimal
+	transfers map[string]TransferOutcome // transfer_id → outcome (AssetHolder idempotency, ADR-0057)
 }
 
 // New returns an empty engine.
@@ -40,7 +61,46 @@ func New() *Engine {
 		positions: map[string]map[string]*perpstate.Position{},
 		marks:     map[string]dec.Decimal{},
 		insurance: map[string]dec.Decimal{},
+		transfers: map[string]TransferOutcome{},
 	}
+}
+
+// TransferIn credits the futures wallet for a saga leg (funding→futures deposit,
+// ADR-0057), idempotent on transferID. The second return is true when the id
+// was already applied (a DUPLICATED hit returning the original outcome).
+func (e *Engine) TransferIn(user, transferID string, amt dec.Decimal) (TransferOutcome, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if prev, ok := e.transfers[transferID]; ok {
+		return prev, true
+	}
+	w := e.walletLocked(user)
+	w.Available = w.Available.Add(amt)
+	out := TransferOutcome{Status: TransferConfirmed, AvailableAfter: w.Available, ReservedAfter: w.Reserved}
+	e.transfers[transferID] = out
+	return out, false
+}
+
+// TransferOut debits free margin for a saga leg (futures→funding withdraw),
+// idempotent on transferID. An insufficient balance is cached as a REJECTED
+// outcome so the same id never succeeds later (the saga must use a fresh id).
+func (e *Engine) TransferOut(user, transferID string, amt dec.Decimal) (TransferOutcome, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if prev, ok := e.transfers[transferID]; ok {
+		return prev, true
+	}
+	w := e.walletLocked(user)
+	if w.Available.Cmp(amt) < 0 {
+		out := TransferOutcome{Status: TransferRejected, RejectReason: "insufficient_available",
+			AvailableAfter: w.Available, ReservedAfter: w.Reserved}
+		e.transfers[transferID] = out
+		return out, false
+	}
+	w.Available = w.Available.Sub(amt)
+	out := TransferOutcome{Status: TransferConfirmed, AvailableAfter: w.Available, ReservedAfter: w.Reserved}
+	e.transfers[transferID] = out
+	return out, false
 }
 
 func (e *Engine) walletLocked(user string) *Wallet {

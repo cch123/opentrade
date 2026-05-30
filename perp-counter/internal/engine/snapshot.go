@@ -13,10 +13,19 @@ import (
 // per-partition Kafka offsets (ADR-0048 invariant #5); this struct is the
 // state half.
 type Snapshot struct {
-	Wallets   []WalletSnap      `json:"wallets"`
-	Positions []PositionSnap    `json:"positions"`
-	Marks     map[string]string `json:"marks"`
-	Insurance map[string]string `json:"insurance"`
+	Wallets   []WalletSnap            `json:"wallets"`
+	Positions []PositionSnap          `json:"positions"`
+	Marks     map[string]string       `json:"marks"`
+	Insurance map[string]string       `json:"insurance"`
+	Transfers map[string]TransferSnap `json:"transfers"` // transfer_id → cached outcome (AssetHolder idempotency)
+}
+
+// TransferSnap is one cached transfer outcome (AssetHolder dedup, ADR-0057).
+type TransferSnap struct {
+	Status         uint8  `json:"status"`
+	AvailableAfter string `json:"available_after"`
+	ReservedAfter  string `json:"reserved_after"`
+	RejectReason   string `json:"reject_reason"`
 }
 
 // WalletSnap is one user's margin balance.
@@ -48,7 +57,7 @@ func (e *Engine) Snapshot() Snapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	s := Snapshot{Marks: map[string]string{}, Insurance: map[string]string{}}
+	s := Snapshot{Marks: map[string]string{}, Insurance: map[string]string{}, Transfers: map[string]TransferSnap{}}
 
 	users := make([]string, 0, len(e.wallets))
 	for u := range e.wallets {
@@ -91,6 +100,12 @@ func (e *Engine) Snapshot() Snapshot {
 	for sym, f := range e.insurance {
 		s.Insurance[sym] = f.String()
 	}
+	for id, o := range e.transfers {
+		s.Transfers[id] = TransferSnap{
+			Status: uint8(o.Status), AvailableAfter: o.AvailableAfter.String(),
+			ReservedAfter: o.ReservedAfter.String(), RejectReason: o.RejectReason,
+		}
+	}
 	return s
 }
 
@@ -105,6 +120,7 @@ func (e *Engine) Restore(s Snapshot) {
 	e.positions = map[string]map[string]*perpstate.Position{}
 	e.marks = map[string]dec.Decimal{}
 	e.insurance = map[string]dec.Decimal{}
+	e.transfers = map[string]TransferOutcome{}
 
 	for _, w := range s.Wallets {
 		e.wallets[w.UserID] = &Wallet{Available: dec.New(w.Available), Reserved: dec.New(w.Reserved)}
@@ -128,5 +144,11 @@ func (e *Engine) Restore(s Snapshot) {
 	}
 	for sym, v := range s.Insurance {
 		e.insurance[sym] = dec.New(v)
+	}
+	for id, ts := range s.Transfers {
+		e.transfers[id] = TransferOutcome{
+			Status: TransferStatus(ts.Status), AvailableAfter: dec.New(ts.AvailableAfter),
+			ReservedAfter: dec.New(ts.ReservedAfter), RejectReason: ts.RejectReason,
+		}
 	}
 }
