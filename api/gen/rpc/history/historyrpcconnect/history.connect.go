@@ -44,6 +44,15 @@ const (
 	// HistoryServiceListAccountLogsProcedure is the fully-qualified name of the HistoryService's
 	// ListAccountLogs RPC.
 	HistoryServiceListAccountLogsProcedure = "/opentrade.rpc.history.HistoryService/ListAccountLogs"
+	// HistoryServiceListPerpPositionsProcedure is the fully-qualified name of the HistoryService's
+	// ListPerpPositions RPC.
+	HistoryServiceListPerpPositionsProcedure = "/opentrade.rpc.history.HistoryService/ListPerpPositions"
+	// HistoryServiceListPerpFundingProcedure is the fully-qualified name of the HistoryService's
+	// ListPerpFunding RPC.
+	HistoryServiceListPerpFundingProcedure = "/opentrade.rpc.history.HistoryService/ListPerpFunding"
+	// HistoryServiceListPerpLiquidationsProcedure is the fully-qualified name of the HistoryService's
+	// ListPerpLiquidations RPC.
+	HistoryServiceListPerpLiquidationsProcedure = "/opentrade.rpc.history.HistoryService/ListPerpLiquidations"
 	// HistoryServiceGetTriggerProcedure is the fully-qualified name of the HistoryService's GetTrigger
 	// RPC.
 	HistoryServiceGetTriggerProcedure = "/opentrade.rpc.history.HistoryService/GetTrigger"
@@ -66,6 +75,12 @@ type HistoryServiceClient interface {
 	// ListAccountLogs pages a user's funds-flow journal rows (`account_logs`),
 	// newest first by ts.
 	ListAccountLogs(context.Context, *connect.Request[history.ListAccountLogsRequest]) (*connect.Response[history.ListAccountLogsResponse], error)
+	// ListPerpPositions returns a user's current positions (state, not paged).
+	ListPerpPositions(context.Context, *connect.Request[history.ListPerpPositionsRequest]) (*connect.Response[history.ListPerpPositionsResponse], error)
+	// ListPerpFunding pages a user's funding payments, newest first by ts.
+	ListPerpFunding(context.Context, *connect.Request[history.ListPerpFundingRequest]) (*connect.Response[history.ListPerpFundingResponse], error)
+	// ListPerpLiquidations pages a user's liquidation events, newest first by ts.
+	ListPerpLiquidations(context.Context, *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error)
 	// GetTrigger returns one trigger by id from the long-term
 	// projection (ADR-0047). Use this for looking up a trigger after
 	// it has aged out of the trigger service's in-memory terminal
@@ -113,6 +128,24 @@ func NewHistoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(historyServiceMethods.ByName("ListAccountLogs")),
 			connect.WithClientOptions(opts...),
 		),
+		listPerpPositions: connect.NewClient[history.ListPerpPositionsRequest, history.ListPerpPositionsResponse](
+			httpClient,
+			baseURL+HistoryServiceListPerpPositionsProcedure,
+			connect.WithSchema(historyServiceMethods.ByName("ListPerpPositions")),
+			connect.WithClientOptions(opts...),
+		),
+		listPerpFunding: connect.NewClient[history.ListPerpFundingRequest, history.ListPerpFundingResponse](
+			httpClient,
+			baseURL+HistoryServiceListPerpFundingProcedure,
+			connect.WithSchema(historyServiceMethods.ByName("ListPerpFunding")),
+			connect.WithClientOptions(opts...),
+		),
+		listPerpLiquidations: connect.NewClient[history.ListPerpLiquidationsRequest, history.ListPerpLiquidationsResponse](
+			httpClient,
+			baseURL+HistoryServiceListPerpLiquidationsProcedure,
+			connect.WithSchema(historyServiceMethods.ByName("ListPerpLiquidations")),
+			connect.WithClientOptions(opts...),
+		),
 		getTrigger: connect.NewClient[history.GetTriggerRequest, history.GetTriggerResponse](
 			httpClient,
 			baseURL+HistoryServiceGetTriggerProcedure,
@@ -130,12 +163,15 @@ func NewHistoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // historyServiceClient implements HistoryServiceClient.
 type historyServiceClient struct {
-	getOrder        *connect.Client[history.GetOrderRequest, history.GetOrderResponse]
-	listOrders      *connect.Client[history.ListOrdersRequest, history.ListOrdersResponse]
-	listTrades      *connect.Client[history.ListTradesRequest, history.ListTradesResponse]
-	listAccountLogs *connect.Client[history.ListAccountLogsRequest, history.ListAccountLogsResponse]
-	getTrigger      *connect.Client[history.GetTriggerRequest, history.GetTriggerResponse]
-	listTriggers    *connect.Client[history.ListTriggersRequest, history.ListTriggersResponse]
+	getOrder             *connect.Client[history.GetOrderRequest, history.GetOrderResponse]
+	listOrders           *connect.Client[history.ListOrdersRequest, history.ListOrdersResponse]
+	listTrades           *connect.Client[history.ListTradesRequest, history.ListTradesResponse]
+	listAccountLogs      *connect.Client[history.ListAccountLogsRequest, history.ListAccountLogsResponse]
+	listPerpPositions    *connect.Client[history.ListPerpPositionsRequest, history.ListPerpPositionsResponse]
+	listPerpFunding      *connect.Client[history.ListPerpFundingRequest, history.ListPerpFundingResponse]
+	listPerpLiquidations *connect.Client[history.ListPerpLiquidationsRequest, history.ListPerpLiquidationsResponse]
+	getTrigger           *connect.Client[history.GetTriggerRequest, history.GetTriggerResponse]
+	listTriggers         *connect.Client[history.ListTriggersRequest, history.ListTriggersResponse]
 }
 
 // GetOrder calls opentrade.rpc.history.HistoryService.GetOrder.
@@ -156,6 +192,21 @@ func (c *historyServiceClient) ListTrades(ctx context.Context, req *connect.Requ
 // ListAccountLogs calls opentrade.rpc.history.HistoryService.ListAccountLogs.
 func (c *historyServiceClient) ListAccountLogs(ctx context.Context, req *connect.Request[history.ListAccountLogsRequest]) (*connect.Response[history.ListAccountLogsResponse], error) {
 	return c.listAccountLogs.CallUnary(ctx, req)
+}
+
+// ListPerpPositions calls opentrade.rpc.history.HistoryService.ListPerpPositions.
+func (c *historyServiceClient) ListPerpPositions(ctx context.Context, req *connect.Request[history.ListPerpPositionsRequest]) (*connect.Response[history.ListPerpPositionsResponse], error) {
+	return c.listPerpPositions.CallUnary(ctx, req)
+}
+
+// ListPerpFunding calls opentrade.rpc.history.HistoryService.ListPerpFunding.
+func (c *historyServiceClient) ListPerpFunding(ctx context.Context, req *connect.Request[history.ListPerpFundingRequest]) (*connect.Response[history.ListPerpFundingResponse], error) {
+	return c.listPerpFunding.CallUnary(ctx, req)
+}
+
+// ListPerpLiquidations calls opentrade.rpc.history.HistoryService.ListPerpLiquidations.
+func (c *historyServiceClient) ListPerpLiquidations(ctx context.Context, req *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error) {
+	return c.listPerpLiquidations.CallUnary(ctx, req)
 }
 
 // GetTrigger calls opentrade.rpc.history.HistoryService.GetTrigger.
@@ -182,6 +233,12 @@ type HistoryServiceHandler interface {
 	// ListAccountLogs pages a user's funds-flow journal rows (`account_logs`),
 	// newest first by ts.
 	ListAccountLogs(context.Context, *connect.Request[history.ListAccountLogsRequest]) (*connect.Response[history.ListAccountLogsResponse], error)
+	// ListPerpPositions returns a user's current positions (state, not paged).
+	ListPerpPositions(context.Context, *connect.Request[history.ListPerpPositionsRequest]) (*connect.Response[history.ListPerpPositionsResponse], error)
+	// ListPerpFunding pages a user's funding payments, newest first by ts.
+	ListPerpFunding(context.Context, *connect.Request[history.ListPerpFundingRequest]) (*connect.Response[history.ListPerpFundingResponse], error)
+	// ListPerpLiquidations pages a user's liquidation events, newest first by ts.
+	ListPerpLiquidations(context.Context, *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error)
 	// GetTrigger returns one trigger by id from the long-term
 	// projection (ADR-0047). Use this for looking up a trigger after
 	// it has aged out of the trigger service's in-memory terminal
@@ -225,6 +282,24 @@ func NewHistoryServiceHandler(svc HistoryServiceHandler, opts ...connect.Handler
 		connect.WithSchema(historyServiceMethods.ByName("ListAccountLogs")),
 		connect.WithHandlerOptions(opts...),
 	)
+	historyServiceListPerpPositionsHandler := connect.NewUnaryHandler(
+		HistoryServiceListPerpPositionsProcedure,
+		svc.ListPerpPositions,
+		connect.WithSchema(historyServiceMethods.ByName("ListPerpPositions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	historyServiceListPerpFundingHandler := connect.NewUnaryHandler(
+		HistoryServiceListPerpFundingProcedure,
+		svc.ListPerpFunding,
+		connect.WithSchema(historyServiceMethods.ByName("ListPerpFunding")),
+		connect.WithHandlerOptions(opts...),
+	)
+	historyServiceListPerpLiquidationsHandler := connect.NewUnaryHandler(
+		HistoryServiceListPerpLiquidationsProcedure,
+		svc.ListPerpLiquidations,
+		connect.WithSchema(historyServiceMethods.ByName("ListPerpLiquidations")),
+		connect.WithHandlerOptions(opts...),
+	)
 	historyServiceGetTriggerHandler := connect.NewUnaryHandler(
 		HistoryServiceGetTriggerProcedure,
 		svc.GetTrigger,
@@ -247,6 +322,12 @@ func NewHistoryServiceHandler(svc HistoryServiceHandler, opts ...connect.Handler
 			historyServiceListTradesHandler.ServeHTTP(w, r)
 		case HistoryServiceListAccountLogsProcedure:
 			historyServiceListAccountLogsHandler.ServeHTTP(w, r)
+		case HistoryServiceListPerpPositionsProcedure:
+			historyServiceListPerpPositionsHandler.ServeHTTP(w, r)
+		case HistoryServiceListPerpFundingProcedure:
+			historyServiceListPerpFundingHandler.ServeHTTP(w, r)
+		case HistoryServiceListPerpLiquidationsProcedure:
+			historyServiceListPerpLiquidationsHandler.ServeHTTP(w, r)
 		case HistoryServiceGetTriggerProcedure:
 			historyServiceGetTriggerHandler.ServeHTTP(w, r)
 		case HistoryServiceListTriggersProcedure:
@@ -274,6 +355,18 @@ func (UnimplementedHistoryServiceHandler) ListTrades(context.Context, *connect.R
 
 func (UnimplementedHistoryServiceHandler) ListAccountLogs(context.Context, *connect.Request[history.ListAccountLogsRequest]) (*connect.Response[history.ListAccountLogsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListAccountLogs is not implemented"))
+}
+
+func (UnimplementedHistoryServiceHandler) ListPerpPositions(context.Context, *connect.Request[history.ListPerpPositionsRequest]) (*connect.Response[history.ListPerpPositionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListPerpPositions is not implemented"))
+}
+
+func (UnimplementedHistoryServiceHandler) ListPerpFunding(context.Context, *connect.Request[history.ListPerpFundingRequest]) (*connect.Response[history.ListPerpFundingResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListPerpFunding is not implemented"))
+}
+
+func (UnimplementedHistoryServiceHandler) ListPerpLiquidations(context.Context, *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListPerpLiquidations is not implemented"))
 }
 
 func (UnimplementedHistoryServiceHandler) GetTrigger(context.Context, *connect.Request[history.GetTriggerRequest]) (*connect.Response[history.GetTriggerResponse], error) {

@@ -48,6 +48,18 @@ service HistoryService {
   // newest first by ts.
   rpc ListAccountLogs(ListAccountLogsRequest) returns (ListAccountLogsResponse);
 
+  // -- Perp (USDT-margined futures) history, ADR-0068 M7. Read-side over the
+  //    trade-dump perp_* projection (03-perp-schema.sql). --
+
+  // ListPerpPositions returns a user's current positions (state, not paged).
+  rpc ListPerpPositions(ListPerpPositionsRequest) returns (ListPerpPositionsResponse);
+
+  // ListPerpFunding pages a user's funding payments, newest first by ts.
+  rpc ListPerpFunding(ListPerpFundingRequest) returns (ListPerpFundingResponse);
+
+  // ListPerpLiquidations pages a user's liquidation events, newest first by ts.
+  rpc ListPerpLiquidations(ListPerpLiquidationsRequest) returns (ListPerpLiquidationsResponse);
+
   // GetTrigger returns one trigger by id from the long-term
   // projection (ADR-0047). Use this for looking up a trigger after
   // it has aged out of the trigger service's in-memory terminal
@@ -294,4 +306,83 @@ message AccountLog {
   string biz_type = 9;
   string biz_ref_id = 10;
   int64 ts_unix_ms = 11;
+}
+
+// -----------------------------------------------------------------------------
+// Perp history (ADR-0068 M7) — over trade-dump's perp_* tables.
+// -----------------------------------------------------------------------------
+
+message ListPerpPositionsRequest {
+  string user_id = 1;
+  string symbol = 2; // "" = all symbols
+}
+
+message ListPerpPositionsResponse {
+  repeated PerpPosition positions = 1;
+}
+
+// PerpPosition mirrors the `perp_positions` projection row.
+message PerpPosition {
+  string user_id = 1;
+  string symbol = 2;
+  opentrade.event.Side side = 3;
+  string size = 4;
+  string entry_price = 5;
+  string margin = 6;
+  string leverage = 7;
+  string realized_pnl = 8;
+  int64 updated_at_unix_ms = 9;
+}
+
+message ListPerpFundingRequest {
+  string user_id = 1;
+  string symbol = 2; // "" = any
+  int64 since_ms = 3;
+  int64 until_ms = 4;
+  string cursor = 5;
+  int32 limit = 6;
+}
+
+message ListPerpFundingResponse {
+  repeated PerpFunding funding = 1;
+  string next_cursor = 2;
+}
+
+// PerpFunding mirrors the `perp_funding` projection row.
+message PerpFunding {
+  uint64 perp_seq_id = 1;
+  string symbol = 2;
+  string funding_round_id = 3;
+  string funding_rate = 4;
+  string mark_price = 5;
+  string payment = 6; // signed; negative = the position paid
+  int64 ts_unix_ms = 7;
+}
+
+message ListPerpLiquidationsRequest {
+  string user_id = 1;
+  string symbol = 2; // "" = any
+  int64 since_ms = 3;
+  int64 until_ms = 4;
+  string cursor = 5;
+  int32 limit = 6;
+}
+
+message ListPerpLiquidationsResponse {
+  repeated PerpLiquidation liquidations = 1;
+  string next_cursor = 2;
+}
+
+// PerpLiquidation mirrors the `perp_liquidations` projection row.
+message PerpLiquidation {
+  uint64 perp_seq_id = 1;
+  string symbol = 2;
+  uint64 liq_order_id = 3;
+  string bankruptcy_price = 4;
+  string mark_price = 5;
+  string closed_qty = 6;
+  string realized_pnl = 7;
+  string insurance_delta = 8;
+  bool adl_queued = 9;
+  int64 ts_unix_ms = 10;
 }

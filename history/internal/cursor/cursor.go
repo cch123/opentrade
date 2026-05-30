@@ -47,6 +47,14 @@ type TriggersCursor struct {
 	ID        uint64 `json:"i"`
 }
 
+// PerpLedgerCursor paginates the perp append-only ledgers (perp_funding,
+// perp_liquidations), both ordered by (ts_unix_ms DESC, perp_seq_id DESC).
+// (ts, perp_seq_id) is unique within a user (perp_seq_id is shard-monotonic).
+type PerpLedgerCursor struct {
+	Ts        int64  `json:"t"`
+	PerpSeqID uint64 `json:"q"`
+}
+
 var enc = base64.RawURLEncoding
 
 // ErrInvalid is returned when a cursor string fails to decode. Callers
