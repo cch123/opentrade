@@ -30,6 +30,7 @@ import (
 	"github.com/xargin/opentrade/perp-counter/internal/journal"
 	"github.com/xargin/opentrade/perp-counter/internal/server"
 	"github.com/xargin/opentrade/perp-counter/internal/service"
+	"github.com/xargin/opentrade/perp-counter/internal/snapshot"
 	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/idgen"
@@ -55,6 +56,10 @@ type Config struct {
 	TransactionalID       string
 	MarkPriceTopic        string
 	MarkPriceGroup        string
+
+	// Snapshot persistence (ADR-0048 / ADR-0068 §5 invariant #5).
+	SnapshotPath     string
+	SnapshotInterval time.Duration
 }
 
 func main() {
@@ -77,6 +82,8 @@ func main() {
 	flag.StringVar(&cfg.TransactionalID, "transactional-id", "", "stable Kafka transactional id for producer fencing (ADR-0032); empty = idempotent (dev)")
 	flag.StringVar(&cfg.MarkPriceTopic, "mark-price-topic", "mark-price", "mark-price topic consumed from markprice (ADR-0068 §5)")
 	flag.StringVar(&cfg.MarkPriceGroup, "mark-price-group", "perp-counter-mark", "Kafka consumer group for the mark-price stream")
+	flag.StringVar(&cfg.SnapshotPath, "snapshot-path", "./data/perp-counter/snapshot.json", "snapshot file path (state + bound offsets, ADR-0048); empty disables")
+	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", 60*time.Second, "how often to snapshot state + offsets")
 	flag.Parse()
 
 	logger, err := logx.New(logx.Config{Service: "perp-counter", Level: cfg.LogLevel, Env: cfg.Env})
@@ -100,6 +107,22 @@ func main() {
 	}
 
 	eng := engine.New()
+
+	// Restore engine state from the last snapshot (ADR-0048). The service order
+	// store + bound offsets are restored after the service is built, below.
+	var restored *snapshot.PerpSnapshot
+	if cfg.SnapshotPath != "" {
+		snap, ok, err := snapshot.Load(cfg.SnapshotPath)
+		if err != nil {
+			logger.Fatal("load snapshot", zap.String("path", cfg.SnapshotPath), zap.Error(err))
+		}
+		if ok {
+			eng.Restore(snap.Engine)
+			restored = &snap
+			logger.Info("restored engine state from snapshot",
+				zap.String("path", cfg.SnapshotPath), zap.Int64("ts_unix_ms", snap.TsUnixMs))
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -135,14 +158,21 @@ func main() {
 	svc := service.New(eng, dispatch, jrnl, idg.Next, service.Config{
 		ShardID: cfg.IDGenShard, ProducerID: cfg.InstanceID, MaxLeverage: maxLev, MMR: mmr,
 	})
+	if restored != nil {
+		svc.Restore(restored.Service)
+		logger.Info("restored service state from snapshot",
+			zap.Int("orders", len(restored.Service.Orders)),
+			zap.Int("offset_partitions", len(restored.Service.Offsets)))
+	}
 
 	var markConsumer *journal.MarkPriceConsumer
 	if len(brokers) > 0 {
 		consumer, err = journal.NewTradeConsumer(journal.TradeConsumerConfig{
-			Brokers:  brokers,
-			ClientID: cfg.InstanceID,
-			GroupID:  cfg.ConsumerGroup,
-			Topic:    cfg.TradeTopic,
+			Brokers:        brokers,
+			ClientID:       cfg.InstanceID,
+			GroupID:        cfg.ConsumerGroup,
+			Topic:          cfg.TradeTopic,
+			InitialOffsets: svc.ConsumedOffsets(), // seek to the snapshot's bound offsets
 		}, svc, logger)
 		if err != nil {
 			logger.Fatal("perp trade consumer", zap.Error(err))
@@ -171,7 +201,14 @@ func main() {
 		zap.Strings("brokers", brokers), zap.String("order_topic_prefix", cfg.OrderEventTopicPrefix),
 		zap.String("trade_topic", cfg.TradeTopic), zap.String("journal_topic", cfg.JournalTopic),
 		zap.Bool("transactional", cfg.TransactionalID != ""))
-	logger.Warn("scope: order-event/trade-event wired; mark-price consume, liquidation execution, snapshot+HA, and M7 (BFF/push/trade-dump/history) pending later milestones")
+	logger.Warn("scope: order-event/trade-event + mark-price/funding/liquidation + snapshot wired; cold-standby HA and M7 (BFF/push/trade-dump/history) pending later milestones")
+
+	if cfg.SnapshotPath != "" {
+		if err := snapshot.EnsureDir(cfg.SnapshotPath); err != nil {
+			logger.Fatal("snapshot dir", zap.Error(err))
+		}
+		go runSnapshotLoop(ctx, cfg, svc, producer, logger)
+	}
 
 	go func() {
 		logger.Info("gRPC (Connect/h2c) listening", zap.String("addr", cfg.GRPCAddr))
@@ -210,12 +247,61 @@ func main() {
 	if markConsumer != nil {
 		markConsumer.Close()
 	}
+	// Final snapshot once the consumers have stopped mutating state.
+	if cfg.SnapshotPath != "" {
+		if err := saveSnapshot(cfg, svc, producer); err != nil {
+			logger.Error("final snapshot", zap.Error(err))
+		} else {
+			logger.Info("wrote final snapshot", zap.String("path", cfg.SnapshotPath))
+		}
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown", zap.Error(err))
 	}
 	_ = logger.Sync()
+}
+
+// runSnapshotLoop periodically captures + persists state (ADR-0048). Each tick
+// flushes the producer under the service capture barrier, so the bound offsets
+// never run ahead of durably-emitted journal / order-event output.
+func runSnapshotLoop(ctx context.Context, cfg Config, svc *service.Service, producer *journal.Producer, logger *zap.Logger) {
+	if cfg.SnapshotInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(cfg.SnapshotInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := saveSnapshot(cfg, svc, producer); err != nil {
+				logger.Error("periodic snapshot", zap.Error(err))
+			}
+		}
+	}
+}
+
+// saveSnapshot captures the engine + service image (flushing the producer first)
+// and atomically writes it to disk.
+func saveSnapshot(cfg Config, svc *service.Service, producer *journal.Producer) error {
+	var flush func() error
+	if producer != nil {
+		flush = func() error {
+			fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return producer.Flush(fctx)
+		}
+	}
+	engSnap, svcSnap, err := svc.Capture(flush)
+	if err != nil {
+		return err
+	}
+	return snapshot.Save(cfg.SnapshotPath, snapshot.PerpSnapshot{
+		TsUnixMs: time.Now().UnixMilli(), Engine: engSnap, Service: svcSnap,
+	})
 }
 
 // splitCSV splits a comma-separated flag value, trimming blanks.

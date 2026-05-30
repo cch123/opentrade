@@ -29,6 +29,10 @@ func (s *Service) HandleTradeEvent(evt *eventpb.TradeEvent, partition int32, off
 	if evt == nil {
 		return
 	}
+	// Hold the capture barrier so a snapshot cannot read state + offsets while
+	// this record is being applied (ADR-0048 atomic offset binding).
+	s.snapshotMu.RLock()
+	defer s.snapshotMu.RUnlock()
 	matchSeq := evt.GetMatchSeqId()
 	switch p := evt.Payload.(type) {
 	case *eventpb.TradeEvent_Trade:

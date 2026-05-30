@@ -75,6 +75,12 @@ type Service struct {
 	nextID   func() uint64
 	seq      *userSeq
 
+	// snapshotMu is the ADR-0048 capture barrier. Both consumer entry points
+	// (HandleTradeEvent, HandleMarkPriceEvent) hold it RLocked for the duration
+	// of a mutation; Capture takes it Locked so the engine state + order store +
+	// consumed offsets are a single consistent image with no handler mid-flight.
+	snapshotMu sync.RWMutex
+
 	mu       sync.Mutex
 	orders   map[uint64]*Order
 	perpSeq  uint64          // shard-scoped perp-journal sequence (ADR-0051 style)

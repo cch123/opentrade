@@ -22,6 +22,10 @@ func (s *Service) HandleMarkPriceEvent(evt *eventpb.MarkPriceEvent) {
 	if evt == nil {
 		return
 	}
+	// Share the capture barrier with the trade path: funding / liquidation
+	// mutate positions + the liquidation registry, which the snapshot reads.
+	s.snapshotMu.RLock()
+	defer s.snapshotMu.RUnlock()
 	symbol := evt.GetSymbol()
 	switch p := evt.Payload.(type) {
 	case *eventpb.MarkPriceEvent_Tick:
