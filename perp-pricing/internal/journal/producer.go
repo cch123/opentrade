@@ -56,13 +56,16 @@ func NewMarkProducer(cfg MarkProducerConfig, logger *zap.Logger) (*MarkProducer,
 }
 
 // PublishMarkTick emits a high-frequency mark/index/funding-estimate tick.
-func (p *MarkProducer) PublishMarkTick(ctx context.Context, symbol string, mark, index, fundingEst dec.Decimal, tsMs int64) error {
+// The stale/degraded bits are part of ADR-0069's safety contract: consumers
+// may keep displaying the frozen mark when stale, but must not liquidate.
+func (p *MarkProducer) PublishMarkTick(ctx context.Context, symbol string, mark, index, fundingEst dec.Decimal, tsMs int64, indexStale, indexDegraded bool) error {
 	return p.publish(ctx, symbol, &eventpb.MarkPriceEvent{
 		Meta:   &eventpb.EventMeta{TsUnixMs: tsMs, ProducerId: p.cfg.ProducerID},
 		Symbol: symbol,
 		Payload: &eventpb.MarkPriceEvent_Tick{Tick: &eventpb.MarkTick{
 			MarkPrice: mark.String(), IndexPrice: index.String(),
 			FundingRate: fundingEst.String(), TsUnixMs: tsMs,
+			IndexStale: indexStale, IndexDegraded: indexDegraded,
 		}},
 	})
 }

@@ -10,7 +10,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,8 +21,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/markprice/internal/calc"
-	"github.com/xargin/opentrade/markprice/internal/journal"
+	"github.com/xargin/opentrade/perp-pricing/internal/calc"
+	indexprice "github.com/xargin/opentrade/perp-pricing/internal/index"
+	"github.com/xargin/opentrade/perp-pricing/internal/journal"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/logx"
 )
@@ -42,6 +45,10 @@ type Config struct {
 	ImpactNotional      string
 	InterestRateDaily   string
 	PremiumBand         string
+	IndexConfig         string
+	IndexSourceMaxAge   string
+	IndexQuorum         int
+	IndexDeviationBand  string
 	Env                 string
 	LogLevel            string
 }
@@ -63,6 +70,10 @@ func main() {
 	flag.StringVar(&cfg.ImpactNotional, "impact-notional", "20000", "impact margin notional (quote) the funding premium index is depth-weighted over (Binance method)")
 	flag.StringVar(&cfg.InterestRateDaily, "funding-interest-rate-daily", "0.0003", "daily interest-rate component of the funding rate (Binance default 0.03%/day)")
 	flag.StringVar(&cfg.PremiumBand, "premium-band", "0.0005", "± band clamping (interest - avg_premium) in the funding rate (Binance ±0.05%); 0 = pure premium")
+	flag.StringVar(&cfg.IndexConfig, "index-config", "", "ADR-0069 per-symbol composite index JSON; empty uses only self:<spot-symbol>")
+	flag.StringVar(&cfg.IndexSourceMaxAge, "index-source-max-age", "5s", "max age before an index source is stale")
+	flag.IntVar(&cfg.IndexQuorum, "index-quorum", 2, "minimum live index sources required for a fresh index; self-only dev mode caps this to 1")
+	flag.StringVar(&cfg.IndexDeviationBand, "index-deviation-band", "0.05", "median deviation band for outlier rejection; 0 disables")
 	flag.StringVar(&cfg.Env, "env", "dev", "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "log level")
 	flag.Parse()
@@ -81,6 +92,10 @@ func main() {
 	if err != nil || fundingInterval <= 0 {
 		logger.Fatal("invalid --funding-interval", zap.String("v", cfg.FundingInterval), zap.Error(err))
 	}
+	indexMaxAge, err := time.ParseDuration(cfg.IndexSourceMaxAge)
+	if err != nil || indexMaxAge <= 0 {
+		logger.Fatal("invalid --index-source-max-age", zap.String("v", cfg.IndexSourceMaxAge), zap.Error(err))
+	}
 	brokers := splitCSV(cfg.Brokers)
 	if len(brokers) == 0 {
 		logger.Fatal("at least one --brokers endpoint required")
@@ -96,6 +111,15 @@ func main() {
 	})
 	impactNotional := dec.New(cfg.ImpactNotional)
 	book := journal.NewBook()
+	indexCfg, selfSourceName, err := loadIndexConfig(cfg, indexMaxAge)
+	if err != nil {
+		logger.Fatal("index config", zap.Error(err))
+	}
+	indexEval, err := indexprice.NewEvaluator(indexCfg)
+	if err != nil {
+		logger.Fatal("index evaluator", zap.Error(err))
+	}
+	indexBook := indexprice.NewSourceBook()
 
 	consumer, err := journal.NewMarketDataConsumer(journal.MarketDataConsumerConfig{
 		Brokers:  brokers,
@@ -120,11 +144,14 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	indexprice.RunExternalSources(ctx, indexBook, indexCfg.Sources, logger)
 
 	logger.Info("markprice starting (ADR-0068 §5)",
 		zap.String("spot_symbol", cfg.SpotSymbol), zap.String("perp_symbol", cfg.PerpSymbol),
 		zap.String("mark_topic", cfg.MarkTopic), zap.Duration("tick", tickInterval),
-		zap.Duration("funding_interval", fundingInterval))
+		zap.Duration("funding_interval", fundingInterval),
+		zap.Int("index_sources", len(indexCfg.Sources)), zap.Int("index_quorum", indexCfg.Quorum),
+		zap.Duration("index_source_max_age", indexCfg.SourceMaxAge))
 
 	go func() {
 		if err := consumer.Run(ctx); err != nil && ctx.Err() == nil {
@@ -133,7 +160,8 @@ func main() {
 		}
 	}()
 
-	runTickLoop(ctx, cfg, tickInterval, fundingInterval, impactNotional, book, c, producer, logger)
+	runTickLoop(ctx, cfg, tickInterval, fundingInterval, impactNotional,
+		book, indexBook, indexEval, indexCfg, selfSourceName, c, producer, logger)
 
 	logger.Info("markprice shutting down")
 	_ = logger.Sync()
@@ -145,41 +173,74 @@ func main() {
 // funding boundary settles the round with one FundingTick. Blocks until ctx is
 // cancelled.
 func runTickLoop(ctx context.Context, cfg Config, tick, fundingInterval time.Duration, impactNotional dec.Decimal,
-	book *journal.Book, c *calc.Calc, producer *journal.MarkProducer, logger *zap.Logger) {
+	book *journal.Book, indexBook *indexprice.SourceBook, indexEval *indexprice.Evaluator, indexCfg indexprice.Config,
+	selfSourceName string, c *calc.Calc, producer *journal.MarkProducer, logger *zap.Logger) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	// Seed the boundary with the current interval so we settle only when we
 	// cross into a NEW interval (no spurious settlement at startup).
 	lastBoundary := time.Now().UTC().Truncate(fundingInterval)
 	var lastMark dec.Decimal
+	var lastStaleLogBoundary time.Time
+	var seenIndexState bool
+	var lastIndexStale, lastIndexDegraded bool
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			spotMid, ok := book.Mid(cfg.SpotSymbol)
-			if !ok {
-				continue // no index yet — wait for the first spot Full
+			now := time.Now()
+			if spotMid, tsMs, ok := book.MidAt(cfg.SpotSymbol); ok {
+				indexBook.Upsert(selfSourceName, spotMid, tsMs)
 			}
+			idx := indexEval.Eval(now, indexBook.Snapshot(indexCfg.Sources))
+			if !idx.HasIndex {
+				continue // no last-good index yet — any mark would be fabricated
+			}
+			if !seenIndexState || idx.Stale != lastIndexStale || idx.Degraded != lastIndexDegraded {
+				level := logger.Info
+				if idx.Stale || idx.Degraded {
+					level = logger.Warn
+				}
+				level("index source state changed",
+					zap.Bool("stale", idx.Stale), zap.Bool("degraded", idx.Degraded),
+					zap.Int("live_sources", idx.LiveCount), zap.Int("used_sources", idx.UsedCount),
+					zap.Int("dropped_sources", idx.DroppedCount), zap.Int("quorum", indexCfg.Quorum))
+				seenIndexState = true
+				lastIndexStale, lastIndexDegraded = idx.Stale, idx.Degraded
+			}
+			indexPx := idx.Index
 			perpMid, okPerp := book.Mid(cfg.PerpSymbol)
 			if !okPerp {
-				perpMid = spotMid // no perp book yet → zero basis, mark == index
+				perpMid = indexPx // no perp book yet → zero basis, mark == index
 			}
-			mark := c.Mark(spotMid, perpMid)
+			mark := c.Mark(indexPx, perpMid)
 			// Funding premium sample from the perp impact prices vs the index
-			// (skipped when the perp book is one-sided / absent).
-			if impactBid, impactAsk, okImp := book.ImpactPrices(cfg.PerpSymbol, impactNotional); okImp {
-				c.SamplePremium(impactBid, impactAsk, spotMid)
+			// (skipped when the perp book is one-sided / absent). ADR-0069 also
+			// skips samples while stale so a frozen index cannot contaminate the
+			// next settled funding round.
+			if !idx.Stale {
+				if impactBid, impactAsk, okImp := book.ImpactPrices(cfg.PerpSymbol, impactNotional); okImp {
+					c.SamplePremium(impactBid, impactAsk, indexPx)
+				}
 			}
 			fundingEst := c.ForecastFundingRate()
 			lastMark = mark
-			now := time.Now()
-			if err := producer.PublishMarkTick(ctx, cfg.PerpSymbol, mark, spotMid, fundingEst, now.UnixMilli()); err != nil && ctx.Err() == nil {
+			if err := producer.PublishMarkTick(ctx, cfg.PerpSymbol, mark, indexPx, fundingEst, now.UnixMilli(), idx.Stale, idx.Degraded); err != nil && ctx.Err() == nil {
 				logger.Warn("publish mark tick", zap.Error(err))
 			}
 
 			if curBoundary := now.UTC().Truncate(fundingInterval); curBoundary.After(lastBoundary) {
+				if idx.Stale {
+					if !curBoundary.Equal(lastStaleLogBoundary) {
+						logger.Warn("funding round deferred because index is stale",
+							zap.String("round_id", journal.FundingRoundID(cfg.PerpSymbol, curBoundary.Unix())),
+							zap.Int("live_sources", idx.LiveCount), zap.Int("quorum", indexCfg.Quorum))
+						lastStaleLogBoundary = curBoundary
+					}
+					continue
+				}
 				rate := c.SettleFundingRate()
 				roundID := curBoundary.Unix()
 				if err := producer.PublishFundingTick(ctx, cfg.PerpSymbol, roundID, rate, lastMark, now.UnixMilli()); err != nil && ctx.Err() == nil {
@@ -193,6 +254,85 @@ func runTickLoop(ctx context.Context, cfg Config, tick, fundingInterval time.Dur
 			}
 		}
 	}
+}
+
+type rawIndexSymbolConfig struct {
+	Quorum        int              `json:"quorum"`
+	SourceMaxAge  int64            `json:"source_max_age_ms"`
+	DeviationBand string           `json:"deviation_band"`
+	Sources       []rawIndexSource `json:"sources"`
+}
+
+type rawIndexSource struct {
+	Name   string          `json:"name"`
+	Weight json.RawMessage `json:"weight"`
+}
+
+func loadIndexConfig(cfg Config, defaultMaxAge time.Duration) (indexprice.Config, string, error) {
+	selfName := "self:" + cfg.SpotSymbol
+	out := indexprice.Config{
+		Quorum:        cfg.IndexQuorum,
+		SourceMaxAge:  defaultMaxAge,
+		DeviationBand: dec.New(cfg.IndexDeviationBand),
+		Sources: []indexprice.SourceConfig{{
+			Name: selfName, Weight: dec.FromInt(1), Self: true,
+		}},
+	}
+	if cfg.IndexConfig == "" {
+		// Empty config is the local/dev self-source mode. It must produce a
+		// degraded-but-fresh index so existing single-node smoke tests still
+		// emit marks; production should pass --index-config and keep quorum > 1.
+		if out.Quorum > len(out.Sources) {
+			out.Quorum = len(out.Sources)
+		}
+		return out, selfName, out.Validate()
+	}
+	body, err := os.ReadFile(cfg.IndexConfig)
+	if err != nil {
+		return out, selfName, err
+	}
+	var bySymbol map[string]rawIndexSymbolConfig
+	if err := json.Unmarshal(body, &bySymbol); err != nil {
+		return out, selfName, err
+	}
+	raw, ok := bySymbol[cfg.PerpSymbol]
+	if !ok {
+		return out, selfName, fmt.Errorf("missing index config for %s", cfg.PerpSymbol)
+	}
+	if raw.Quorum > 0 {
+		out.Quorum = raw.Quorum
+	}
+	if raw.SourceMaxAge > 0 {
+		out.SourceMaxAge = time.Duration(raw.SourceMaxAge) * time.Millisecond
+	}
+	if raw.DeviationBand != "" {
+		out.DeviationBand = dec.New(raw.DeviationBand)
+	}
+	out.Sources = out.Sources[:0]
+	for _, src := range raw.Sources {
+		weight, err := parseRawWeight(src.Weight)
+		if err != nil {
+			return out, selfName, fmt.Errorf("source %s weight: %w", src.Name, err)
+		}
+		if strings.HasPrefix(src.Name, "self:") {
+			selfName = src.Name
+		}
+		out.Sources = append(out.Sources, indexprice.SourceConfig{
+			Name: src.Name, Weight: weight, Self: strings.HasPrefix(src.Name, "self:"),
+		})
+	}
+	return out, selfName, out.Validate()
+}
+
+func parseRawWeight(raw json.RawMessage) (dec.Decimal, error) {
+	if len(raw) == 0 {
+		return dec.Zero, fmt.Errorf("missing")
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return dec.Parse(s)
+	}
+	return dec.Parse(string(raw))
 }
 
 // splitCSV splits a comma-separated flag value, trimming blanks.

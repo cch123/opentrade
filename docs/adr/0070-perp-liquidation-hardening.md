@@ -278,7 +278,7 @@ mark tick → pool health 破 MM ?
 #### 图 1 — 阶梯部分强平（多 tick 单调逼近）
 
 ```
-markprice        perp-counter (user A sequencer 内, 无 TOCTOU)              Match
+perp-pricing        perp-counter (user A sequencer 内, 无 TOCTOU)              Match
   │ mark tick ──────►│ pool.health(MMRFunc) 破 MM ?
   │                  │  是, 且权益够"部分平回安全线":
   │                  │   q* = ReduceToTarget(pool, mark, MMRFunc, target)   // 含掉档
@@ -293,7 +293,7 @@ markprice        perp-counter (user A sequencer 内, 无 TOCTOU)              Ma
 #### 图 2 — 整仓接管 + backstop 最终保障（保证闭合）
 
 ```
-markprice     perp-counter (user A sequencer)                 Match            backstop账户/保险基金
+perp-pricing     perp-counter (user A sequencer)                 Match            backstop账户/保险基金
   │ mark tick ─►│ 权益不足以部分平回 → 整仓接管:
   │             │ reduce_only 整仓 @ bankruptcy_price ───────►│ 盘口可成交?
   │             │◄───── 部分成交 / N tick 未成交 ─────────────┤ (流动性不足)

@@ -32,6 +32,8 @@ message MarkTick {
   string index_price = 2;   // decimal; spot-derived anchor
   string funding_rate = 3;  // decimal; current estimate (not yet settled)
   int64 ts_unix_ms = 4;
+  bool index_stale = 5;     // true when index uses frozen last-good value; consumers must not liquidate
+  bool index_degraded = 6;  // true when quorum is met only by self-referential sources; alert but keep trading
 }
 
 message FundingTick {

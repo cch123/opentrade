@@ -14,7 +14,7 @@ use (
 	./asset
 	./admin-gateway
 	./perp-counter
-	./markprice
+	./perp-pricing
 	./tools/tui
 	./tools/web
 	./tools/precision-cli

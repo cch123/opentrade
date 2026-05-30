@@ -1,9 +1,10 @@
-module github.com/xargin/opentrade/markprice
+module github.com/xargin/opentrade/perp-pricing
 
 go 1.26
 
 require (
 	connectrpc.com/connect v1.19.2
+	github.com/coder/websocket v1.8.14
 	github.com/twmb/franz-go v1.18.0
 	github.com/xargin/opentrade/api v0.0.0-00010101000000-000000000000
 	github.com/xargin/opentrade/pkg v0.0.0-00010101000000-000000000000

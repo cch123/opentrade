@@ -14,6 +14,7 @@ package journal
 
 import (
 	"sync"
+	"time"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/pkg/dec"
@@ -33,8 +34,9 @@ type level struct {
 // sideLevels holds a symbol's two book sides. bids are descending by price,
 // asks ascending (ADR-0055), i.e. each slice is already in fill order.
 type sideLevels struct {
-	bids []level
-	asks []level
+	bids      []level
+	asks      []level
+	updatedMs int64
 }
 
 // Book tracks each symbol's latest Full-frame depth. Safe for concurrent use:
@@ -50,6 +52,14 @@ func NewBook() *Book { return &Book{books: map[string]*sideLevels{}} }
 // ApplyFull replaces symbol's stored depth from a Full frame. An entirely empty
 // Full is ignored (a transient empty book should not erase a usable price).
 func (b *Book) ApplyFull(symbol string, full *eventpb.OrderBookFull) {
+	b.ApplyFullAt(symbol, full, time.Now().UnixMilli())
+}
+
+// ApplyFullAt replaces symbol's stored depth and records the producer event
+// timestamp. ADR-0069 uses that timestamp for source staleness; using the
+// producer time instead of the local tick time prevents an idle book from being
+// refreshed accidentally just because markprice is still running.
+func (b *Book) ApplyFullAt(symbol string, full *eventpb.OrderBookFull, tsMs int64) {
 	if full == nil || symbol == "" {
 		return
 	}
@@ -58,30 +68,41 @@ func (b *Book) ApplyFull(symbol string, full *eventpb.OrderBookFull) {
 	if len(bids) == 0 && len(asks) == 0 {
 		return
 	}
+	if tsMs <= 0 {
+		tsMs = time.Now().UnixMilli()
+	}
 	b.mu.Lock()
-	b.books[symbol] = &sideLevels{bids: bids, asks: asks}
+	b.books[symbol] = &sideLevels{bids: bids, asks: asks, updatedMs: tsMs}
 	b.mu.Unlock()
 }
 
 // Mid returns symbol's top-of-book mid (one-sided fallback) and whether a book
 // has been observed.
 func (b *Book) Mid(symbol string) (dec.Decimal, bool) {
+	mid, _, ok := b.MidAt(symbol)
+	return mid, ok
+}
+
+// MidAt returns symbol's current mid plus the event timestamp of the Full frame
+// that produced it. The timestamp lets the composite index treat the self spot
+// source like any external source for staleness/quorum.
+func (b *Book) MidAt(symbol string) (dec.Decimal, int64, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	sl := b.books[symbol]
 	if sl == nil {
-		return zero, false
+		return zero, 0, false
 	}
 	hasBid, hasAsk := len(sl.bids) > 0, len(sl.asks) > 0
 	switch {
 	case hasBid && hasAsk:
-		return sl.bids[0].price.Add(sl.asks[0].price).Div(two), true
+		return sl.bids[0].price.Add(sl.asks[0].price).Div(two), sl.updatedMs, true
 	case hasBid:
-		return sl.bids[0].price, true
+		return sl.bids[0].price, sl.updatedMs, true
 	case hasAsk:
-		return sl.asks[0].price, true
+		return sl.asks[0].price, sl.updatedMs, true
 	}
-	return zero, false
+	return zero, 0, false
 }
 
 // ImpactPrices returns symbol's depth-weighted impact bid/ask: the volume-

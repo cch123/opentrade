@@ -34,9 +34,12 @@ func (s *Service) HandleMarkPriceEvent(evt *eventpb.MarkPriceEvent) {
 			return
 		}
 		s.eng.SetMark(symbol, mark)
-		// Each mark tick is also the liquidation trigger (ADR-0068 §8); the
-		// scan is wired in once the execution flow lands.
-		s.onMarkTick(symbol)
+		// ADR-0069 freezes the index to a last-good value when quorum is lost.
+		// That mark is still useful for display, but liquidation is irreversible
+		// and must not be driven from a stale index.
+		if !p.Tick.GetIndexStale() {
+			s.onMarkTick(symbol)
+		}
 	case *eventpb.MarkPriceEvent_Funding:
 		f := p.Funding
 		rate, err := dec.Parse(f.GetFundingRate())

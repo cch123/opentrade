@@ -3,7 +3,7 @@
 - 状态: **Proposed**（2026-05-30 起草；从 [ADR-0070](./0070-perp-liquidation-hardening.md) 的"单实例假设"缺口提升为独立 ADR，触发自 perp-counter 按 user 分片后保险基金与 ADL 的全局性问题）
 - 日期: 2026-05-30
 - 决策者: xargin, Claude
-- 相关 ADR: 0068（USDT 线性 perp，§8 强平、§9 保险基金/ADL、§备选方案 A/C/E）、0070（强平进阶：阶梯 MMR / 部分强平 / backstop / ADL，**本 ADR 在分片拓扑下扩展其 §3/§4/§跨 sequencer hand-off**）、0010（Counter 按 user_id 分 shard）、0048（snapshot 绑 offset + 幂等水位）、0031（cold-standby HA）、0051（typed producer sequence）、0069（markprice 单实例 + cold-standby，协调器候选宿主）
+- 相关 ADR: 0068（USDT 线性 perp，§8 强平、§9 保险基金/ADL、§备选方案 A/C/E）、0070（强平进阶：阶梯 MMR / 部分强平 / backstop / ADL，**本 ADR 在分片拓扑下扩展其 §3/§4/§跨 sequencer hand-off**）、0010（Counter 按 user_id 分 shard）、0048（snapshot 绑 offset + 幂等水位）、0031（cold-standby HA）、0051（typed producer sequence）、0069（perp-pricing 单实例 + cold-standby，协调器候选宿主）
 
 ## 范围声明（先读这一段）
 
@@ -71,7 +71,7 @@ OpenTrade 未上线，breaking change 直接改（同 [ADR-0057](./0057-asset-se
 
 ```
         ┌──────────────────────────────────────────┐
-        │  全局风控协调器  perp-risk                  │   单实例 + cold-standby（对齐 0069 markprice 形态）
+        │  全局风控协调器  perp-risk                  │   单实例 + cold-standby（对齐 0069 perp-pricing 形态）
         │  低 QPS（只在强平/接管/ADL 时活跃）          │   不持有用户仓位、不在撮合热路径
         │   ├─ 全局保险基金余额 = fold(InsuranceDelta) │   per-coin 全局 + per-symbol 配额
         │   ├─ ADL 排名 + 决策（deficit→减谁/多少）    │   只产出"带版本戳的任务"，不修改仓位
@@ -88,7 +88,7 @@ OpenTrade 未上线，breaking change 直接改（同 [ADR-0057](./0057-asset-se
 
 - **协调器 = "决策 + 全局账务"**：fund 余额、ADL 决策、托管周转金，三者都需要**跨 symbol / 跨 shard 的全局视角**，且都是低频（强平/接管/ADL 才活跃），合在一个单实例 + cold-standby 服务里。
 - **shard = "持仓权威 + 执行"**：高频的健康检测、单仓平仓、所有仓位 mutation 都留在 shard（持仓和 mark 都在本地，又快又新；cross-margin 让 pool-health 天然是账户级、落在该用户 shard）。
-- **宿主选择**：协调器既可新建独立 `perp-risk` 服务（**失败半径隔离**，对齐 0068 §C 看重的故障隔离——风控风暴故障不影响 mark-price 发布），也可折叠进 `markprice`（它已是单实例 + cold-standby、已每 tick fanout 到所有 shard、已有全局视角，见 [0069 §备选方案 E](./0069-external-composite-index-price.md) 的"fold vs split"先例）。**MVP 倾向独立 `perp-risk`**（隔离 > 省一个服务），最终拍板列开放问题。
+- **宿主选择**：协调器既可新建独立 `perp-risk` 服务（**失败半径隔离**，对齐 0068 §C 看重的故障隔离——风控风暴故障不影响 mark-price 发布），也可折叠进 `perp-pricing`（它已是单实例 + cold-standby、已每 tick fanout 到所有 shard、已有全局视角，见 [0069 §备选方案 E](./0069-external-composite-index-price.md) 的"fold vs split"先例）。**MVP 倾向独立 `perp-risk`**（隔离 > 省一个服务），最终拍板列开放问题。
 
 ### 2. 版本戳握手（本 ADR 的核心正确性约束，缺它就是 unimargin）
 
@@ -182,7 +182,7 @@ shard：单仓破 MM → 0070 救援阶梯（降档/撤单/加保证金/部分�
 ## 实施约束 (Implementation Notes)
 
 ### 落地要点
-- **协调器 `perp-risk`**（新服务，或 fold 进 markprice）：消费 `perp-journal` 的 `InsuranceDelta` → fold 全局 fund；持有 per-symbol 配额计数（每日重置）；ADL 排名 + 派发；托管周转金借据。自身 snapshot 绑 offset（[0048](./0048-snapshot-offset-atomicity.md)）+ cold-standby（[0031](./0031-ha-cold-standby-rollout.md)）。
+- **协调器 `perp-risk`**（新服务，或 fold 进 perp-pricing）：消费 `perp-journal` 的 `InsuranceDelta` → fold 全局 fund；持有 per-symbol 配额计数（每日重置）；ADL 排名 + 派发；托管周转金借据。自身 snapshot 绑 offset（[0048](./0048-snapshot-offset-atomicity.md)）+ cold-standby（[0031](./0031-ha-cold-standby-rollout.md)）。
 - **perp-counter shard**：`engine.insurance` 去"权威"语义（移除或降为本地缓存）；强平/接管照发 `InsuranceDelta`；新增**接收协调器版本戳任务**的入口（liq/takeover/adl），进 owning user sequencer、比对 `pos_seq`、幂等 `adl_round` 后执行。
 - **新事件 / 字段**：`PerpTakeoverEvent`（接管 + 周转金借）、`PerpAdlEvent`（沿用 0070）、`InsuranceDelta` 流明确为协调器的 fold 输入；ADL 任务消息带 `{user, symbol, qty, price, pos_seq, adl_round}`。
 - **ADL 候选来源**：MVP 选 (a) 各 shard 周期上报 owned 高分候选给协调器（新鲜、量可控）；(b) 查 perp 持仓投影作回退(fallback)。无论哪个，**执行端版本戳复核保证滞后无害**。
@@ -206,7 +206,7 @@ shard：单仓破 MM → 0070 救援阶梯（降档/撤单/加保证金/部分�
 #### 图 1 — 分片下正常强平 + 全局 fund fold（热路径 shard 本地）
 
 ```
-markprice    perp-counter shard X (user A sequencer, 本地无 TOCTOU)        协调器 perp-risk
+perp-pricing    perp-counter shard X (user A sequencer, 本地无 TOCTOU)        协调器 perp-risk
   │ mark tick ─►│ pool.health 破 MM ? 是 → 本地平仓(0070 决策树)
   │             │ reduce_only @ liq/bankruptcy → Match 成交 → 本地结算 A
   │             │ ── PerpLiquidationEvent{InsuranceDelta: ±d} ──(perp-journal)──►│ fold: fund += ±d
@@ -243,7 +243,7 @@ shard X (user A)              协调器 perp-risk (全局 fund + 配额)        
 
 ## 开放问题 (Open Questions)
 
-- **协调器宿主**：独立 `perp-risk`（失败隔离，倾向）vs fold 进 markprice（省一个服务，有 0069 先例）——最终拍板。
+- **协调器宿主**：独立 `perp-risk`（失败隔离，倾向）vs fold 进 perp-pricing（省一个服务，有 0069 先例）——最终拍板。
 - **托管周转金 ↔ collateral pool 对账**：借/还周转金如何与 [0057](./0057-asset-service-and-transfer-saga.md) 资产 / collateral pool 守恒对账，是否需要 backstop 账户在 asset-service 落真实系统账户（同 0070 backstop 库存的链下对冲问题）。
 - **ADL 候选来源**：shard 主动上报 vs 协调器查持仓投影 vs 两者结合；上报频率与新鲜度 vs 开销。
 - **per-symbol 配额具体策略**：百分比、每日重置时点、BTC 特权与否；配额耗尽时"减平仓量 / 优先 ADL / 更激进价"的次序。
@@ -257,8 +257,8 @@ shard X (user A)              协调器 perp-risk (全局 fund + 配额)        
 - [ADR-0070](./0070-perp-liquidation-hardening.md) — 强平进阶（§3 backstop 升级为托管+周转金；§4 + §跨 sequencer hand-off 从"同进程同 snapshot"扩展为跨 shard；`last_match_seq`/`adl_round` 复用为版本戳）。
 - [ADR-0010](./0010-counter-sharding-by-userid.md) — 按 user_id 分 shard（perp-counter 对齐）。
 - [ADR-0048](./0048-snapshot-offset-atomicity.md) — snapshot 绑 offset + 幂等水位（协调器 fund/借据/ADL 队列复用）。
-- [ADR-0069](./0069-external-composite-index-price.md) — markprice 单实例 + cold-standby（协调器候选宿主 + fold-vs-split 先例）。
+- [ADR-0069](./0069-external-composite-index-price.md) — perp-pricing 单实例 + cold-standby（协调器候选宿主 + fold-vs-split 先例）。
 - 参考实现（已读源、核对代码）：
   - `bybit-leaked/trading`（范本）：`trading_service/internal/dispatcher/internal/process.go:119`（外部 ADL 经 dispatcher 入）、`.../liqadlbiz/adl_execute.go:82` + `liq_execute.go:39`（`OrigCrossSeq` 版本戳）、`globalvar.ShardName`（按 user 分片）、`idl/models/riskpooldto/risk_pool_result_dto.proto`（per-coin 全局 + per-symbol 配额）、`taken_over_position_dto.proto`（托管 + 周转金借还）。**ADL 决策者不在本泄漏内**（确为外部服务）。
   - `cryptofabric/unimargin-liquidate-server`（反例）：单 Raft 组、持仓零存、`QuoteService.getMaxProfitRatePosition` 读 quote 影子副本、对手方侧仅本地咨询锁 + reduceOnly（无版本号）——0068 §C/0070 §E 批判的 TOCTOU 典型反例。
-- 实现位置（动工时涉及）：新 `perp-risk/`（或 `markprice` 内）、`perp-counter/internal/{engine,service}/`（去 fund 权威 + 收版本戳任务入口）、`api/event/perp_journal.proto`（InsuranceDelta fold 输入 + PerpTakeoverEvent + ADL 任务消息）。
+- 实现位置（动工时涉及）：新 `perp-risk/`（或 `perp-pricing` 内）、`perp-counter/internal/{engine,service}/`（去 fund 权威 + 收版本戳任务入口）、`api/event/perp_journal.proto`（InsuranceDelta fold 输入 + PerpTakeoverEvent + ADL 任务消息）。

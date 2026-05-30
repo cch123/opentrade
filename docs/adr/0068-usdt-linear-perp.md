@@ -18,18 +18,18 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 
 ## 实现进度 (2026-05-30 更新)
 
-逻辑核心 + **perp-counter / markprice 的全部本地可验证集成**已落地并入 CI（离线 `make build/vet` + 各模块 `test -race` 全绿，并对 perp-counter 二进制做了 startup/SIGTERM/snapshot 冒烟）。perp-counter 自身已 feature-complete：下单→结算→标记价/资金费→强平执行→snapshot→冷备 HA→futures 充值入口。仅剩 M7 的 4 个**他模块**接入面（BFF/push/trade-dump/history）待各自基础设施。
+逻辑核心 + **perp-counter / perp-pricing 的全部本地可验证集成**已落地并入 CI（离线 `make build/vet` + 各模块 `test -race` 全绿，并对 perp-counter 二进制做了 startup/SIGTERM/snapshot 冒烟）。perp-counter 自身已 feature-complete：下单→结算→标记价/资金费→强平执行→snapshot→冷备 HA→futures 充值入口。仅剩 M7 的 4 个**他模块**接入面（BFF/push/trade-dump/history）待各自基础设施。
 
 | 里程碑 | 范围 | 状态 | commit |
 |---|---|---|---|
 | M1 | perp proto（PerpService/perp-journal/mark-price）+ perp-counter 模块骨架 | ✅ | `453fddb` |
 | M2 | 仓位/保证金/资金费/强平代数（`pkg/perpstate`） | ✅ | `e036dba` |
 | M3 | 前置保证金闸门 + reduce_only + 成交结算 + matchSeq 守卫 + 自成交 | ✅ | `d4f9f2b` |
-| M4 | markprice mark/funding 计算核心 + 服务骨架 | ✅ | `c078001` |
+| M4 | perp-pricing mark/funding 计算核心 + 服务骨架 | ✅ | `c078001` |
 | M5 | 资金费扫描结算（funding_round_seen 幂等） | ✅ | `18a1897` |
 | M6 | 强平检测（collateral pool health 破 mmr） | ✅ | `18a1897` |
 | 集成-K | **perp-counter ↔ Match Kafka 接线**：order-event 生产 + perp-journal WAL + perp-trade-event 消费 + 订单生命周期（Accepted/Rejected/Cancelled/Expired）+ IM 释放 | ✅ | `29d8769` |
-| 集成-MP | **markprice ↔ perp-counter**：markprice 消费现货+perp market-data 出 mark-price；perp-counter 消费 MarkTick→SetMark / FundingTick→**per-user 资金费结算**（走 sequencer，invariant #1） | ✅ | `7b7646b` `94846b0` |
+| 集成-MP | **perp-pricing ↔ perp-counter**：perp-pricing 消费现货+perp market-data 出 mark-price；perp-counter 消费 MarkTick→SetMark / FundingTick→**per-user 资金费结算**（走 sequencer，invariant #1） | ✅ | `7b7646b` `94846b0` |
 | 集成-LQ | **强平执行流**：mark tick 触发 → TOCTOU 复核 → 撤挂单 → 破产价 reduce_only 单 → 成交**逐笔**路由权益进保险基金（partial-fill 正确）+ PerpLiquidationEvent + ADL 告警位 | ✅ | `94846b0` |
 | 集成-SN | **snapshot 持久化**：engine 状态 + service 订单表 + 绑 perp-trade-event offset + 幂等水位 + 在途强平，`snapshotMu` capture barrier（flush 后原子读，ADR-0048）；启动 restore + 周期/退出 save | ✅ | `b248090` |
 | 集成-HA | **冷备 HA**：`--ha-mode=auto` etcd 选主（镜像 match）；只主跑管线，提升即 restore+seek offset，降级写终态 snapshot；安全性靠已落地的 snapshot/offset 绑定 + 事务 producer fencing（ADR-0031/0032） | ✅ | `4a3b4b5` |
@@ -39,7 +39,7 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 | 集成-BFF | **BFF perp REST**：`/v1/perp/{order,positions,margin}` 路由到 PerpService（`SetPerp` 注入，`--perp` 空则 503） | ✅ | `ad119ef` |
 | 集成-HIST | **history perp 查询**：`ListPerpPositions/Funding/Liquidations`（proto + buf 重生成 + sqlmock 单测，keyset 分页） | ✅ | `672b573` |
 
-**M7 接入面已闭环**：perp 现在端到端打通——用户经 BFF 下单/查仓/充保证金、私有流推送、历史查询、MySQL 投影全部就位。各模块的纯逻辑（投影/路由/查询）已单测；真正端到端跑通需把 perp Match 部署 + perp-counter + markprice + 这些消费方一起拉起（broker/etcd/MySQL）。
+**M7 接入面已闭环**：perp 现在端到端打通——用户经 BFF 下单/查仓/充保证金、私有流推送、历史查询、MySQL 投影全部就位。各模块的纯逻辑（投影/路由/查询）已单测；真正端到端跑通需把 perp Match 部署 + perp-counter + perp-pricing + 这些消费方一起拉起（broker/etcd/MySQL）。
 
 ### 集成-K 落地说明（perp-counter ↔ Match）
 
@@ -63,7 +63,7 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 
 - **强平**：每仓一张破产价单；若流动性不足只部分成交，剩余不自动再挂（在途 guard 持有，下个 tick 跳过）；ADL 只算+告警（`adl_queued`），不自动减仓（§9）。
 - **order-event / perp-journal 非单事务原子**：稳态双写都成功；崩溃恢复靠 snapshot（含订单表）+ offset 重放 + 幂等水位兜底。真正单 Kafka 事务原子化是后续硬化项。
-- **markprice mid**：只用 OrderBook Full 帧（忽略 Delta，同 BFF marketcache），mid 刷新频率 = Full 周期；mark EMA 平滑足够，MVP 可接受。
+- **perp-pricing mid**：只用 OrderBook Full 帧（忽略 Delta，同 BFF marketcache），mid 刷新频率 = Full 周期；mark EMA 平滑足够，MVP 可接受。
 - **perp-counter 分片**：MVP 单实例消费组吃全部分区；多实例 per-user 分片 + BFF 按 shard 发现是 HA 之后的增量。
 
 ## 术语 (Glossary)
@@ -184,9 +184,9 @@ Position {
 
 > collateral pool 视角：上面的占用/释放都发生在**订单目标仓位所属的 pool** 内。逐仓下 pool = 单仓，"占用 available"即占用该仓 pool 的 drawable；全仓（future）下 available 指向账户钱包。结算代数不变，只是 drawable 指向不同。
 
-### 5. 标记价 / 指数价服务（新增 `markprice`）
+### 5. 标记价 / 指数价服务（新增 `perp-pricing`）
 
-新增轻量服务 `markprice`（单实例 + cold-standby 起步，QPS 远低于撮合）：
+新增轻量服务 `perp-pricing`（单实例 + cold-standby 起步，QPS 远低于撮合）：
 
 - **指数价 `index_price`**：MVP 取**自家现货** `BTC-USDT` 的中间价/最新价（消费现货 `market-data`）。⚠️ 自参考有被现货盘口操纵传导的风险，MVP 接受并在 runbook 标注；外部 composite index（多所加权 + 离群剔除）列 §开放问题。
 - **标记价 `mark_price`**：抗插针，公式 MVP 取 `mark = index_price + clamp(EMA(perp_mid − index_price), ±cap)`（基差 EMA 限幅），参数可配。**未实现盈亏 + 强平判定一律用 mark，不用 perp 最新成交价**——这是防止"砸自己的 perp 盘口触发连环强平"的关键。
@@ -199,7 +199,7 @@ Position {
 
 ### 7. 资金费结算（多空互付）
 
-每 `funding_interval`（默认 UTC 00/08/16:00），`markprice` 在边界 emit `FundingTick{funding_round_id, rate}`。perp-counter 消费后，对自己 owned 的、该 symbol 的每个仓位：
+每 `funding_interval`（默认 UTC 00/08/16:00），`perp-pricing` 在边界 emit `FundingTick{funding_round_id, rate}`。perp-counter 消费后，对自己 owned 的、该 symbol 的每个仓位：
 
 ```
 funding_payment = position_notional(at mark) × funding_rate
@@ -232,7 +232,7 @@ ratio ≤ maint_margin_ratio → 触发强平
 强平**决策流**（与附录"图 3"时序图互补；✅ = 已落地，全链路 Kafka 接线已通，见集成-MP/LQ commits `94846b0`）：
 
 ```
- [markprice] 发 mark tick ──(mark-price topic, ~1s)
+ [perp-pricing] 发 mark tick ──(mark-price topic, ~1s)
        │  fanout → 所有 perp-counter shard                              ✅ 集成-MP
        ▼
  每 shard 在 per-user sequencer 内,对 owned 仓位算 collateral pool health
@@ -346,14 +346,14 @@ ratio ≤ maint_margin_ratio → 触发强平
 
 ### 负面 / 代价
 
-- **大工程**：新服务 perp-counter + markprice + 一批新 proto（perp rpc / perp-journal / mark-price event）+ trade-dump 新投影（positions / funding / liquidations）+ BFF/Push/History 扩展。分阶段见 §实施约束，整体是多里程碑、跨多周的量级，**不是一次 PR**。
+- **大工程**：新服务 perp-counter + perp-pricing + 一批新 proto（perp rpc / perp-journal / mark-price event）+ trade-dump 新投影（positions / funding / liquidations）+ BFF/Push/History 扩展。分阶段见 §实施约束，整体是多里程碑、跨多周的量级，**不是一次 PR**。
 - **正确性敏感**：强平、资金费、盈亏结算是钱直接相关 + 顺序敏感 + 并发敏感，测试成本高（见 §测试要点）。
 - **mark price 自参考风险**：MVP 用自家现货，被操纵风险存在，靠保守 MMR + 限幅 + 告警缓解，runbook 须写明。
 - **前置风控改变下单语义**：perp 下单可能因保证金不足被 REJECTED，和现货"基本不前置拒"不同，BFF/客户端契约要区分现货/合约。
 
 ### 中性
 
-- perp-counter / markprice MVP 单实例或小分片起步，量级远低于撮合热路径。
+- perp-counter / perp-pricing MVP 单实例或小分片起步，量级远低于撮合热路径。
 - ADL MVP 只算不自动执行；保险基金 + 保守 MMR 兜底，穿仓告警人工介入。
 - 现货与合约是两套 symbol 命名空间、两套 book、两套账户，BFF 对外按 symbol 后缀路由。
 
@@ -361,17 +361,17 @@ ratio ≤ maint_margin_ratio → 触发强平
 
 ### 分阶段落地（建议里程碑，每个一篇可独立 review 的 PR + 单测）
 
-- **M1 — proto + 服务骨架**：`api/rpc/perp`（PlaceOrder/Cancel/Query/QueryPosition/QueryMargin）、`api/event/perp_journal.proto`、`api/event/mark_price.proto`、`api/rpc/markprice`；perp-counter / markprice 的 main 骨架（参考 counter / quote）。
+- **M1 — proto + 服务骨架**：`api/rpc/perp`（PlaceOrder/Cancel/Query/QueryPosition/QueryMargin）、`api/event/perp_journal.proto`、`api/event/mark_price.proto`、`api/rpc/markprice`；perp-counter / perp-pricing 的 main 骨架（参考 counter / quote）。
 - **M2 — 仓位结算（无杠杆风控、无强平、喂假 mark）**：trade-event → 建/加/减仓 + 加权均价 + realized/unrealized；snapshot 绑 offset round-trip 单测。这一步等价于 §范围声明里 spike 想验证的核心代数。
 - **M3 — 保证金 + 前置风控**：接 Reservation，PlaceOrder 占 IM、成交转 position_margin、撤单释放；REJECTED 路径。
-- **M4 — markprice 服务**：index（自家现货）+ mark（基差 EMA 限幅）+ funding_rate；发 `mark-price` topic。perp-counter 消费 mark 更新 unrealized。
+- **M4 — perp-pricing 服务**：index（自家现货）+ mark（基差 EMA 限幅）+ funding_rate；发 `mark-price` topic。perp-counter 消费 mark 更新 unrealized。
 - **M5 — 资金费结算**：FundingTick + per-position 幂等结算（funding_round_seen）。
 - **M6 — 强平 + 保险基金**：mark tick fanout、margin_ratio 判定、LIQUIDATING 流程、bankruptcy 单、insurance_fund 会计；ADL 排名 + 告警（不自动执行）。
 - **M7 — 接入面**：asset-service `biz_line=futures` AssetHolder（funding→futures 充值）、BFF perp REST/WS 路由、Push perp 私有流、trade-dump perp 投影、History perp 查询。
 
 ### Flag（perp-counter）
 
-`--grpc-addr` / `--kafka-brokers` / `--journal-topic=perp-journal` / `--mark-price-topic=mark-price` / `--shard-*`（对齐 counter）/ `--snapshot-*` / `--etcd`（HA）/ `--insurance-fund-symbol-scope=per-symbol`。markprice：`--index-source=spot-self` / `--mark-ema-alpha` / `--mark-basis-cap` / `--funding-interval=8h` / `--funding-rate-cap`。
+`--grpc-addr` / `--kafka-brokers` / `--journal-topic=perp-journal` / `--mark-price-topic=mark-price` / `--shard-*`（对齐 counter）/ `--snapshot-*` / `--etcd`（HA）/ `--insurance-fund-symbol-scope=per-symbol`。perp-pricing：`--index-source=spot-self` / `--mark-ema-alpha` / `--mark-basis-cap` / `--funding-interval=8h` / `--funding-rate-cap`。
 
 ### 关键不变量（落地时逐条 audit 代码兑现）
 
@@ -408,7 +408,7 @@ ratio ≤ maint_margin_ratio → 触发强平
 - [ADR-0055](./0055-match-as-orderbook-authority-bybit-style.md) — Match 直出 orderbook（perp book 复用）
 - [ADR-0056](./0056-symbol-config-via-mysql.md) — SymbolConfig（perp 风控参数承载）
 - [ADR-0057](./0057-asset-service-and-transfer-saga.md) — asset-service + `biz_line=futures` 预留（perp 保证金充值入口）
-- 实现位置（动工时涉及）：新增 `api/rpc/perp/` `api/rpc/markprice/` `api/event/perp_journal.proto` `api/event/mark_price.proto`、新增 `perp-counter/` `markprice/`、`asset/` 加 futures holder、`bff/` `push/` `history/` `trade-dump/` perp 扩展。
+- 实现位置（动工时涉及）：新增 `api/rpc/perp/` `api/rpc/markprice/` `api/event/perp_journal.proto` `api/event/mark_price.proto`、新增 `perp-counter/` `perp-pricing/`、`asset/` 加 futures holder、`bff/` `push/` `history/` `trade-dump/` perp 扩展。
 
 ---
 
@@ -417,7 +417,7 @@ ratio ≤ maint_margin_ratio → 触发强平
 ### 图 1 — 开仓成交结算（前置 IM → 成交建仓）
 
 ```
-Client    BFF        perp-counter            Match        markprice   perp-journal
+Client    BFF        perp-counter            Match        perp-pricing   perp-journal
   │  POST   │  PlaceOrder(perp,            │              │            │
   │ /order  │   reduce_only=false)         │              │            │
   ├────────►├────────►│                    │              │            │
@@ -442,7 +442,7 @@ Client    BFF        perp-counter            Match        markprice   perp-journ
 ### 图 2 — 资金费结算（边界对全量仓位一次性、幂等）
 
 ```
-markprice                 perp-counter (每 shard 各自结算 owned 用户)      perp-journal
+perp-pricing                 perp-counter (每 shard 各自结算 owned 用户)      perp-journal
    │ 到 funding_interval 边界                                                  │
    │ FundingTick{round_id, rate} ─────►│                                       │
    │ (经 mark-price topic 广播)         │ for 每个 owned (user,symbol) 仓位:    │
@@ -460,7 +460,7 @@ markprice                 perp-counter (每 shard 各自结算 owned 用户)    
 ### 图 3 — 强平（mark 触及 → 内置 sequencer 接管 → 破产价平仓 → 保险基金）
 
 ```
-markprice          perp-counter (sequencer 内, 无 TOCTOU)        Match        insurance_fund
+perp-pricing          perp-counter (sequencer 内, 无 TOCTOU)        Match        insurance_fund
    │ mark tick ───────►│                                          │              │
    │                   │ margin_ratio =                           │              │
    │                   │  (position_margin+unrealized)/notional   │              │

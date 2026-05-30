@@ -13,6 +13,12 @@ func markTickEvt(symbol, mark string) *eventpb.MarkPriceEvent {
 		Tick: &eventpb.MarkTick{MarkPrice: mark, IndexPrice: mark, FundingRate: "0", TsUnixMs: 1}}}
 }
 
+func staleMarkTickEvt(symbol, mark string) *eventpb.MarkPriceEvent {
+	evt := markTickEvt(symbol, mark)
+	evt.GetTick().IndexStale = true
+	return evt
+}
+
 func fundingTickEvt(symbol, roundUnixSec, rate, mark string) *eventpb.MarkPriceEvent {
 	return &eventpb.MarkPriceEvent{Symbol: symbol, Payload: &eventpb.MarkPriceEvent_Funding{
 		Funding: &eventpb.FundingTick{
@@ -44,6 +50,24 @@ func TestHandleMarkTick_SetsMark(t *testing.T) {
 	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "0"))
 	if got := eng.MarkOf(perpSym); got.String() != "12345.5" {
 		t.Fatalf("mark should be unchanged by bad ticks, got %s", got.String())
+	}
+}
+
+func TestHandleMarkTick_StaleIndexSkipsLiquidation(t *testing.T) {
+	svc, eng, disp, _ := newLiqSvc()
+	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
+
+	svc.HandleMarkPriceEvent(staleMarkTickEvt(perpSym, "90"))
+	if got := eng.MarkOf(perpSym); got.String() != "90" {
+		t.Fatalf("stale tick should still update display mark, got %s", got)
+	}
+	if len(disp.orders) != 0 {
+		t.Fatalf("stale index must not dispatch liquidation orders, got %d", len(disp.orders))
+	}
+
+	svc.HandleMarkPriceEvent(markTickEvt(perpSym, "90"))
+	if len(disp.orders) != 1 {
+		t.Fatalf("fresh tick should resume liquidation scan, got %d orders", len(disp.orders))
 	}
 }
 

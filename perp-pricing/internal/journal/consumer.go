@@ -91,7 +91,11 @@ func (c *MarketDataConsumer) handleRecord(rec *kgo.Record) {
 		return // PublicTrade / Kline — not a price source for the mark
 	}
 	if full := ob.GetFull(); full != nil {
-		c.book.ApplyFull(pb.GetSymbol(), full)
+		tsMs := pb.GetMeta().GetTsUnixMs()
+		if tsMs <= 0 {
+			tsMs = rec.Timestamp.UnixMilli()
+		}
+		c.book.ApplyFullAt(pb.GetSymbol(), full, tsMs)
 	}
 	// Delta frames are intentionally ignored (see book.go).
 }

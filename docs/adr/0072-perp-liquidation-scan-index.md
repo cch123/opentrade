@@ -41,7 +41,7 @@ func (e *Engine) LiquidatablePositions(symbol string, mmr dec.Decimal) []Liquida
 }
 ```
 
-[ADR-0068 §8](./0068-usdt-linear-perp.md) 的 mark tick 链路：markprice 发 `MarkPriceEvent` → perp-counter `HandleMarkPriceEvent` → `SetMark` → `onMarkTick` → `scanLiquidations` → 上面这个全量评估。
+[ADR-0068 §8](./0068-usdt-linear-perp.md) 的 mark tick 链路：perp-pricing 发 `MarkPriceEvent` → perp-counter `HandleMarkPriceEvent` → `SetMark` → `onMarkTick` → `scanLiquidations` → 上面这个全量评估。
 
 ### 为什么现在做 —— 三个真实成本
 
@@ -197,7 +197,7 @@ fill / 加减保证金 / funding / 部分平 / 接管
 #### 图 2 — 读路径（mark tick → 阈值穿越查询 → 复核执行）
 
 ```
-markprice ──MarkTick──► perp-counter shard
+perp-pricing ──MarkTick──► perp-counter shard
    SetMark(symbol, mark)
    onMarkTick(symbol):
      e.mu.RLock()                                          ← 短临界区 O(log N + k)

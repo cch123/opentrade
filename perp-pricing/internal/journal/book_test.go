@@ -14,12 +14,12 @@ func lvl(price, size string) *eventpb.OrderBookLevel {
 func TestBook_Mid(t *testing.T) {
 	b := NewBook()
 	// Bids descending, asks ascending → mid from the best of each.
-	b.ApplyFull("BTC-USDT", &eventpb.OrderBookFull{
+	b.ApplyFullAt("BTC-USDT", &eventpb.OrderBookFull{
 		Bids: []*eventpb.OrderBookLevel{lvl("100", "1"), lvl("99", "1")},
 		Asks: []*eventpb.OrderBookLevel{lvl("102", "1"), lvl("103", "1")},
-	})
-	if m, ok := b.Mid("BTC-USDT"); !ok || m.String() != "101" {
-		t.Fatalf("two-sided mid = %s ok=%v, want 101", m.String(), ok)
+	}, 1234)
+	if m, ts, ok := b.MidAt("BTC-USDT"); !ok || m.String() != "101" || ts != 1234 {
+		t.Fatalf("two-sided mid = %s ts=%d ok=%v, want 101 ts=1234", m.String(), ts, ok)
 	}
 	b.ApplyFull("ETH", &eventpb.OrderBookFull{Bids: []*eventpb.OrderBookLevel{lvl("50", "1")}})
 	if m, ok := b.Mid("ETH"); !ok || m.String() != "50" {

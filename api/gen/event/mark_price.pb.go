@@ -125,6 +125,8 @@ type MarkTick struct {
 	IndexPrice    string                 `protobuf:"bytes,2,opt,name=index_price,json=indexPrice,proto3" json:"index_price,omitempty"`    // decimal; spot-derived anchor
 	FundingRate   string                 `protobuf:"bytes,3,opt,name=funding_rate,json=fundingRate,proto3" json:"funding_rate,omitempty"` // decimal; current estimate (not yet settled)
 	TsUnixMs      int64                  `protobuf:"varint,4,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	IndexStale    bool                   `protobuf:"varint,5,opt,name=index_stale,json=indexStale,proto3" json:"index_stale,omitempty"`          // true when index uses frozen last-good value; consumers must not liquidate
+	IndexDegraded bool                   `protobuf:"varint,6,opt,name=index_degraded,json=indexDegraded,proto3" json:"index_degraded,omitempty"` // true when quorum is met only by self-referential sources; alert but keep trading
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -185,6 +187,20 @@ func (x *MarkTick) GetTsUnixMs() int64 {
 		return x.TsUnixMs
 	}
 	return 0
+}
+
+func (x *MarkTick) GetIndexStale() bool {
+	if x != nil {
+		return x.IndexStale
+	}
+	return false
+}
+
+func (x *MarkTick) GetIndexDegraded() bool {
+	if x != nil {
+		return x.IndexDegraded
+	}
+	return false
 }
 
 type FundingTick struct {
@@ -266,7 +282,7 @@ const file_event_mark_price_proto_rawDesc = "" +
 	"\x04tick\x18\n" +
 	" \x01(\v2\x19.opentrade.event.MarkTickH\x00R\x04tick\x128\n" +
 	"\afunding\x18\v \x01(\v2\x1c.opentrade.event.FundingTickH\x00R\afundingB\t\n" +
-	"\apayload\"\x8b\x01\n" +
+	"\apayload\"\xd3\x01\n" +
 	"\bMarkTick\x12\x1d\n" +
 	"\n" +
 	"mark_price\x18\x01 \x01(\tR\tmarkPrice\x12\x1f\n" +
@@ -274,7 +290,10 @@ const file_event_mark_price_proto_rawDesc = "" +
 	"indexPrice\x12!\n" +
 	"\ffunding_rate\x18\x03 \x01(\tR\vfundingRate\x12\x1c\n" +
 	"\n" +
-	"ts_unix_ms\x18\x04 \x01(\x03R\btsUnixMs\"\x97\x01\n" +
+	"ts_unix_ms\x18\x04 \x01(\x03R\btsUnixMs\x12\x1f\n" +
+	"\vindex_stale\x18\x05 \x01(\bR\n" +
+	"indexStale\x12%\n" +
+	"\x0eindex_degraded\x18\x06 \x01(\bR\rindexDegraded\"\x97\x01\n" +
 	"\vFundingTick\x12(\n" +
 	"\x10funding_round_id\x18\x01 \x01(\tR\x0efundingRoundId\x12!\n" +
 	"\ffunding_rate\x18\x02 \x01(\tR\vfundingRate\x12\x1d\n" +
