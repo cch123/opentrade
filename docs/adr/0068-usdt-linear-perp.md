@@ -18,7 +18,7 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 
 ## 实现进度 (2026-05-30 更新)
 
-逻辑核心 + **perp-counter ↔ Match 的 Kafka 集成**已落地并入 CI（离线 `make build/vet` + 各模块 `test -race` 全绿）。其余跨服务集成层（markprice 收发、强平执行、snapshot/HA、M7）仍**待真实基础设施**就绪再接。
+逻辑核心 + **perp-counter / markprice 的全部本地可验证集成**已落地并入 CI（离线 `make build/vet` + 各模块 `test -race` 全绿，并对 perp-counter 二进制做了 startup/SIGTERM/snapshot 冒烟）。perp-counter 自身已 feature-complete：下单→结算→标记价/资金费→强平执行→snapshot→冷备 HA→futures 充值入口。仅剩 M7 的 4 个**他模块**接入面（BFF/push/trade-dump/history）待各自基础设施。
 
 | 里程碑 | 范围 | 状态 | commit |
 |---|---|---|---|
@@ -28,7 +28,12 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 | M4 | markprice mark/funding 计算核心 + 服务骨架 | ✅ | `c078001` |
 | M5 | 资金费扫描结算（funding_round_seen 幂等） | ✅ | `18a1897` |
 | M6 | 强平检测（collateral pool health 破 mmr） | ✅ | `18a1897` |
-| 集成-K | **perp-counter ↔ Match Kafka 接线**：order-event 生产 + perp-journal WAL + perp-trade-event 消费 + 订单生命周期处理（Accepted/Rejected/Cancelled/Expired）+ IM 释放 | ✅ | `29d8769` |
+| 集成-K | **perp-counter ↔ Match Kafka 接线**：order-event 生产 + perp-journal WAL + perp-trade-event 消费 + 订单生命周期（Accepted/Rejected/Cancelled/Expired）+ IM 释放 | ✅ | `29d8769` |
+| 集成-MP | **markprice ↔ perp-counter**：markprice 消费现货+perp market-data 出 mark-price；perp-counter 消费 MarkTick→SetMark / FundingTick→**per-user 资金费结算**（走 sequencer，invariant #1） | ✅ | `7b7646b` `94846b0` |
+| 集成-LQ | **强平执行流**：mark tick 触发 → TOCTOU 复核 → 撤挂单 → 破产价 reduce_only 单 → 成交**逐笔**路由权益进保险基金（partial-fill 正确）+ PerpLiquidationEvent + ADL 告警位 | ✅ | `94846b0` |
+| 集成-SN | **snapshot 持久化**：engine 状态 + service 订单表 + 绑 perp-trade-event offset + 幂等水位 + 在途强平，`snapshotMu` capture barrier（flush 后原子读，ADR-0048）；启动 restore + 周期/退出 save | ✅ | `b248090` |
+| 集成-HA | **冷备 HA**：`--ha-mode=auto` etcd 选主（镜像 match）；只主跑管线，提升即 restore+seek offset，降级写终态 snapshot；安全性靠已落地的 snapshot/offset 绑定 + 事务 producer fencing（ADR-0031/0032） | ✅ | `4a3b4b5` |
+| 集成-AH | **futures AssetHolder**（M7 基石）：perp-counter 实现 AssetHolder 合约，funding→futures 保证金充值走现成 saga（asset-service 仅需 `--peer-holders futures=...` flag，零改动）；transfer_id 去重入 snapshot，出 PerpMarginEvent（ADR-0057） | ✅ | `8ac0606` |
 
 ### 集成-K 落地说明（perp-counter ↔ Match）
 
@@ -39,11 +44,21 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 - **幂等**：成交走仓位 `last_match_seq` 守卫；生命周期事件走订单态（terminal 退场 / NEW 单调边沿）。`HandleTradeEvent` 记录 per-partition consumed offset，供后续 snapshot 绑定。
 - **运维约束**：`perp-trade-event` 的分区数须 ≥ perp Match 的 `--vshard-count`（Match 按 `shard.Index(user_id, vshardCount)` 显式选分区）；MVP 单实例 perp-counter 用消费组吃下全部分区，本地结算全部用户。
 
-**仍待集成（需 broker/etcd/MySQL 才能 build + verify，故暂未写）**：
-- markprice：现货 market-data 消费 + mark-price 生产；perp-counter 消费 mark-tick / funding-tick
-- 强平**执行**流：撤单 → 破产价 reduce_only 单 → 保险基金结算（检测已就绪）
-- snapshot 持久化（含**订单表** + 绑 offset，ADR-0048）+ cold-standby HA。⚠️ 集成-K 的订单表仅在内存：进程重启会丢在途订单 → 回流成交因查不到订单被跳过。订单表入 snapshot 是 HA 里程碑的前置，也是 order-event 与 perp-journal 单事务原子化的前提（稳态双写非原子可接受，崩溃恢复需此项兜底）。
-- **M7 接入面**：AssetHolder（funding→futures）、BFF perp REST/WS、push perp 私有流、trade-dump perp 投影、history perp 查询
+### 仍待集成：M7 余下 4 个他模块接入面（各需所在服务的基础设施 build+verify）
+
+perp-counter / markprice 本体已闭环。余下是把这套引擎接进系统其它服务的**读侧 / 路由**面，各自落在别的模块、需要那个模块的 infra（MySQL / 运行中的服务 / broker）才能真正 build+verify，故不在 perp-counter 里盲写：
+
+- **trade-dump perp 投影**：消费 `perp-journal` → MySQL（positions / perp_settlements / funding / liquidations / margin 表）。perp-journal 是状态日志（每事件带 `PerpPositionSnapshot`），符合 [[ADR-0066]] 准入；对齐 ADR-0061 shadow/snapshot 模式。需新 schema + trade-dump 投影逻辑（纯 convert 可单测，落库需 MySQL）。
+- **push perp 私有流**：消费 `perp-journal` → 用户 WS（仓位/保证金/成交/资金费/强平推送）。镜像 push 现有 counter-journal → 私有流。
+- **BFF perp REST/WS 路由**：按 symbol `-PERP` 后缀路由到 PerpService（连 perprpcconnect client）+ AssetHolder 充值入口；前置风控会返回 REJECTED，客户端契约要区分现货/合约（§影响）。
+- **history perp 查询**：positions / 成交 / 资金费 / 强平历史的查询 endpoint（落 trade-dump 投影表之上）。
+
+### 已落地实现的 MVP 边界（已在代码注释 + commit 记录，列此备查）
+
+- **强平**：每仓一张破产价单；若流动性不足只部分成交，剩余不自动再挂（在途 guard 持有，下个 tick 跳过）；ADL 只算+告警（`adl_queued`），不自动减仓（§9）。
+- **order-event / perp-journal 非单事务原子**：稳态双写都成功；崩溃恢复靠 snapshot（含订单表）+ offset 重放 + 幂等水位兜底。真正单 Kafka 事务原子化是后续硬化项。
+- **markprice mid**：只用 OrderBook Full 帧（忽略 Delta，同 BFF marketcache），mid 刷新频率 = Full 周期；mark EMA 平滑足够，MVP 可接受。
+- **perp-counter 分片**：MVP 单实例消费组吃全部分区；多实例 per-user 分片 + BFF 按 shard 发现是 HA 之后的增量。
 
 ## 术语 (Glossary)
 
@@ -208,11 +223,11 @@ ratio ≤ maint_margin_ratio → 触发强平
    - 成交价优于破产价 → 剩余 `position_margin` 差额进 `insurance_fund`。
    - 成交价触及破产价仍亏 → `insurance_fund` 补足；基金不够 → 进 ADL（§9）。
 
-强平**决策流**（与附录"图 3"时序图互补；✅ = 已实现引擎核心，⏳ = 待集成的 Kafka/Match 接线）：
+强平**决策流**（与附录"图 3"时序图互补；✅ = 已落地，全链路 Kafka 接线已通，见集成-MP/LQ commits `94846b0`）：
 
 ```
  [markprice] 发 mark tick ──(mark-price topic, ~1s)
-       │  fanout → 所有 perp-counter shard                              ⏳ 待集成
+       │  fanout → 所有 perp-counter shard                              ✅ 集成-MP
        ▼
  每 shard 在 per-user sequencer 内,对 owned 仓位算 collateral pool health
        │
@@ -228,10 +243,10 @@ ratio ≤ maint_margin_ratio → 触发强平
 安全     仓位 → LIQUIDATING 态
 等下个    │
  tick     ▼
-        撤该仓全部挂单 ── 释放预留 IM                                     ⏳ 待集成
+        撤该仓全部挂单 ── 释放预留 IM                                     ✅ 集成-LQ
           │
           ▼
-        算 bankruptcy_price,挂 reduce_only 强平单 ──order-event──▶[Match] ⏳ 待集成
+        算 bankruptcy_price,挂 reduce_only 强平单 ──order-event──▶[Match] ✅ 集成-LQ
           │
           ◀──────────── trade-event(成交) ──────────────────────[Match]
           ▼
