@@ -130,7 +130,7 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	if cfg.BackstopAfterTicks <= 0 {
 		cfg.BackstopAfterTicks = 2
 	}
-	return &Service{
+	svc := &Service{
 		eng: eng, dispatch: dispatch, journal: journal, cfg: cfg,
 		risk:   perpstate.NewRiskModel(cfg.RiskTiers, cfg.MMR, cfg.MaxLeverage, cfg.LiquidationFeeRate),
 		nextID: nextID, seq: newUserSeq(), orders: map[uint64]*Order{},
@@ -138,6 +138,12 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 		liqByKey:   map[string]*liquidation{},
 		liqByOrder: map[uint64]*liquidation{},
 	}
+	// ADR-0072 lets Engine maintain the liq-price index in the same lock as
+	// position writes. The service still owns risk-tier configuration, so it
+	// installs the resolver once after construction and again only if config is
+	// explicitly reloaded in a future admin path.
+	eng.SetLiquidationMMRFunc(svc.risk.MMRFunc())
+	return svc
 }
 
 func (s *Service) now() int64 { return s.cfg.Clock().UnixMilli() }

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -215,6 +216,89 @@ func TestEngine_LiquidatablePositions(t *testing.T) {
 	if got[0].Side != perpstate.SideBuy {
 		t.Fatalf("candidate side = %v, want buy", got[0].Side)
 	}
+}
+
+func TestEngine_LiquidationIndexMatchesFullScanAcrossMutations(t *testing.T) {
+	e := New()
+	mmrOf := perpstate.ConstantMMR(d("0.05"))
+	e.SetLiquidationMMRFunc(mmrOf)
+	symbol := "BTC-USDT-PERP"
+
+	openPos(e, "u1", symbol, perpstate.SideBuy, "100", "1", "10")
+	openPos(e, "u2", symbol, perpstate.SideBuy, "100", "1", "20")
+	openPos(e, "u3", symbol, perpstate.SideSell, "100", "1", "10")
+	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+
+	// Closing to flat must remove the old index key; otherwise later mark gaps
+	// would keep producing a false candidate for a position that no longer
+	// exists.
+	e.ApplyFillWithSeq("u1", symbol, d("10"), 1,
+		perpstate.Fill{Side: perpstate.SideSell, Price: d("100"), Qty: d("1")})
+	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+
+	// A flip is the most error-prone update because the position leaves the
+	// long tree and re-enters the short tree under the same (user,symbol).
+	e.ApplyFillWithSeq("u2", symbol, d("20"), 1,
+		perpstate.Fill{Side: perpstate.SideSell, Price: d("100"), Qty: d("2")})
+	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+
+	e.SetMark(symbol, d("100"))
+	e.ApplyFunding("u3", symbol, d("0.01"))
+	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+
+	e.ApplyPartialLiquidationFill("u2", symbol, 2,
+		perpstate.Fill{Side: perpstate.SideBuy, Price: d("95"), Qty: d("0.25")},
+		d("0.001"))
+	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+}
+
+func TestEngine_LiquidationIndexRebuildsOnRestore(t *testing.T) {
+	mmrOf := perpstate.ConstantMMR(d("0.05"))
+	symbol := "BTC-USDT-PERP"
+	e := New()
+	e.SetLiquidationMMRFunc(mmrOf)
+	openPos(e, "u1", symbol, perpstate.SideBuy, "100", "1", "10")
+	openPos(e, "u2", symbol, perpstate.SideSell, "100", "1", "10")
+	e.SetMark(symbol, d("90"))
+	snap := e.Snapshot()
+
+	configuredBeforeRestore := New()
+	configuredBeforeRestore.SetLiquidationMMRFunc(mmrOf)
+	configuredBeforeRestore.Restore(snap)
+	assertLiquidationIndexMatchesFullScan(t, configuredBeforeRestore, symbol, mmrOf)
+
+	configuredAfterRestore := New()
+	configuredAfterRestore.Restore(snap)
+	configuredAfterRestore.SetLiquidationMMRFunc(mmrOf)
+	assertLiquidationIndexMatchesFullScan(t, configuredAfterRestore, symbol, mmrOf)
+}
+
+func assertLiquidationIndexMatchesFullScan(t *testing.T, e *Engine, symbol string, mmrOf perpstate.MMRFunc) {
+	t.Helper()
+	for _, mark := range []string{"80", "94", "95", "100", "105", "115"} {
+		m := d(mark)
+		e.SetMark(symbol, m)
+		got := liquidationCandidateSummary(e.LiquidatablePositions(symbol, mmrOf))
+		want := liquidationCandidateSummary(fullScanLiquidationsForTest(e, symbol, m, mmrOf))
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("mark %s indexed candidates mismatch:\n got  %v\n want %v", mark, got, want)
+		}
+	}
+}
+
+func fullScanLiquidationsForTest(e *Engine, symbol string, mark dec.Decimal, mmrOf perpstate.MMRFunc) []LiquidationCandidate {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.liquidatablePositionsFullScanLocked(symbol, mark, mmrOf)
+}
+
+func liquidationCandidateSummary(candidates []LiquidationCandidate) []string {
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, fmt.Sprintf("%s|%s|%d|%s|%s|%d",
+			c.UserID, c.Symbol, c.Side, c.Size.String(), c.LiqPrice.String(), c.PositionVersion))
+	}
+	return out
 }
 
 func TestEngine_ForceClose(t *testing.T) {

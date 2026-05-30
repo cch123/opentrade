@@ -153,4 +153,8 @@ func (e *Engine) Restore(s Snapshot) {
 			ReservedAfter: dec.New(ts.ReservedAfter), RejectReason: ts.RejectReason,
 		}
 	}
+	// ADR-0072 keeps the liq-price index out of snapshots because it is a
+	// materialized view over positions. Rebuilding here keeps restore atomic:
+	// once the lock is released, readers see positions and their index together.
+	e.rebuildLiquidationIndexLocked()
 }

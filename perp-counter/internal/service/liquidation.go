@@ -41,8 +41,9 @@ type liquidation struct {
 
 func liqKey(user, symbol string) string { return user + "|" + symbol }
 
-// scanLiquidations runs on every mark tick: it finds positions breaching the
-// maintenance margin rate and starts a takeover for each not already in flight.
+// scanLiquidations runs on every mark tick: ADR-0072 narrows the read side to a
+// liq-price threshold query, while the later sequencer step still performs the
+// authoritative LiquidationCheck before any forced order is sent.
 func (s *Service) scanLiquidations(symbol string) {
 	if !s.risk.HasMMR() {
 		return // no MMR configured → liquidation disabled
@@ -61,7 +62,8 @@ func (s *Service) scanLiquidations(symbol string) {
 
 // beginLiquidation cancels the position's resting orders and dispatches a
 // reduce_only bankruptcy-price order to close it. Runs under the user's
-// sequencer with a TOCTOU re-check (the scan was lock-free).
+// sequencer with a TOCTOU re-check because the indexed scan is only a read-side
+// candidate pass.
 func (s *Service) beginLiquidation(cand engine.LiquidationCandidate) {
 	s.seq.do(cand.UserID, func() {
 		key := liqKey(cand.UserID, cand.Symbol)
