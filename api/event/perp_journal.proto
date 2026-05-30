@@ -43,6 +43,7 @@ message PerpJournalEvent {
     PerpMarginEvent      margin        = 12;
     PerpFundingEvent     funding      = 13;
     PerpLiquidationEvent liquidation  = 14;
+    PerpAdlEvent         adl          = 15;
   }
 }
 
@@ -114,6 +115,23 @@ message PerpLiquidationEvent {
   string closed_qty = 6;
   string realized_pnl = 7;
   string insurance_delta = 8;  // + surplus into fund / - fund covers deficit
-  bool adl_queued = 9;         // true when fund couldn't cover -> ADL queue (MVP: alert only)
+  bool adl_queued = 9;         // true when fund was negative and ADL was attempted
+  PerpPositionSnapshot position_after = 10;
+  bool partial = 11;           // ADR-0070: reduce-to-safe rather than full takeover
+  bool backstop = 12;          // ADR-0070: internally matched to the system backstop
+  int32 risk_tier = 13;        // 1-based selected risk tier, 0 when scalar fallback was used
+}
+
+// ADL forced close of a profitable counterparty (ADR-0070 §4). It is separate
+// from PerpLiquidationEvent because the mutated user is the counterparty, not
+// the originally liquidated account, and the event must partition to that user.
+message PerpAdlEvent {
+  string user_id = 1;
+  string symbol = 2;
+  uint64 adl_round = 3;
+  string price = 4;
+  string closed_qty = 5;
+  string realized_pnl = 6;
+  string insurance_delta = 7;  // profit surrendered to repair a negative fund
   PerpPositionSnapshot position_after = 10;
 }

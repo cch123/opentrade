@@ -61,9 +61,19 @@ type Order struct {
 type Config struct {
 	ShardID     int
 	ProducerID  string
-	MaxLeverage dec.Decimal      // cap; zero = no cap
-	MMR         dec.Decimal      // maintenance margin rate for liquidation; zero disables (ADR-0068 §8)
-	Clock       func() time.Time // nil → time.Now
+	MaxLeverage dec.Decimal // legacy cap; zero = no cap
+	MMR         dec.Decimal // legacy maintenance margin rate; zero disables liquidation when no tier supplies MMR
+	RiskTiers   []perpstate.RiskTier
+
+	// ADR-0070 knobs. Zero values keep the old behavior except that the
+	// backstop still has a deterministic system account, so an explicitly
+	// enabled liquidation flow never wedges on missing liquidity forever.
+	LiquidationFeeRate dec.Decimal
+	TargetMarginBuffer dec.Decimal
+	BackstopAccount    string
+	BackstopAfterTicks int
+
+	Clock func() time.Time // nil → time.Now
 }
 
 // Service is the perp order + settlement coordinator.
@@ -72,6 +82,7 @@ type Service struct {
 	dispatch Dispatcher
 	journal  Journal
 	cfg      Config
+	risk     perpstate.RiskModel
 	nextID   func() uint64
 	seq      *userSeq
 
@@ -92,6 +103,7 @@ type Service struct {
 	// liqByOrder routes the bankruptcy order's fills to insurance settlement.
 	liqByKey   map[string]*liquidation
 	liqByOrder map[uint64]*liquidation
+	adlRound   uint64
 }
 
 // New wires the service. nextID supplies order ids (snowflake in prod, a
@@ -106,8 +118,15 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	if journal == nil {
 		journal = noopJournal{}
 	}
+	if cfg.BackstopAccount == "" {
+		cfg.BackstopAccount = "__perp_backstop__"
+	}
+	if cfg.BackstopAfterTicks <= 0 {
+		cfg.BackstopAfterTicks = 2
+	}
 	return &Service{
 		eng: eng, dispatch: dispatch, journal: journal, cfg: cfg,
+		risk:   perpstate.NewRiskModel(cfg.RiskTiers, cfg.MMR, cfg.MaxLeverage, cfg.LiquidationFeeRate),
 		nextID: nextID, seq: newUserSeq(), orders: map[uint64]*Order{},
 		offsets:    map[int32]int64{},
 		liqByKey:   map[string]*liquidation{},
@@ -135,9 +154,6 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 	if err != nil || lev.Sign() <= 0 {
 		return nil, errors.New("invalid leverage")
 	}
-	if s.cfg.MaxLeverage.Sign() > 0 && lev.Cmp(s.cfg.MaxLeverage) > 0 {
-		return s.reject(req, "leverage_exceeds_max"), nil
-	}
 	var price dec.Decimal
 	isMarket := req.GetOrderType() == eventpb.OrderType_ORDER_TYPE_MARKET
 	if !isMarket {
@@ -158,7 +174,6 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 				return
 			}
 		}
-
 		var reservedIM dec.Decimal = zero
 		if !req.GetReduceOnly() {
 			imPrice := price
@@ -168,6 +183,10 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 					resp = s.reject(req, "no_mark_for_market_order")
 					return
 				}
+			}
+			if maxLev := s.maxLeverageForOrder(req.GetUserId(), req.GetSymbol(), side, imPrice, qty); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
+				resp = s.reject(req, "leverage_exceeds_max")
+				return
 			}
 			im := perpstate.InitMargin(imPrice, qty, lev)
 			if !s.eng.Reserve(req.GetUserId(), im) {

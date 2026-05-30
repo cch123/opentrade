@@ -30,18 +30,32 @@ func (p *Position) MarginRatio(mark dec.Decimal) dec.Decimal {
 }
 
 // LiqPrice is the mark price at which this isolated position's margin_ratio
-// equals mmr (maintenance margin rate). Derived by solving
-// (margin + uPnL(mark)) / (mark*size) = mmr for mark:
+// equals the tier-resolved maintenance margin rate. For a scalar MMR the closed
+// form below is exact; for tiered MMR we iterate the same formula against the
+// notional implied by the candidate price. Keeping the resolver here avoids
+// duplicating risk-tier math in service/server call sites.
 //
 //	long : (entry*size - margin) / (size*(1 - mmr))
 //	short: (entry*size + margin) / (size*(1 + mmr))
 //
 // Zero when flat. Ignores fees/funding (MVP); the live liquidation trigger
 // uses the exact pool health (pool.go), this is the observable estimate.
-func (p *Position) LiqPrice(mmr dec.Decimal) dec.Decimal {
-	if p.IsFlat() {
+func (p *Position) LiqPrice(mmrOf MMRFunc) dec.Decimal {
+	if p.IsFlat() || mmrOf == nil {
 		return zero
 	}
+	price := p.liqPriceAtMMR(mmrOf(p.Entry.Mul(p.Size)))
+	for i := 0; i < 16; i++ {
+		next := p.liqPriceAtMMR(mmrOf(price.Mul(p.Size)))
+		if next.Cmp(price) == 0 {
+			return next
+		}
+		price = next
+	}
+	return price
+}
+
+func (p *Position) liqPriceAtMMR(mmr dec.Decimal) dec.Decimal {
 	one := dec.FromInt(1)
 	entryNotional := p.Entry.Mul(p.Size)
 	if p.Side == SideBuy {

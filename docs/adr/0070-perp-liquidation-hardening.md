@@ -36,6 +36,14 @@ OpenTrade 未上线，breaking change 直接改（同 [ADR-0057](./0057-asset-se
 | `bankruptcy_price` | 破产价，仓位权益归零的价 | Bybit `bankPrice` |
 | `liq_price` | 强平价，margin_ratio 触及 MMR 的价（仍有权益） | BN `liquidationPrice` |
 
+### 强平价 vs 破产价
+
+`liq_price` 和 `bankruptcy_price` 解决的是两个不同问题，不能混用：
+
+- **MMR / 强平价决定什么时候开始强平**：`margin_ratio = equity / notional`，当 `margin_ratio <= MMR` 时，仓位进入强平检查。逐仓下 `equity = position_margin + unrealized_pnl`；执行前仍必须在 owning user 的 sequencer 内复核，避免扫描到执行之间仓位已被成交或价格变化救回。
+- **破产价决定亏损归属边界**：`bankruptcy_price` 是 `equity = 0` 的价格，表示用户这笔逐仓保证金已经完全亏光。强平成交优于破产价时，剩余权益进入保险基金；成交劣于破产价时，缺口由保险基金补。
+- **保险基金不足才进入 ADL**：保险基金能覆盖穿仓缺口时，只做基金会计；基金为负且无法覆盖时，才触发 ADL 自动减少对手方盈利仓。这个顺序保证 ADL 是最后手段，而不是常规强平路径。
+
 ## 背景 (Context)
 
 ### 现状（已落地，2026-05-30 核实代码）

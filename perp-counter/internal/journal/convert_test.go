@@ -44,6 +44,8 @@ func TestJournalPartitionKey_AllPayloads(t *testing.T) {
 			Funding: &eventpb.PerpFundingEvent{UserId: "u4"}}}, "u4"},
 		{"liquidation", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_Liquidation{
 			Liquidation: &eventpb.PerpLiquidationEvent{UserId: "u5"}}}, "u5"},
+		{"adl", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_Adl{
+			Adl: &eventpb.PerpAdlEvent{UserId: "u6"}}}, "u6"},
 		{"empty", &eventpb.PerpJournalEvent{}, ""},
 	}
 	for _, c := range cases {

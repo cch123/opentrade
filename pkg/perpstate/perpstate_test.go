@@ -119,12 +119,12 @@ func TestLiqAndBankruptcyPrice(t *testing.T) {
 	mmr := d("0.005")
 	long := &Position{Side: SideBuy, Size: d("1"), Entry: d("100"), Margin: d("10")}
 	// (100*1 - 10) / (1*(1-0.005)) = 90/0.995 = 90.45226...
-	approx(t, long.LiqPrice(mmr), "90.45226", "0.001", "long liq")
+	approx(t, long.LiqPrice(ConstantMMR(mmr)), "90.45226", "0.001", "long liq")
 	eq(t, long.BankruptcyPrice(), "90", "long bankruptcy 100-10/1")
 
 	short := &Position{Side: SideSell, Size: d("1"), Entry: d("100"), Margin: d("10")}
 	// (100 + 10) / (1+0.005) = 110/1.005 = 109.45273...
-	approx(t, short.LiqPrice(mmr), "109.45273", "0.001", "short liq")
+	approx(t, short.LiqPrice(ConstantMMR(mmr)), "109.45273", "0.001", "short liq")
 	eq(t, short.BankruptcyPrice(), "110", "short bankruptcy 100+10/1")
 }
 
@@ -155,15 +155,15 @@ func TestPool_IsolatedHealthAndLiquidatable(t *testing.T) {
 	eq(t, h.Equity, "10", "equity at entry")
 	eq(t, h.Notional, "100", "notional at entry")
 	eq(t, h.MarginRatio, "0.1", "ratio at entry")
-	if pool.Liquidatable(map[string]dec.Decimal{"BTC-USDT-PERP": d("100")}, mmr) {
+	if pool.Liquidatable(map[string]dec.Decimal{"BTC-USDT-PERP": d("100")}, ConstantMMR(mmr)) {
 		t.Fatal("healthy long should not be liquidatable at entry")
 	}
 	// Drop to 90: equity 10 + (-10) = 0, ratio 0 <= mmr → liquidatable.
-	if !pool.Liquidatable(map[string]dec.Decimal{"BTC-USDT-PERP": d("90")}, mmr) {
+	if !pool.Liquidatable(map[string]dec.Decimal{"BTC-USDT-PERP": d("90")}, ConstantMMR(mmr)) {
 		t.Fatal("long at bankruptcy mark should be liquidatable")
 	}
 	// 95: equity 5, notional 95, ratio ~0.0526 > mmr → safe.
-	if pool.Liquidatable(map[string]dec.Decimal{"BTC-USDT-PERP": d("95")}, mmr) {
+	if pool.Liquidatable(map[string]dec.Decimal{"BTC-USDT-PERP": d("95")}, ConstantMMR(mmr)) {
 		t.Fatal("long at 95 should still be safe")
 	}
 }
@@ -182,13 +182,31 @@ func TestPool_CrossSeam(t *testing.T) {
 	h := pool.Eval(marks)
 	eq(t, h.Equity, "90", "cross pool equity")
 	eq(t, h.Notional, "290", "cross pool notional")
-	if pool.Liquidatable(marks, d("0.005")) {
+	if pool.Liquidatable(marks, ConstantMMR(d("0.005"))) {
 		t.Fatal("well-collateralized cross pool should be safe")
 	}
 
 	// Empty / flat pool is never liquidatable.
 	empty := CollateralPool{Drawable: zero}
-	if empty.Liquidatable(marks, d("0.005")) {
+	if empty.Liquidatable(marks, ConstantMMR(d("0.005"))) {
 		t.Fatal("empty pool must not be liquidatable")
+	}
+}
+
+func TestRiskModel_TierSelectionAndReduceToTarget(t *testing.T) {
+	model := NewRiskModel([]RiskTier{
+		{TierMaxNotional: d("50"), MaintMarginRatio: d("0.01"), MaxLeverage: d("50")},
+		{TierMaxNotional: d("0"), MaintMarginRatio: d("0.05"), MaxLeverage: d("20")},
+	}, d("0.005"), d("100"), zero)
+
+	eq(t, model.MMR(d("40")), "0.01", "first tier mmr")
+	eq(t, model.MMR(d("60")), "0.05", "open-ended tier mmr")
+	eq(t, model.MaxLeverage(d("60")), "20", "tier max leverage")
+
+	p := &Position{Symbol: "BTC-USDT-PERP", Side: SideBuy, Size: d("1"), Entry: d("100"), Margin: d("10")}
+	q := ReduceToTarget(Isolated(p), map[string]dec.Decimal{"BTC-USDT-PERP": d("94")},
+		ConstantMMR(d("0.05")), d("0.01"))
+	if q.Sign() <= 0 || q.Cmp(p.Size) >= 0 {
+		t.Fatalf("reduce-to-target should return a partial qty, got %s", q)
 	}
 }

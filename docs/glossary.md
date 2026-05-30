@@ -55,6 +55,15 @@
 - **OCO（One-Cancels-the-Other）** — N 腿触发单，任一腿 terminal 自动 CANCEL 兄弟。[ADR-0044](./adr/0044-trigger-oco.md)。
 - **Trailing stop** — 追踪止损，bps 回撤触发，引擎维护 watermark。[ADR-0045](./adr/0045-trigger-trailing-stop.md)。
 
+## Perp 风控 / 强平
+
+- **MMR（Maintenance Margin Ratio）** — 维持保证金率。强平判断阈值：`margin_ratio <= MMR` 时进入强平检查；逐仓下 MMR 可以按 symbol / risk tier 配置。[ADR-0068](./adr/0068-usdt-linear-perp.md) / [ADR-0070](./adr/0070-perp-liquidation-hardening.md)。
+- **`margin_ratio`** — 保证金率，核心公式是 `equity / notional`。逐仓下 `equity = position_margin + unrealized_pnl`，`notional = abs(size) * mark_price`；实现上强平判断必须走 `CollateralPool`，避免把逐仓公式散落到调用点。
+- **`liq_price` / 强平价** — `margin_ratio` 触及 MMR 的 mark 价格。它决定“什么时候开始强平”；触发后仍要在 owning user 的 sequencer 内重新复核，避免扫描与执行之间仓位已变化。
+- **`bankruptcy_price` / 破产价** — 仓位权益刚好归零的价格。它决定“用户保证金最多承担到哪里”：强平成交优于破产价时，剩余权益进保险基金；劣于破产价时，缺口由保险基金补。
+- **`insurance_fund` / 保险基金** — per-symbol 风险缓冲池。强平释放的权益或穿仓缺口都以 `insurance_delta` 形式进出基金；基金不足以覆盖缺口时才进入 ADL。
+- **ADL（Auto-Deleveraging）** — 自动减仓。保险基金不足以覆盖穿仓时，系统按 ADL 排序强制减少对手方盈利仓，作为偿付能力的最后手段。[ADR-0070](./adr/0070-perp-liquidation-hardening.md)。
+
 ## 一致性 / 持久化
 
 - **UserSequencer** — Counter 里 per-user 的 FIFO 执行器（`counter/internal/sequencer`）。同一用户所有写串行化；不同用户并行。

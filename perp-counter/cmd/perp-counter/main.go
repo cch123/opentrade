@@ -46,17 +46,23 @@ import (
 	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
+	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
 // Config holds the perp-counter CLI flags.
 type Config struct {
-	InstanceID  string
-	GRPCAddr    string
-	DefaultMMR  string
-	MaxLeverage string
-	IDGenShard  int
-	Env         string
-	LogLevel    string
+	InstanceID         string
+	GRPCAddr           string
+	DefaultMMR         string
+	MaxLeverage        string
+	RiskTiers          string
+	LiqFeeRate         string
+	TargetMarginBuffer string
+	BackstopAccount    string
+	BackstopAfterTicks int
+	IDGenShard         int
+	Env                string
+	LogLevel           string
 
 	// Kafka (ADR-0068 §1/§2/§5). Empty Brokers = no-op sinks (dev).
 	Brokers               string
@@ -83,9 +89,12 @@ type Config struct {
 // deps are the parsed, process-lifetime dependencies passed to each primary
 // cycle.
 type deps struct {
-	mmr    dec.Decimal
-	maxLev dec.Decimal
-	idg    *idgen.Generator
+	mmr          dec.Decimal
+	maxLev       dec.Decimal
+	liqFeeRate   dec.Decimal
+	targetBuffer dec.Decimal
+	riskTiers    []perpstate.RiskTier
+	idg          *idgen.Generator
 }
 
 func main() {
@@ -105,11 +114,23 @@ func main() {
 	if err != nil {
 		logger.Fatal("invalid --max-leverage", zap.Error(err))
 	}
+	liqFeeRate, err := dec.Parse(cfg.LiqFeeRate)
+	if err != nil {
+		logger.Fatal("invalid --liq-fee-rate", zap.Error(err))
+	}
+	targetBuffer, err := dec.Parse(cfg.TargetMarginBuffer)
+	if err != nil {
+		logger.Fatal("invalid --target-margin-buffer", zap.Error(err))
+	}
+	riskTiers, err := parseRiskTiers(cfg.RiskTiers)
+	if err != nil {
+		logger.Fatal("invalid --risk-tiers", zap.Error(err))
+	}
 	idg, err := idgen.NewGenerator(cfg.IDGenShard)
 	if err != nil {
 		logger.Fatal("idgen", zap.Error(err))
 	}
-	d := deps{mmr: mmr, maxLev: maxLev, idg: idg}
+	d := deps{mmr: mmr, maxLev: maxLev, liqFeeRate: liqFeeRate, targetBuffer: targetBuffer, riskTiers: riskTiers, idg: idg}
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -231,7 +252,10 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 	}
 
 	svc := service.New(eng, dispatch, jrnl, d.idg.Next, service.Config{
-		ShardID: cfg.IDGenShard, ProducerID: cfg.InstanceID, MaxLeverage: d.maxLev, MMR: d.mmr,
+		ShardID: cfg.IDGenShard, ProducerID: cfg.InstanceID,
+		MaxLeverage: d.maxLev, MMR: d.mmr, RiskTiers: d.riskTiers,
+		LiquidationFeeRate: d.liqFeeRate, TargetMarginBuffer: d.targetBuffer,
+		BackstopAccount: cfg.BackstopAccount, BackstopAfterTicks: cfg.BackstopAfterTicks,
 	})
 	if restored != nil {
 		svc.Restore(restored.Service)
@@ -397,6 +421,12 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.DefaultMMR, "default-mmr", "0.005",
 		"maintenance margin rate for liquidation + the derived liq price (ADR-0068; per-symbol override is M6)")
 	flag.StringVar(&cfg.MaxLeverage, "max-leverage", "125", "max leverage accepted at PlaceOrder (0 = no cap)")
+	flag.StringVar(&cfg.RiskTiers, "risk-tiers", "",
+		"ADR-0070 risk tiers as cap:mmr:max_leverage:liq_fee_rate CSV; cap=0 means open-ended")
+	flag.StringVar(&cfg.LiqFeeRate, "liq-fee-rate", "0", "fallback liquidation fee rate credited to insurance")
+	flag.StringVar(&cfg.TargetMarginBuffer, "target-margin-buffer", "0", "partial liquidation target buffer added above tier MMR")
+	flag.StringVar(&cfg.BackstopAccount, "backstop-account", "__perp_backstop__", "system account that receives internal backstop inventory")
+	flag.IntVar(&cfg.BackstopAfterTicks, "backstop-after-ticks", 2, "mark ticks to wait before escalating an in-flight liquidation to backstop")
 	flag.IntVar(&cfg.IDGenShard, "idgen-shard", 0, "snowflake shard id for perp order ids (avoid collisions with counter)")
 	flag.StringVar(&cfg.Env, "env", "dev", "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "log level")
@@ -432,4 +462,43 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func parseRiskTiers(raw string) ([]perpstate.RiskTier, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := splitCSV(raw)
+	tiers := make([]perpstate.RiskTier, 0, len(parts))
+	for _, part := range parts {
+		fields := strings.Split(part, ":")
+		if len(fields) != 4 {
+			return nil, errors.New("each tier must be cap:mmr:max_leverage:liq_fee_rate")
+		}
+		cap, err := dec.Parse(strings.TrimSpace(fields[0]))
+		if err != nil {
+			return nil, err
+		}
+		mmr, err := dec.Parse(strings.TrimSpace(fields[1]))
+		if err != nil {
+			return nil, err
+		}
+		maxLev, err := dec.Parse(strings.TrimSpace(fields[2]))
+		if err != nil {
+			return nil, err
+		}
+		fee, err := dec.Parse(strings.TrimSpace(fields[3]))
+		if err != nil {
+			return nil, err
+		}
+		// Keep validation local to CLI parsing so tests can still construct edge
+		// models directly, while production flags fail before the service starts.
+		if cap.Sign() < 0 || mmr.Sign() < 0 || maxLev.Sign() < 0 || fee.Sign() < 0 {
+			return nil, errors.New("tier values must be non-negative")
+		}
+		tiers = append(tiers, perpstate.RiskTier{
+			TierMaxNotional: cap, MaintMarginRatio: mmr, MaxLeverage: maxLev, LiqFeeRate: fee,
+		})
+	}
+	return tiers, nil
 }

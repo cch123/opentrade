@@ -21,6 +21,7 @@ type Snapshot struct {
 	Offsets      map[int32]int64 `json:"offsets"` // next-to-consume perp-trade-event offset per partition
 	PerpSeq      uint64          `json:"perp_seq"`
 	OrderSeq     uint64          `json:"order_seq"`
+	AdlRound     uint64          `json:"adl_round"`
 	Liquidations []LiqSnap       `json:"liquidations"`
 }
 
@@ -51,7 +52,13 @@ type LiqSnap struct {
 	UserID     string `json:"user_id"`
 	Symbol     string `json:"symbol"`
 	OrderID    uint64 `json:"order_id"`
+	Mode       uint8  `json:"mode"`
+	Side       uint8  `json:"side"`
+	OrderPrice string `json:"order_price"`
 	Bankruptcy string `json:"bankruptcy"`
+	LiqFeeRate string `json:"liq_fee_rate"`
+	RiskTier   int32  `json:"risk_tier"`
+	Ticks      int    `json:"ticks"`
 }
 
 // Capture takes the barrier, flushes the producer (so every emitted journal /
@@ -79,6 +86,7 @@ func (s *Service) snapshotLocked() Snapshot {
 		Offsets:  make(map[int32]int64, len(s.offsets)),
 		PerpSeq:  s.perpSeq,
 		OrderSeq: s.orderSeq,
+		AdlRound: s.adlRound,
 	}
 	for p, o := range s.offsets {
 		snap.Offsets[p] = o
@@ -94,7 +102,10 @@ func (s *Service) snapshotLocked() Snapshot {
 	}
 	for _, liq := range s.liqByOrder {
 		snap.Liquidations = append(snap.Liquidations, LiqSnap{
-			UserID: liq.userID, Symbol: liq.symbol, OrderID: liq.orderID, Bankruptcy: liq.bankruptcy.String(),
+			UserID: liq.userID, Symbol: liq.symbol, OrderID: liq.orderID,
+			Mode: uint8(liq.mode), Side: uint8(liq.side), OrderPrice: liq.orderPrice.String(),
+			Bankruptcy: liq.bankruptcy.String(), LiqFeeRate: liq.liqFeeRate.String(),
+			RiskTier: liq.tier, Ticks: liq.ticks,
 		})
 	}
 	return snap
@@ -110,6 +121,7 @@ func (s *Service) Restore(snap Snapshot) {
 
 	s.perpSeq = snap.PerpSeq
 	s.orderSeq = snap.OrderSeq
+	s.adlRound = snap.AdlRound
 	s.offsets = make(map[int32]int64, len(snap.Offsets))
 	for p, o := range snap.Offsets {
 		s.offsets[p] = o
@@ -127,10 +139,25 @@ func (s *Service) Restore(snap Snapshot) {
 	s.liqByKey = make(map[string]*liquidation, len(snap.Liquidations))
 	s.liqByOrder = make(map[uint64]*liquidation, len(snap.Liquidations))
 	for _, ls := range snap.Liquidations {
-		liq := &liquidation{userID: ls.UserID, symbol: ls.Symbol, orderID: ls.OrderID, bankruptcy: dec.New(ls.Bankruptcy)}
+		liq := &liquidation{
+			userID: ls.UserID, symbol: ls.Symbol, orderID: ls.OrderID,
+			mode: liquidationMode(ls.Mode), side: perpstate.Side(ls.Side),
+			orderPrice: snapDecimal(ls.OrderPrice), bankruptcy: dec.New(ls.Bankruptcy),
+			liqFeeRate: snapDecimal(ls.LiqFeeRate), tier: ls.RiskTier, ticks: ls.Ticks,
+		}
+		if liq.mode == 0 {
+			liq.mode = liquidationFull
+		}
 		s.liqByKey[liqKey(ls.UserID, ls.Symbol)] = liq
 		s.liqByOrder[ls.OrderID] = liq
 	}
+}
+
+func snapDecimal(v string) dec.Decimal {
+	if v == "" {
+		return zero
+	}
+	return dec.New(v)
 }
 
 // ConsumedOffsetsForResume returns the per-partition next-to-consume offsets a

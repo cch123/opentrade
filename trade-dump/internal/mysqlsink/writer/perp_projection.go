@@ -160,6 +160,8 @@ func BuildPerpBatch(events []*eventpb.PerpJournalEvent) PerpBatch {
 			appendPerpFunding(&b, p.Funding, seq, ts)
 		case *eventpb.PerpJournalEvent_Liquidation:
 			appendPerpLiquidation(&b, p.Liquidation, seq, ts)
+		case *eventpb.PerpJournalEvent_Adl:
+			appendPerpADL(&b, p.Adl, seq, ts)
 		}
 	}
 	return b
@@ -212,6 +214,17 @@ func appendPerpLiquidation(b *PerpBatch, e *eventpb.PerpLiquidationEvent, seq ui
 		RealizedPnl: defaultZero(e.GetRealizedPnl()), InsuranceDelta: defaultZero(e.GetInsuranceDelta()),
 		AdlQueued: e.GetAdlQueued(), TsUnixMs: ts,
 	})
+	appendPerpPosition(b, e.GetPositionAfter(), seq, ts)
+}
+
+func appendPerpADL(b *PerpBatch, e *eventpb.PerpAdlEvent, seq uint64, ts int64) {
+	if e == nil {
+		return
+	}
+	// ADR-0070 introduces ADL primarily as a user-position mutation and
+	// notification. Until the MySQL schema grows a dedicated ADL ledger, the
+	// projection at least advances the affected position so history queries do
+	// not show a stale profitable size after an ADL event.
 	appendPerpPosition(b, e.GetPositionAfter(), seq, ts)
 }
 

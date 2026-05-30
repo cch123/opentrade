@@ -120,7 +120,7 @@ func (s *Server) positionView(p *perpstate.Position) *perprpc.Position {
 		v.MarginRatio = p.MarginRatio(mark).String()
 	}
 	if s.defaultMMR.Sign() > 0 {
-		v.LiqPrice = p.LiqPrice(s.defaultMMR).String()
+		v.LiqPrice = p.LiqPrice(perpstate.ConstantMMR(s.defaultMMR)).String()
 	}
 	return v
 }

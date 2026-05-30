@@ -10,12 +10,15 @@ import (
 )
 
 func newLiqSvc() (*Service, *engine.Engine, *fakeDispatcher, *fakeJournal) {
+	return newLiqSvcWithConfig(Config{MaxLeverage: dec.New("100"), MMR: dec.New("0.05"), ProducerID: "perp-shard-0"})
+}
+
+func newLiqSvcWithConfig(cfg Config) (*Service, *engine.Engine, *fakeDispatcher, *fakeJournal) {
 	eng := engine.New()
 	disp := &fakeDispatcher{}
 	jr := &fakeJournal{}
 	var id uint64
-	svc := New(eng, disp, jr, func() uint64 { id++; return id },
-		Config{MaxLeverage: dec.New("100"), MMR: dec.New("0.05"), ProducerID: "perp-shard-0"})
+	svc := New(eng, disp, jr, func() uint64 { id++; return id }, cfg)
 	return svc, eng, disp, jr
 }
 
@@ -152,5 +155,113 @@ func TestLiquidation_PartialFillThenClose(t *testing.T) {
 	}
 	if got := eng.InsuranceFund(perpSym); got.Sign() != 0 {
 		t.Fatalf("insurance should net 0 across bankruptcy fills, got %s", got)
+	}
+}
+
+func TestLiquidation_PartialReduceToSafe(t *testing.T) {
+	svc, eng, disp, jr := newLiqSvcWithConfig(Config{
+		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
+		TargetMarginBuffer: dec.New("0.01"), BackstopAfterTicks: 99,
+		ProducerID: "perp-shard-0",
+	})
+	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
+
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "94"))
+	if len(disp.orders) != 1 {
+		t.Fatalf("expected one partial liquidation order, got %d", len(disp.orders))
+	}
+	placed := disp.orders[0].GetPlaced()
+	if placed.GetQty() == "1" || placed.GetPrice() == "90" {
+		t.Fatalf("expected partial @ liq price, got qty=%s price=%s", placed.GetQty(), placed.GetPrice())
+	}
+	liq := svc.liquidationFor(placed.GetOrderId())
+	if liq == nil || liq.mode != liquidationPartial {
+		t.Fatalf("in-flight liquidation mode = %+v, want partial", liq)
+	}
+
+	svc.HandleTrade(&eventpb.Trade{
+		TradeId: "partial-liq", Symbol: perpSym, Price: placed.GetPrice(), Qty: placed.GetQty(),
+		MakerUserId: "mm", MakerOrderId: 1, TakerUserId: "u1", TakerOrderId: placed.GetOrderId(),
+		TakerSide:           eventpb.Side_SIDE_SELL,
+		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
+		TakerFilledQtyAfter: placed.GetQty(),
+	}, 5)
+	pos, ok := eng.PositionOf("u1", perpSym)
+	if !ok {
+		t.Fatal("partial liquidation should keep a residual position")
+	}
+	if pos.Size.Cmp(dec.New("1")) >= 0 {
+		t.Fatalf("position size should shrink, got %s", pos.Size)
+	}
+	if ratio := pos.MarginRatio(dec.New("94")); ratio.Cmp(dec.New("0.06")) < 0 {
+		t.Fatalf("post-partial margin ratio = %s, want >= 0.06", ratio)
+	}
+	if svc.hasLiquidation(liqKey("u1", perpSym)) {
+		t.Fatal("partial liquidation guard should clear after the partial order is terminal")
+	}
+	foundPartial := false
+	for _, e := range jr.evts {
+		if l := e.GetLiquidation(); l != nil && l.GetPartial() && !l.GetBackstop() {
+			foundPartial = true
+		}
+	}
+	if !foundPartial {
+		t.Fatal("expected liquidation journal to mark partial=true")
+	}
+}
+
+func TestLiquidation_BackstopClosesInFlightOrder(t *testing.T) {
+	svc, eng, disp, jr := newLiqSvcWithConfig(Config{
+		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
+		BackstopAfterTicks: 1, BackstopAccount: "backstop", ProducerID: "perp-shard-0",
+	})
+	triggerLiquidation(t, svc, eng, disp)
+
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "89"))
+	if _, ok := eng.PositionOf("u1", perpSym); ok {
+		t.Fatal("backstop escalation should close the liquidated position")
+	}
+	if pos, ok := eng.PositionOf("backstop", perpSym); !ok || pos.Side != perpstate.SideBuy || pos.Size.Sign() <= 0 {
+		t.Fatalf("backstop inventory not recorded correctly: pos=%+v ok=%v", pos, ok)
+	}
+	if disp.cancels == 0 {
+		t.Fatal("backstop should cancel the live Match order before internal takeover")
+	}
+	if svc.OrderCount() != 0 {
+		t.Fatalf("backstopped order should be evicted, have %d", svc.OrderCount())
+	}
+	foundBackstop := false
+	for _, e := range jr.evts {
+		if l := e.GetLiquidation(); l != nil && l.GetBackstop() {
+			foundBackstop = true
+		}
+	}
+	if !foundBackstop {
+		t.Fatal("expected liquidation journal to mark backstop=true")
+	}
+}
+
+func TestLiquidation_DeficitTriggersADL(t *testing.T) {
+	svc, eng, disp, jr := newLiqSvcWithConfig(Config{
+		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
+		BackstopAfterTicks: 99, ProducerID: "perp-shard-0",
+	})
+	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
+	openPosition(eng, "u2", perpSym, perpstate.SideSell, "100", "1", "10")
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90"))
+	bankID := disp.orders[0].GetPlaced().GetOrderId()
+	// Move the mark further down while the liquidation order is in flight so
+	// the short counterparty has profit to surrender at u1's bankruptcy price.
+	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "85"))
+
+	liqFill(svc, bankID, "85", "1", 5)
+	if got := eng.InsuranceFund(perpSym); got.Sign() != 0 {
+		t.Fatalf("ADL should repair the insurance deficit, got fund=%s", got)
+	}
+	if _, ok := eng.PositionOf("u2", perpSym); ok {
+		t.Fatal("ADL should close the profitable short in this one-lot scenario")
+	}
+	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 1 {
+		t.Fatalf("expected one ADL journal event, got %d", n)
 	}
 }

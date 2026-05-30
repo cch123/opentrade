@@ -153,6 +153,10 @@ func perpUserIDOf(evt *eventpb.PerpJournalEvent) string {
 		if p.Liquidation != nil {
 			return p.Liquidation.UserId
 		}
+	case *eventpb.PerpJournalEvent_Adl:
+		if p.Adl != nil {
+			return p.Adl.UserId
+		}
 	}
 	return ""
 }

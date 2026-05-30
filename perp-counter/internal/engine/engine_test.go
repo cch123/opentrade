@@ -199,15 +199,15 @@ func TestEngine_LiquidatablePositions(t *testing.T) {
 	mmr := d("0.005")
 
 	e.SetMark("BTC-USDT-PERP", d("100"))
-	if got := e.LiquidatablePositions("BTC-USDT-PERP", mmr); len(got) != 0 {
+	if got := e.LiquidatablePositions("BTC-USDT-PERP", perpstate.ConstantMMR(mmr)); len(got) != 0 {
 		t.Fatalf("healthy long at entry should not be liquidatable, got %d", len(got))
 	}
 	e.SetMark("BTC-USDT-PERP", d("95"))
-	if got := e.LiquidatablePositions("BTC-USDT-PERP", mmr); len(got) != 0 {
+	if got := e.LiquidatablePositions("BTC-USDT-PERP", perpstate.ConstantMMR(mmr)); len(got) != 0 {
 		t.Fatalf("long at 95 (ratio ~0.0526) should be safe, got %d", len(got))
 	}
 	e.SetMark("BTC-USDT-PERP", d("90"))
-	got := e.LiquidatablePositions("BTC-USDT-PERP", mmr)
+	got := e.LiquidatablePositions("BTC-USDT-PERP", perpstate.ConstantMMR(mmr))
 	if len(got) != 1 {
 		t.Fatalf("long at 90 (equity 0) should be liquidatable, got %d", len(got))
 	}

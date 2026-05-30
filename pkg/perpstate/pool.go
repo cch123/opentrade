@@ -49,14 +49,17 @@ func (cp CollateralPool) Eval(marks map[string]dec.Decimal) Health {
 	return h
 }
 
-// Liquidatable reports whether the pool breaches the maintenance margin rate
-// (margin_ratio <= mmr). The single source of the liquidation trigger:
-// isolated calls it with a one-position pool, cross (future) with the
-// account pool. An empty/flat pool (zero notional) is never liquidatable.
-func (cp CollateralPool) Liquidatable(marks map[string]dec.Decimal, mmr dec.Decimal) bool {
+// Liquidatable reports whether the pool breaches the tier-resolved maintenance
+// margin rate (margin_ratio <= MMR(notional)). The resolver is passed in rather
+// than inlining tier selection here so the pool stays the single liquidation
+// boundary when cross margin adds multi-position pools.
+func (cp CollateralPool) Liquidatable(marks map[string]dec.Decimal, mmrOf MMRFunc) bool {
+	if mmrOf == nil {
+		return false
+	}
 	h := cp.Eval(marks)
 	if h.Notional.Sign() == 0 {
 		return false
 	}
-	return h.MarginRatio.Cmp(mmr) <= 0
+	return h.MarginRatio.Cmp(mmrOf(h.Notional)) <= 0
 }

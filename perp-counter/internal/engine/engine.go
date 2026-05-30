@@ -209,6 +209,7 @@ func (e *Engine) ApplyFill(user, symbol string, leverage dec.Decimal, f perpstat
 		p.Leverage = leverage
 	}
 	res := p.ApplyFill(f)
+	p.Version++
 	e.routeCashLocked(user, res)
 	return res
 }
@@ -233,6 +234,7 @@ func (e *Engine) ApplyFillWithSeq(user, symbol string, leverage dec.Decimal, seq
 	if seq != 0 {
 		p.LastMatchSeq = seq
 	}
+	p.Version++
 	e.routeCashLocked(user, res)
 	return res, true
 }
@@ -269,7 +271,9 @@ func (e *Engine) ApplyFunding(user, symbol string, rate dec.Decimal) dec.Decimal
 	if p == nil || p.IsFlat() {
 		return zero
 	}
-	return p.ApplyFunding(e.marks[symbol], rate)
+	delta := p.ApplyFunding(e.marks[symbol], rate)
+	p.Version++
+	return delta
 }
 
 // FundingResult is one position's funding settlement outcome.
@@ -301,6 +305,7 @@ func (e *Engine) SettleFunding(symbol string, roundID int64, rate dec.Decimal) [
 		}
 		delta := p.ApplyFunding(mark, rate)
 		p.FundingRoundSeen = roundID
+		p.Version++
 		out = append(out, FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
@@ -347,6 +352,7 @@ func (e *Engine) SettleFundingUser(user, symbol string, roundID int64, rate dec.
 	}
 	delta := p.ApplyFunding(e.marks[symbol], rate)
 	p.FundingRoundSeen = roundID
+	p.Version++
 	return FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p}, true
 }
 
@@ -376,7 +382,10 @@ type LiquidationCandidate struct {
 	Side            perpstate.Side
 	Size            dec.Decimal
 	Mark            dec.Decimal
+	LiqPrice        dec.Decimal
 	BankruptcyPrice dec.Decimal // where the reduce_only liquidation order is placed
+	MaintMarginRate dec.Decimal
+	PositionVersion uint64
 }
 
 // LiquidatablePositions scans every non-flat position in symbol at the
@@ -386,7 +395,7 @@ type LiquidationCandidate struct {
 // method is read-only; the liquidation flow (cancel the position's orders →
 // submit the bankruptcy reduce_only order → book insurance) runs in the
 // per-user sequencer once Match is wired.
-func (e *Engine) LiquidatablePositions(symbol string, mmr dec.Decimal) []LiquidationCandidate {
+func (e *Engine) LiquidatablePositions(symbol string, mmrOf perpstate.MMRFunc) []LiquidationCandidate {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	mark := e.marks[symbol]
@@ -397,10 +406,13 @@ func (e *Engine) LiquidatablePositions(symbol string, mmr dec.Decimal) []Liquida
 		if p == nil || p.IsFlat() {
 			continue
 		}
-		if perpstate.Isolated(p).Liquidatable(marks, mmr) {
+		pool := perpstate.Isolated(p)
+		if pool.Liquidatable(marks, mmrOf) {
+			h := pool.Eval(marks)
 			out = append(out, LiquidationCandidate{
 				UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
-				Mark: mark, BankruptcyPrice: p.BankruptcyPrice(),
+				Mark: mark, LiqPrice: p.LiqPrice(mmrOf), BankruptcyPrice: p.BankruptcyPrice(),
+				MaintMarginRate: mmrOf(h.Notional), PositionVersion: p.Version,
 			})
 		}
 	}
@@ -413,7 +425,7 @@ func (e *Engine) LiquidatablePositions(symbol string, mmr dec.Decimal) []Liquida
 // breaches. The service calls this inside the user's sequencer to re-verify
 // before acting (the scan that found it ran lock-free and the position may have
 // moved since — TOCTOU guard, ADR-0068 invariant #1).
-func (e *Engine) LiquidationCheck(user, symbol string, mmr dec.Decimal) (LiquidationCandidate, bool) {
+func (e *Engine) LiquidationCheck(user, symbol string, mmrOf perpstate.MMRFunc) (LiquidationCandidate, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
@@ -425,13 +437,36 @@ func (e *Engine) LiquidationCheck(user, symbol string, mmr dec.Decimal) (Liquida
 		return LiquidationCandidate{}, false
 	}
 	mark := e.marks[symbol]
-	if !perpstate.Isolated(p).Liquidatable(map[string]dec.Decimal{symbol: mark}, mmr) {
+	marks := map[string]dec.Decimal{symbol: mark}
+	pool := perpstate.Isolated(p)
+	if !pool.Liquidatable(marks, mmrOf) {
 		return LiquidationCandidate{}, false
 	}
+	h := pool.Eval(marks)
 	return LiquidationCandidate{
 		UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
-		Mark: mark, BankruptcyPrice: p.BankruptcyPrice(),
+		Mark: mark, LiqPrice: p.LiqPrice(mmrOf), BankruptcyPrice: p.BankruptcyPrice(),
+		MaintMarginRate: mmrOf(h.Notional), PositionVersion: p.Version,
 	}, true
+}
+
+// ReduceToTarget computes ADR-0070's partial-liquidation quantity for a single
+// isolated position using a locked snapshot. The service still re-checks the
+// candidate inside the user's sequencer; this helper only centralizes the pure
+// pool math so callers do not bypass the CollateralPool boundary.
+func (e *Engine) ReduceToTarget(user, symbol string, mmrOf perpstate.MMRFunc, buffer dec.Decimal) dec.Decimal {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	bySym := e.positions[user]
+	if bySym == nil {
+		return zero
+	}
+	p := bySym[symbol]
+	if p == nil || p.IsFlat() {
+		return zero
+	}
+	return perpstate.ReduceToTarget(perpstate.Isolated(p),
+		map[string]dec.Decimal{symbol: e.marks[symbol]}, mmrOf, buffer)
 }
 
 // ApplyLiquidationFill applies one fill of the bankruptcy reduce_only order to a
@@ -455,10 +490,233 @@ func (e *Engine) ApplyLiquidationFill(user, symbol string, seq uint64, f perpsta
 	if seq != 0 {
 		p.LastMatchSeq = seq
 	}
+	p.Version++
 	// Equity freed by this reduce goes to insurance, not the wallet.
 	insuranceDelta = res.MarginReleased.Add(res.Realized).Sub(res.Fee)
 	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
 	return res, insuranceDelta, true
+}
+
+// ApplyPartialLiquidationFill applies a forced reduce that leaves the surviving
+// isolated position healthier instead of withdrawing released margin to the
+// user's wallet. That accounting choice is the core ADR-0070 tradeoff: partial
+// liquidation should shrink notional and preserve residual equity for the
+// remaining position; only the configured liquidation fee is moved to insurance.
+func (e *Engine) ApplyPartialLiquidationFill(user, symbol string, seq uint64, f perpstate.Fill, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	p := e.positionLocked(user, symbol)
+	if p.IsFlat() || f.Side != p.Side.Opposite() {
+		return perpstate.FillResult{}, zero, false
+	}
+	if seq != 0 && seq <= p.LastMatchSeq {
+		return perpstate.FillResult{}, zero, false
+	}
+	closeQty := dec.Min(f.Qty, p.Size)
+	res = reducePositionKeepingEquity(p, f.Price, closeQty, liqFeeRate)
+	if seq != 0 {
+		p.LastMatchSeq = seq
+	}
+	p.Version++
+	insuranceDelta = res.Fee
+	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
+	return res, insuranceDelta, true
+}
+
+// BackstopTakeover closes qty internally at price and records the other side on
+// the configured system account. It is intentionally engine-local: once the
+// service escalates here, Match liquidity is no longer part of correctness.
+func (e *Engine) BackstopTakeover(user, symbol string, qty, price dec.Decimal, backstopUser string, partial bool, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bySym := e.positions[user]
+	if bySym == nil {
+		return perpstate.FillResult{}, zero, false
+	}
+	p := bySym[symbol]
+	if p == nil || p.IsFlat() {
+		return perpstate.FillResult{}, zero, false
+	}
+	originalSide := p.Side
+	closeQty := dec.Min(qty, p.Size)
+	fillSide := p.Side.Opposite()
+	if partial && closeQty.Cmp(p.Size) < 0 {
+		res = reducePositionKeepingEquity(p, price, closeQty, liqFeeRate)
+		insuranceDelta = res.Fee
+	} else {
+		res = p.ApplyFill(perpstate.Fill{Side: fillSide, Price: price, Qty: closeQty})
+		insuranceDelta = res.MarginReleased.Add(res.Realized).Sub(res.Fee)
+	}
+	p.Version++
+	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
+	if backstopUser != "" && closeQty.Sign() > 0 {
+		e.applyBackstopInventoryLocked(backstopUser, symbol, originalSide, price, closeQty)
+	}
+	return res, insuranceDelta, true
+}
+
+// ADLCandidate is a profitable opposite-side position that can absorb an
+// insurance deficit. The service dispatches the actual close to that user's
+// sequencer so this read-side ranking never mutates another user inline.
+type ADLCandidate struct {
+	UserID          string
+	Symbol          string
+	Side            perpstate.Side
+	Size            dec.Decimal
+	Score           dec.Decimal
+	SacrificePerQty dec.Decimal
+	PositionVersion uint64
+}
+
+// SelectAdlCandidates ranks profitable opposite-side positions by the Binance-
+// style score used in ADR-0070: unrealized profit rate times effective leverage.
+// Candidates that would not give up mark-to-ADL-price profit are skipped because
+// they cannot repair the insurance deficit.
+func (e *Engine) SelectAdlCandidates(symbol string, liquidatedSide perpstate.Side, adlPrice dec.Decimal, excludeUser string) []ADLCandidate {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	mark := e.marks[symbol]
+	if mark.Sign() <= 0 {
+		return nil
+	}
+	wantSide := liquidatedSide.Opposite()
+	var out []ADLCandidate
+	for user, bySym := range e.positions {
+		if user == excludeUser {
+			continue
+		}
+		p := bySym[symbol]
+		if p == nil || p.IsFlat() || p.Side != wantSide {
+			continue
+		}
+		upnl := p.UnrealizedPnL(mark)
+		if upnl.Sign() <= 0 || p.Margin.Sign() <= 0 {
+			continue
+		}
+		sacrificePerQty := adlSacrificePerQty(p.Side, mark, adlPrice)
+		if sacrificePerQty.Sign() <= 0 {
+			continue
+		}
+		equity := p.Margin.Add(upnl)
+		if equity.Sign() <= 0 {
+			continue
+		}
+		profitRate := upnl.Div(p.Margin)
+		effLev := p.Notional(mark).Div(equity)
+		out = append(out, ADLCandidate{
+			UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
+			Score: profitRate.Mul(effLev), SacrificePerQty: sacrificePerQty,
+			PositionVersion: p.Version,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if c := out[i].Score.Cmp(out[j].Score); c != 0 {
+			return c > 0
+		}
+		return out[i].UserID < out[j].UserID
+	})
+	return out
+}
+
+// ApplyAdlClose force-closes a profitable counterparty at adlPrice. The user
+// receives normal close cash at that price; the difference between mark and the
+// adverse ADL price is credited to insurance as the profit they gave up. The
+// adlRound guard makes replayed internal tasks idempotent after snapshot/replay.
+func (e *Engine) ApplyAdlClose(user, symbol string, qty, adlPrice dec.Decimal, adlRound uint64) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bySym := e.positions[user]
+	if bySym == nil {
+		return perpstate.FillResult{}, zero, false
+	}
+	p := bySym[symbol]
+	if p == nil || p.IsFlat() {
+		return perpstate.FillResult{}, zero, false
+	}
+	if adlRound != 0 && adlRound <= p.LastAdlRound {
+		return perpstate.FillResult{}, zero, false
+	}
+	mark := e.marks[symbol]
+	sacrificePerQty := adlSacrificePerQty(p.Side, mark, adlPrice)
+	if mark.Sign() <= 0 || sacrificePerQty.Sign() <= 0 || p.UnrealizedPnL(mark).Sign() <= 0 {
+		return perpstate.FillResult{}, zero, false
+	}
+	closeQty := dec.Min(qty, p.Size)
+	res = p.ApplyFill(perpstate.Fill{Side: p.Side.Opposite(), Price: adlPrice, Qty: closeQty})
+	if adlRound != 0 {
+		p.LastAdlRound = adlRound
+	}
+	p.Version++
+	e.routeCashLocked(user, res)
+	insuranceDelta = sacrificePerQty.Mul(closeQty)
+	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
+	return res, insuranceDelta, true
+}
+
+func reducePositionKeepingEquity(p *perpstate.Position, price, closeQty, liqFeeRate dec.Decimal) perpstate.FillResult {
+	res := perpstate.FillResult{Fee: price.Mul(closeQty).Mul(liqFeeRate)}
+	if closeQty.Sign() <= 0 || p.IsFlat() {
+		return res
+	}
+	if closeQty.Cmp(p.Size) >= 0 {
+		return p.ApplyFill(perpstate.Fill{Side: p.Side.Opposite(), Price: price, Qty: closeQty, Fee: res.Fee})
+	}
+	if p.Side == perpstate.SideBuy {
+		res.Realized = price.Sub(p.Entry).Mul(closeQty)
+	} else {
+		res.Realized = p.Entry.Sub(price).Mul(closeQty)
+	}
+	p.Size = p.Size.Sub(closeQty)
+	p.Margin = p.Margin.Add(res.Realized).Sub(res.Fee)
+	p.Realized = p.Realized.Add(res.Realized)
+	return res
+}
+
+func adlSacrificePerQty(side perpstate.Side, mark, adlPrice dec.Decimal) dec.Decimal {
+	switch side {
+	case perpstate.SideBuy:
+		return mark.Sub(adlPrice)
+	case perpstate.SideSell:
+		return adlPrice.Sub(mark)
+	default:
+		return zero
+	}
+}
+
+func (e *Engine) applyBackstopInventoryLocked(user, symbol string, side perpstate.Side, price, qty dec.Decimal) {
+	p := e.positionLocked(user, symbol)
+	// Backstop inventory is a system-risk ledger, not user margin. We therefore
+	// mutate size/entry directly instead of routing IM through a wallet reserve.
+	if p.IsFlat() || p.Side == side {
+		newSize := p.Size.Add(qty)
+		if newSize.Sign() > 0 {
+			p.Entry = p.Entry.Mul(p.Size).Add(price.Mul(qty)).Div(newSize)
+		}
+		p.Size = newSize
+		p.Side = side
+		p.Mode = perpstate.MarginIsolated
+		p.Version++
+		return
+	}
+	closeQty := dec.Min(qty, p.Size)
+	if p.Side == perpstate.SideBuy {
+		p.Realized = p.Realized.Add(price.Sub(p.Entry).Mul(closeQty))
+	} else {
+		p.Realized = p.Realized.Add(p.Entry.Sub(price).Mul(closeQty))
+	}
+	p.Size = p.Size.Sub(closeQty)
+	remaining := qty.Sub(closeQty)
+	if p.Size.Sign() == 0 {
+		p.Entry = zero
+		if remaining.Sign() > 0 {
+			p.Side = side
+			p.Size = remaining
+			p.Entry = price
+		} else {
+			p.Side = 0
+		}
+	}
+	p.Version++
 }
 
 // ForceClose liquidates a position fully at fillPrice (the price the
@@ -495,6 +753,7 @@ func (e *Engine) ForceClose(user, symbol string, fillPrice dec.Decimal) (insuran
 	p.Entry = zero
 	p.Margin = zero
 	p.Side = 0
+	p.Version++
 	e.insurance[symbol] = e.insurance[symbol].Add(equity)
 	return equity, true
 }

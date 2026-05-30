@@ -198,6 +198,7 @@ type PerpJournalEvent struct {
 	//	*PerpJournalEvent_Margin
 	//	*PerpJournalEvent_Funding
 	//	*PerpJournalEvent_Liquidation
+	//	*PerpJournalEvent_Adl
 	Payload       isPerpJournalEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -299,6 +300,15 @@ func (x *PerpJournalEvent) GetLiquidation() *PerpLiquidationEvent {
 	return nil
 }
 
+func (x *PerpJournalEvent) GetAdl() *PerpAdlEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*PerpJournalEvent_Adl); ok {
+			return x.Adl
+		}
+	}
+	return nil
+}
+
 type isPerpJournalEvent_Payload interface {
 	isPerpJournalEvent_Payload()
 }
@@ -323,6 +333,10 @@ type PerpJournalEvent_Liquidation struct {
 	Liquidation *PerpLiquidationEvent `protobuf:"bytes,14,opt,name=liquidation,proto3,oneof"`
 }
 
+type PerpJournalEvent_Adl struct {
+	Adl *PerpAdlEvent `protobuf:"bytes,15,opt,name=adl,proto3,oneof"`
+}
+
 func (*PerpJournalEvent_OrderStatus) isPerpJournalEvent_Payload() {}
 
 func (*PerpJournalEvent_Settlement) isPerpJournalEvent_Payload() {}
@@ -332,6 +346,8 @@ func (*PerpJournalEvent_Margin) isPerpJournalEvent_Payload() {}
 func (*PerpJournalEvent_Funding) isPerpJournalEvent_Payload() {}
 
 func (*PerpJournalEvent_Liquidation) isPerpJournalEvent_Payload() {}
+
+func (*PerpJournalEvent_Adl) isPerpJournalEvent_Payload() {}
 
 // Order lifecycle transition (analogous to counter OrderStatusEvent).
 type PerpOrderStatusEvent struct {
@@ -765,8 +781,11 @@ type PerpLiquidationEvent struct {
 	ClosedQty       string                 `protobuf:"bytes,6,opt,name=closed_qty,json=closedQty,proto3" json:"closed_qty,omitempty"`
 	RealizedPnl     string                 `protobuf:"bytes,7,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"`
 	InsuranceDelta  string                 `protobuf:"bytes,8,opt,name=insurance_delta,json=insuranceDelta,proto3" json:"insurance_delta,omitempty"` // + surplus into fund / - fund covers deficit
-	AdlQueued       bool                   `protobuf:"varint,9,opt,name=adl_queued,json=adlQueued,proto3" json:"adl_queued,omitempty"`               // true when fund couldn't cover -> ADL queue (MVP: alert only)
+	AdlQueued       bool                   `protobuf:"varint,9,opt,name=adl_queued,json=adlQueued,proto3" json:"adl_queued,omitempty"`               // true when fund was negative and ADL was attempted
 	PositionAfter   *PerpPositionSnapshot  `protobuf:"bytes,10,opt,name=position_after,json=positionAfter,proto3" json:"position_after,omitempty"`
+	Partial         bool                   `protobuf:"varint,11,opt,name=partial,proto3" json:"partial,omitempty"`                   // ADR-0070: reduce-to-safe rather than full takeover
+	Backstop        bool                   `protobuf:"varint,12,opt,name=backstop,proto3" json:"backstop,omitempty"`                 // ADR-0070: internally matched to the system backstop
+	RiskTier        int32                  `protobuf:"varint,13,opt,name=risk_tier,json=riskTier,proto3" json:"risk_tier,omitempty"` // 1-based selected risk tier, 0 when scalar fallback was used
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -871,6 +890,130 @@ func (x *PerpLiquidationEvent) GetPositionAfter() *PerpPositionSnapshot {
 	return nil
 }
 
+func (x *PerpLiquidationEvent) GetPartial() bool {
+	if x != nil {
+		return x.Partial
+	}
+	return false
+}
+
+func (x *PerpLiquidationEvent) GetBackstop() bool {
+	if x != nil {
+		return x.Backstop
+	}
+	return false
+}
+
+func (x *PerpLiquidationEvent) GetRiskTier() int32 {
+	if x != nil {
+		return x.RiskTier
+	}
+	return 0
+}
+
+// ADL forced close of a profitable counterparty (ADR-0070 §4). It is separate
+// from PerpLiquidationEvent because the mutated user is the counterparty, not
+// the originally liquidated account, and the event must partition to that user.
+type PerpAdlEvent struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	UserId         string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol         string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	AdlRound       uint64                 `protobuf:"varint,3,opt,name=adl_round,json=adlRound,proto3" json:"adl_round,omitempty"`
+	Price          string                 `protobuf:"bytes,4,opt,name=price,proto3" json:"price,omitempty"`
+	ClosedQty      string                 `protobuf:"bytes,5,opt,name=closed_qty,json=closedQty,proto3" json:"closed_qty,omitempty"`
+	RealizedPnl    string                 `protobuf:"bytes,6,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"`
+	InsuranceDelta string                 `protobuf:"bytes,7,opt,name=insurance_delta,json=insuranceDelta,proto3" json:"insurance_delta,omitempty"` // profit surrendered to repair a negative fund
+	PositionAfter  *PerpPositionSnapshot  `protobuf:"bytes,10,opt,name=position_after,json=positionAfter,proto3" json:"position_after,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *PerpAdlEvent) Reset() {
+	*x = PerpAdlEvent{}
+	mi := &file_event_perp_journal_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PerpAdlEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PerpAdlEvent) ProtoMessage() {}
+
+func (x *PerpAdlEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_event_perp_journal_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PerpAdlEvent.ProtoReflect.Descriptor instead.
+func (*PerpAdlEvent) Descriptor() ([]byte, []int) {
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *PerpAdlEvent) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *PerpAdlEvent) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *PerpAdlEvent) GetAdlRound() uint64 {
+	if x != nil {
+		return x.AdlRound
+	}
+	return 0
+}
+
+func (x *PerpAdlEvent) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *PerpAdlEvent) GetClosedQty() string {
+	if x != nil {
+		return x.ClosedQty
+	}
+	return ""
+}
+
+func (x *PerpAdlEvent) GetRealizedPnl() string {
+	if x != nil {
+		return x.RealizedPnl
+	}
+	return ""
+}
+
+func (x *PerpAdlEvent) GetInsuranceDelta() string {
+	if x != nil {
+		return x.InsuranceDelta
+	}
+	return ""
+}
+
+func (x *PerpAdlEvent) GetPositionAfter() *PerpPositionSnapshot {
+	if x != nil {
+		return x.PositionAfter
+	}
+	return nil
+}
+
 var File_event_perp_journal_proto protoreflect.FileDescriptor
 
 const file_event_perp_journal_proto_rawDesc = "" +
@@ -886,7 +1029,7 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x06margin\x18\x06 \x01(\tR\x06margin\x12\x1a\n" +
 	"\bleverage\x18\a \x01(\tR\bleverage\x12!\n" +
 	"\frealized_pnl\x18\b \x01(\tR\vrealizedPnl\x12\x18\n" +
-	"\aversion\x18\t \x01(\x04R\aversion\"\xc7\x03\n" +
+	"\aversion\x18\t \x01(\x04R\aversion\"\xfa\x03\n" +
 	"\x10PerpJournalEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x1e\n" +
 	"\vperp_seq_id\x18\x02 \x01(\x04R\tperpSeqId\x12J\n" +
@@ -897,7 +1040,8 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"settlement\x12:\n" +
 	"\x06margin\x18\f \x01(\v2 .opentrade.event.PerpMarginEventH\x00R\x06margin\x12=\n" +
 	"\afunding\x18\r \x01(\v2!.opentrade.event.PerpFundingEventH\x00R\afunding\x12I\n" +
-	"\vliquidation\x18\x0e \x01(\v2%.opentrade.event.PerpLiquidationEventH\x00R\vliquidationB\t\n" +
+	"\vliquidation\x18\x0e \x01(\v2%.opentrade.event.PerpLiquidationEventH\x00R\vliquidation\x121\n" +
+	"\x03adl\x18\x0f \x01(\v2\x1d.opentrade.event.PerpAdlEventH\x00R\x03adlB\t\n" +
 	"\apayload\"\xf0\x02\n" +
 	"\x14PerpOrderStatusEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
@@ -949,7 +1093,7 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"mark_price\x18\x05 \x01(\tR\tmarkPrice\x12\x18\n" +
 	"\apayment\x18\x06 \x01(\tR\apayment\x12L\n" +
 	"\x0eposition_after\x18\n" +
-	" \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\"\x8b\x03\n" +
+	" \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\"\xde\x03\n" +
 	"\x14PerpLiquidationEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12 \n" +
@@ -964,6 +1108,20 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x0finsurance_delta\x18\b \x01(\tR\x0einsuranceDelta\x12\x1d\n" +
 	"\n" +
 	"adl_queued\x18\t \x01(\bR\tadlQueued\x12L\n" +
+	"\x0eposition_after\x18\n" +
+	" \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\x12\x18\n" +
+	"\apartial\x18\v \x01(\bR\apartial\x12\x1a\n" +
+	"\bbackstop\x18\f \x01(\bR\bbackstop\x12\x1b\n" +
+	"\trisk_tier\x18\r \x01(\x05R\briskTier\"\xab\x02\n" +
+	"\fPerpAdlEvent\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x1b\n" +
+	"\tadl_round\x18\x03 \x01(\x04R\badlRound\x12\x14\n" +
+	"\x05price\x18\x04 \x01(\tR\x05price\x12\x1d\n" +
+	"\n" +
+	"closed_qty\x18\x05 \x01(\tR\tclosedQty\x12!\n" +
+	"\frealized_pnl\x18\x06 \x01(\tR\vrealizedPnl\x12'\n" +
+	"\x0finsurance_delta\x18\a \x01(\tR\x0einsuranceDelta\x12L\n" +
 	"\x0eposition_after\x18\n" +
 	" \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfterB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
@@ -980,7 +1138,7 @@ func file_event_perp_journal_proto_rawDescGZIP() []byte {
 }
 
 var file_event_perp_journal_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_event_perp_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_event_perp_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_event_perp_journal_proto_goTypes = []any{
 	(PerpMarginEvent_Kind)(0),    // 0: opentrade.event.PerpMarginEvent.Kind
 	(*PerpPositionSnapshot)(nil), // 1: opentrade.event.PerpPositionSnapshot
@@ -990,32 +1148,35 @@ var file_event_perp_journal_proto_goTypes = []any{
 	(*PerpMarginEvent)(nil),      // 5: opentrade.event.PerpMarginEvent
 	(*PerpFundingEvent)(nil),     // 6: opentrade.event.PerpFundingEvent
 	(*PerpLiquidationEvent)(nil), // 7: opentrade.event.PerpLiquidationEvent
-	(Side)(0),                    // 8: opentrade.event.Side
-	(*EventMeta)(nil),            // 9: opentrade.event.EventMeta
-	(InternalOrderStatus)(0),     // 10: opentrade.event.InternalOrderStatus
-	(RejectReason)(0),            // 11: opentrade.event.RejectReason
+	(*PerpAdlEvent)(nil),         // 8: opentrade.event.PerpAdlEvent
+	(Side)(0),                    // 9: opentrade.event.Side
+	(*EventMeta)(nil),            // 10: opentrade.event.EventMeta
+	(InternalOrderStatus)(0),     // 11: opentrade.event.InternalOrderStatus
+	(RejectReason)(0),            // 12: opentrade.event.RejectReason
 }
 var file_event_perp_journal_proto_depIdxs = []int32{
-	8,  // 0: opentrade.event.PerpPositionSnapshot.side:type_name -> opentrade.event.Side
-	9,  // 1: opentrade.event.PerpJournalEvent.meta:type_name -> opentrade.event.EventMeta
+	9,  // 0: opentrade.event.PerpPositionSnapshot.side:type_name -> opentrade.event.Side
+	10, // 1: opentrade.event.PerpJournalEvent.meta:type_name -> opentrade.event.EventMeta
 	3,  // 2: opentrade.event.PerpJournalEvent.order_status:type_name -> opentrade.event.PerpOrderStatusEvent
 	4,  // 3: opentrade.event.PerpJournalEvent.settlement:type_name -> opentrade.event.PerpSettlementEvent
 	5,  // 4: opentrade.event.PerpJournalEvent.margin:type_name -> opentrade.event.PerpMarginEvent
 	6,  // 5: opentrade.event.PerpJournalEvent.funding:type_name -> opentrade.event.PerpFundingEvent
 	7,  // 6: opentrade.event.PerpJournalEvent.liquidation:type_name -> opentrade.event.PerpLiquidationEvent
-	10, // 7: opentrade.event.PerpOrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
-	10, // 8: opentrade.event.PerpOrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
-	11, // 9: opentrade.event.PerpOrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
-	8,  // 10: opentrade.event.PerpSettlementEvent.fill_side:type_name -> opentrade.event.Side
-	1,  // 11: opentrade.event.PerpSettlementEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	0,  // 12: opentrade.event.PerpMarginEvent.kind:type_name -> opentrade.event.PerpMarginEvent.Kind
-	1,  // 13: opentrade.event.PerpFundingEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	1,  // 14: opentrade.event.PerpLiquidationEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	8,  // 7: opentrade.event.PerpJournalEvent.adl:type_name -> opentrade.event.PerpAdlEvent
+	11, // 8: opentrade.event.PerpOrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
+	11, // 9: opentrade.event.PerpOrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
+	12, // 10: opentrade.event.PerpOrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
+	9,  // 11: opentrade.event.PerpSettlementEvent.fill_side:type_name -> opentrade.event.Side
+	1,  // 12: opentrade.event.PerpSettlementEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	0,  // 13: opentrade.event.PerpMarginEvent.kind:type_name -> opentrade.event.PerpMarginEvent.Kind
+	1,  // 14: opentrade.event.PerpFundingEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	1,  // 15: opentrade.event.PerpLiquidationEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	1,  // 16: opentrade.event.PerpAdlEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_event_perp_journal_proto_init() }
@@ -1030,6 +1191,7 @@ func file_event_perp_journal_proto_init() {
 		(*PerpJournalEvent_Margin)(nil),
 		(*PerpJournalEvent_Funding)(nil),
 		(*PerpJournalEvent_Liquidation)(nil),
+		(*PerpJournalEvent_Adl)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1037,7 +1199,7 @@ func file_event_perp_journal_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_perp_journal_proto_rawDesc), len(file_event_perp_journal_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

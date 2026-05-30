@@ -47,6 +47,7 @@ type PositionSnap struct {
 	Realized         string `json:"realized"`
 	Mode             uint8  `json:"mode"`
 	LastMatchSeq     uint64 `json:"last_match_seq"`
+	LastAdlRound     uint64 `json:"last_adl_round"`
 	FundingRoundSeen int64  `json:"funding_round_seen"`
 	Version          uint64 `json:"version"`
 }
@@ -89,7 +90,8 @@ func (e *Engine) Snapshot() Snapshot {
 				UserID: p.UserID, Symbol: p.Symbol, Side: uint8(p.Side),
 				Size: p.Size.String(), Entry: p.Entry.String(), Margin: p.Margin.String(),
 				Leverage: p.Leverage.String(), Realized: p.Realized.String(), Mode: uint8(p.Mode),
-				LastMatchSeq: p.LastMatchSeq, FundingRoundSeen: p.FundingRoundSeen, Version: p.Version,
+				LastMatchSeq: p.LastMatchSeq, LastAdlRound: p.LastAdlRound,
+				FundingRoundSeen: p.FundingRoundSeen, Version: p.Version,
 			})
 		}
 	}
@@ -136,7 +138,7 @@ func (e *Engine) Restore(s Snapshot) {
 			Size: dec.New(ps.Size), Entry: dec.New(ps.Entry), Margin: dec.New(ps.Margin),
 			Leverage: dec.New(ps.Leverage), Realized: dec.New(ps.Realized),
 			Mode: perpstate.MarginMode(ps.Mode), LastMatchSeq: ps.LastMatchSeq,
-			FundingRoundSeen: ps.FundingRoundSeen, Version: ps.Version,
+			LastAdlRound: ps.LastAdlRound, FundingRoundSeen: ps.FundingRoundSeen, Version: ps.Version,
 		}
 	}
 	for sym, v := range s.Marks {

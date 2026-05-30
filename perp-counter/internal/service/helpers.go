@@ -5,6 +5,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
+	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
@@ -79,8 +80,31 @@ func (s *Service) nextOrderSeq() uint64 {
 	return s.orderSeq
 }
 
+func (s *Service) nextAdlRound() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adlRound++
+	return s.adlRound
+}
+
 func (s *Service) meta() *eventpb.EventMeta {
 	return &eventpb.EventMeta{TsUnixMs: s.now(), ProducerId: s.cfg.ProducerID}
+}
+
+// maxLeverageForOrder estimates the post-order notional used for ADR-0070 risk
+// tier selection. It stays intentionally conservative for flips: if an incoming
+// order could both close and reopen, we size the tier from the submitted order
+// notional because Match, not perp-counter, determines the exact execution mix.
+func (s *Service) maxLeverageForOrder(user, symbol string, side perpstate.Side, price, qty dec.Decimal) dec.Decimal {
+	notional := price.Mul(qty)
+	if pos, ok := s.eng.PositionOf(user, symbol); ok && pos.Side == side {
+		mark := s.eng.MarkOf(symbol)
+		if mark.Sign() <= 0 {
+			mark = price
+		}
+		notional = notional.Add(pos.Notional(mark))
+	}
+	return s.risk.MaxLeverage(notional)
 }
 
 // placedOrderEvent builds the order-event Match consumes for a new order

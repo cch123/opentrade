@@ -95,6 +95,7 @@ type Position struct {
 	// §3.2 + invariant #3). The service advances these; the algebra here
 	// does not touch them.
 	LastMatchSeq     uint64 // per-(user,symbol) match_seq guard
+	LastAdlRound     uint64 // ADR-0070 ADL task guard; prevents repeated forced closes
 	FundingRoundSeen int64  // last applied funding_round_id
 	Version          uint64 // optimistic/projection guard
 }
