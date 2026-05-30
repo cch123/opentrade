@@ -1,6 +1,6 @@
 # ADR-0072: 强平扫描改为强平价排序索引 —— 阈值穿越查询取代每 tick 全量评估
 
-- 状态: **Proposed**（2026-05-30 起草；从 ADR-0070 强平扫描的实现成本问题独立成 ADR）
+- 状态: **Accepted / Implemented**（2026-05-30 起草；2026-05-31 落地；从 ADR-0070 强平扫描的实现成本问题独立成 ADR）
 - 日期: 2026-05-30
 - 决策者: xargin, Claude
 - 相关 ADR: 0068（USDT 线性 perp，§5 mark tick、§8 强平判定）、0070（强平进阶：阶梯 MMR / liq_price 求解 / 在途 guard / LiquidationCheck 复核）、0071（perp-counter 按 user 分片，扫描是 per-shard 行为）、0069（index_stale → 跳过扫描）、0048（snapshot 绑 offset；本 ADR 的索引为派生态、不入 snapshot）、0053（symbol 精度 / tick 标度）
