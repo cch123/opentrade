@@ -36,9 +36,12 @@ func SymbolAssets(symbol string) (base, quote string, err error) {
 //	Market Sell:           freeze base  = qty  (no price; taker eats asks)
 //	Market Buy + quoteQty: freeze quote = quoteQty  (BN quoteOrderQty form)
 //
-// Market Buy with only `qty` (no quoteQty) is explicitly rejected — estimating
-// a freeze cap would require Counter to subscribe to market-data; we keep
-// Counter state-machine-only (see ADR-0035 §备选方案 Z).
+// Market Buy with only `qty` (no quoteQty) is explicitly rejected. Counter
+// deliberately does not keep price / order-book context, so it cannot turn a
+// base quantity into a quote freeze cap at placement time. Callers must pass
+// the quote budget they want frozen as quoteQty; otherwise Counter would need
+// to subscribe to market-data and stop being a state-machine-only component
+// (see ADR-0035 §备选方案 Z).
 func ComputeFreeze(symbol string, side Side, typ OrderType, price, qty, quoteQty dec.Decimal) (asset string, amount dec.Decimal, err error) {
 	base, quote, err := SymbolAssets(symbol)
 	if err != nil {

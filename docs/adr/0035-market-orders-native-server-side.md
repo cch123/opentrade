@@ -199,6 +199,13 @@ type placeOrderBody struct {
 
 - **BFF 保护价合理性校验**：last_price 和当前 depth top-of-book 偏差 > X% 拒
   单，防止恶意 / 陈旧 last_price
+- **TODO(match): 原生滑点保护 / protected-market order**：当前路径 B 只能 100%
+  保证"不高于 BFF 算出的 LIMIT IOC 保护价成交"，但这个保护价的参考价可能在
+  订单进入 Match 前变旧。如果产品需要"相对于 Match sequencer 当下盘口的滑点
+  保护"，应由 Match 在同一 symbol worker / order book 状态里计算 price
+  collar，再按 IOC limit 执行。注意当前链路是 Counter 先冻结、Match 后撮合；
+  因此该优化需要配套显式 `quote_cap` / reservation 等冻结上限协议，不能让
+  Counter 为了这个订阅价格。
 - **MARKET buy with `quantity`**：如果有需求，BFF 可以接受 `qty + last_price` 估算
   `quote_qty = qty × last_price × 1.05`（5% 冗余 freeze）下传。本 ADR 不做
 - **`docs/market-orders.md`**：客户端指导（两条路径用法、字段、失败场景）

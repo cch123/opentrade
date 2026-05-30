@@ -1,15 +1,24 @@
-// Command opentrade-web is a zero-build browser UI for exercising the
-// OpenTrade order flow end-to-end against a running BFF + push stack.
+// Command opentrade-web is a browser dev console for the OpenTrade spot stack.
 //
-// It hosts a single embedded HTML page and reverse-proxies /v1/* and /ws to
-// BFF. The WS proxy converts a `?user_id=...` query parameter into an
-// `X-User-Id` header when dialing BFF — browsers can't set custom headers on
-// the WebSocket handshake, and the dev-mode auth (ADR-0039 header scheme)
-// needs that header.
+// It does two jobs from one local process:
+//
+//  1. Control plane — one-click start/stop of the whole stack: it brings up the
+//     docker-compose deps (kafka / etcd / mysql / minio), builds every Go
+//     service, and launches them in dependency order with the *current*
+//     ADR-0058 / ADR-0057 / ADR-0040 flags. A browser can't spawn OS
+//     processes, so this binary supervises them and exposes /api/stack/*.
+//
+//  2. Trading UI — it serves a single embedded page and reverse-proxies /v1/*
+//     and /ws to BFF. The WS proxy turns a `?user_id=...` query parameter into
+//     an `X-User-Id` header when dialing BFF (browsers can't set custom headers
+//     on the WebSocket handshake, and dev-mode auth — ADR-0039 — needs it).
+//
+// A dev faucet (/api/faucet) credits balances directly via the AssetHolder
+// contract so an account has funds to trade with.
 //
 // Usage (from repo root):
 //
-//	./bin/opentrade-web                                  # serves on :7070, BFF at :8080
+//	go run ./tools/web                 # serves :7070, proxies BFF at :8080
 //	./bin/opentrade-web --addr :9000 --bff http://host:8080
 package main
 
@@ -48,13 +57,24 @@ func main() {
 		os.Exit(2)
 	}
 
+	repoRoot := repoRootFromCWD()
+	sup, err := newSupervisor(repoRoot)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "supervisor init:", err)
+		os.Exit(2)
+	}
+	stack := newStack(sup, repoRoot)
+	api := &apiServer{stack: stack, sup: sup, faucet: newFaucet()}
+
 	mux := http.NewServeMux()
 	// Go 1.22 ServeMux: bare "/" is a catch-all prefix, so method-qualified
 	// "GET /" conflicts with unqualified "/v1/". Register "/" without a
-	// method — more-specific prefixes ("/v1/", "/ws", "/healthz") still win.
+	// method — more-specific prefixes ("/v1/", "/ws", "/api/", "/healthz")
+	// still win.
 	mux.HandleFunc("/", serveIndex)
 	mux.Handle("/v1/", restProxy(bffURL))
 	mux.HandleFunc("/ws", wsProxy(bffURL))
+	mux.Handle("/api/", api.handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -66,8 +86,8 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("opentrade-web listening on %s → proxying to %s", *addr, bffURL)
-		log.Printf("open http://localhost%s/ in your browser", *addr)
+		log.Printf("opentrade-web console on %s (repo root %s)", *addr, repoRoot)
+		log.Printf("open http://localhost%s/ — click \"Start All\" to boot the stack", *addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}
@@ -77,19 +97,26 @@ func main() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 
+	// Stop supervised children so they don't outlive the console, then shut
+	// down the HTTP server. Docker deps are left running (faster next start;
+	// use the UI's "stop deps" or `make dev-down` to stop them).
+	log.Printf("shutting down — stopping supervised services")
+	sup.stopAll()
+	sup.closeLogs()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
 }
 
-// serveIndex returns the embedded single-page app.
+// serveIndex returns the embedded single-page console.
 func serveIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(indexHTML)
 }
 
 // restProxy reverse-proxies /v1/* to BFF. Browser fetches already carry the
-// X-User-Id header set by app.js; httputil.ReverseProxy preserves headers.
+// X-User-Id header set by the page; httputil.ReverseProxy preserves headers.
 func restProxy(target *url.URL) http.Handler {
 	p := httputil.NewSingleHostReverseProxy(target)
 	orig := p.Director
@@ -164,4 +191,3 @@ func pump(ctx context.Context, src, dst *websocket.Conn) {
 		}
 	}
 }
-

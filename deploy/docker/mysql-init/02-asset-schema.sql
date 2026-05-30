@@ -4,6 +4,14 @@
 -- trade-dump/read-model `opentrade` database created in 01-schema.sql.
 
 CREATE DATABASE IF NOT EXISTS opentrade_asset CHARACTER SET utf8mb4;
+
+-- The compose entrypoint only grants the opentrade user its MYSQL_DATABASE
+-- (opentrade). asset-service connects as the same user, so it needs explicit
+-- access to this second logical database or it fails to ping at startup
+-- (Error 1044: Access denied ... to database 'opentrade_asset').
+GRANT ALL PRIVILEGES ON opentrade_asset.* TO 'opentrade'@'%';
+FLUSH PRIVILEGES;
+
 USE opentrade_asset;
 
 CREATE TABLE IF NOT EXISTS transfer_ledger (

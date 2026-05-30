@@ -16,6 +16,12 @@
   .chip-on  { background: #38bdf8; color: #0f172a; }
   .chip-off { background: transparent; color: #94a3b8; border: 1px solid #334155; }
   .chip     { padding: 4px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .chip-svc { padding: 2px 8px; border-radius: 9999px; font-size: 11px; cursor: pointer;
+              border: 1px solid transparent; font-variant-numeric: tabular-nums; }
+  .svc-up   { background: rgba(16,185,129,0.15); color: #6ee7b7; border-color: rgba(16,185,129,0.35); }
+  .svc-warn { background: rgba(245,158,11,0.15); color: #fcd34d; border-color: rgba(245,158,11,0.35); }
+  .svc-down { background: rgba(239,68,68,0.15);  color: #fca5a5; border-color: rgba(239,68,68,0.35); }
+  .svc-off  { background: rgba(100,116,139,0.12); color: #94a3b8; border-color: rgba(100,116,139,0.25); }
   input[type=text], input[type=number] {
     background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
     padding: 6px 10px; border-radius: 6px; width: 100%;
@@ -36,6 +42,36 @@
   <div id="ws-badge" class="text-sm ml-2">● idle</div>
   <button id="reconnect" class="text-xs text-sky-400 hover:underline">reconnect</button>
 </header>
+
+<!-- Stack control: one-click start/stop of the whole dev stack -->
+<section class="px-6 py-3 border-b border-slate-800 bg-slate-900/70">
+  <div class="flex items-center gap-3 flex-wrap">
+    <span class="text-sm font-semibold text-slate-300">Stack</span>
+    <button id="stack-up" class="px-3 py-1.5 rounded text-sm font-semibold bg-emerald-600 hover:bg-emerald-500 text-white">▶ Start All</button>
+    <button id="stack-down" class="px-3 py-1.5 rounded text-sm font-semibold bg-slate-700 hover:bg-slate-600 text-slate-100">■ Stop All</button>
+    <label class="text-xs text-slate-400 flex items-center gap-1 ml-1"><input type="checkbox" id="opt-asset" checked class="accent-sky-500"> asset <span class="text-slate-600">(funding/transfer)</span></label>
+    <label class="text-xs text-slate-400 flex items-center gap-1"><input type="checkbox" id="opt-trigger" checked class="accent-sky-500"> trigger <span class="text-slate-600">(conditional)</span></label>
+    <span id="stack-phase" class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">idle</span>
+    <div class="flex-1"></div>
+    <button id="stack-down-deps" class="text-xs text-slate-500 hover:text-rose-400 hover:underline">stop docker deps too</button>
+  </div>
+  <div id="stack-chips" class="flex flex-wrap gap-1.5 mt-2.5"></div>
+  <div id="stack-msg" class="text-xs text-slate-500 mt-1.5 h-4"></div>
+</section>
+
+<!-- Log viewer modal (opened by clicking a service chip) -->
+<div id="log-modal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+  <div class="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-4xl max-h-[80vh] flex flex-col">
+    <div class="flex items-center gap-3 px-4 py-2 border-b border-slate-800">
+      <span class="text-sm font-semibold text-sky-400">logs:</span>
+      <span id="log-svc" class="text-sm num text-slate-200"></span>
+      <label class="text-xs text-slate-400 flex items-center gap-1 ml-2"><input type="checkbox" id="log-follow" checked class="accent-sky-500"> follow</label>
+      <div class="flex-1"></div>
+      <button id="log-close" class="text-slate-400 hover:text-white text-lg leading-none">&times;</button>
+    </div>
+    <pre id="log-body" class="flex-1 overflow-auto p-3 text-xs font-mono text-slate-300 whitespace-pre-wrap"></pre>
+  </div>
+</div>
 
 <section class="px-6 py-2 border-b border-slate-800 flex items-center gap-6 text-sm">
   <div id="ticker-symbol" class="font-bold text-sky-400">BTC-USDT</div>
@@ -116,12 +152,29 @@
     </div>
 
     <div class="bg-slate-800/40 rounded-lg border border-slate-800 p-3">
-      <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Transfer</h2>
+      <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Faucet <span class="text-slate-600 normal-case">· dev deposit</span></h2>
       <div class="flex gap-2 mb-2 flex-wrap">
-        <button class="chip" data-xfer="deposit">deposit</button>
-        <button class="chip" data-xfer="withdraw">withdraw</button>
-        <button class="chip" data-xfer="freeze">freeze</button>
-        <button class="chip" data-xfer="unfreeze">unfreeze</button>
+        <button class="chip" data-faucet="spot">→ spot (tradeable)</button>
+        <button class="chip" data-faucet="funding">→ funding</button>
+      </div>
+      <div class="flex items-center gap-2 mb-2">
+        <label class="text-xs text-slate-400 w-12">asset</label>
+        <input id="faucet-asset" type="text" placeholder="USDT" />
+      </div>
+      <div class="flex items-center gap-2 mb-2">
+        <label class="text-xs text-slate-400 w-12">amount</label>
+        <input id="faucet-amount" type="text" placeholder="30000" />
+      </div>
+      <button id="faucet-submit" class="w-full py-2 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold">
+        Deposit to spot
+      </button>
+    </div>
+
+    <div class="bg-slate-800/40 rounded-lg border border-slate-800 p-3">
+      <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Transfer <span class="text-slate-600 normal-case">· funding ↔ spot saga</span></h2>
+      <div class="flex gap-2 mb-2 flex-wrap">
+        <button class="chip" data-xferdir="funding>spot">funding → spot</button>
+        <button class="chip" data-xferdir="spot>funding">spot → funding</button>
       </div>
       <div class="flex items-center gap-2 mb-2">
         <label class="text-xs text-slate-400 w-12">asset</label>
@@ -131,10 +184,49 @@
         <label class="text-xs text-slate-400 w-12">amount</label>
         <input id="xfer-amount" type="text" placeholder="100" />
       </div>
-      <button id="xfer-submit" class="w-full py-2 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold">
-        Submit Transfer
+      <button id="xfer-submit" class="w-full py-2 rounded bg-fuchsia-700 hover:bg-fuchsia-600 text-white font-semibold">
+        Transfer (saga)
       </button>
+      <div class="text-xs text-slate-600 mt-1.5">requires the <span class="text-slate-400">asset</span> service running.</div>
     </div>
+  </section>
+
+  <!-- Conditional orders (triggers) -->
+  <section class="col-span-12 bg-slate-800/40 rounded-lg border border-slate-800 p-3">
+    <h2 class="text-sm uppercase tracking-wide text-slate-400 mb-2">Conditional Orders <span class="text-slate-600 normal-case">· stop / take-profit · needs trigger service</span></h2>
+    <div class="flex flex-wrap items-end gap-3 mb-3">
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">type</label>
+        <select id="trig-type" class="bg-slate-800 border border-slate-700 text-slate-100 px-2 py-1.5 rounded text-sm">
+          <option value="stop_loss">stop_loss</option>
+          <option value="stop_loss_limit">stop_loss_limit</option>
+          <option value="take_profit">take_profit</option>
+          <option value="take_profit_limit">take_profit_limit</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">side</label>
+        <select id="trig-side" class="bg-slate-800 border border-slate-700 text-slate-100 px-2 py-1.5 rounded text-sm">
+          <option value="sell">sell</option>
+          <option value="buy">buy</option>
+        </select>
+      </div>
+      <div class="w-28"><label class="text-xs text-slate-400 block mb-1">stop price</label><input id="trig-stop" type="text" placeholder="48000" /></div>
+      <div class="w-28" id="trig-limit-wrap"><label class="text-xs text-slate-400 block mb-1">limit price</label><input id="trig-limit" type="text" placeholder="47900" /></div>
+      <div class="w-24"><label class="text-xs text-slate-400 block mb-1">qty</label><input id="trig-qty" type="text" placeholder="0.1" /></div>
+      <button id="trig-place" class="px-4 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-white font-semibold text-sm">Place Trigger</button>
+      <div id="trig-status" class="text-xs h-4 self-center"></div>
+    </div>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-slate-500">
+          <th class="py-1">id</th><th>symbol</th><th>side</th><th>type</th>
+          <th class="text-right">stop</th><th class="text-right">limit</th><th class="text-right">qty</th>
+          <th>status</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="triggers" class="num"><tr><td colspan="9" class="text-slate-500 text-xs py-2">(none)</td></tr></tbody>
+    </table>
   </section>
 
   <!-- Open orders -->
@@ -182,7 +274,12 @@ const state = {
   side: 'buy',
   orderType: 'limit',
   tif: 'gtc',
-  xferType: 'deposit',
+  faucetTarget: 'spot',
+  xferDir: 'funding>spot',
+  triggers: [],
+  stack: null,
+  logSvc: null,
+  logTimer: null,
   ws: null,
   wsState: 'idle',
   book: { bids: new Map(), asks: new Map(), ts: null },
@@ -529,9 +626,16 @@ function renderForm() {
   for (const el of document.querySelectorAll('[data-tif]')) {
     el.className = 'chip ' + (el.dataset.tif === state.tif ? 'chip-on' : 'chip-off');
   }
-  for (const el of document.querySelectorAll('[data-xfer]')) {
-    el.className = 'chip ' + (el.dataset.xfer === state.xferType ? 'chip-on' : 'chip-off');
+  for (const el of document.querySelectorAll('[data-faucet]')) {
+    el.className = 'chip ' + (el.dataset.faucet === state.faucetTarget ? 'chip-on' : 'chip-off');
   }
+  for (const el of document.querySelectorAll('[data-xferdir]')) {
+    el.className = 'chip ' + (el.dataset.xferdir === state.xferDir ? 'chip-on' : 'chip-off');
+  }
+  const fb = $('faucet-submit');
+  if (fb) fb.textContent = 'Deposit to ' + state.faucetTarget;
+  const tt = $('trig-type');
+  if (tt) $('trig-limit-wrap').style.display = tt.value.endsWith('_limit') ? '' : 'none';
 
   // field visibility
   const isLimit = state.orderType === 'limit';
@@ -630,21 +734,184 @@ async function cancelOrder(orderID) {
   pollAccount();
 }
 
-async function submitTransfer() {
+// ---------- Faucet (dev deposit via AssetHolder) ----------
+// There is no public deposit REST endpoint — a transfer saga only *moves*
+// money between wallets. The launcher's /api/faucet credits a wallet directly
+// through the AssetHolder contract (counter for spot, asset-service for
+// funding) so an account has funds to trade with.
+async function submitFaucet() {
+  const asset = $('faucet-asset').value.trim().toUpperCase();
+  const amount = $('faucet-amount').value.trim();
+  if (!asset || !amount) { setStatus('faucet needs asset + amount', false); return; }
+  try {
+    const resp = await api('POST', '/api/faucet', { user: state.user, target: state.faucetTarget, asset, amount });
+    setStatus(`faucet +${amount} ${asset} → ${state.faucetTarget} (avail ${resp.available_after ?? '?'})`, true);
+    pushStream('xfer', `faucet ${state.faucetTarget} +${amount} ${asset}`);
+  } catch (e) {
+    setStatus('faucet failed: ' + e.message, false);
+  }
+  pollAccount();
+}
+
+// ---------- Transfer saga (funding ↔ spot, ADR-0057) ----------
+async function submitSagaTransfer() {
   const asset = $('xfer-asset').value.trim().toUpperCase();
   const amount = $('xfer-amount').value.trim();
   if (!asset || !amount) { setStatus('transfer needs asset + amount', false); return; }
-  const req = {
-    transfer_id: `${state.xferType}-${state.user}-${rand()}`,
-    asset, amount, type: state.xferType,
-  };
+  const [from_biz, to_biz] = state.xferDir.split('>');
+  const req = { transfer_id: `xfer-${state.user}-${rand()}`, from_biz, to_biz, asset, amount };
   try {
     const resp = await api('POST', '/v1/transfer', req);
-    setStatus(`transfer ${state.xferType} ${amount} ${asset} → ${resp.status}`, resp.status !== 'rejected');
+    const st = resp.state || resp.status || '';
+    setStatus(`transfer ${from_biz}→${to_biz} ${amount} ${asset} → ${st}`, st !== 'FAILED' && st !== 'rejected');
+    pushStream('xfer', `transfer ${from_biz}→${to_biz} ${amount} ${asset} ${st}`);
   } catch (e) {
     setStatus('transfer failed: ' + e.message, false);
   }
   pollAccount();
+}
+
+// ---------- Stack control ----------
+async function startStack() {
+  const opt = { asset: $('opt-asset').checked, trigger: $('opt-trigger').checked };
+  try { await api('POST', '/api/stack/up', opt); setStatus('starting stack…', true); }
+  catch (e) { setStatus('start failed: ' + e.message, false); }
+  pollStack();
+}
+async function stopStack(deps) {
+  if (deps && !confirm('Stop services AND docker deps (kafka/mysql/etcd)? Deps keep their data volumes.')) return;
+  try { await api('POST', '/api/stack/down', { deps: !!deps }); setStatus('stopping stack…', true); }
+  catch (e) { setStatus('stop failed: ' + e.message, false); }
+  pollStack();
+}
+async function pollStack() {
+  try { state.stack = await api('GET', '/api/stack/status'); renderStack(); } catch {}
+}
+function renderStack() {
+  const st = state.stack;
+  if (!st) return;
+  const phaseCls = {
+    idle: 'bg-slate-800 text-slate-400', deps: 'bg-amber-900/60 text-amber-300',
+    building: 'bg-amber-900/60 text-amber-300', starting: 'bg-amber-900/60 text-amber-300',
+    up: 'bg-emerald-900/60 text-emerald-300', stopping: 'bg-slate-800 text-slate-400',
+    error: 'bg-rose-900/60 text-rose-300',
+  }[st.phase] || 'bg-slate-800 text-slate-400';
+  $('stack-phase').textContent = st.phase + (st.busy ? '…' : '');
+  $('stack-phase').className = 'text-xs px-2 py-0.5 rounded ' + phaseCls;
+  $('stack-msg').textContent = st.message || '';
+  $('stack-up').disabled = st.busy;
+  $('stack-up').classList.toggle('opacity-50', st.busy);
+
+  const depCls = (d) =>
+    (d.health === 'healthy' || (d.state === 'running' && !d.health)) ? 'svc-up'
+    : d.state === 'running' ? 'svc-warn'
+    : (d.state === 'exited' || d.state === 'down') ? 'svc-down' : 'svc-off';
+  const svcCls = (s) => ({
+    running: 'svc-up', starting: 'svc-warn', building: 'svc-warn',
+    exited: 'svc-down', failed: 'svc-down', stopped: 'svc-off',
+  }[s.state] || 'svc-off');
+
+  let html = '<span class="text-xs text-slate-600 self-center mr-1">deps:</span>';
+  for (const d of (st.deps || [])) {
+    html += `<button data-logsvc="docker" class="chip-svc ${depCls(d)}">${d.name}${d.health ? '·' + d.health[0] : ''}</button>`;
+  }
+  html += '<span class="text-xs text-slate-600 self-center mx-1">svc:</span>';
+  for (const s of (st.services || [])) {
+    const label = s.name + (s.state === 'running' ? '' : '·' + s.state);
+    html += `<button data-logsvc="${s.name}" class="chip-svc ${svcCls(s)}" title="${s.note || s.desc || ''}">${label}</button>`;
+  }
+  $('stack-chips').innerHTML = html;
+}
+
+// ---------- Log viewer ----------
+function openLogs(svc) {
+  state.logSvc = svc;
+  $('log-svc').textContent = svc;
+  $('log-modal').classList.remove('hidden');
+  refreshLogs();
+  if (state.logTimer) clearInterval(state.logTimer);
+  state.logTimer = setInterval(() => { if ($('log-follow').checked) refreshLogs(); }, 1000);
+}
+function closeLogs() {
+  $('log-modal').classList.add('hidden');
+  if (state.logTimer) { clearInterval(state.logTimer); state.logTimer = null; }
+  state.logSvc = null;
+}
+async function refreshLogs() {
+  if (!state.logSvc) return;
+  try {
+    const resp = await api('GET', `/api/stack/logs?svc=${encodeURIComponent(state.logSvc)}&tail=400`);
+    const body = $('log-body');
+    body.textContent = (resp.lines || []).join('\n') || '(no output yet)';
+    if ($('log-follow').checked) body.scrollTop = body.scrollHeight;
+  } catch (e) {
+    $('log-body').textContent = 'failed to load logs: ' + e.message;
+  }
+}
+
+// ---------- Conditional orders (triggers, ADR-0040) ----------
+function setTrigStatus(t, ok) {
+  const el = $('trig-status');
+  el.textContent = t || '';
+  el.className = 'text-xs h-4 self-center ' + (t ? (ok ? 'text-emerald-400' : 'text-rose-400') : '');
+}
+async function placeTrigger() {
+  const type = $('trig-type').value;
+  const side = $('trig-side').value;
+  const stop_price = $('trig-stop').value.trim();
+  const limit_price = $('trig-limit').value.trim();
+  const qty = $('trig-qty').value.trim();
+  if (!stop_price || !qty) { setTrigStatus('need stop price + qty', false); return; }
+  const req = { client_trigger_id: 'web-' + rand(), symbol: state.symbol, side, type, stop_price, qty };
+  if (type.endsWith('_limit')) {
+    if (!limit_price) { setTrigStatus('limit type needs limit price', false); return; }
+    req.limit_price = limit_price;
+  }
+  try {
+    const resp = await api('POST', '/v1/trigger', req);
+    setTrigStatus(`trigger ${resp.id} ${resp.status || ''} accepted=${resp.accepted}`, resp.accepted);
+    pushStream('me', `trigger ${resp.id} placed (${type} ${side} @ ${stop_price})`);
+  } catch (e) { setTrigStatus('trigger failed: ' + e.message, false); }
+  pollTriggers();
+}
+async function cancelTrigger(id) {
+  try { await api('DELETE', `/v1/trigger/${id}`); pushStream('me', `cancel trigger ${id}`); }
+  catch (e) { setTrigStatus('cancel failed: ' + e.message, false); }
+  pollTriggers();
+}
+async function pollTriggers() {
+  try { const resp = await api('GET', '/v1/trigger?scope=active'); state.triggers = resp.triggers || []; }
+  catch { state.triggers = []; }
+  renderTriggers();
+}
+function stripEnum(s, ...prefixes) {
+  let v = String(s || '');
+  for (const p of prefixes) v = v.replace(p, '');
+  return v.toLowerCase();
+}
+function renderTriggers() {
+  const tb = $('triggers');
+  if (!state.triggers.length) {
+    tb.innerHTML = `<tr><td colspan="9" class="text-slate-500 text-xs py-2">(none)</td></tr>`;
+    return;
+  }
+  tb.innerHTML = state.triggers.map((t) => {
+    const side = stripEnum(t.side, 'SIDE_');
+    const typ = stripEnum(t.type, 'TRIGGER_TYPE_', 'TYPE_');
+    return `<tr class="border-t border-slate-800/50">
+      <td class="py-1">${t.id}</td>
+      <td>${t.symbol || ''}</td>
+      <td class="${side.includes('buy') ? 'text-emerald-400' : 'text-rose-400'}">${side}</td>
+      <td>${typ}</td>
+      <td class="text-right">${fmtNum(t.stop_price)}</td>
+      <td class="text-right">${fmtNum(t.limit_price)}</td>
+      <td class="text-right">${fmtNum(t.qty)}</td>
+      <td>${stripEnum(t.status, 'TRIGGER_STATUS_', 'STATUS_')}</td>
+      <td><button data-cancel-trig="${t.id}" class="text-rose-400 hover:underline text-xs">cancel</button></td>
+    </tr>`;
+  }).join('');
+  tb.querySelectorAll('button[data-cancel-trig]').forEach((b) =>
+    b.addEventListener('click', () => cancelTrigger(b.dataset.cancelTrig)));
 }
 
 // ---------- Polling ----------
@@ -761,16 +1028,36 @@ function wire() {
   for (const el of document.querySelectorAll('[data-tif]')) {
     el.addEventListener('click', () => { state.tif = el.dataset.tif; renderForm(); });
   }
-  for (const el of document.querySelectorAll('[data-xfer]')) {
-    el.addEventListener('click', () => { state.xferType = el.dataset.xfer; renderForm(); });
+  for (const el of document.querySelectorAll('[data-faucet]')) {
+    el.addEventListener('click', () => { state.faucetTarget = el.dataset.faucet; renderForm(); });
+  }
+  for (const el of document.querySelectorAll('[data-xferdir]')) {
+    el.addEventListener('click', () => { state.xferDir = el.dataset.xferdir; renderForm(); });
   }
 
   $('price').addEventListener('input', updateNotional);
   $('qty').addEventListener('input', updateNotional);
 
   $('place').addEventListener('click', placeOrder);
-  $('xfer-submit').addEventListener('click', submitTransfer);
+  $('faucet-submit').addEventListener('click', submitFaucet);
+  $('xfer-submit').addEventListener('click', submitSagaTransfer);
   $('clear-stream').addEventListener('click', () => { state.stream = []; renderStream(); });
+
+  // Stack control
+  $('stack-up').addEventListener('click', startStack);
+  $('stack-down').addEventListener('click', () => stopStack(false));
+  $('stack-down-deps').addEventListener('click', () => stopStack(true));
+  // Service/dep chips are re-rendered each poll — delegate clicks to the container.
+  $('stack-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-logsvc]');
+    if (btn) openLogs(btn.dataset.logsvc);
+  });
+  $('log-close').addEventListener('click', closeLogs);
+  $('log-modal').addEventListener('click', (e) => { if (e.target === $('log-modal')) closeLogs(); });
+
+  // Triggers
+  $('trig-place').addEventListener('click', placeTrigger);
+  $('trig-type').addEventListener('change', renderForm);
 
   document.addEventListener('keydown', (e) => {
     const inInput = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName);
@@ -798,6 +1085,11 @@ function boot() {
   seedOrderbook();
   pollAccount();
   schedulePoll();
+  renderTriggers();
+  pollStack();
+  setInterval(pollStack, 2000);
+  pollTriggers();
+  setInterval(pollTriggers, 4000);
 }
 boot();
 </script>
