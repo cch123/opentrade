@@ -8,7 +8,7 @@ import (
 
 func TestNewMarketDataConsumer_Validation(t *testing.T) {
 	logger := zap.NewNop()
-	book := NewMidBook()
+	book := NewBook()
 	if _, err := NewMarketDataConsumer(MarketDataConsumerConfig{Topics: []string{"market-data"}}, book, logger); err == nil {
 		t.Error("expected error for empty brokers")
 	}

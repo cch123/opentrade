@@ -1,9 +1,11 @@
 // Command markprice produces the mark-price topic (ADR-0068 §5): it tails the
-// spot + perp market-data OrderBook streams for an index (spot mid) and basis
-// (perp mid), folds them into a manipulation-resistant mark via internal/calc,
-// and emits MarkTick (high-frequency) + FundingTick (at each funding boundary)
-// for perp-counter. A single tick goroutine owns the Calc; the market-data
-// consumer feeds a concurrent-safe mid book.
+// spot + perp market-data OrderBook streams and emits MarkTick (high-frequency)
+// + FundingTick (at each funding boundary) for perp-counter. The mark is the
+// spot index + a capped EMA basis; the funding rate is the Binance method —
+// a premium index built from the perp DEPTH-WEIGHTED impact prices (not
+// top-of-book) vs the index, TWAP'd over the interval, plus a clamped interest
+// term. A single tick goroutine owns the Calc; the market-data consumer feeds a
+// concurrent-safe depth book.
 package main
 
 import (
@@ -37,6 +39,9 @@ type Config struct {
 	FundingRateCap      string
 	FundingInterval     string
 	TickInterval        string
+	ImpactNotional      string
+	InterestRateDaily   string
+	PremiumBand         string
 	Env                 string
 	LogLevel            string
 }
@@ -55,6 +60,9 @@ func main() {
 	flag.StringVar(&cfg.FundingRateCap, "funding-rate-cap", "0.0075", "clamp on |funding_rate| per interval")
 	flag.StringVar(&cfg.FundingInterval, "funding-interval", "8h", "funding settlement interval (aligned to UTC)")
 	flag.StringVar(&cfg.TickInterval, "tick-interval", "1s", "how often to emit a MarkTick")
+	flag.StringVar(&cfg.ImpactNotional, "impact-notional", "20000", "impact margin notional (quote) the funding premium index is depth-weighted over (Binance method)")
+	flag.StringVar(&cfg.InterestRateDaily, "funding-interest-rate-daily", "0.0003", "daily interest-rate component of the funding rate (Binance default 0.03%/day)")
+	flag.StringVar(&cfg.PremiumBand, "premium-band", "0.0005", "± band clamping (interest - avg_premium) in the funding rate (Binance ±0.05%); 0 = pure premium")
 	flag.StringVar(&cfg.Env, "env", "dev", "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "log level")
 	flag.Parse()
@@ -79,11 +87,15 @@ func main() {
 	}
 
 	c := calc.New(calc.Config{
-		Alpha:          dec.New(cfg.Alpha),
-		BasisCap:       dec.New(cfg.BasisCap),
-		FundingRateCap: dec.New(cfg.FundingRateCap),
+		Alpha:         dec.New(cfg.Alpha),
+		BasisCap:      dec.New(cfg.BasisCap),
+		InterestDaily: dec.New(cfg.InterestRateDaily),
+		IntervalMin:   int64(fundingInterval / time.Minute),
+		PremiumBand:   dec.New(cfg.PremiumBand),
+		FundingCap:    dec.New(cfg.FundingRateCap),
 	})
-	book := journal.NewMidBook()
+	impactNotional := dec.New(cfg.ImpactNotional)
+	book := journal.NewBook()
 
 	consumer, err := journal.NewMarketDataConsumer(journal.MarketDataConsumerConfig{
 		Brokers:  brokers,
@@ -121,17 +133,19 @@ func main() {
 		}
 	}()
 
-	runTickLoop(ctx, cfg, tickInterval, fundingInterval, book, c, producer, logger)
+	runTickLoop(ctx, cfg, tickInterval, fundingInterval, impactNotional, book, c, producer, logger)
 
 	logger.Info("markprice shutting down")
 	_ = logger.Sync()
 }
 
 // runTickLoop owns the Calc (single goroutine). Each tick it reads the latest
-// spot/perp mids, folds a MarkTick, and on crossing a funding boundary settles
-// the round with one FundingTick. Blocks until ctx is cancelled.
-func runTickLoop(ctx context.Context, cfg Config, tick, fundingInterval time.Duration,
-	book *journal.MidBook, c *calc.Calc, producer *journal.MarkProducer, logger *zap.Logger) {
+// spot index + perp mid (for the mark) and the perp depth-weighted impact
+// prices (for the funding premium sample), emits a MarkTick, and on crossing a
+// funding boundary settles the round with one FundingTick. Blocks until ctx is
+// cancelled.
+func runTickLoop(ctx context.Context, cfg Config, tick, fundingInterval time.Duration, impactNotional dec.Decimal,
+	book *journal.Book, c *calc.Calc, producer *journal.MarkProducer, logger *zap.Logger) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	// Seed the boundary with the current interval so we settle only when we
@@ -152,7 +166,13 @@ func runTickLoop(ctx context.Context, cfg Config, tick, fundingInterval time.Dur
 			if !okPerp {
 				perpMid = spotMid // no perp book yet → zero basis, mark == index
 			}
-			mark, fundingEst := c.Tick(spotMid, perpMid)
+			mark := c.Mark(spotMid, perpMid)
+			// Funding premium sample from the perp impact prices vs the index
+			// (skipped when the perp book is one-sided / absent).
+			if impactBid, impactAsk, okImp := book.ImpactPrices(cfg.PerpSymbol, impactNotional); okImp {
+				c.SamplePremium(impactBid, impactAsk, spotMid)
+			}
+			fundingEst := c.ForecastFundingRate()
 			lastMark = mark
 			now := time.Now()
 			if err := producer.PublishMarkTick(ctx, cfg.PerpSymbol, mark, spotMid, fundingEst, now.UnixMilli()); err != nil && ctx.Err() == nil {
@@ -160,7 +180,7 @@ func runTickLoop(ctx context.Context, cfg Config, tick, fundingInterval time.Dur
 			}
 
 			if curBoundary := now.UTC().Truncate(fundingInterval); curBoundary.After(lastBoundary) {
-				rate := c.FundingRate()
+				rate := c.SettleFundingRate()
 				roundID := curBoundary.Unix()
 				if err := producer.PublishFundingTick(ctx, cfg.PerpSymbol, roundID, rate, lastMark, now.UnixMilli()); err != nil && ctx.Err() == nil {
 					logger.Warn("publish funding tick", zap.Error(err))

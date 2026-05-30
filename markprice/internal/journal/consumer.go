@@ -21,19 +21,19 @@ type MarketDataConsumerConfig struct {
 	Topics   []string // e.g. ["market-data", "perp-market-data"]
 }
 
-// MarketDataConsumer feeds a MidBook from OrderBook Full frames. It is a live
+// MarketDataConsumer feeds a Book from OrderBook Full frames. It is a live
 // price projection, not an event-sourced consumer: it reads every partition
 // directly (no group) from the latest offset, since only the current book
 // matters and restart re-tails to a fresh Full within one Full interval
 // (ADR-0055 cold start).
 type MarketDataConsumer struct {
 	cli    *kgo.Client
-	book   *MidBook
+	book   *Book
 	logger *zap.Logger
 }
 
 // NewMarketDataConsumer builds a ReadCommitted reader of the given topics.
-func NewMarketDataConsumer(cfg MarketDataConsumerConfig, book *MidBook, logger *zap.Logger) (*MarketDataConsumer, error) {
+func NewMarketDataConsumer(cfg MarketDataConsumerConfig, book *Book, logger *zap.Logger) (*MarketDataConsumer, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, errors.New("journal: no brokers")
 	}

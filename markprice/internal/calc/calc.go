@@ -1,33 +1,51 @@
 // Package calc is the markprice computation core (ADR-0068 §5): it folds a
-// stream of (index, perp-mid) observations into a manipulation-resistant mark
-// price and a funding rate. Pure + deterministic; the Kafka consume (spot
-// market-data) and produce (mark-price topic) wiring lives in cmd/markprice.
+// stream of market-data observations into a manipulation-resistant mark price
+// and a Binance-style funding rate. Pure + deterministic; the Kafka consume
+// (market-data) and produce (mark-price) wiring lives in cmd/markprice.
 //
-// mark  = index + clamp(EMA(perp_mid - index), ±basis_cap)
-// fund  = clamp(TWAP(premium), ±rate_cap),  premium = (perp_mid - index)/index
+// Mark price (for unrealized PnL + liquidation):
 //
-// Running unrealized PnL / liquidation off the mark (not the perp last price)
-// is what blunts "slam your own perp book to trigger liquidations" — the mark
-// only drifts from the spot index by the smoothed, capped basis.
+//	mark = index + clamp(EMA(perp_mid - index), ±basis_cap)
+//
+// Funding rate (ADR-0068 §7, Binance method) — sampled across the interval then
+// settled at the boundary:
+//
+//	premium_index = ( Max(0, impact_bid - index) - Max(0, index - impact_ask) ) / index
+//	avg_premium   = TWAP(premium_index over the interval)
+//	funding_rate  = avg_premium + clamp(interest_per_interval - avg_premium, ±band)
+//	              = clamp(funding_rate, ±funding_cap)
+//
+// impact_bid/ask are depth-weighted (the average fill price over a fixed
+// notional, computed in internal/journal.Book) — NOT top-of-book — so a thin
+// best quote cannot move the rate. interest_per_interval = daily_interest ×
+// interval_min / 1440. Running unrealized PnL / liquidation off the mark, and
+// funding off the impact-based premium, is what blunts self-book manipulation.
 package calc
 
 import "github.com/xargin/opentrade/pkg/dec"
 
 var (
-	zero = dec.FromInt(0)
-	one  = dec.FromInt(1)
+	zero    = dec.FromInt(0)
+	one     = dec.FromInt(1)
+	minsDay = dec.FromInt(1440)
 )
 
 // Config tunes the mark/funding computation.
 type Config struct {
-	Alpha          dec.Decimal // EMA smoothing for the basis, in (0,1]
-	BasisCap       dec.Decimal // clamp on |mark - index| (absolute USDT); 0 = no clamp
-	FundingRateCap dec.Decimal // clamp on |funding_rate|; 0 = no clamp
+	// Mark.
+	Alpha    dec.Decimal // EMA smoothing for the basis, in (0,1]
+	BasisCap dec.Decimal // clamp on |mark - index| (absolute USDT); 0 = no clamp
+
+	// Funding (Binance method).
+	InterestDaily dec.Decimal // daily interest-rate component (e.g. 0.0003 = 0.03%/day)
+	IntervalMin   int64       // funding interval in minutes (for interest-per-interval); 0 disables the interest term
+	PremiumBand   dec.Decimal // ± band on (interest - avg_premium); Binance uses 0.0005 (±0.05%); 0 = no band clamp
+	FundingCap    dec.Decimal // clamp on |funding_rate|; 0 = no clamp
 }
 
-// Calc holds the running EMA basis and the funding-interval premium
-// accumulator. Not safe for concurrent use — the markprice worker is
-// single-goroutine per symbol.
+// Calc holds the running mark-basis EMA and the funding-interval premium-index
+// accumulator. Not safe for concurrent use — the markprice tick loop is a
+// single goroutine.
 type Calc struct {
 	cfg          Config
 	emaBasis     dec.Decimal
@@ -41,11 +59,9 @@ func New(cfg Config) *Calc {
 	return &Calc{cfg: cfg, emaBasis: zero, premiumSum: zero}
 }
 
-// Tick folds one (index, perpMid) observation and returns the current mark
-// price and the running funding-rate estimate. index should be > 0; a
-// non-positive index skips the premium accumulation (mark still tracks the
-// basis EMA).
-func (c *Calc) Tick(index, perpMid dec.Decimal) (mark, fundingEstimate dec.Decimal) {
+// Mark folds one (index, perpMid) observation into the basis EMA and returns
+// the current mark price.
+func (c *Calc) Mark(index, perpMid dec.Decimal) dec.Decimal {
 	basis := perpMid.Sub(index)
 	if c.hasEMA {
 		c.emaBasis = c.cfg.Alpha.Mul(basis).Add(one.Sub(c.cfg.Alpha).Mul(c.emaBasis))
@@ -53,32 +69,69 @@ func (c *Calc) Tick(index, perpMid dec.Decimal) (mark, fundingEstimate dec.Decim
 		c.emaBasis = basis
 		c.hasEMA = true
 	}
-	mark = index.Add(clampAbs(c.emaBasis, c.cfg.BasisCap))
-	if index.Sign() > 0 {
-		c.premiumSum = c.premiumSum.Add(basis.Div(index))
-		c.premiumCount++
-	}
-	return mark, c.currentFunding()
+	return index.Add(clampAbs(c.emaBasis, c.cfg.BasisCap))
 }
 
-func (c *Calc) currentFunding() dec.Decimal {
-	if c.premiumCount == 0 {
-		return zero
+// SamplePremium accumulates one premium-index observation from the perp impact
+// prices vs the index (ADR-0068 §7). Non-positive index is skipped (no division
+// guard needed downstream).
+func (c *Calc) SamplePremium(impactBid, impactAsk, index dec.Decimal) {
+	if index.Sign() <= 0 {
+		return
 	}
-	avg := c.premiumSum.Div(dec.FromInt(c.premiumCount))
-	return clampAbs(avg, c.cfg.FundingRateCap)
+	c.premiumSum = c.premiumSum.Add(premiumIndex(impactBid, impactAsk, index))
+	c.premiumCount++
 }
 
-// FundingRate returns the settled rate for the interval (clamped TWAP premium)
-// and resets the accumulator for the next interval.
-func (c *Calc) FundingRate() dec.Decimal {
-	r := c.currentFunding()
+// ForecastFundingRate returns the funding-rate estimate from the premium samples
+// gathered so far this interval, WITHOUT resetting (for the MarkTick estimate).
+func (c *Calc) ForecastFundingRate() dec.Decimal {
+	return c.fundingFromAvg(c.avgPremium())
+}
+
+// SettleFundingRate returns the funding rate for the interval and resets the
+// premium accumulator for the next one (for the boundary FundingTick).
+func (c *Calc) SettleFundingRate() dec.Decimal {
+	r := c.fundingFromAvg(c.avgPremium())
 	c.premiumSum = zero
 	c.premiumCount = 0
 	return r
 }
 
-// clampAbs limits v to [-limit, +limit] when limit > 0.
+// premiumIndex is the per-sample premium: how far the depth-weighted impact
+// quotes sit outside the index, normalised by the index. Positive ⇒ perp trades
+// rich (longs pay), negative ⇒ perp trades cheap (shorts pay).
+func premiumIndex(impactBid, impactAsk, index dec.Decimal) dec.Decimal {
+	buyDiff := maxDec(zero, impactBid.Sub(index))  // perp bid above index
+	sellDiff := maxDec(zero, index.Sub(impactAsk)) // perp ask below index
+	return buyDiff.Sub(sellDiff).Div(index)
+}
+
+func (c *Calc) avgPremium() dec.Decimal {
+	if c.premiumCount == 0 {
+		return zero
+	}
+	return c.premiumSum.Div(dec.FromInt(c.premiumCount))
+}
+
+// fundingFromAvg applies the Binance interest-band + cap to an average premium:
+// funding = avg + clamp(interest - avg, ±band), then clamp(±funding_cap).
+func (c *Calc) fundingFromAvg(avg dec.Decimal) dec.Decimal {
+	f := avg.Add(clampBand(c.interestPerInterval().Sub(avg), c.cfg.PremiumBand))
+	return clampAbs(f, c.cfg.FundingCap)
+}
+
+// interestPerInterval = daily_interest × interval_min / 1440 (the interval's
+// share of the daily interest-rate term). Zero when the interval is unset.
+func (c *Calc) interestPerInterval() dec.Decimal {
+	if c.cfg.IntervalMin <= 0 {
+		return zero
+	}
+	return c.cfg.InterestDaily.Mul(dec.FromInt(c.cfg.IntervalMin)).Div(minsDay)
+}
+
+// clampAbs limits v to [-limit, +limit] when limit > 0; limit <= 0 disables the
+// clamp (used for the optional basis / funding caps).
 func clampAbs(v, limit dec.Decimal) dec.Decimal {
 	if limit.Sign() <= 0 {
 		return v
@@ -90,4 +143,27 @@ func clampAbs(v, limit dec.Decimal) dec.Decimal {
 		return neg
 	}
 	return v
+}
+
+// clampBand limits v to [-band, +band]. Unlike clampAbs a non-positive band is a
+// ZERO-WIDTH band (returns 0): with band 0 the interest term is fully
+// suppressed and the funding rate is the pure average premium.
+func clampBand(v, band dec.Decimal) dec.Decimal {
+	if band.Sign() <= 0 {
+		return zero
+	}
+	if v.Cmp(band) > 0 {
+		return band
+	}
+	if neg := band.Neg(); v.Cmp(neg) < 0 {
+		return neg
+	}
+	return v
+}
+
+func maxDec(a, b dec.Decimal) dec.Decimal {
+	if a.Cmp(b) >= 0 {
+		return a
+	}
+	return b
 }
