@@ -34,6 +34,12 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 | 集成-SN | **snapshot 持久化**：engine 状态 + service 订单表 + 绑 perp-trade-event offset + 幂等水位 + 在途强平，`snapshotMu` capture barrier（flush 后原子读，ADR-0048）；启动 restore + 周期/退出 save | ✅ | `b248090` |
 | 集成-HA | **冷备 HA**：`--ha-mode=auto` etcd 选主（镜像 match）；只主跑管线，提升即 restore+seek offset，降级写终态 snapshot；安全性靠已落地的 snapshot/offset 绑定 + 事务 producer fencing（ADR-0031/0032） | ✅ | `4a3b4b5` |
 | 集成-AH | **futures AssetHolder**（M7 基石）：perp-counter 实现 AssetHolder 合约，funding→futures 保证金充值走现成 saga（asset-service 仅需 `--peer-holders futures=...` flag，零改动）；transfer_id 去重入 snapshot，出 PerpMarginEvent（ADR-0057） | ✅ | `8ac0606` |
+| 集成-TD | **trade-dump perp 投影**：`perp-journal` → MySQL（positions/wallets/orders + settlements/funding/liquidations/margin 账本）。纯 `BuildPerpBatch` 单测，perp_seq_id 守卫幂等；`03-perp-schema.sql` | ✅ | `2516634` |
+| 集成-PSH | **push perp 私有流**：`perp-journal` → 用户 WS（新 `perp-user` stream，与现货 `user` 分开）；镜像 PrivateConsumer | ✅ | `3d7792a` |
+| 集成-BFF | **BFF perp REST**：`/v1/perp/{order,positions,margin}` 路由到 PerpService（`SetPerp` 注入，`--perp` 空则 503） | ✅ | `ad119ef` |
+| 集成-HIST | **history perp 查询**：`ListPerpPositions/Funding/Liquidations`（proto + buf 重生成 + sqlmock 单测，keyset 分页） | ✅ | `672b573` |
+
+**M7 接入面已闭环**：perp 现在端到端打通——用户经 BFF 下单/查仓/充保证金、私有流推送、历史查询、MySQL 投影全部就位。各模块的纯逻辑（投影/路由/查询）已单测；真正端到端跑通需把 perp Match 部署 + perp-counter + markprice + 这些消费方一起拉起（broker/etcd/MySQL）。
 
 ### 集成-K 落地说明（perp-counter ↔ Match）
 
@@ -44,14 +50,14 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 - **幂等**：成交走仓位 `last_match_seq` 守卫；生命周期事件走订单态（terminal 退场 / NEW 单调边沿）。`HandleTradeEvent` 记录 per-partition consumed offset，供后续 snapshot 绑定。
 - **运维约束**：`perp-trade-event` 的分区数须 ≥ perp Match 的 `--vshard-count`（Match 按 `shard.Index(user_id, vshardCount)` 显式选分区）；MVP 单实例 perp-counter 用消费组吃下全部分区，本地结算全部用户。
 
-### 仍待集成：M7 余下 4 个他模块接入面（各需所在服务的基础设施 build+verify）
+### M7 接入面落地说明（4 个他模块面，纯逻辑均已单测）
 
-perp-counter / markprice 本体已闭环。余下是把这套引擎接进系统其它服务的**读侧 / 路由**面，各自落在别的模块、需要那个模块的 infra（MySQL / 运行中的服务 / broker）才能真正 build+verify，故不在 perp-counter 里盲写：
+- **trade-dump perp 投影**（`2516634`）：`writer.BuildPerpBatch` 纯投影（OrderStatus/Settlement/Funding/Liquidation/Margin → 行）；状态表 perp_seq_id 守卫 latest-wins，账本 `(user_id, perp_seq_id)` INSERT IGNORE；`03-perp-schema.sql` 7 张表；`--perp-journal-topic` 可选消费。符合 [[project_adr0066_admission_rule]] 准入（状态日志）。
+- **push perp 私有流**（`3d7792a`）：新 `StreamPerpUser="perp-user"` 与现货 `user` 分流；`PerpPrivateConsumer` 镜像 PrivateConsumer（同 sticky 归属 ADR-0033、tail-start、protojson 帧）；`--perp-topic` 可选。
+- **BFF perp REST**（`ad119ef`）：`client.Perp` alias + `SetPerp` 注入（不动 NewServer 签名）；`/v1/perp/order|positions|margin`；`--perp` 空则 503。leverage/reduce_only 透传、前置风控 REJECT 上抛。
+- **history perp 查询**（`672b573`）：history.proto 加 3 RPC（buf 重生成）；`ListPerpPositions/Funding/Liquidations`，funding/liq keyset 分页（`PerpLedgerCursor` ts+perp_seq_id）；sqlmock 单测。
 
-- **trade-dump perp 投影**：消费 `perp-journal` → MySQL（positions / perp_settlements / funding / liquidations / margin 表）。perp-journal 是状态日志（每事件带 `PerpPositionSnapshot`），符合 [[ADR-0066]] 准入；对齐 ADR-0061 shadow/snapshot 模式。需新 schema + trade-dump 投影逻辑（纯 convert 可单测，落库需 MySQL）。
-- **push perp 私有流**：消费 `perp-journal` → 用户 WS（仓位/保证金/成交/资金费/强平推送）。镜像 push 现有 counter-journal → 私有流。
-- **BFF perp REST/WS 路由**：按 symbol `-PERP` 后缀路由到 PerpService（连 perprpcconnect client）+ AssetHolder 充值入口；前置风控会返回 REJECTED，客户端契约要区分现货/合约（§影响）。
-- **history perp 查询**：positions / 成交 / 资金费 / 强平历史的查询 endpoint（落 trade-dump 投影表之上）。
+**剩余真正待办**：仅集成测试（把全套服务 + broker/etcd/MySQL 拉起跑端到端）、以及正文已列的功能 MVP 边界（部分强平再挂、ADL 自动执行、cross margin、外部 index 等——均属"后续 ADR / future work"，非本期接入面）。
 
 ### 已落地实现的 MVP 边界（已在代码注释 + commit 记录，列此备查）
 
