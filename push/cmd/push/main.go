@@ -41,6 +41,8 @@ type Config struct {
 	CounterJournalTopic string
 	MarketGroupID       string
 	PrivateGroupID      string
+	PerpJournalTopic    string
+	PerpGroupID         string
 	SendBuffer          int
 	WriteTimeout        time.Duration
 	TrustedHeaderSecret string
@@ -103,6 +105,21 @@ func main() {
 	}
 	defer privCons.Close()
 
+	// Perp private stream (ADR-0068 M7): empty --perp-topic disables it.
+	var perpCons *consumer.PerpPrivateConsumer
+	if cfg.PerpJournalTopic != "" {
+		perpCons, err = consumer.NewPerpPrivate(consumer.PerpPrivateConfig{
+			Brokers: cfg.Brokers, ClientID: cfg.InstanceID + "-perp",
+			InstanceOrdinal: cfg.InstanceOrdinal,
+			TotalInstances:  cfg.TotalInstances,
+			GroupID:         cfg.PerpGroupID, Topic: cfg.PerpJournalTopic,
+		}, h, logger)
+		if err != nil {
+			logger.Fatal("perp private consumer init", zap.Error(err))
+		}
+		defer perpCons.Close()
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", ws.Handler(rootCtx, h, ws.Config{
 		SendBuffer:          cfg.SendBuffer,
@@ -140,6 +157,16 @@ func main() {
 			stop()
 		}
 	}()
+	if perpCons != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := perpCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("perp private consumer exited", zap.Error(err))
+				stop()
+			}
+		}()
+	}
 	go func() {
 		defer wg.Done()
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -168,6 +195,7 @@ func parseFlags() Config {
 		HTTPAddr:            ":8081",
 		MarketDataTopic:     "market-data",
 		CounterJournalTopic: "counter-journal",
+		PerpJournalTopic:    "perp-journal",
 		SendBuffer:          256,
 		WriteTimeout:        10 * time.Second,
 		MessageRate:         2000,
@@ -185,6 +213,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.CounterJournalTopic, "counter-topic", cfg.CounterJournalTopic, "counter-journal topic")
 	flag.StringVar(&cfg.MarketGroupID, "market-group", "", "market-data consumer group (default push-md-{instance-id})")
 	flag.StringVar(&cfg.PrivateGroupID, "private-group", "", "counter-journal consumer group (default push-priv-{instance-id})")
+	flag.StringVar(&cfg.PerpJournalTopic, "perp-topic", cfg.PerpJournalTopic, "perp-journal topic (empty disables the perp private stream; ADR-0068 M7)")
+	flag.StringVar(&cfg.PerpGroupID, "perp-group", "", "perp-journal consumer group (default push-perp-{instance-id})")
 	flag.IntVar(&cfg.SendBuffer, "send-buffer", cfg.SendBuffer, "per-connection outbound queue depth")
 	flag.DurationVar(&cfg.WriteTimeout, "write-timeout", cfg.WriteTimeout, "per-write deadline on WS")
 	flag.StringVar(&cfg.TrustedHeaderSecret, "trusted-header-secret", "", "shared BFF/LB secret required with X-User-Id in prod")
@@ -200,6 +230,9 @@ func parseFlags() Config {
 	}
 	if cfg.PrivateGroupID == "" {
 		cfg.PrivateGroupID = "push-priv-" + cfg.InstanceID
+	}
+	if cfg.PerpGroupID == "" {
+		cfg.PerpGroupID = "push-perp-" + cfg.InstanceID
 	}
 	return cfg
 }

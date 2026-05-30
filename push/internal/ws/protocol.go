@@ -35,6 +35,12 @@ const (
 	// StreamUser is the implicit private stream. Every authenticated
 	// connection is subscribed to it automatically.
 	StreamUser = "user"
+
+	// StreamPerpUser is the private perp (futures) stream — position /
+	// margin / settlement / funding / liquidation updates from perp-journal
+	// (ADR-0068 M7). Kept separate from StreamUser so clients can subscribe to
+	// spot and perp private flows independently.
+	StreamPerpUser = "perp-user"
 )
 
 // EncodeControl returns a pre-serialized control message.
