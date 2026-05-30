@@ -16,9 +16,9 @@
 
 OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-transfer-saga.md)）不写兼容层。
 
-## 实现进度 (2026-05-29)
+## 实现进度 (2026-05-30 更新)
 
-逻辑核心已落地并入 CI（离线 `make build/vet` + 各模块 `test -race` 全绿）。Kafka / 跨服务集成层**待真实基础设施**（broker / etcd / MySQL + perp-aware Match + BFF）就绪再接——不盲写未验证的资金相关集成代码。
+逻辑核心 + **perp-counter ↔ Match 的 Kafka 集成**已落地并入 CI（离线 `make build/vet` + 各模块 `test -race` 全绿）。其余跨服务集成层（markprice 收发、强平执行、snapshot/HA、M7）仍**待真实基础设施**就绪再接。
 
 | 里程碑 | 范围 | 状态 | commit |
 |---|---|---|---|
@@ -28,12 +28,21 @@ OpenTrade 未上线，按既有惯例（同 [ADR-0057](./0057-asset-service-and-
 | M4 | markprice mark/funding 计算核心 + 服务骨架 | ✅ | `c078001` |
 | M5 | 资金费扫描结算（funding_round_seen 幂等） | ✅ | `18a1897` |
 | M6 | 强平检测（collateral pool health 破 mmr） | ✅ | `18a1897` |
+| 集成-K | **perp-counter ↔ Match Kafka 接线**：order-event 生产 + perp-journal WAL + perp-trade-event 消费 + 订单生命周期处理（Accepted/Rejected/Cancelled/Expired）+ IM 释放 | ✅ | `29d8769` |
 
-**待集成（需 broker/etcd/MySQL 才能 build + verify，故暂未写）**：
-- perp-counter ↔ Match：order-event 生产 + trade-event 消费（`Dispatcher` / `Journal` 接口已留，main 用 no-op）
+### 集成-K 落地说明（perp-counter ↔ Match）
+
+- **Match 零改动**：`OrderEvent` / `TradeEvent` proto 本就 symbol-agnostic，`leverage` / `reduce_only` 留在 perp-counter 自己的订单表里（成交回流时按 order_id 取），不上 wire。perp 走**独立 Match 部署**（纯 flag：`--symbols=...-PERP` / `--trade-topic=perp-trade-event` / 独立 group + 选主路径），靠 symbol 的 `-PERP` 后缀路由到它 owned 的 `order-event-...-PERP` topic。验证了 §1「Match 原样复用」。
+- **物理隔离的 topic**（§0）：order-event 沿用 `order-event-<symbol>` 前缀；trade-event 用**独立** `perp-trade-event`（与现货 `trade-event` 隔离）；WAL 为 `perp-journal`（key=user_id）。
+- **新增 `perp-counter/internal/journal`**：`Producer`（结构化满足 service 的 `Dispatcher`+`Journal`，事务/幂等双模，ADR-0032）、`TradeConsumer`（ReadCommitted 消费组，snapshot 为权威 offset 不回提，ADR-0048）。service 不反向依赖 journal（service 建 proto、journal 只碰 Kafka）。
+- **补齐生命周期处理**：消费侧此前只有 `HandleTrade`；新增 Accepted→NEW、Rejected/Cancelled/Expired→**释放订单残余预留 IM + 退场**。否则每次撤单/拒单/过期都漏占保证金。残余 IM 在 `afterFill` 按 `MarginAdded` 递减，部分成交后撤单只释放未成交部分。
+- **幂等**：成交走仓位 `last_match_seq` 守卫；生命周期事件走订单态（terminal 退场 / NEW 单调边沿）。`HandleTradeEvent` 记录 per-partition consumed offset，供后续 snapshot 绑定。
+- **运维约束**：`perp-trade-event` 的分区数须 ≥ perp Match 的 `--vshard-count`（Match 按 `shard.Index(user_id, vshardCount)` 显式选分区）；MVP 单实例 perp-counter 用消费组吃下全部分区，本地结算全部用户。
+
+**仍待集成（需 broker/etcd/MySQL 才能 build + verify，故暂未写）**：
 - markprice：现货 market-data 消费 + mark-price 生产；perp-counter 消费 mark-tick / funding-tick
 - 强平**执行**流：撤单 → 破产价 reduce_only 单 → 保险基金结算（检测已就绪）
-- snapshot 持久化（`pkg/snapshot` + 绑 offset，ADR-0048）+ cold-standby HA
+- snapshot 持久化（含**订单表** + 绑 offset，ADR-0048）+ cold-standby HA。⚠️ 集成-K 的订单表仅在内存：进程重启会丢在途订单 → 回流成交因查不到订单被跳过。订单表入 snapshot 是 HA 里程碑的前置，也是 order-event 与 perp-journal 单事务原子化的前提（稳态双写非原子可接受，崩溃恢复需此项兜底）。
 - **M7 接入面**：AssetHolder（funding→futures）、BFF perp REST/WS、push perp 私有流、trade-dump perp 投影、history perp 查询
 
 ## 术语 (Glossary)
