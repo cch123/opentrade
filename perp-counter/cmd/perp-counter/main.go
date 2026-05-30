@@ -1,15 +1,21 @@
 // Command perp-counter is the account-truth service for USDT-margined linear
-// perpetuals (ADR-0068 §2, A1: independent service alongside the spot
-// Counter). The Connect/h2c gRPC server serves the read + write paths, and —
-// when --brokers is set — perp-counter is wired into Match over Kafka:
-// PlaceOrder/Cancel dispatch order-event records to Match's perp deployment and
-// the perp-trade-event stream flows back into position settlement (ADR-0068 §1).
+// perpetuals (ADR-0068 §2, A1: independent service alongside the spot Counter).
+// It serves the Connect/h2c gRPC read+write paths and, when --brokers is set,
+// is wired into Match over Kafka end to end: PlaceOrder/Cancel dispatch
+// order-event to Match's perp deployment; perp-trade-event flows back into
+// position settlement; mark-price drives unrealized PnL, funding, and
+// liquidation; and state is snapshotted with bound offsets for recovery
+// (ADR-0068 §1/§2/§5/§7/§8, ADR-0048).
 //
-// mark-price consumption (markprice → perp-counter), the liquidation execution
-// flow, snapshot persistence + HA, and the M7 access surface (BFF/push/
-// trade-dump/history) are later milestones. With --brokers empty the service
-// runs with no-op sinks (dev: read paths + the margin gate are live, nothing
-// fills).
+// HA (ADR-0031 cold-standby): with --ha-mode=auto the instance competes for the
+// shard's etcd leader key; only the primary runs the pipeline, losers idle.
+// Failover safety rests on the snapshot+offset binding (the new primary restores
+// then replays idempotently) and the transactional producer fencing
+// (--transactional-id, ADR-0032). --ha-mode=disabled runs a single instance.
+//
+// With --brokers empty the service runs with no-op sinks (dev: read paths + the
+// margin gate are live, nothing fills). The M7 access surface (BFF/push/
+// trade-dump/history, asset-service futures holder) is a later milestone.
 package main
 
 import (
@@ -20,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,6 +40,7 @@ import (
 	"github.com/xargin/opentrade/perp-counter/internal/snapshot"
 	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
 )
@@ -60,31 +68,25 @@ type Config struct {
 	// Snapshot persistence (ADR-0048 / ADR-0068 §5 invariant #5).
 	SnapshotPath     string
 	SnapshotInterval time.Duration
+
+	// HA (ADR-0031 cold-standby).
+	HAMode          string
+	EtcdEndpoints   string
+	ElectionPath    string
+	LeaseTTL        int
+	CampaignBackoff time.Duration
+}
+
+// deps are the parsed, process-lifetime dependencies passed to each primary
+// cycle.
+type deps struct {
+	mmr    dec.Decimal
+	maxLev dec.Decimal
+	idg    *idgen.Generator
 }
 
 func main() {
-	var cfg Config
-	flag.StringVar(&cfg.InstanceID, "instance-id", "perp-counter-0", "instance id (client id / producer id / consumer group suffix)")
-	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", ":8086", "gRPC (Connect/h2c) listen address")
-	flag.StringVar(&cfg.DefaultMMR, "default-mmr", "0.005",
-		"default maintenance margin rate for the derived liq price (ADR-0068; per-symbol override is M6)")
-	flag.StringVar(&cfg.MaxLeverage, "max-leverage", "125", "max leverage accepted at PlaceOrder (0 = no cap)")
-	flag.IntVar(&cfg.IDGenShard, "idgen-shard", 0, "snowflake shard id for perp order ids (avoid collisions with counter)")
-	flag.StringVar(&cfg.Env, "env", "dev", "environment: dev | prod")
-	flag.StringVar(&cfg.LogLevel, "log-level", "info", "log level")
-
-	flag.StringVar(&cfg.Brokers, "brokers", "", "comma-separated Kafka brokers; empty runs with no-op sinks (no order dispatch / trade consume)")
-	flag.StringVar(&cfg.OrderEventTopicPrefix, "order-event-topic-prefix", "order-event",
-		"per-symbol order-event topic prefix (ADR-0050); a perp order routes to `<prefix>-<symbol>`")
-	flag.StringVar(&cfg.JournalTopic, "journal-topic", "perp-journal", "perp-journal WAL topic (ADR-0068 §2)")
-	flag.StringVar(&cfg.TradeTopic, "trade-topic", "perp-trade-event", "perp trade-event topic consumed from Match (ADR-0068 §0 physical isolation)")
-	flag.StringVar(&cfg.ConsumerGroup, "group", "perp-counter", "Kafka consumer group for perp-trade-event (stable across instances so partitions balance)")
-	flag.StringVar(&cfg.TransactionalID, "transactional-id", "", "stable Kafka transactional id for producer fencing (ADR-0032); empty = idempotent (dev)")
-	flag.StringVar(&cfg.MarkPriceTopic, "mark-price-topic", "mark-price", "mark-price topic consumed from markprice (ADR-0068 §5)")
-	flag.StringVar(&cfg.MarkPriceGroup, "mark-price-group", "perp-counter-mark", "Kafka consumer group for the mark-price stream")
-	flag.StringVar(&cfg.SnapshotPath, "snapshot-path", "./data/perp-counter/snapshot.json", "snapshot file path (state + bound offsets, ADR-0048); empty disables")
-	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", 60*time.Second, "how often to snapshot state + offsets")
-	flag.Parse()
+	cfg := parseFlags()
 
 	logger, err := logx.New(logx.Config{Service: "perp-counter", Level: cfg.LogLevel, Env: cfg.Env})
 	if err != nil {
@@ -96,7 +98,6 @@ func main() {
 	if err != nil {
 		logger.Fatal("invalid --default-mmr", zap.Error(err))
 	}
-
 	maxLev, err := dec.Parse(cfg.MaxLeverage)
 	if err != nil {
 		logger.Fatal("invalid --max-leverage", zap.Error(err))
@@ -105,37 +106,107 @@ func main() {
 	if err != nil {
 		logger.Fatal("idgen", zap.Error(err))
 	}
+	d := deps{mmr: mmr, maxLev: maxLev, idg: idg}
 
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	etcd := splitCSV(cfg.EtcdEndpoints)
+	if cfg.HAMode != "auto" || len(etcd) == 0 {
+		runPrimary(rootCtx, cfg, d, logger)
+		return
+	}
+	runElectionLoop(rootCtx, cfg, d, etcd, logger)
+}
+
+// runElectionLoop campaigns for the shard's leader key and runs the primary
+// body for each leadership cycle (ADR-0031, mirrors match). Exits when rootCtx
+// is cancelled.
+func runElectionLoop(rootCtx context.Context, cfg Config, d deps, etcd []string, logger *zap.Logger) {
+	elec, err := election.New(election.Config{
+		Endpoints: etcd, Path: cfg.ElectionPath, Value: cfg.InstanceID, LeaseTTL: cfg.LeaseTTL,
+	})
+	if err != nil {
+		logger.Fatal("election init", zap.Error(err))
+	}
+	defer func() { _ = elec.Close() }()
+
+	for {
+		if rootCtx.Err() != nil {
+			return
+		}
+		logger.Info("campaigning for leadership", zap.String("path", cfg.ElectionPath))
+		if err := elec.Campaign(rootCtx); err != nil {
+			if rootCtx.Err() != nil {
+				return
+			}
+			logger.Error("campaign failed", zap.Error(err))
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-time.After(cfg.CampaignBackoff):
+			}
+			continue
+		}
+		logger.Info("became primary", zap.String("instance", cfg.InstanceID))
+
+		primaryCtx, cancelPrimary := context.WithCancel(rootCtx)
+		watchDone := make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			select {
+			case <-elec.LostCh():
+				logger.Warn("lost leadership — demoting")
+				cancelPrimary()
+			case <-primaryCtx.Done():
+			}
+		}()
+
+		runPrimary(primaryCtx, cfg, d, logger)
+		cancelPrimary()
+		<-watchDone
+
+		if rootCtx.Err() == nil {
+			logger.Info("demoted; re-campaigning")
+			continue
+		}
+		resignCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := elec.Resign(resignCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("resign failed", zap.Error(err))
+		}
+		cancel()
+		return
+	}
+}
+
+// runPrimary brings up the whole pipeline and blocks until ctx is done. Invoked
+// directly in HA-disabled mode and once per leadership cycle in auto mode. On
+// promotion it restores from the snapshot; on shutdown/demotion it writes a
+// final snapshot so the next owner resumes from a fresh point.
+func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 	eng := engine.New()
 
-	// Restore engine state from the last snapshot (ADR-0048). The service order
-	// store + bound offsets are restored after the service is built, below.
+	// Restore engine state; the service order store + bound offsets are
+	// restored after the service is built (ADR-0048).
 	var restored *snapshot.PerpSnapshot
 	if cfg.SnapshotPath != "" {
 		snap, ok, err := snapshot.Load(cfg.SnapshotPath)
 		if err != nil {
-			logger.Fatal("load snapshot", zap.String("path", cfg.SnapshotPath), zap.Error(err))
+			logger.Error("load snapshot", zap.String("path", cfg.SnapshotPath), zap.Error(err))
+			return
 		}
 		if ok {
 			eng.Restore(snap.Engine)
 			restored = &snap
-			logger.Info("restored engine state from snapshot",
-				zap.String("path", cfg.SnapshotPath), zap.Int64("ts_unix_ms", snap.TsUnixMs))
+			logger.Info("restored engine state", zap.Int64("ts_unix_ms", snap.TsUnixMs))
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	// --- Kafka wiring (ADR-0068 §1/§2) -----------------------------------
-	// When --brokers is set, the producer dispatches order-event to Match and
-	// emits the perp-journal WAL; the consumer feeds perp-trade-event back into
-	// settlement. Empty brokers keep the no-op sinks so dev runs without Kafka.
 	var (
 		dispatch service.Dispatcher
 		jrnl     service.Journal
 		producer *journal.Producer
-		consumer *journal.TradeConsumer
+		err      error
 	)
 	brokers := splitCSV(cfg.Brokers)
 	if len(brokers) > 0 {
@@ -147,7 +218,8 @@ func main() {
 			TransactionalID:       cfg.TransactionalID,
 		}, logger)
 		if err != nil {
-			logger.Fatal("perp producer", zap.Error(err))
+			logger.Error("perp producer", zap.Error(err))
+			return
 		}
 		defer producer.Close()
 		dispatch, jrnl = producer, producer
@@ -155,17 +227,20 @@ func main() {
 		logger.Warn("no --brokers: running with no-op sinks (PlaceOrder reserves margin but nothing dispatches/fills)")
 	}
 
-	svc := service.New(eng, dispatch, jrnl, idg.Next, service.Config{
-		ShardID: cfg.IDGenShard, ProducerID: cfg.InstanceID, MaxLeverage: maxLev, MMR: mmr,
+	svc := service.New(eng, dispatch, jrnl, d.idg.Next, service.Config{
+		ShardID: cfg.IDGenShard, ProducerID: cfg.InstanceID, MaxLeverage: d.maxLev, MMR: d.mmr,
 	})
 	if restored != nil {
 		svc.Restore(restored.Service)
-		logger.Info("restored service state from snapshot",
+		logger.Info("restored service state",
 			zap.Int("orders", len(restored.Service.Orders)),
 			zap.Int("offset_partitions", len(restored.Service.Offsets)))
 	}
 
-	var markConsumer *journal.MarkPriceConsumer
+	var (
+		consumer     *journal.TradeConsumer
+		markConsumer *journal.MarkPriceConsumer
+	)
 	if len(brokers) > 0 {
 		consumer, err = journal.NewTradeConsumer(journal.TradeConsumerConfig{
 			Brokers:        brokers,
@@ -175,7 +250,8 @@ func main() {
 			InitialOffsets: svc.ConsumedOffsets(), // seek to the snapshot's bound offsets
 		}, svc, logger)
 		if err != nil {
-			logger.Fatal("perp trade consumer", zap.Error(err))
+			logger.Error("perp trade consumer", zap.Error(err))
+			return
 		}
 		defer consumer.Close()
 
@@ -186,67 +262,72 @@ func main() {
 			Topic:    cfg.MarkPriceTopic,
 		}, svc, logger)
 		if err != nil {
-			logger.Fatal("mark-price consumer", zap.Error(err))
+			logger.Error("mark-price consumer", zap.Error(err))
+			return
 		}
 		defer markConsumer.Close()
 	}
 
 	mux := http.NewServeMux()
-	path, handler := perprpcconnect.NewPerpServiceHandler(server.New(eng, svc, mmr))
-	mux.Handle(path, handler)
+	rpcPath, handler := perprpcconnect.NewPerpServiceHandler(server.New(eng, svc, d.mmr))
+	mux.Handle(rpcPath, handler)
 	httpSrv := connectx.NewH2CServer(cfg.GRPCAddr, mux)
 
-	logger.Info("perp-counter starting (ADR-0068)",
-		zap.String("grpc", cfg.GRPCAddr), zap.String("default_mmr", cfg.DefaultMMR),
-		zap.Strings("brokers", brokers), zap.String("order_topic_prefix", cfg.OrderEventTopicPrefix),
-		zap.String("trade_topic", cfg.TradeTopic), zap.String("journal_topic", cfg.JournalTopic),
-		zap.Bool("transactional", cfg.TransactionalID != ""))
-	logger.Warn("scope: order-event/trade-event + mark-price/funding/liquidation + snapshot wired; cold-standby HA and M7 (BFF/push/trade-dump/history) pending later milestones")
+	logger.Info("perp-counter primary up (ADR-0068)",
+		zap.String("grpc", cfg.GRPCAddr), zap.Strings("brokers", brokers),
+		zap.String("trade_topic", cfg.TradeTopic), zap.String("mark_topic", cfg.MarkPriceTopic),
+		zap.Bool("transactional", cfg.TransactionalID != ""), zap.String("ha", cfg.HAMode))
 
 	if cfg.SnapshotPath != "" {
 		if err := snapshot.EnsureDir(cfg.SnapshotPath); err != nil {
-			logger.Fatal("snapshot dir", zap.Error(err))
+			logger.Error("snapshot dir", zap.Error(err))
+			return
 		}
 		go runSnapshotLoop(ctx, cfg, svc, producer, logger)
 	}
 
+	srvErr := make(chan error, 1)
 	go func() {
 		logger.Info("gRPC (Connect/h2c) listening", zap.String("addr", cfg.GRPCAddr))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("grpc serve", zap.Error(err))
-			stop()
+			srvErr <- err
 		}
 	}()
-
+	var consumerWG sync.WaitGroup
 	if consumer != nil {
+		consumerWG.Add(1)
 		go func() {
-			logger.Info("perp-trade-event consumer starting",
-				zap.String("topic", cfg.TradeTopic), zap.String("group", cfg.ConsumerGroup))
+			defer consumerWG.Done()
 			if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("trade consumer exited", zap.Error(err))
-				stop()
 			}
 		}()
 	}
 	if markConsumer != nil {
+		consumerWG.Add(1)
 		go func() {
-			logger.Info("mark-price consumer starting",
-				zap.String("topic", cfg.MarkPriceTopic), zap.String("group", cfg.MarkPriceGroup))
+			defer consumerWG.Done()
 			if err := markConsumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("mark-price consumer exited", zap.Error(err))
-				stop()
 			}
 		}()
 	}
 
-	<-ctx.Done()
-	logger.Info("perp-counter shutting down")
+	select {
+	case <-ctx.Done():
+	case err := <-srvErr:
+		logger.Error("grpc serve", zap.Error(err))
+	}
+
+	logger.Info("primary shutting down")
 	if consumer != nil {
 		consumer.Close()
 	}
 	if markConsumer != nil {
 		markConsumer.Close()
 	}
+	consumerWG.Wait()
+
 	// Final snapshot once the consumers have stopped mutating state.
 	if cfg.SnapshotPath != "" {
 		if err := saveSnapshot(cfg, svc, producer); err != nil {
@@ -258,9 +339,8 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("shutdown", zap.Error(err))
+		logger.Error("http shutdown", zap.Error(err))
 	}
-	_ = logger.Sync()
 }
 
 // runSnapshotLoop periodically captures + persists state (ADR-0048). Each tick
@@ -302,6 +382,38 @@ func saveSnapshot(cfg Config, svc *service.Service, producer *journal.Producer) 
 	return snapshot.Save(cfg.SnapshotPath, snapshot.PerpSnapshot{
 		TsUnixMs: time.Now().UnixMilli(), Engine: engSnap, Service: svcSnap,
 	})
+}
+
+func parseFlags() Config {
+	var cfg Config
+	flag.StringVar(&cfg.InstanceID, "instance-id", "perp-counter-0", "instance id (client id / producer id / consumer group suffix)")
+	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", ":8086", "gRPC (Connect/h2c) listen address")
+	flag.StringVar(&cfg.DefaultMMR, "default-mmr", "0.005",
+		"maintenance margin rate for liquidation + the derived liq price (ADR-0068; per-symbol override is M6)")
+	flag.StringVar(&cfg.MaxLeverage, "max-leverage", "125", "max leverage accepted at PlaceOrder (0 = no cap)")
+	flag.IntVar(&cfg.IDGenShard, "idgen-shard", 0, "snowflake shard id for perp order ids (avoid collisions with counter)")
+	flag.StringVar(&cfg.Env, "env", "dev", "environment: dev | prod")
+	flag.StringVar(&cfg.LogLevel, "log-level", "info", "log level")
+
+	flag.StringVar(&cfg.Brokers, "brokers", "", "comma-separated Kafka brokers; empty runs with no-op sinks (no order dispatch / trade consume)")
+	flag.StringVar(&cfg.OrderEventTopicPrefix, "order-event-topic-prefix", "order-event",
+		"per-symbol order-event topic prefix (ADR-0050); a perp order routes to `<prefix>-<symbol>`")
+	flag.StringVar(&cfg.JournalTopic, "journal-topic", "perp-journal", "perp-journal WAL topic (ADR-0068 §2)")
+	flag.StringVar(&cfg.TradeTopic, "trade-topic", "perp-trade-event", "perp trade-event topic consumed from Match (ADR-0068 §0 physical isolation)")
+	flag.StringVar(&cfg.ConsumerGroup, "group", "perp-counter", "Kafka consumer group for perp-trade-event (stable across instances so partitions balance)")
+	flag.StringVar(&cfg.TransactionalID, "transactional-id", "", "stable Kafka transactional id for producer fencing (ADR-0032); empty = idempotent (dev). Set per shard in HA mode.")
+	flag.StringVar(&cfg.MarkPriceTopic, "mark-price-topic", "mark-price", "mark-price topic consumed from markprice (ADR-0068 §5)")
+	flag.StringVar(&cfg.MarkPriceGroup, "mark-price-group", "perp-counter-mark", "Kafka consumer group for the mark-price stream")
+	flag.StringVar(&cfg.SnapshotPath, "snapshot-path", "./data/perp-counter/snapshot.json", "snapshot file path (state + bound offsets, ADR-0048); empty disables")
+	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", 60*time.Second, "how often to snapshot state + offsets")
+
+	flag.StringVar(&cfg.HAMode, "ha-mode", "disabled", "ha mode: disabled | auto (etcd leader election, ADR-0031)")
+	flag.StringVar(&cfg.EtcdEndpoints, "etcd", "", "comma-separated etcd endpoints (required for --ha-mode=auto)")
+	flag.StringVar(&cfg.ElectionPath, "election-path", "/cex/perp-counter/leader", "etcd election key (ADR-0031)")
+	flag.IntVar(&cfg.LeaseTTL, "lease-ttl", 10, "etcd session TTL seconds")
+	flag.DurationVar(&cfg.CampaignBackoff, "campaign-backoff", 2*time.Second, "wait between failed campaigns")
+	flag.Parse()
+	return cfg
 }
 
 // splitCSV splits a comma-separated flag value, trimming blanks.
