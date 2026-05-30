@@ -58,12 +58,14 @@ type Config struct {
 	Pipelines []string
 
 	// -- SQL pipeline (ADR-0023 / 0028 / 0047) --
-	TradeTopic   string
-	TradeGroup   string
-	JournalTopic string
-	JournalGroup string
-	TriggerTopic string
-	TriggerGroup string
+	TradeTopic       string
+	TradeGroup       string
+	JournalTopic     string
+	JournalGroup     string
+	TriggerTopic     string
+	TriggerGroup     string
+	PerpJournalTopic string
+	PerpJournalGroup string
 
 	MySQLDSN            string
 	MySQLMaxOpenConns   int
@@ -165,6 +167,7 @@ func main() {
 		tradeCons   *consumer.TradeConsumer
 		journalCons *consumer.JournalConsumer
 		condCons    *consumer.TriggerConsumer
+		perpCons    *consumer.PerpJournalConsumer
 	)
 	if wantSQL {
 		mysqlWriter, err = writer.NewMySQL(writer.MySQLConfig{
@@ -216,6 +219,20 @@ func main() {
 				zap.String("topic", cfg.TriggerTopic),
 				zap.String("group", cfg.TriggerGroup))
 		}
+		if cfg.PerpJournalTopic != "" {
+			perpCons, err = consumer.NewPerpJournal(consumer.PerpJournalConfig{
+				Brokers:  cfg.Brokers,
+				ClientID: cfg.InstanceID + "-perp",
+				GroupID:  cfg.PerpJournalGroup,
+				Topic:    cfg.PerpJournalTopic,
+			}, mysqlWriter, logger)
+			if err != nil {
+				logger.Fatal("perp-journal consumer init", zap.Error(err))
+			}
+			defer perpCons.Close()
+			logger.Info("perp-journal consumer enabled (ADR-0068 M7)",
+				zap.String("topic", cfg.PerpJournalTopic), zap.String("group", cfg.PerpJournalGroup))
+		}
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
@@ -237,6 +254,16 @@ func main() {
 				defer wg.Done()
 				if err := condCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
 					logger.Error("trigger consumer exited", zap.Error(err))
+					stop()
+				}
+			}()
+		}
+		if perpCons != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := perpCons.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Error("perp-journal consumer exited", zap.Error(err))
 					stop()
 				}
 			}()
@@ -514,6 +541,7 @@ func parseFlags() Config {
 		TradeTopic:        "trade-event",
 		JournalTopic:      "counter-journal",
 		TriggerTopic:      "trigger-event",
+		PerpJournalTopic:  "perp-journal",
 		MySQLDSN:          "opentrade:opentrade@tcp(127.0.0.1:3306)/opentrade?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true",
 		MySQLMaxOpenConns: 16,
 		MySQLMaxIdleConns: 4,
@@ -562,6 +590,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.JournalGroup, "journal-group", "", "counter-journal consumer group for sql pipeline (default trade-dump-journal-{instance-id})")
 	flag.StringVar(&cfg.TriggerTopic, "trigger-topic", cfg.TriggerTopic, "trigger-event topic name (empty disables; ADR-0047)")
 	flag.StringVar(&cfg.TriggerGroup, "trigger-group", "", "trigger-event consumer group (default trade-dump-trig-{instance-id})")
+	flag.StringVar(&cfg.PerpJournalTopic, "perp-journal-topic", cfg.PerpJournalTopic, "perp-journal topic name (empty disables perp projection; ADR-0068 M7)")
+	flag.StringVar(&cfg.PerpJournalGroup, "perp-journal-group", "", "perp-journal consumer group (default trade-dump-perp-{instance-id})")
 	flag.StringVar(&cfg.MySQLDSN, "mysql-dsn", cfg.MySQLDSN, "MySQL DSN")
 	flag.IntVar(&cfg.MySQLMaxOpenConns, "mysql-max-open", cfg.MySQLMaxOpenConns, "MySQL max open connections")
 	flag.IntVar(&cfg.MySQLMaxIdleConns, "mysql-max-idle", cfg.MySQLMaxIdleConns, "MySQL max idle connections")
@@ -617,6 +647,9 @@ func parseFlags() Config {
 	}
 	if cfg.TriggerGroup == "" {
 		cfg.TriggerGroup = "trade-dump-trig-" + cfg.InstanceID
+	}
+	if cfg.PerpJournalGroup == "" {
+		cfg.PerpJournalGroup = "trade-dump-perp-" + cfg.InstanceID
 	}
 	if envFmt := os.Getenv("OPENTRADE_SNAPSHOT_FORMAT"); envFmt != "" {
 		snapFmtStr = envFmt
