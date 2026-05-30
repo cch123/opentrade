@@ -247,6 +247,49 @@ func (e *Engine) SettleFunding(symbol string, roundID int64, rate dec.Decimal) [
 	return out
 }
 
+// UsersWithPosition returns the users holding a non-flat position in symbol,
+// sorted. The service fans funding settlement out across these users, each
+// under its own sequencer (ADR-0068 invariant #1), instead of mutating every
+// position in one bulk pass — so a user's funding and fills stay totally
+// ordered (the funding amount depends on size, so it must not interleave with
+// a concurrent fill).
+func (e *Engine) UsersWithPosition(symbol string) []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	var out []string
+	for user, bySym := range e.positions {
+		if p := bySym[symbol]; p != nil && !p.IsFlat() {
+			out = append(out, user)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SettleFundingUser settles one funding round against (user, symbol) at the
+// current mark, guarded by the per-position funding_round_seen watermark
+// (ADR-0068 invariant #3: roundID <= seen is a replay and is skipped). Returns
+// the result and whether it applied. The caller MUST run this inside the user's
+// sequencer (invariant #1). Guard + apply + advance are one locked step.
+func (e *Engine) SettleFundingUser(user, symbol string, roundID int64, rate dec.Decimal) (FundingResult, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bySym := e.positions[user]
+	if bySym == nil {
+		return FundingResult{}, false
+	}
+	p := bySym[symbol]
+	if p == nil || p.IsFlat() {
+		return FundingResult{}, false
+	}
+	if roundID <= p.FundingRoundSeen {
+		return FundingResult{}, false
+	}
+	delta := p.ApplyFunding(e.marks[symbol], rate)
+	p.FundingRoundSeen = roundID
+	return FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p}, true
+}
+
 // AddInsurance adjusts a symbol's insurance fund (ADR-0068 §9). delta may be
 // negative (fund covers a shortfall). Returns the new balance.
 func (e *Engine) AddInsurance(symbol string, delta dec.Decimal) dec.Decimal {
@@ -303,6 +346,59 @@ func (e *Engine) LiquidatablePositions(symbol string, mmr dec.Decimal) []Liquida
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
 	return out
+}
+
+// LiquidationCheck re-evaluates a single (user, symbol) position against the
+// maintenance margin rate under the lock, returning the candidate when it still
+// breaches. The service calls this inside the user's sequencer to re-verify
+// before acting (the scan that found it ran lock-free and the position may have
+// moved since — TOCTOU guard, ADR-0068 invariant #1).
+func (e *Engine) LiquidationCheck(user, symbol string, mmr dec.Decimal) (LiquidationCandidate, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	bySym := e.positions[user]
+	if bySym == nil {
+		return LiquidationCandidate{}, false
+	}
+	p := bySym[symbol]
+	if p == nil || p.IsFlat() {
+		return LiquidationCandidate{}, false
+	}
+	mark := e.marks[symbol]
+	if !perpstate.Isolated(p).Liquidatable(map[string]dec.Decimal{symbol: mark}, mmr) {
+		return LiquidationCandidate{}, false
+	}
+	return LiquidationCandidate{
+		UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
+		Mark: mark, BankruptcyPrice: p.BankruptcyPrice(),
+	}, true
+}
+
+// ApplyLiquidationFill applies one fill of the bankruptcy reduce_only order to a
+// position being liquidated (ADR-0068 §8). Unlike ApplyFill it routes the freed
+// equity to the symbol's insurance fund instead of the user's wallet — in
+// isolated margin the user forfeits the position margin on liquidation. The
+// signed insurance delta is (margin released + realized PnL at the fill): a
+// surplus (filled better than bankruptcy) grows the fund, a deficit (filled
+// worse) draws it down. Applying per fill makes partial liquidation fills
+// correct — the sum across fills equals the single-shot ForceClose equity.
+// Guarded by the same per-(user, symbol) match_seq watermark as ApplyFillWithSeq
+// (replay → applied=false). Caller runs inside the user's sequencer.
+func (e *Engine) ApplyLiquidationFill(user, symbol string, seq uint64, f perpstate.Fill) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	p := e.positionLocked(user, symbol)
+	if seq != 0 && seq <= p.LastMatchSeq {
+		return perpstate.FillResult{}, zero, false
+	}
+	res = p.ApplyFill(f)
+	if seq != 0 {
+		p.LastMatchSeq = seq
+	}
+	// Equity freed by this reduce goes to insurance, not the wallet.
+	insuranceDelta = res.MarginReleased.Add(res.Realized).Sub(res.Fee)
+	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
+	return res, insuranceDelta, true
 }
 
 // ForceClose liquidates a position fully at fillPrice (the price the

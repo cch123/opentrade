@@ -46,13 +46,15 @@ type Config struct {
 	Env         string
 	LogLevel    string
 
-	// Kafka (ADR-0068 §1/§2). Empty Brokers = no-op sinks (dev).
+	// Kafka (ADR-0068 §1/§2/§5). Empty Brokers = no-op sinks (dev).
 	Brokers               string
 	OrderEventTopicPrefix string
 	JournalTopic          string
 	TradeTopic            string
 	ConsumerGroup         string
 	TransactionalID       string
+	MarkPriceTopic        string
+	MarkPriceGroup        string
 }
 
 func main() {
@@ -73,6 +75,8 @@ func main() {
 	flag.StringVar(&cfg.TradeTopic, "trade-topic", "perp-trade-event", "perp trade-event topic consumed from Match (ADR-0068 §0 physical isolation)")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "perp-counter", "Kafka consumer group for perp-trade-event (stable across instances so partitions balance)")
 	flag.StringVar(&cfg.TransactionalID, "transactional-id", "", "stable Kafka transactional id for producer fencing (ADR-0032); empty = idempotent (dev)")
+	flag.StringVar(&cfg.MarkPriceTopic, "mark-price-topic", "mark-price", "mark-price topic consumed from markprice (ADR-0068 §5)")
+	flag.StringVar(&cfg.MarkPriceGroup, "mark-price-group", "perp-counter-mark", "Kafka consumer group for the mark-price stream")
 	flag.Parse()
 
 	logger, err := logx.New(logx.Config{Service: "perp-counter", Level: cfg.LogLevel, Env: cfg.Env})
@@ -129,9 +133,10 @@ func main() {
 	}
 
 	svc := service.New(eng, dispatch, jrnl, idg.Next, service.Config{
-		ShardID: cfg.IDGenShard, ProducerID: cfg.InstanceID, MaxLeverage: maxLev,
+		ShardID: cfg.IDGenShard, ProducerID: cfg.InstanceID, MaxLeverage: maxLev, MMR: mmr,
 	})
 
+	var markConsumer *journal.MarkPriceConsumer
 	if len(brokers) > 0 {
 		consumer, err = journal.NewTradeConsumer(journal.TradeConsumerConfig{
 			Brokers:  brokers,
@@ -143,6 +148,17 @@ func main() {
 			logger.Fatal("perp trade consumer", zap.Error(err))
 		}
 		defer consumer.Close()
+
+		markConsumer, err = journal.NewMarkPriceConsumer(journal.MarkPriceConsumerConfig{
+			Brokers:  brokers,
+			ClientID: cfg.InstanceID + "-mark",
+			GroupID:  cfg.MarkPriceGroup,
+			Topic:    cfg.MarkPriceTopic,
+		}, svc, logger)
+		if err != nil {
+			logger.Fatal("mark-price consumer", zap.Error(err))
+		}
+		defer markConsumer.Close()
 	}
 
 	mux := http.NewServeMux()
@@ -175,11 +191,24 @@ func main() {
 			}
 		}()
 	}
+	if markConsumer != nil {
+		go func() {
+			logger.Info("mark-price consumer starting",
+				zap.String("topic", cfg.MarkPriceTopic), zap.String("group", cfg.MarkPriceGroup))
+			if err := markConsumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("mark-price consumer exited", zap.Error(err))
+				stop()
+			}
+		}()
+	}
 
 	<-ctx.Done()
 	logger.Info("perp-counter shutting down")
 	if consumer != nil {
 		consumer.Close()
+	}
+	if markConsumer != nil {
+		markConsumer.Close()
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

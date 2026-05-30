@@ -62,6 +62,7 @@ type Config struct {
 	ShardID     int
 	ProducerID  string
 	MaxLeverage dec.Decimal      // cap; zero = no cap
+	MMR         dec.Decimal      // maintenance margin rate for liquidation; zero disables (ADR-0068 §8)
 	Clock       func() time.Time // nil → time.Now
 }
 
@@ -79,6 +80,12 @@ type Service struct {
 	perpSeq  uint64          // shard-scoped perp-journal sequence (ADR-0051 style)
 	orderSeq uint64          // shard-scoped order-event sequence (separate stream from perpSeq)
 	offsets  map[int32]int64 // next-to-consume perp-trade-event offset per partition (ADR-0048 snapshot binding)
+
+	// In-flight liquidations (ADR-0068 §8). liqByKey guards against
+	// re-triggering a position already being liquidated on the next mark tick;
+	// liqByOrder routes the bankruptcy order's fills to insurance settlement.
+	liqByKey   map[string]*liquidation
+	liqByOrder map[uint64]*liquidation
 }
 
 // New wires the service. nextID supplies order ids (snowflake in prod, a
@@ -96,7 +103,9 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	return &Service{
 		eng: eng, dispatch: dispatch, journal: journal, cfg: cfg,
 		nextID: nextID, seq: newUserSeq(), orders: map[uint64]*Order{},
-		offsets: map[int32]int64{},
+		offsets:    map[int32]int64{},
+		liqByKey:   map[string]*liquidation{},
+		liqByOrder: map[uint64]*liquidation{},
 	}
 }
 
@@ -199,6 +208,11 @@ func (s *Service) CancelOrder(req *perprpc.CancelOrderRequest) (*perprpc.CancelO
 		if o == nil || o.UserID != req.GetUserId() || isTerminal(o.Status) {
 			return
 		}
+		// A bankruptcy reduce_only order is system-owned — the user cannot
+		// cancel it to dodge liquidation (ADR-0068 §8).
+		if s.liquidationFor(o.OrderID) != nil {
+			return
+		}
 		if err := s.dispatch.DispatchCancel(o.Symbol, s.cancelOrderEvent(o)); err != nil {
 			return
 		}
@@ -248,6 +262,12 @@ func (s *Service) settleLeg(user string, orderID uint64, side perpstate.Side, ma
 		o := s.getOrder(orderID)
 		if o == nil || o.UserID != user {
 			return // not owned by this shard / not a perp order we track
+		}
+		// A fill of the bankruptcy reduce_only order settles to insurance, not
+		// the wallet (ADR-0068 §8), via a separate path.
+		if liq := s.liquidationFor(orderID); liq != nil {
+			s.settleLiquidationFill(o, liq, side, matchSeq, t, statusAfter, filledAfter)
+			return
 		}
 		fill := perpstate.Fill{Side: side, Price: dec.New(t.GetPrice()), Qty: dec.New(t.GetQty()), Fee: zero}
 		res, applied := s.eng.ApplyFillWithSeq(user, o.Symbol, o.Leverage, matchSeq, fill)

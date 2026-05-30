@@ -79,6 +79,7 @@ func (s *Service) handleRejected(r *eventpb.OrderRejected) {
 		o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_REJECTED
 		o.UpdatedMs = s.now()
 		s.emitOrderStatusReason(o, old, o.Status, r.GetReason())
+		s.clearLiquidationIfAny(o.OrderID) // re-arm if this was a bankruptcy order
 		s.delOrder(o.OrderID)
 	})
 }
@@ -96,6 +97,7 @@ func (s *Service) handleCancelled(c *eventpb.OrderCancelled) {
 		o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED
 		o.UpdatedMs = s.now()
 		s.emitOrderStatus(o, old, o.Status)
+		s.clearLiquidationIfAny(o.OrderID)
 		s.delOrder(o.OrderID)
 	})
 }
@@ -113,6 +115,7 @@ func (s *Service) handleExpired(e *eventpb.OrderExpired) {
 		o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_EXPIRED
 		o.UpdatedMs = s.now()
 		s.emitOrderStatusReason(o, old, o.Status, e.GetReason())
+		s.clearLiquidationIfAny(o.OrderID)
 		s.delOrder(o.OrderID)
 	})
 }
