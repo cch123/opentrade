@@ -199,6 +199,58 @@ ratio ≤ maint_margin_ratio → 触发强平
    - 成交价优于破产价 → 剩余 `position_margin` 差额进 `insurance_fund`。
    - 成交价触及破产价仍亏 → `insurance_fund` 补足；基金不够 → 进 ADL（§9）。
 
+强平**决策流**（与附录"图 3"时序图互补；✅ = 已实现引擎核心，⏳ = 待集成的 Kafka/Match 接线）：
+
+```
+ [markprice] 发 mark tick ──(mark-price topic, ~1s)
+       │  fanout → 所有 perp-counter shard                              ⏳ 待集成
+       ▼
+ 每 shard 在 per-user sequencer 内,对 owned 仓位算 collateral pool health
+       │
+       ▼
+ margin_ratio = (position_margin + 未实现盈亏(mark)) / 名义值(mark)       ✅ LiquidatablePositions
+       │
+       ▼
+ ◇ ratio ≤ 维持保证金率(MMR) ?
+       │
+  否 ──┴── 是
+  │        │
+  ▼        ▼
+安全     仓位 → LIQUIDATING 态
+等下个    │
+ tick     ▼
+        撤该仓全部挂单 ── 释放预留 IM                                     ⏳ 待集成
+          │
+          ▼
+        算 bankruptcy_price,挂 reduce_only 强平单 ──order-event──▶[Match] ⏳ 待集成
+          │
+          ◀──────────── trade-event(成交) ──────────────────────[Match]
+          ▼
+        ForceClose @ 成交价:平掉仓位,算 equity = margin + 本次已实现        ✅ ForceClose
+          │
+          ▼
+ ◇ equity 正/负 ? (成交价 优于 / 劣于 破产价)
+          │
+  >0(优于)─┴─<0(穿仓)
+  │           │
+  ▼           ▼
+盈余进      ◇ 保险基金够补 ?
+保险基金        │
+ (+)      是 ──┴── 否
+  │        │        │
+  │        ▼        ▼
+  │      基金补     ADL 队列 + 告警
+  │      (-)       (MVP 只排不自动平)
+  │        │        │
+  └────────┴────────┘
+           ▼
+ emit PerpLiquidationEvent(perp-journal) + 仓位/保险基金更新
+           ▼
+        ( 完成 )
+```
+
+两个设计取舍图中已体现：判定跑 **mark price**（非最新成交价）防自激连环强平；判定 + 执行都在 **per-user sequencer** 内串行，避免与在途成交的仓位变更竞态（TOCTOU）。
+
 ### 9. 保险基金 + ADL
 
 - `insurance_fund`：perp-counter 内的 per-symbol USDT 池（也可全局，MVP 选 per-symbol 简单）。强平盈余进、穿仓亏损出，随 snapshot 持久化。
