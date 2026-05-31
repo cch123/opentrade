@@ -97,6 +97,7 @@
 | [0035](0035-market-orders-native-server-side.md) | MARKET 单服务端原生支持 + 可选 BFF 滑点保护翻译 | Accepted |
 | [0053](0053-symbol-precision-and-tiered-evolution.md) | Symbol 精度治理 + 分层精度演进（tick / lot / min-quote-amount） | Accepted |
 | [0054](0054-per-symbol-order-slots.md) | 单用户 per-symbol 挂单数上限（Limit / Trigger 双槽位） | Accepted |
+| [0083](0083-match-native-protected-market-order.md) | Match 原生 protected market order — 基于撮合时刻盘口的滑点保护 | Proposed |
 
 ### 行情与推送
 
@@ -110,6 +111,7 @@
 | [0036](0036-quote-state-snapshot.md) | Quote 引擎状态 snapshot + 热重启 | Accepted |
 | [0037](0037-push-coalesce-rate-limit.md) | Push 端 coalesce + per-conn rate limit | Accepted |
 | [0055](0055-match-as-orderbook-authority-bybit-style.md) | Match 作为 orderbook 权威方，直出 Full + Delta；Quote 降级为无状态转发（参考 Bybit） | Accepted |
+| [0084](0084-private-push-merge-strategy.md) | match→user 私有推送合并策略 — 先做传输帧 batching | Proposed |
 
 ### BFF 与网关
 
@@ -143,6 +145,13 @@
 | [0072](0072-perp-liquidation-scan-index.md) | 强平扫描改为强平价排序索引 — 阈值穿越查询取代每 tick 全量评估 | Accepted / Implemented |
 | [0073](0073-perp-takeover-inventory-and-riskpool-settlement.md) | perp 强平托管仓位 — TakenOverLot 生命周期 + RiskPool 结算 + ADL 消耗库存 | Proposed |
 | [0074](0074-perp-account-margin-modes.md) | perp 账户与保证金模式 — cross / unified / portfolio 的演进路径 | Proposed |
+| [0075](0075-perp-symbol-config-productization.md) | perp 合约 SymbolConfig 产品化 | Proposed |
+| [0076](0076-perp-contract-product-expansion.md) | perp 合约品类扩展 — linear dated futures / settlement，inverse 延后 | Proposed |
+| [0077](0077-perp-position-mode-hedge-both-side.md) | perp 持仓模式 — one-way / hedge both-side position | Proposed |
+| [0078](0078-perp-order-position-product-api.md) | perp 订单与持仓产品 API | Proposed |
+| [0079](0079-perp-fee-accounting.md) | perp 手续费与财务记账 | Proposed |
+| [0080](0080-perp-admission-risk-price-protection.md) | perp 订单准入风控与价格保护 | Proposed |
+| [0081](0081-perp-reduce-only-settlement-hardening.md) | perp reduce_only 结算时硬约束 | Proposed |
 
 ### 工程与基础设施
 
@@ -151,3 +160,4 @@
 | [0012](0012-multi-module-monorepo.md) | 采用 multi-module monorepo + Go workspace | Accepted |
 | [0013](0013-tech-stack-choices.md) | 核心技术选型：franz-go、etcd-v3、shopspring/decimal、zap | Accepted |
 | [0056](0056-symbol-config-via-mysql.md) | Symbol 配置存储从 etcd 迁到独立 MySQL（版本位点轻量 poll；leader election 仍在 etcd） | Proposed |
+| [0082](0082-match-counter-benchmark-methodology.md) | Match / Counter 延迟与吞吐 benchmark 方法 | Proposed |
