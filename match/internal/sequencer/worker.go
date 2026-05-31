@@ -370,7 +370,7 @@ func (w *SymbolWorker) handleCancel(evt *Event) {
 	// Authorization: if UserID is provided and does not match the order owner,
 	// log and emit nothing. In production Counter enforces ownership before
 	// forwarding; this is defensive.
-	if evt.UserID != "" && evt.UserID != o.UserID {
+	if evt.UserID != 0 && evt.UserID != o.UserID {
 		// Re-insert and reject: this is malformed routing.
 		// (In current design counter-journal guarantees no such case; left as
 		// a defensive guard.)

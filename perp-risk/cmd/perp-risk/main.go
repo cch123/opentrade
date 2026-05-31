@@ -1,7 +1,7 @@
 // Command perp-risk is ADR-0071's global risk coordinator. It owns the global
-// insurance fund fold and per-symbol working-capital quotas; perp-counter shards
-// remain the position authority and only emit InsuranceDelta / execute
-// version-stamped tasks.
+// insurance fund fold, TakenOverLot lifecycle, and per-symbol working-capital
+// quotas; perp-counter shards remain the position authority and only emit user
+// execution events / execute version-stamped tasks.
 package main
 
 import (
@@ -120,9 +120,19 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 
 	var consumer *journal.Consumer
+	var producer *journal.Producer
 	brokers := splitCSV(cfg.Brokers)
 	if len(brokers) > 0 {
 		var err error
+		producer, err = journal.NewProducer(journal.ProducerConfig{
+			Brokers: brokers, ClientID: cfg.InstanceID + "-settlement", Topic: cfg.JournalTopic,
+		}, logger)
+		if err != nil {
+			logger.Error("journal producer", zap.Error(err))
+			return
+		}
+		defer producer.Close()
+		riskHandler.settlementProducer = producer
 		consumer, err = journal.NewConsumer(journal.ConsumerConfig{
 			Brokers: brokers, ClientID: cfg.InstanceID, GroupID: cfg.GroupID,
 			Topic: cfg.JournalTopic, InitialOffsets: coord.Offsets(),
@@ -273,47 +283,77 @@ func riskHTTPServer(addr string, h *handler, logger *zap.Logger) *http.Server {
 }
 
 type handler struct {
-	mu     sync.Mutex
-	coord  *perprisk.Coordinator
-	shards []string
-	rpc    *shardrpc.Client
-	logger *zap.Logger
+	mu                 sync.Mutex
+	coord              *perprisk.Coordinator
+	shards             []string
+	rpc                *shardrpc.Client
+	settlementProducer settlementProducer
+	logger             *zap.Logger
+}
+
+type settlementProducer interface {
+	EmitRiskPoolSettlement(*eventpb.PerpJournalEvent)
 }
 
 func (h *handler) ApplyJournalEventAt(evt *eventpb.PerpJournalEvent, partition int32, offset int64) (bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delta, applied, err := h.coord.ApplyJournalEventAtResult(evt, partition, offset)
-	if err != nil || !applied {
-		return applied, err
+	result, err := h.coord.ApplyJournalEventAtResult(evt, partition, offset)
+	if err != nil || !result.Applied {
+		return result.Applied, err
 	}
-	if delta.Backstop && delta.TakeoverNotional.Sign() > 0 {
-		// A backstop takeover moves risk from a liquidated user into system
-		// inventory. Borrowing working capital here makes that exposure visible
-		// to the global fund/quota model instead of leaving it as a shard-local
-		// side effect.
-		if _, err := h.coord.BorrowWorkingCapital(perprisk.BorrowRequest{
-			Coin: delta.Coin, Symbol: delta.Symbol, Day: time.Now().UTC().Format("2006-01-02"),
-			RefID: "takeover:" + delta.RefID, Amount: delta.TakeoverNotional,
-		}); err != nil {
+	if result.Kind == perprisk.JournalKindTakeoverLot && result.BorrowAmount.Sign() > 0 {
+		// ADR-0073 records the actual draw on the lot. This value can be lower
+		// than the notional request because RiskPool quotas clamp exposure.
+		borrow, err := h.coord.BorrowWorkingCapital(perprisk.BorrowRequest{
+			Coin: result.Coin, Symbol: result.Symbol, Day: time.Now().UTC().Format("2006-01-02"),
+			RefID: result.BorrowRef, Amount: result.BorrowAmount,
+		})
+		if err != nil {
 			h.logger.Warn("working-capital borrow failed",
-				zap.String("symbol", delta.Symbol), zap.String("ref_id", delta.RefID), zap.Error(err))
+				zap.String("symbol", result.Symbol), zap.String("lot_id", result.LotID), zap.Error(err))
+		} else if err := h.coord.MarkLotWorkingCapital(result.LotID, result.BorrowRef, borrow.Borrowed); err != nil {
+			h.logger.Warn("working-capital lot mark failed",
+				zap.String("symbol", result.Symbol), zap.String("lot_id", result.LotID), zap.Error(err))
 		}
 	}
-	if len(h.shards) == 0 || delta.Symbol == "" || delta.Price.Sign() <= 0 {
-		return applied, nil
+	if result.Kind == perprisk.JournalKindLotADL && result.Lot.LeavesQty.Sign() == 0 {
+		settlement, applied, err := h.coord.SettleLot(result.LotID)
+		if err != nil {
+			return result.Applied, err
+		}
+		if applied {
+			h.emitRiskPoolSettlement(settlement)
+		}
 	}
-	deficit := h.coord.Fund(delta.Coin).Neg()
-	if deficit.Sign() <= 0 {
-		return applied, nil
+	lot, ok := h.coord.Lot(result.LotID)
+	if !ok || lot.LeavesQty.Sign() <= 0 || len(h.shards) == 0 || lot.TakeoverPrice.Sign() <= 0 {
+		return result.Applied, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := h.planAndDispatchADL(ctx, delta, deficit); err != nil {
+	if err := h.planAndDispatchADL(ctx, lot); err != nil {
 		h.logger.Warn("ADL dispatch incomplete",
-			zap.String("symbol", delta.Symbol), zap.String("deficit", deficit.String()), zap.Error(err))
+			zap.String("symbol", lot.Symbol), zap.String("lot_id", lot.LotID), zap.Error(err))
 	}
-	return applied, nil
+	return result.Applied, nil
+}
+
+func (h *handler) emitRiskPoolSettlement(s perprisk.RiskPoolSettlement) {
+	if h.settlementProducer == nil {
+		return
+	}
+	h.settlementProducer.EmitRiskPoolSettlement(&eventpb.PerpJournalEvent{
+		Meta: &eventpb.EventMeta{TsUnixMs: time.Now().UnixMilli(), ProducerId: "perp-risk"},
+		Payload: &eventpb.PerpJournalEvent_RiskPoolSettlement{RiskPoolSettlement: &eventpb.RiskPoolSettlementEvent{
+			LotId: s.LotID, Symbol: s.Symbol, Coin: s.Coin, WorkingCapitalRef: s.WorkingCapitalRef,
+			TakenOverBalance:  s.TakenOverBalance.String(),
+			LiqAdlRealisedPnl: s.LiqAdlRealizedPnL.String(),
+			CumFee:            s.CumFee.String(), WorkingCapitalDrawn: s.WorkingCapitalDrawn.String(),
+			BorrowedBalance: s.BorrowedBalance.String(), FinalPoolDelta: s.FinalPoolDelta.String(),
+			Status: string(perprisk.LotStatusDone),
+		}},
+	})
 }
 
 func (h *handler) Snapshot() perprisk.Snapshot {
@@ -328,12 +368,12 @@ func (h *handler) RepayWorkingCapital(refID string, amount dec.Decimal) error {
 	return h.coord.RepayWorkingCapitalRef(refID, amount)
 }
 
-func (h *handler) planAndDispatchADL(ctx context.Context, delta perprisk.InsuranceDelta, deficit dec.Decimal) error {
+func (h *handler) planAndDispatchADL(ctx context.Context, lot perprisk.TakenOverLot) error {
 	var all []perprisk.ADLCandidate
 	sources := map[string]string{}
 	for _, endpoint := range h.shards {
 		candidates, err := h.rpc.Candidates(ctx, endpoint, perprisk.CandidateRequest{
-			Symbol: delta.Symbol, AdlPrice: delta.Price.String(), ExcludeUser: delta.UserID,
+			Symbol: lot.Symbol, AdlPrice: lot.TakeoverPrice.String(), ExcludeUser: lot.UserID,
 		})
 		if err != nil {
 			return err
@@ -345,27 +385,41 @@ func (h *handler) planAndDispatchADL(ctx context.Context, delta perprisk.Insuran
 	}
 	// Reserve one round for the whole plan, not one per shard. The round is the
 	// replay guard visible to every owning shard; sharing it lets logs and
-	// snapshots reconstruct one deficit-repair attempt across all tasks.
+	// snapshots reconstruct one lot-consumption attempt across all tasks.
 	round := h.coord.ReserveAdlRound()
-	tasks := perprisk.PlanADL(deficit, delta.Price, round, all)
+	planningLot, ok := h.coord.LotForADLPlanning(lot.LotID)
+	if !ok || planningLot.LeavesQty.Sign() <= 0 {
+		return nil
+	}
+	tasks := perprisk.PlanADL(planningLot, planningLot.TakeoverPrice, round, all)
 	for _, task := range tasks {
 		endpoint := sources[taskKey(task.UserID, task.Symbol, task.PosSeq, task.PositionVersion)]
 		if endpoint == "" {
 			continue
 		}
-		applied, err := h.rpc.ExecuteTask(ctx, endpoint, task)
-		if err != nil {
+		if err := h.coord.RegisterInFlightADL(task); err != nil {
 			return err
 		}
+		result, err := h.rpc.ExecuteTask(ctx, endpoint, task)
+		if err != nil {
+			// Keep the task reserved on transport errors. The shard may have
+			// accepted it and later emit the ADL journal event; clearing here would
+			// allow an over-dispatch before replay proves what happened.
+			return err
+		}
+		if !result.Applied {
+			h.coord.CompleteInFlightADL(task.LotID, task.UserID, task.AdlRound)
+		}
 		h.logger.Info("ADL task dispatched",
-			zap.String("user", task.UserID), zap.String("symbol", task.Symbol),
-			zap.Uint64("adl_round", task.AdlRound), zap.Bool("applied", applied))
+			zap.Uint64("user", task.UserID), zap.String("symbol", task.Symbol),
+			zap.String("lot_id", task.LotID), zap.Uint64("adl_round", task.AdlRound),
+			zap.Bool("applied", result.Applied), zap.String("fact_qty", result.FactQty.String()))
 	}
 	return nil
 }
 
-func taskKey(user, symbol string, posSeq, positionVersion uint64) string {
-	return user + "|" + symbol + "|" + strconv.FormatUint(posSeq, 10) + "|" + strconv.FormatUint(positionVersion, 10)
+func taskKey(user uint64, symbol string, posSeq, positionVersion uint64) string {
+	return strconv.FormatUint(user, 10) + "|" + symbol + "|" + strconv.FormatUint(posSeq, 10) + "|" + strconv.FormatUint(positionVersion, 10)
 }
 
 type snapper interface {

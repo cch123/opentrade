@@ -34,23 +34,23 @@ type TransferResult struct {
 }
 
 // FuturesTransferIn credits the futures wallet (funding→futures deposit).
-func (s *Service) FuturesTransferIn(user, transferID, asset string, amt dec.Decimal) TransferResult {
+func (s *Service) FuturesTransferIn(user uint64, transferID, asset string, amt dec.Decimal) TransferResult {
 	return s.futuresTransfer(user, transferID, asset, amt, true, eventpb.PerpMarginEvent_KIND_TRANSFER_IN)
 }
 
 // FuturesTransferOut debits free margin (futures→funding withdrawal).
-func (s *Service) FuturesTransferOut(user, transferID, asset string, amt dec.Decimal) TransferResult {
+func (s *Service) FuturesTransferOut(user uint64, transferID, asset string, amt dec.Decimal) TransferResult {
 	return s.futuresTransfer(user, transferID, asset, amt, false, eventpb.PerpMarginEvent_KIND_TRANSFER_OUT)
 }
 
 // FuturesCompensateTransferOut reverses a confirmed TransferOut by crediting the
 // amount back. asset-service uses a distinct transfer_id for the compensate leg
 // (the holder just dedups on whatever id it receives, like counter).
-func (s *Service) FuturesCompensateTransferOut(user, transferID, asset string, amt dec.Decimal) TransferResult {
+func (s *Service) FuturesCompensateTransferOut(user uint64, transferID, asset string, amt dec.Decimal) TransferResult {
 	return s.futuresTransfer(user, transferID, asset, amt, true, eventpb.PerpMarginEvent_KIND_TRANSFER_IN)
 }
 
-func (s *Service) futuresTransfer(user, transferID, asset string, amt dec.Decimal, in bool, kind eventpb.PerpMarginEvent_Kind) TransferResult {
+func (s *Service) futuresTransfer(user uint64, transferID, asset string, amt dec.Decimal, in bool, kind eventpb.PerpMarginEvent_Kind) TransferResult {
 	s.snapshotMu.RLock()
 	defer s.snapshotMu.RUnlock()
 	var res TransferResult
@@ -82,7 +82,7 @@ func (s *Service) futuresTransfer(user, transferID, asset string, amt dec.Decima
 }
 
 // emitMargin journals a confirmed futures-wallet balance change (ADR-0068 §2).
-func (s *Service) emitMargin(user string, kind eventpb.PerpMarginEvent_Kind, asset string, amt dec.Decimal, out engine.TransferOutcome, refID string) {
+func (s *Service) emitMargin(user uint64, kind eventpb.PerpMarginEvent_Kind, asset string, amt dec.Decimal, out engine.TransferOutcome, refID string) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_Margin{Margin: &eventpb.PerpMarginEvent{

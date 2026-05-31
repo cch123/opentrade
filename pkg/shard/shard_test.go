@@ -6,10 +6,10 @@ import (
 
 func TestIndex_InRange(t *testing.T) {
 	const total = 10
-	for _, u := range []string{"", "alice", "bob", "00000000-0000-0000-0000-000000000000"} {
+	for _, u := range []uint64{0, 1, 1001, 1 << 63} {
 		got := Index(u, total)
 		if got < 0 || got >= total {
-			t.Errorf("Index(%q) = %d out of [0,%d)", u, got, total)
+			t.Errorf("Index(%d) = %d out of [0,%d)", u, got, total)
 		}
 	}
 }
@@ -19,21 +19,21 @@ func TestIndex_Stable(t *testing.T) {
 	// changes semantics or we switch hash algorithms we need to plan a
 	// coordinated re-shard; this test makes that intent explicit.
 	cases := []struct {
-		userID string
+		userID uint64
 		total  int
 		want   int
 	}{
-		// Frozen from xxhash64: regression trip-wire. If this fails, the
-		// hash algorithm or its library changed and we need a coordinated
-		// re-shard plan before shipping.
-		{"alice", 10, 9},
-		{"bob", 10, 7},
-		{"", 10, 1},
-		{"carol", 10, 8},
+		// Frozen from xxhash64 over the big-endian uint64 bytes: regression
+		// trip-wire. If this fails, the hash algorithm or encoding changed
+		// and we need a coordinated re-shard plan before shipping.
+		{0, 10, 9},
+		{1, 10, 4},
+		{1001, 10, 8},
+		{1 << 63, 10, 2},
 	}
 	for _, c := range cases {
 		if got := Index(c.userID, c.total); got != c.want {
-			t.Errorf("Index(%q,%d)=%d want %d", c.userID, c.total, got, c.want)
+			t.Errorf("Index(%d,%d)=%d want %d", c.userID, c.total, got, c.want)
 		}
 	}
 }
@@ -43,8 +43,7 @@ func TestIndex_Distribution(t *testing.T) {
 	const n = 10_000
 	counts := make([]int, total)
 	for i := 0; i < n; i++ {
-		u := "u" + itoa(i)
-		counts[Index(u, total)]++
+		counts[Index(uint64(i), total)]++
 	}
 	// Each bucket should land within ±25% of n/total. The 25% bound is
 	// generous — xxhash is far better in practice, but we'd rather not
@@ -63,29 +62,29 @@ func TestIndex_Distribution(t *testing.T) {
 
 func TestOwnsUser(t *testing.T) {
 	const total = 10
-	userID := "alice"
+	userID := uint64(1001)
 	want := Index(userID, total)
 	if !OwnsUser(want, total, userID) {
-		t.Errorf("expected shard %d to own %q", want, userID)
+		t.Errorf("expected shard %d to own %d", want, userID)
 	}
 	for s := 0; s < total; s++ {
 		if s == want {
 			continue
 		}
 		if OwnsUser(s, total, userID) {
-			t.Errorf("shard %d must not claim %q", s, userID)
+			t.Errorf("shard %d must not claim %d", s, userID)
 		}
 	}
 }
 
 func TestOwnsUser_OutOfRange(t *testing.T) {
-	if OwnsUser(-1, 10, "x") {
+	if OwnsUser(-1, 10, 1) {
 		t.Error("negative shard must not own")
 	}
-	if OwnsUser(10, 10, "x") {
+	if OwnsUser(10, 10, 1) {
 		t.Error("shard == total must not own")
 	}
-	if OwnsUser(0, 0, "x") {
+	if OwnsUser(0, 0, 1) {
 		t.Error("zero total must not own")
 	}
 }
@@ -96,27 +95,5 @@ func TestIndex_PanicsOnBadTotal(t *testing.T) {
 			t.Error("expected panic on totalShards=0")
 		}
 	}()
-	_ = Index("x", 0)
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	_ = Index(1, 0)
 }

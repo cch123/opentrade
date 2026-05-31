@@ -11,8 +11,8 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -23,7 +23,7 @@ type mockPublisher struct {
 	failNext error
 }
 
-func (m *mockPublisher) Publish(_ context.Context, _ string, evt *eventpb.CounterJournalEvent) error {
+func (m *mockPublisher) Publish(_ context.Context, _ uint64, evt *eventpb.CounterJournalEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failNext != nil {
@@ -56,7 +56,7 @@ func TestTransferConfirms(t *testing.T) {
 
 	res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
 		TransferID: "tx-1",
-		UserID:     "u1",
+		UserID:     1001,
 		Asset:      "USDT",
 		Amount:     dec.New("100"),
 		Type:       counterstate.TransferDeposit,
@@ -70,8 +70,8 @@ func TestTransferConfirms(t *testing.T) {
 	if res.BalanceAfter.Available.String() != "100" {
 		t.Fatalf("balance_after.available = %s", res.BalanceAfter.Available)
 	}
-	if state.Balance("u1", "USDT").Available.String() != "100" {
-		t.Fatalf("state not committed: %+v", state.Balance("u1", "USDT"))
+	if state.Balance(1001, "USDT").Available.String() != "100" {
+		t.Fatalf("state not committed: %+v", state.Balance(1001, "USDT"))
 	}
 	if len(pub.Events()) != 1 {
 		t.Fatalf("expected 1 Kafka event, got %d", len(pub.Events()))
@@ -81,7 +81,7 @@ func TestTransferConfirms(t *testing.T) {
 func TestTransferRejectsInsufficient(t *testing.T) {
 	svc, state, pub := newFixture(t)
 	res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
-		TransferID: "tx-1", UserID: "u1", Asset: "USDT",
+		TransferID: "tx-1", UserID: 1001, Asset: "USDT",
 		Amount: dec.New("10"), Type: counterstate.TransferWithdraw,
 	})
 	if err != nil {
@@ -90,7 +90,7 @@ func TestTransferRejectsInsufficient(t *testing.T) {
 	if res.Status != counterstate.TransferStatusRejected {
 		t.Fatalf("status = %d, want Rejected", res.Status)
 	}
-	if !state.Balance("u1", "USDT").IsEmpty() {
+	if !state.Balance(1001, "USDT").IsEmpty() {
 		t.Fatal("state mutated despite rejection")
 	}
 	if len(pub.Events()) != 0 {
@@ -101,7 +101,7 @@ func TestTransferRejectsInsufficient(t *testing.T) {
 func TestTransferIdempotent(t *testing.T) {
 	svc, _, pub := newFixture(t)
 	req := counterstate.TransferRequest{
-		TransferID: "tx-1", UserID: "u1", Asset: "USDT",
+		TransferID: "tx-1", UserID: 1001, Asset: "USDT",
 		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	}
 	first, err := svc.Transfer(context.Background(), req)
@@ -139,19 +139,19 @@ func TestTransferKafkaFailureRollsBackMemory(t *testing.T) {
 	pub.mu.Unlock()
 
 	_, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
-		TransferID: "tx-1", UserID: "u1", Asset: "USDT",
+		TransferID: "tx-1", UserID: 1001, Asset: "USDT",
 		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	})
 	if err == nil {
 		t.Fatal("expected publish error")
 	}
-	if !state.Balance("u1", "USDT").IsEmpty() {
-		t.Fatalf("state mutated despite publish failure: %+v", state.Balance("u1", "USDT"))
+	if !state.Balance(1001, "USDT").IsEmpty() {
+		t.Fatalf("state mutated despite publish failure: %+v", state.Balance(1001, "USDT"))
 	}
 
 	// A retry with the same transfer_id should go through cleanly.
 	res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
-		TransferID: "tx-1", UserID: "u1", Asset: "USDT",
+		TransferID: "tx-1", UserID: 1001, Asset: "USDT",
 		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	})
 	if err != nil {
@@ -160,8 +160,8 @@ func TestTransferKafkaFailureRollsBackMemory(t *testing.T) {
 	if res.Status != counterstate.TransferStatusConfirmed {
 		t.Fatalf("retry: status = %d", res.Status)
 	}
-	if state.Balance("u1", "USDT").Available.String() != "10" {
-		t.Fatalf("retry did not commit: %+v", state.Balance("u1", "USDT"))
+	if state.Balance(1001, "USDT").Available.String() != "10" {
+		t.Fatalf("retry did not commit: %+v", state.Balance(1001, "USDT"))
 	}
 }
 
@@ -169,9 +169,9 @@ func TestTransferInvalidArgs(t *testing.T) {
 	svc, _, _ := newFixture(t)
 
 	cases := []counterstate.TransferRequest{
-		{UserID: "", TransferID: "tx", Asset: "USDT", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
-		{UserID: "u1", TransferID: "", Asset: "USDT", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
-		{UserID: "u1", TransferID: "tx", Asset: "", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
+		{UserID: 0, TransferID: "tx", Asset: "USDT", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
+		{UserID: 1001, TransferID: "", Asset: "USDT", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
+		{UserID: 1001, TransferID: "tx", Asset: "", Amount: dec.New("1"), Type: counterstate.TransferDeposit},
 	}
 	for _, c := range cases {
 		if _, err := svc.Transfer(context.Background(), c); err == nil {
@@ -191,14 +191,14 @@ func TestConcurrentUsersIndependent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perUser; i++ {
 				res, err := svc.Transfer(context.Background(), counterstate.TransferRequest{
-					TransferID: user + "-" + itoa(i),
+					TransferID: "u" + itoa(u) + "-" + itoa(i),
 					UserID:     user,
 					Asset:      "USDT",
 					Amount:     dec.New("1"),
 					Type:       counterstate.TransferDeposit,
 				})
 				if err != nil || res.Status != counterstate.TransferStatusConfirmed {
-					t.Errorf("%s#%d: err=%v status=%v", user, i, err, res.Status)
+					t.Errorf("%d#%d: err=%v status=%v", user, i, err, res.Status)
 					return
 				}
 			}
@@ -219,7 +219,7 @@ func TestConcurrentUsersIndependent(t *testing.T) {
 }
 
 // tiny helpers; avoid strconv to keep Go imports minimal in tests.
-func userLabel(u int) string { return "u" + itoa(u) }
+func userLabel(u int) uint64 { return uint64(1000 + u) }
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

@@ -237,7 +237,7 @@ func TestRemoveSymbol_DrainsAcceptedInboxBeforeSnapshot(t *testing.T) {
 			Symbol: "BTC-USDT",
 			Order: &orderbook.Order{
 				ID:        uint64(i + 1),
-				UserID:    "user-1",
+				UserID:    7001,
 				Symbol:    "BTC-USDT",
 				Side:      orderbook.Bid,
 				Type:      orderbook.Limit,

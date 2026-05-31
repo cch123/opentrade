@@ -22,7 +22,7 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 // needs no cross-referencing (mirrors BalanceSnapshot). Side is unset and
 // size "0" when the position is flat after the change.
 message PerpPositionSnapshot {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;
   Side side = 3;
   string size = 4;          // decimal
@@ -45,12 +45,13 @@ message PerpJournalEvent {
     PerpLiquidationEvent liquidation  = 14;
     PerpAdlEvent         adl          = 15;
     PerpTakeoverEvent    takeover     = 16;
+    RiskPoolSettlementEvent risk_pool_settlement = 17;
   }
 }
 
 // Order lifecycle transition (analogous to counter OrderStatusEvent).
 message PerpOrderStatusEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
   InternalOrderStatus old_status = 4;
@@ -63,7 +64,7 @@ message PerpOrderStatusEvent {
 // A fill applied to a position (open / increase / reduce / close / flip).
 // Cash effects mirror perpstate.FillResult.
 message PerpSettlementEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string trade_id = 3;
   string symbol = 4;
@@ -86,7 +87,7 @@ message PerpMarginEvent {
     KIND_RESERVE = 3;      // IM hold on PlaceOrder (ADR-0041)
     KIND_RELEASE = 4;      // IM release on cancel / reject
   }
-  string user_id = 1;
+  uint64 user_id = 1;
   Kind kind = 2;
   string asset = 3;            // USDT
   string amount = 4;
@@ -97,7 +98,7 @@ message PerpMarginEvent {
 
 // Funding settlement for a position at a funding boundary (ADR-0068 §7).
 message PerpFundingEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;
   string funding_round_id = 3;
   string funding_rate = 4;
@@ -108,7 +109,7 @@ message PerpFundingEvent {
 
 // Liquidation of a position (ADR-0068 §8).
 message PerpLiquidationEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;
   uint64 liq_order_id = 3;
   string bankruptcy_price = 4;
@@ -116,47 +117,72 @@ message PerpLiquidationEvent {
   string closed_qty = 6;
   string realized_pnl = 7;
   string insurance_delta = 8;  // + surplus into fund / - fund covers deficit
-  bool adl_queued = 9;         // true when fund was negative and ADL was attempted
+  bool adl_queued = 9;         // legacy alert bit; ADR-0073 ADL is lot-driven
   PerpPositionSnapshot position_after = 10;
   bool partial = 11;           // ADR-0070: reduce-to-safe rather than full takeover
   bool backstop = 12;          // ADR-0070: internally matched to the system backstop
   int32 risk_tier = 13;        // 1-based selected risk tier, 0 when scalar fallback was used
 }
 
-// Backstop takeover of a liquidated position (ADR-0071 §4). This is separate
-// from PerpLiquidationEvent because, under sharding, takeover is both a user
-// close and a request for the global perp-risk coordinator to fund managed
-// backstop inventory. The coordinator decides the actual loan amount after
-// applying global fund and per-symbol quota limits; takeover_notional is the
-// deterministic borrow request derived from the closed inventory.
+// Backstop takeover of a liquidated position (ADR-0073). This is separate from
+// PerpLiquidationEvent because takeover creates a coordinator-owned
+// TakenOverLot. insurance_delta is retained for old readers but is no longer an
+// authoritative fund movement; taken_over_balance + later lot fills settle via
+// RiskPoolSettlementEvent.
 message PerpTakeoverEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;
   uint64 liq_order_id = 3;
   string bankruptcy_price = 4;
   string mark_price = 5;
   string closed_qty = 6;
   string realized_pnl = 7;
-  string insurance_delta = 8;  // + surplus into fund / - fund covers deficit
+  string insurance_delta = 8;  // deprecated: use taken_over_balance + settlement
   string takeover_notional = 9;
-  string backstop_user_id = 10;
+  uint64 backstop_user_id = 10;
   Side inventory_side = 11;
   PerpPositionSnapshot position_after = 12;
   bool partial = 13;
   int32 risk_tier = 14;
-  bool adl_queued = 15;         // true when the post-takeover fund deficit triggered ADL
+  bool adl_queued = 15;         // legacy alert bit; ADR-0073 ADL is lot-driven
+  string lot_id = 16;
+  string taken_over_qty = 17;
+  string takeover_price = 18;
+  string taken_over_balance = 19;
+  uint64 position_version = 20;
 }
 
-// ADL forced close of a profitable counterparty (ADR-0070 §4). It is separate
-// from PerpLiquidationEvent because the mutated user is the counterparty, not
-// the originally liquidated account, and the event must partition to that user.
+// ADL forced close of a profitable counterparty (ADR-0073). The event describes
+// the affected user's execution result and the TakenOverLot inventory it
+// consumed. insurance_delta is retained only for old readers and must not be
+// folded as fund credit.
 message PerpAdlEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;
   uint64 adl_round = 3;
   string price = 4;
-  string closed_qty = 5;
+  string closed_qty = 5;        // legacy alias for fact_qty
   string realized_pnl = 6;
-  string insurance_delta = 7;  // profit surrendered to repair a negative fund
+  string insurance_delta = 7;   // deprecated: ADL does not directly credit fund
+  string lot_id = 8;
+  string requested_qty = 9;
   PerpPositionSnapshot position_after = 10;
+  string fact_qty = 11;
+}
+
+// RiskPool settlement is the only authoritative fund movement for a completed
+// TakenOverLot (ADR-0073). final_pool_delta > 0 credits the fund; < 0 consumes
+// it. The event is idempotent by lot_id.
+message RiskPoolSettlementEvent {
+  string lot_id = 1;
+  string symbol = 2;
+  string coin = 3;
+  string working_capital_ref = 4;
+  string taken_over_balance = 5;
+  string liq_adl_realised_pnl = 6;
+  string cum_fee = 7;
+  string working_capital_drawn = 8;
+  string borrowed_balance = 9;
+  string final_pool_delta = 10;
+  string status = 11;
 }

@@ -58,7 +58,7 @@ type Config struct {
 	RiskTiers          string
 	LiqFeeRate         string
 	TargetMarginBuffer string
-	BackstopAccount    string
+	BackstopAccount    uint64
 	BackstopAfterTicks int
 	VShardCount        int
 	RiskCoordinator    bool
@@ -442,7 +442,7 @@ func parseFlags() Config {
 		"ADR-0070 risk tiers as cap:mmr:max_leverage:liq_fee_rate CSV; cap=0 means open-ended")
 	flag.StringVar(&cfg.LiqFeeRate, "liq-fee-rate", "0", "fallback liquidation fee rate credited to insurance")
 	flag.StringVar(&cfg.TargetMarginBuffer, "target-margin-buffer", "0", "partial liquidation target buffer added above tier MMR")
-	flag.StringVar(&cfg.BackstopAccount, "backstop-account", "__perp_backstop__", "system account that receives internal backstop inventory")
+	flag.Uint64Var(&cfg.BackstopAccount, "backstop-account", 0, "system user id that receives internal backstop inventory")
 	flag.IntVar(&cfg.BackstopAfterTicks, "backstop-after-ticks", 2, "mark ticks to wait before escalating an in-flight liquidation to backstop")
 	flag.IntVar(&cfg.VShardCount, "vshard-count", 1, "perp-counter user vshard count; values >1 require --risk-coordinator-enabled (ADR-0071)")
 	flag.BoolVar(&cfg.RiskCoordinator, "risk-coordinator-enabled", false, "disable shard-local ADL decisions because perp-risk owns global insurance/ADL (ADR-0071)")

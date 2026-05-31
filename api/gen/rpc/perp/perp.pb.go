@@ -76,7 +76,7 @@ func (MarginMode) EnumDescriptor() ([]byte, []int) {
 
 type PlaceOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	ClientOrderId string                 `protobuf:"bytes,2,opt,name=client_order_id,json=clientOrderId,proto3" json:"client_order_id,omitempty"` // optional idempotency key
 	Symbol        string                 `protobuf:"bytes,3,opt,name=symbol,proto3" json:"symbol,omitempty"`                                      // e.g. BTC-USDT-PERP
 	Side          event.Side             `protobuf:"varint,4,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
@@ -121,11 +121,11 @@ func (*PlaceOrderRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *PlaceOrderRequest) GetUserId() string {
+func (x *PlaceOrderRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *PlaceOrderRequest) GetClientOrderId() string {
@@ -276,7 +276,7 @@ func (x *PlaceOrderResponse) GetReceivedTsUnixMs() int64 {
 
 type CancelOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	OrderId       uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -312,11 +312,11 @@ func (*CancelOrderRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *CancelOrderRequest) GetUserId() string {
+func (x *CancelOrderRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *CancelOrderRequest) GetOrderId() uint64 {
@@ -380,7 +380,7 @@ func (x *CancelOrderResponse) GetAccepted() bool {
 
 type QueryOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	OrderId       uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -416,11 +416,11 @@ func (*QueryOrderRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *QueryOrderRequest) GetUserId() string {
+func (x *QueryOrderRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *QueryOrderRequest) GetOrderId() uint64 {
@@ -572,7 +572,7 @@ func (x *QueryOrderResponse) GetUpdatedAtUnixMs() int64 {
 
 type QueryPositionsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // empty = all symbols
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -608,11 +608,11 @@ func (*QueryPositionsRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *QueryPositionsRequest) GetUserId() string {
+func (x *QueryPositionsRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *QueryPositionsRequest) GetSymbol() string {
@@ -803,7 +803,7 @@ func (x *Position) GetMarginRatio() string {
 
 type QueryMarginRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -838,11 +838,11 @@ func (*QueryMarginRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *QueryMarginRequest) GetUserId() string {
+func (x *QueryMarginRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 type QueryMarginResponse struct {
@@ -927,7 +927,7 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\n" +
 	"\x13rpc/perp/perp.proto\x12\x12opentrade.rpc.perp\x1a\x12event/common.proto\"\xa8\x03\n" +
 	"\x11PlaceOrderRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12&\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x16\n" +
 	"\x06symbol\x18\x03 \x01(\tR\x06symbol\x12)\n" +
 	"\x04side\x18\x04 \x01(\x0e2\x15.opentrade.event.SideR\x04side\x129\n" +
@@ -949,13 +949,13 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\rreject_reason\x18\x04 \x01(\tR\frejectReason\x12-\n" +
 	"\x13received_ts_unix_ms\x18\x05 \x01(\x03R\x10receivedTsUnixMs\"H\n" +
 	"\x12CancelOrderRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\"L\n" +
 	"\x13CancelOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12\x1a\n" +
 	"\baccepted\x18\x02 \x01(\bR\baccepted\"G\n" +
 	"\x11QueryOrderRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\"\x85\x04\n" +
 	"\x12QueryOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12&\n" +
@@ -976,7 +976,7 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\x12created_at_unix_ms\x18\f \x01(\x03R\x0fcreatedAtUnixMs\x12+\n" +
 	"\x12updated_at_unix_ms\x18\r \x01(\x03R\x0fupdatedAtUnixMs\"H\n" +
 	"\x15QueryPositionsRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"T\n" +
 	"\x16QueryPositionsResponse\x12:\n" +
 	"\tpositions\x18\x01 \x03(\v2\x1c.opentrade.rpc.perp.PositionR\tpositions\"\xa0\x03\n" +
@@ -998,7 +998,7 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\tliq_price\x18\v \x01(\tR\bliqPrice\x12!\n" +
 	"\fmargin_ratio\x18\f \x01(\tR\vmarginRatio\"-\n" +
 	"\x12QueryMarginRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\"\xb5\x01\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\"\xb5\x01\n" +
 	"\x13QueryMarginResponse\x12\x14\n" +
 	"\x05asset\x18\x01 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x02 \x01(\tR\tavailable\x12\x1a\n" +

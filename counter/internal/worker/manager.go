@@ -149,7 +149,7 @@ func (m *Manager) Run(ctx context.Context) error {
 // returns the Service if a ready worker is running. Otherwise it
 // returns (nil, false) so the caller can emit FailedPrecondition and
 // let the client retry after refreshing its routing view.
-func (m *Manager) Lookup(userID string) (*service.Service, bool) {
+func (m *Manager) Lookup(userID uint64) (*service.Service, bool) {
 	vid := clustering.VShardID(shard.Index(userID, m.template.VShardCount))
 	m.mu.RLock()
 	run, ok := m.running[vid]

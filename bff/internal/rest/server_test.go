@@ -167,7 +167,7 @@ func newServerWithAsset(fc *fakeCounter, fa *fakeAsset) *Server {
 func TestPlaceOrderHappyPath(t *testing.T) {
 	fc := &fakeCounter{
 		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
-			if req.UserId != "u1" || req.Symbol != "BTC-USDT" {
+			if req.UserId != 1001 || req.Symbol != "BTC-USDT" {
 				t.Fatalf("req = %+v", req)
 			}
 			if req.Side != eventpb.Side_SIDE_BUY {
@@ -185,7 +185,7 @@ func TestPlaceOrderHappyPath(t *testing.T) {
 
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"limit","tif":"gtc","price":"100","qty":"1","client_order_id":"c1"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -215,7 +215,7 @@ func TestPlaceOrderMissingAuth(t *testing.T) {
 func TestPlaceOrderInvalidSide(t *testing.T) {
 	srv := newServer(&fakeCounter{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(`{"symbol":"BTC-USDT","side":"long","order_type":"limit","tif":"gtc","price":"100","qty":"1"}`))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
@@ -237,7 +237,7 @@ func TestPlaceOrder_MarketBuyNeedsQuoteQty(t *testing.T) {
 	srv := newServer(fc)
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"1"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
@@ -256,7 +256,7 @@ func TestPlaceOrder_MarketBuyByQuoteQtyForwarded(t *testing.T) {
 	srv := newServer(fc)
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","quote_qty":"100"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -281,7 +281,7 @@ func TestPlaceOrder_MarketSellForwarded(t *testing.T) {
 	srv := newServer(fc)
 	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -319,7 +319,7 @@ func TestPlaceOrder_ReferencePriceFilledFromDepthCache(t *testing.T) {
 
 	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -343,7 +343,7 @@ func TestPlaceOrder_ReferencePriceEmptyWhenNoCache(t *testing.T) {
 	srv := newServer(fc) // newServer passes market=nil
 	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -375,7 +375,7 @@ func TestPlaceOrder_ReferencePriceEmptyWhenSnapshotMissing(t *testing.T) {
 
 	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -398,7 +398,7 @@ func TestPlaceOrder_MarketBuyWithSlippageTranslatesToLimitIOC(t *testing.T) {
 	// buy @ last=50000 + 50 bps slippage → protected price = 50250
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"0.5","last_price":"50000","slippage_bps":50}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -419,7 +419,7 @@ func TestPlaceOrder_MarketWithSlippageButNoLastPrice(t *testing.T) {
 	srv := newServer(&fakeCounter{})
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"0.5","slippage_bps":50}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
@@ -430,7 +430,7 @@ func TestPlaceOrder_MarketWithSlippageButNoLastPrice(t *testing.T) {
 func TestCancelOrderAndQuery(t *testing.T) {
 	fc := &fakeCounter{
 		cancelFn: func(req *counterrpc.CancelOrderRequest) (*counterrpc.CancelOrderResponse, error) {
-			if req.OrderId != 42 || req.UserId != "u1" {
+			if req.OrderId != 42 || req.UserId != 1001 {
 				t.Fatalf("req = %+v", req)
 			}
 			return &counterrpc.CancelOrderResponse{OrderId: 42, Accepted: true}, nil
@@ -439,7 +439,7 @@ func TestCancelOrderAndQuery(t *testing.T) {
 			return &counterrpc.QueryOrderResponse{
 				OrderId: req.OrderId, Symbol: "BTC-USDT",
 				Side: eventpb.Side_SIDE_BUY, OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
-				Tif: eventpb.TimeInForce_TIME_IN_FORCE_GTC,
+				Tif:   eventpb.TimeInForce_TIME_IN_FORCE_GTC,
 				Price: "100", Qty: "1", FilledQty: "0", FrozenAmt: "100",
 				Status: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			}, nil
@@ -449,7 +449,7 @@ func TestCancelOrderAndQuery(t *testing.T) {
 
 	// Cancel
 	req := httptest.NewRequest(http.MethodDelete, "/v1/order/42", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -458,7 +458,7 @@ func TestCancelOrderAndQuery(t *testing.T) {
 
 	// Query (folds PENDING_NEW → "new")
 	req = httptest.NewRequest(http.MethodGet, "/v1/order/42", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -482,7 +482,7 @@ func TestConnectErrorMapping(t *testing.T) {
 	}
 	srv := newServer(fc)
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(`{"symbol":"BTC-USDT","side":"buy","order_type":"limit","tif":"gtc","price":"100","qty":"1"}`))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusConflict {
@@ -505,7 +505,7 @@ func TestRateLimitPerUser(t *testing.T) {
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"limit","tif":"gtc","price":"100","qty":"1"}`
 	send := func() int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
-		req.Header.Set(auth.HeaderUserID, "u1")
+		req.Header.Set(auth.HeaderUserID, "1001")
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, req)
 		return rr.Code
@@ -547,7 +547,7 @@ func TestTransferAndBalance(t *testing.T) {
 	// Transfer — new ADR-0057 body: from_biz / to_biz instead of type.
 	req := httptest.NewRequest(http.MethodPost, "/v1/transfer",
 		bytes.NewBufferString(`{"transfer_id":"tx1","from_biz":"funding","to_biz":"spot","asset":"USDT","amount":"100"}`))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -561,13 +561,13 @@ func TestTransferAndBalance(t *testing.T) {
 	if tresp["terminal"] != true {
 		t.Fatalf("transfer terminal = %v", tresp["terminal"])
 	}
-	if seen == nil || seen.UserId != "u1" || seen.FromBiz != "funding" || seen.ToBiz != "spot" {
+	if seen == nil || seen.UserId != 1001 || seen.FromBiz != "funding" || seen.ToBiz != "spot" {
 		t.Fatalf("asset transfer request = %+v", seen)
 	}
 
 	// Balance (spot)
 	req = httptest.NewRequest(http.MethodGet, "/v1/account?asset=USDT", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -581,7 +581,7 @@ func TestTransfer_AssetServiceNotConfigured(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/transfer",
 		bytes.NewBufferString(`{"transfer_id":"tx1","from_biz":"funding","to_biz":"spot","asset":"USDT","amount":"100"}`))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
@@ -596,7 +596,7 @@ func TestQueryTransfer_ProxiesToAsset(t *testing.T) {
 				t.Errorf("transfer_id = %q", req.TransferId)
 			}
 			return &assetrpc.QueryTransferResponse{
-				TransferId: "tx1", UserId: "u1",
+				TransferId: "tx1", UserId: 1001,
 				FromBiz: "funding", ToBiz: "spot",
 				Asset: "USDT", Amount: "100",
 				State: assetrpc.SagaState_SAGA_STATE_DEBITED,
@@ -605,7 +605,7 @@ func TestQueryTransfer_ProxiesToAsset(t *testing.T) {
 	}
 	srv := newServerWithAsset(&fakeCounter{}, fa)
 	req := httptest.NewRequest(http.MethodGet, "/v1/transfer/tx1", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -633,7 +633,7 @@ func TestQueryFundingBalance_ProxiesToAsset(t *testing.T) {
 	}
 	srv := newServerWithAsset(&fakeCounter{}, fa)
 	req := httptest.NewRequest(http.MethodGet, "/v1/funding-balance?asset=USDT", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -661,14 +661,14 @@ func TestCancelMyOrders_ForwardsUserAndSymbol(t *testing.T) {
 	}
 	srv := newServer(fc)
 	req := httptest.NewRequest(http.MethodDelete, "/v1/orders?symbol=BTC-USDT", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
 	}
-	if seen == nil || seen.UserId != "u1" || seen.Symbol != "BTC-USDT" {
+	if seen == nil || seen.UserId != 1001 || seen.Symbol != "BTC-USDT" {
 		t.Fatalf("forwarded req = %+v", seen)
 	}
 	var resp map[string]any
@@ -688,14 +688,14 @@ func TestCancelMyOrders_NoSymbolDefaultsToAll(t *testing.T) {
 	}
 	srv := newServer(fc)
 	req := httptest.NewRequest(http.MethodDelete, "/v1/orders", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
 	}
-	if seen == nil || seen.UserId != "u1" || seen.Symbol != "" {
+	if seen == nil || seen.UserId != 1001 || seen.Symbol != "" {
 		t.Fatalf("forwarded req = %+v", seen)
 	}
 }

@@ -10,7 +10,7 @@ import (
 func update(id, seq uint64, status eventpb.TriggerEventStatus) *eventpb.TriggerUpdate {
 	return &eventpb.TriggerUpdate{
 		Id:           id,
-		UserId:       "u1",
+		UserId:       1001,
 		Symbol:       "BTC-USDT",
 		Status:       status,
 		StopPrice:    "100",
@@ -230,7 +230,7 @@ func TestCapture_PreservesAllRecordFields(t *testing.T) {
 	full := &eventpb.TriggerUpdate{
 		Id:                42,
 		ClientTriggerId:   "cli-1",
-		UserId:            "u-1",
+		UserId:            1001,
 		Symbol:            "BTC-USDT",
 		Side:              eventpb.Side_SIDE_SELL,
 		Type:              eventpb.TriggerEventType_TRIGGER_EVENT_TYPE_STOP_LOSS_LIMIT,
@@ -258,7 +258,7 @@ func TestCapture_PreservesAllRecordFields(t *testing.T) {
 	want := &snapshotpb.TriggerRecord{
 		Id:                42,
 		ClientTriggerId:   "cli-1",
-		UserId:            "u-1",
+		UserId:            1001,
 		Symbol:            "BTC-USDT",
 		Side:              uint32(eventpb.Side_SIDE_SELL),
 		Type:              uint32(eventpb.TriggerEventType_TRIGGER_EVENT_TYPE_STOP_LOSS_LIMIT),

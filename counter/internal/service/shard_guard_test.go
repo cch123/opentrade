@@ -10,8 +10,8 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/shard"
 )
@@ -27,9 +27,9 @@ func newShardedFixture(t *testing.T, shardID, totalShards int) *Service {
 }
 
 // Pick a user id that does NOT land on shardID under totalShards.
-func userForOtherShard(shardID, totalShards int) string {
-	for i := 0; ; i++ {
-		u := "probe-" + itoa(i)
+func userForOtherShard(shardID, totalShards int) uint64 {
+	for i := uint64(1); ; i++ {
+		u := 1000 + i
 		if shard.Index(u, totalShards) != shardID {
 			return u
 		}
@@ -38,7 +38,7 @@ func userForOtherShard(shardID, totalShards int) string {
 
 func TestOwnsUser_TotalShardsZero_ClaimsEverything(t *testing.T) {
 	svc := newShardedFixture(t, 0, 0)
-	if !svc.OwnsUser("anyone") {
+	if !svc.OwnsUser(1001) {
 		t.Error("TotalShards=0 must claim every user")
 	}
 }
@@ -47,10 +47,10 @@ func TestOwnsUser_SelectsByIndex(t *testing.T) {
 	total := 10
 	for sid := 0; sid < total; sid++ {
 		svc := newShardedFixture(t, sid, total)
-		owned := "probe-" + itoa(sid*31+1)
+		owned := uint64(1000 + sid*31 + 1)
 		want := shard.Index(owned, total) == sid
 		if got := svc.OwnsUser(owned); got != want {
-			t.Errorf("shard=%d user=%q OwnsUser=%v want %v", sid, owned, got, want)
+			t.Errorf("shard=%d user=%d OwnsUser=%v want %v", sid, owned, got, want)
 		}
 	}
 }
@@ -141,9 +141,9 @@ func TestTransfer_CorrectShardPasses(t *testing.T) {
 	shardID := 7
 	svc := newShardedFixture(t, shardID, total)
 	// Find a user owned by this shard.
-	var owned string
-	for i := 0; ; i++ {
-		u := "mine-" + itoa(i)
+	var owned uint64
+	for i := uint64(1); ; i++ {
+		u := 2000 + i
 		if shard.Index(u, total) == shardID {
 			owned = u
 			break
@@ -160,4 +160,3 @@ func TestTransfer_CorrectShardPasses(t *testing.T) {
 		t.Errorf("expected Confirmed, got %d", res.Status)
 	}
 }
-

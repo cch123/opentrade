@@ -10,7 +10,7 @@ import (
 
 type fakeSink struct {
 	id     string
-	userID string
+	userID uint64
 	cap    int
 	mu     sync.Mutex
 	out    [][]byte
@@ -21,12 +21,12 @@ type fakeSink struct {
 	dropped atomic.Int64
 }
 
-func newSink(id, user string, cap int) *fakeSink {
+func newSink(id string, user uint64, cap int) *fakeSink {
 	return &fakeSink{id: id, userID: user, cap: cap, coal: make(map[string][]byte)}
 }
 
 func (f *fakeSink) ID() string     { return f.id }
-func (f *fakeSink) UserID() string { return f.userID }
+func (f *fakeSink) UserID() uint64 { return f.userID }
 func (f *fakeSink) TrySend(p []byte) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -64,7 +64,7 @@ func newHub() *Hub { return New(zap.NewNop()) }
 
 func TestRegister_Unregister_CleansUpIndexes(t *testing.T) {
 	h := newHub()
-	s := newSink("c1", "u1", 10)
+	s := newSink("c1", 1001, 10)
 	h.Register(s)
 	if h.ConnCount() != 1 {
 		t.Fatalf("conns: %d", h.ConnCount())
@@ -82,14 +82,14 @@ func TestRegister_Unregister_CleansUpIndexes(t *testing.T) {
 		t.Errorf("stream index not cleaned up")
 	}
 	// Sending to the removed user / stream is a no-op.
-	if sent, _ := h.SendUser("u1", []byte("x")); sent != 0 {
+	if sent, _ := h.SendUser(1001, []byte("x")); sent != 0 {
 		t.Errorf("expected no delivery after unregister")
 	}
 }
 
 func TestSubscribe_Idempotent(t *testing.T) {
 	h := newHub()
-	s := newSink("c1", "", 10)
+	s := newSink("c1", 0, 10)
 	h.Register(s)
 	added1 := h.Subscribe("c1", []string{"a", "b"})
 	added2 := h.Subscribe("c1", []string{"b", "c"})
@@ -105,7 +105,7 @@ func TestSubscribe_Idempotent(t *testing.T) {
 
 func TestUnsubscribe_OnlyReportsActual(t *testing.T) {
 	h := newHub()
-	s := newSink("c1", "", 10)
+	s := newSink("c1", 0, 10)
 	h.Register(s)
 	h.Subscribe("c1", []string{"a", "b"})
 	removed := h.Unsubscribe("c1", []string{"a", "z"})
@@ -122,9 +122,9 @@ func TestUnsubscribe_OnlyReportsActual(t *testing.T) {
 
 func TestBroadcastStream_DeliversToSubscribersOnly(t *testing.T) {
 	h := newHub()
-	a := newSink("a", "", 10)
-	b := newSink("b", "", 10)
-	c := newSink("c", "", 10)
+	a := newSink("a", 0, 10)
+	b := newSink("b", 0, 10)
+	c := newSink("c", 0, 10)
 	for _, s := range []*fakeSink{a, b, c} {
 		h.Register(s)
 	}
@@ -146,8 +146,8 @@ func TestBroadcastStream_DeliversToSubscribersOnly(t *testing.T) {
 
 func TestBroadcastStream_SlowConsumerDropped(t *testing.T) {
 	h := newHub()
-	fast := newSink("fast", "", 10)
-	slow := newSink("slow", "", 1) // capacity 1 → second send fails
+	fast := newSink("fast", 0, 10)
+	slow := newSink("slow", 0, 1) // capacity 1 → second send fails
 	h.Register(fast)
 	h.Register(slow)
 	h.Subscribe("fast", []string{"s"})
@@ -169,7 +169,7 @@ func TestBroadcastStream_SlowConsumerDropped(t *testing.T) {
 // sends, rather than three queued items.
 func TestBroadcastStreamCoalesce_OverwritesLatest(t *testing.T) {
 	h := newHub()
-	s := newSink("c1", "", 10)
+	s := newSink("c1", 0, 10)
 	h.Register(s)
 	h.Subscribe("c1", []string{"kline@BTC:1m"})
 
@@ -193,7 +193,7 @@ func TestBroadcastStreamCoalesce_OverwritesLatest(t *testing.T) {
 // values.
 func TestBroadcastStreamCoalesce_DifferentKeysCoexist(t *testing.T) {
 	h := newHub()
-	s := newSink("c1", "", 10)
+	s := newSink("c1", 0, 10)
 	h.Register(s)
 	h.Subscribe("c1", []string{"kline@BTC:1m", "kline@BTC:5m"})
 
@@ -209,13 +209,13 @@ func TestBroadcastStreamCoalesce_DifferentKeysCoexist(t *testing.T) {
 func TestSendUser_FanOutAcrossConnections(t *testing.T) {
 	h := newHub()
 	// Two connections for the same user.
-	c1 := newSink("c1", "u1", 10)
-	c2 := newSink("c2", "u1", 10)
-	other := newSink("c3", "u2", 10)
+	c1 := newSink("c1", 1001, 10)
+	c2 := newSink("c2", 1001, 10)
+	other := newSink("c3", 1002, 10)
 	for _, s := range []*fakeSink{c1, c2, other} {
 		h.Register(s)
 	}
-	sent, _ := h.SendUser("u1", []byte("priv"))
+	sent, _ := h.SendUser(1001, []byte("priv"))
 	if sent != 2 {
 		t.Fatalf("sent: %d", sent)
 	}
@@ -229,7 +229,7 @@ func TestSendUser_FanOutAcrossConnections(t *testing.T) {
 
 func TestSendUser_EmptyUserNoop(t *testing.T) {
 	h := newHub()
-	if sent, _ := h.SendUser("", []byte("x")); sent != 0 {
+	if sent, _ := h.SendUser(0, []byte("x")); sent != 0 {
 		t.Error("empty user should be no-op")
 	}
 }

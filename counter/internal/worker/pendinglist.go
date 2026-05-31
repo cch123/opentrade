@@ -29,7 +29,7 @@ import (
 // monitoring (ADR-0060 §G6).
 type pendingList struct {
 	mu    sync.Mutex
-	items *list.List            // *inFlightTE, ordered by offset ascending
+	items *list.List              // *inFlightTE, ordered by offset ascending
 	index map[int64]*list.Element // offset → element, O(1) lookups for tests
 }
 

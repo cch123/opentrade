@@ -23,7 +23,7 @@ import (
 // ready" — the handler replies FailedPrecondition so the BFF refreshes
 // its routing view and retries (ADR-0058 §BFF 客户端路由).
 type Router interface {
-	Lookup(userID string) (*service.Service, bool)
+	Lookup(userID uint64) (*service.Service, bool)
 }
 
 // Server satisfies counterrpcconnect.CounterServiceHandler.
@@ -42,8 +42,8 @@ func New(router Router, logger *zap.Logger) *Server {
 // routeOrFail resolves userID → Service, returning a FailedPrecondition
 // status when this node does not currently serve the vshard. Every RPC
 // handler in this file calls it as its first step.
-func (s *Server) routeOrFail(userID string) (*service.Service, error) {
-	if userID == "" {
+func (s *Server) routeOrFail(userID uint64) (*service.Service, error) {
+	if userID == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	svc, ok := s.router.Lookup(userID)
@@ -67,7 +67,7 @@ func NewSingleServiceRouter(svc *service.Service) *SingleServiceRouter {
 }
 
 // Lookup implements Router.
-func (r *SingleServiceRouter) Lookup(_ string) (*service.Service, bool) {
+func (r *SingleServiceRouter) Lookup(_ uint64) (*service.Service, bool) {
 	return r.svc, r.svc != nil
 }
 
@@ -129,7 +129,7 @@ func (s *Server) CancelOrder(ctx context.Context, req *connect.Request[counterrp
 // QueryOrder implements CounterService.QueryOrder (MVP-3).
 func (s *Server) QueryOrder(_ context.Context, req *connect.Request[counterrpc.QueryOrderRequest]) (*connect.Response[counterrpc.QueryOrderResponse], error) {
 	m := req.Msg
-	if m == nil || m.UserId == "" {
+	if m == nil || m.UserId == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	svc, err := s.routeOrFail(m.UserId)
@@ -147,7 +147,7 @@ func (s *Server) QueryOrder(_ context.Context, req *connect.Request[counterrpc.Q
 // returns all assets for the user.
 func (s *Server) QueryBalance(_ context.Context, req *connect.Request[counterrpc.QueryBalanceRequest]) (*connect.Response[counterrpc.QueryBalanceResponse], error) {
 	m := req.Msg
-	if m == nil || m.UserId == "" {
+	if m == nil || m.UserId == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
 	}
 	svc, err := s.routeOrFail(m.UserId)

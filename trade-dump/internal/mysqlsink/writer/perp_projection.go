@@ -2,6 +2,7 @@ package writer
 
 import (
 	"context"
+	"strconv"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
@@ -22,7 +23,7 @@ import (
 // the PerpPositionSnapshot embedded in settlement / funding / liquidation /
 // takeover).
 type PerpPositionRow struct {
-	UserID      string
+	UserID      uint64
 	Symbol      string
 	Side        int8
 	Size        string
@@ -38,7 +39,7 @@ type PerpPositionRow struct {
 // PerpWalletRow mirrors `perp_wallets` (per user USDT margin balance; upserted
 // from PerpMarginEvent's available/reserved after-values).
 type PerpWalletRow struct {
-	UserID      string
+	UserID      uint64
 	Asset       string
 	Available   string
 	Reserved    string
@@ -49,7 +50,7 @@ type PerpWalletRow struct {
 // PerpOrderRow mirrors `perp_orders` (lifecycle status from PerpOrderStatusEvent).
 type PerpOrderRow struct {
 	OrderID      uint64
-	UserID       string
+	UserID       uint64
 	Symbol       string
 	Status       int8
 	FilledQty    string
@@ -61,7 +62,7 @@ type PerpOrderRow struct {
 // PerpSettlementRow mirrors `perp_settlements` (append-only fill ledger).
 type PerpSettlementRow struct {
 	PerpSeqID      uint64
-	UserID         string
+	UserID         uint64
 	OrderID        uint64
 	TradeID        string
 	Symbol         string
@@ -78,7 +79,7 @@ type PerpSettlementRow struct {
 // PerpFundingRow mirrors `perp_funding` (append-only funding payments).
 type PerpFundingRow struct {
 	PerpSeqID      uint64
-	UserID         string
+	UserID         uint64
 	Symbol         string
 	FundingRoundID string
 	FundingRate    string
@@ -90,7 +91,7 @@ type PerpFundingRow struct {
 // PerpLiquidationRow mirrors `perp_liquidations` (append-only liquidation ledger).
 type PerpLiquidationRow struct {
 	PerpSeqID       uint64
-	UserID          string
+	UserID          uint64
 	Symbol          string
 	LiqOrderID      uint64
 	BankruptcyPrice string
@@ -102,10 +103,60 @@ type PerpLiquidationRow struct {
 	TsUnixMs        int64
 }
 
+// PerpTakeoverLotRow mirrors `perp_takeover_lots`, the initial audit row for a
+// coordinator-owned TakenOverLot.
+type PerpTakeoverLotRow struct {
+	LotID             string
+	PerpSeqID         uint64
+	UserID            uint64
+	Symbol            string
+	Side              int8
+	TotalQty          string
+	LeavesQty         string
+	TakeoverPrice     string
+	TriggerMarkPrice  string
+	TakenOverBalance  string
+	WorkingCapitalRef string
+	Status            string
+	TsUnixMs          int64
+}
+
+// PerpADLRow mirrors `perp_adl_events`, an append-only user-visible forced
+// close ledger keyed by the affected user and perp_seq_id.
+type PerpADLRow struct {
+	PerpSeqID    uint64
+	UserID       uint64
+	Symbol       string
+	LotID        string
+	AdlRound     uint64
+	Price        string
+	RequestedQty string
+	FactQty      string
+	RealizedPnl  string
+	TsUnixMs     int64
+}
+
+// RiskPoolSettlementRow mirrors `perp_risk_pool_settlements`.
+type RiskPoolSettlementRow struct {
+	LotID               string
+	PerpSeqID           uint64
+	Symbol              string
+	Coin                string
+	WorkingCapitalRef   string
+	TakenOverBalance    string
+	LiqAdlRealisedPnl   string
+	CumFee              string
+	WorkingCapitalDrawn string
+	BorrowedBalance     string
+	FinalPoolDelta      string
+	Status              string
+	TsUnixMs            int64
+}
+
 // PerpMarginRow mirrors `perp_margin_logs` (append-only wallet balance changes).
 type PerpMarginRow struct {
 	PerpSeqID      uint64
-	UserID         string
+	UserID         uint64
 	Kind           int8
 	Asset          string
 	Amount         string
@@ -124,6 +175,9 @@ type PerpBatch struct {
 	Settlements  []PerpSettlementRow
 	Funding      []PerpFundingRow
 	Liquidations []PerpLiquidationRow
+	TakeoverLots []PerpTakeoverLotRow
+	ADL          []PerpADLRow
+	RiskPool     []RiskPoolSettlementRow
 	Margins      []PerpMarginRow
 }
 
@@ -131,7 +185,7 @@ type PerpBatch struct {
 func (b *PerpBatch) IsEmpty() bool {
 	return len(b.Positions) == 0 && len(b.Wallets) == 0 && len(b.Orders) == 0 &&
 		len(b.Settlements) == 0 && len(b.Funding) == 0 && len(b.Liquidations) == 0 &&
-		len(b.Margins) == 0
+		len(b.TakeoverLots) == 0 && len(b.ADL) == 0 && len(b.RiskPool) == 0 && len(b.Margins) == 0
 }
 
 // PerpJournalWriter is the contract the consumer uses against MySQL. Real impl
@@ -165,6 +219,8 @@ func BuildPerpBatch(events []*eventpb.PerpJournalEvent) PerpBatch {
 			appendPerpTakeover(&b, p.Takeover, seq, ts)
 		case *eventpb.PerpJournalEvent_Adl:
 			appendPerpADL(&b, p.Adl, seq, ts)
+		case *eventpb.PerpJournalEvent_RiskPoolSettlement:
+			appendRiskPoolSettlement(&b, p.RiskPoolSettlement, seq, ts)
 		}
 	}
 	return b
@@ -234,6 +290,19 @@ func appendPerpTakeover(b *PerpBatch, e *eventpb.PerpTakeoverEvent, seq uint64, 
 		RealizedPnl: defaultZero(e.GetRealizedPnl()), InsuranceDelta: defaultZero(e.GetInsuranceDelta()),
 		AdlQueued: e.GetAdlQueued(), TsUnixMs: ts,
 	})
+	lotID := e.GetLotId()
+	if lotID == "" {
+		lotID = e.GetSymbol() + ":" + strconv.FormatUint(e.GetLiqOrderId(), 10)
+	}
+	takenQty := firstNonEmpty(e.GetTakenOverQty(), e.GetClosedQty())
+	takeoverPrice := firstNonEmpty(e.GetTakeoverPrice(), e.GetBankruptcyPrice())
+	b.TakeoverLots = append(b.TakeoverLots, PerpTakeoverLotRow{
+		LotID: lotID, PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		Side: int8(e.GetInventorySide()), TotalQty: defaultZero(takenQty), LeavesQty: defaultZero(takenQty),
+		TakeoverPrice: defaultZero(takeoverPrice), TriggerMarkPrice: defaultZero(e.GetMarkPrice()),
+		TakenOverBalance:  defaultZero(firstNonEmpty(e.GetTakenOverBalance(), e.GetInsuranceDelta())),
+		WorkingCapitalRef: "takeover:" + lotID, Status: "Init", TsUnixMs: ts,
+	})
 	appendPerpPosition(b, e.GetPositionAfter(), seq, ts)
 }
 
@@ -241,11 +310,31 @@ func appendPerpADL(b *PerpBatch, e *eventpb.PerpAdlEvent, seq uint64, ts int64) 
 	if e == nil {
 		return
 	}
-	// ADR-0070 introduces ADL primarily as a user-position mutation and
-	// notification. Until the MySQL schema grows a dedicated ADL ledger, the
-	// projection at least advances the affected position so history queries do
-	// not show a stale profitable size after an ADL event.
+	factQty := firstNonEmpty(e.GetFactQty(), e.GetClosedQty())
+	b.ADL = append(b.ADL, PerpADLRow{
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(), LotID: e.GetLotId(),
+		AdlRound: e.GetAdlRound(), Price: e.GetPrice(),
+		RequestedQty: defaultZero(firstNonEmpty(e.GetRequestedQty(), factQty)),
+		FactQty:      defaultZero(factQty), RealizedPnl: defaultZero(e.GetRealizedPnl()), TsUnixMs: ts,
+	})
 	appendPerpPosition(b, e.GetPositionAfter(), seq, ts)
+}
+
+func appendRiskPoolSettlement(b *PerpBatch, e *eventpb.RiskPoolSettlementEvent, seq uint64, ts int64) {
+	if e == nil {
+		return
+	}
+	b.RiskPool = append(b.RiskPool, RiskPoolSettlementRow{
+		LotID: e.GetLotId(), PerpSeqID: seq, Symbol: e.GetSymbol(), Coin: e.GetCoin(),
+		WorkingCapitalRef:   e.GetWorkingCapitalRef(),
+		TakenOverBalance:    defaultZero(e.GetTakenOverBalance()),
+		LiqAdlRealisedPnl:   defaultZero(e.GetLiqAdlRealisedPnl()),
+		CumFee:              defaultZero(e.GetCumFee()),
+		WorkingCapitalDrawn: defaultZero(e.GetWorkingCapitalDrawn()),
+		BorrowedBalance:     defaultZero(e.GetBorrowedBalance()),
+		FinalPoolDelta:      defaultZero(e.GetFinalPoolDelta()),
+		Status:              e.GetStatus(), TsUnixMs: ts,
+	})
 }
 
 func appendPerpMargin(b *PerpBatch, e *eventpb.PerpMarginEvent, seq uint64, ts int64) {

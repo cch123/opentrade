@@ -18,7 +18,7 @@ func TestSubmitAsync_ReturnsImmediately(t *testing.T) {
 	done := make(chan error, 1)
 
 	start := time.Now()
-	s.SubmitAsync("u1",
+	s.SubmitAsync(1001,
 		func(_ uint64) error {
 			close(block)
 			<-release
@@ -46,7 +46,7 @@ func TestSubmitAsync_InvokesCallbackWithError(t *testing.T) {
 	s := New()
 	target := errors.New("deliberate")
 	done := make(chan error, 1)
-	s.SubmitAsync("u1",
+	s.SubmitAsync(1001,
 		func(_ uint64) error { return target },
 		func(err error) { done <- err },
 	)
@@ -61,7 +61,7 @@ func TestSubmitAsync_InvokesCallbackWithError(t *testing.T) {
 func TestSubmitAsync_NilCallbackNoops(t *testing.T) {
 	s := New()
 	var ran atomic.Bool
-	s.SubmitAsync("u1", func(_ uint64) error {
+	s.SubmitAsync(1001, func(_ uint64) error {
 		ran.Store(true)
 		return nil
 	}, nil)
@@ -89,7 +89,7 @@ func TestSubmitAsync_FIFOPerUser(t *testing.T) {
 	done := make(chan struct{}, n)
 	for i := 0; i < n; i++ {
 		i := i
-		s.SubmitAsync("u1",
+		s.SubmitAsync(1001,
 			func(_ uint64) error {
 				mu.Lock()
 				order = append(order, i)
@@ -123,7 +123,7 @@ func TestSubmitAsync_CountersSharedWithExecute(t *testing.T) {
 
 	// Alternate Execute and SubmitAsync calls on the same user.
 	go func() {
-		_, _ = s.Execute("u1", func(seq uint64) (any, error) {
+		_, _ = s.Execute(1001, func(seq uint64) (any, error) {
 			mu.Lock()
 			seqs = append(seqs, seq)
 			mu.Unlock()
@@ -131,14 +131,14 @@ func TestSubmitAsync_CountersSharedWithExecute(t *testing.T) {
 		})
 		done <- struct{}{}
 	}()
-	s.SubmitAsync("u1", func(seq uint64) error {
+	s.SubmitAsync(1001, func(seq uint64) error {
 		mu.Lock()
 		seqs = append(seqs, seq)
 		mu.Unlock()
 		return nil
 	}, func(_ error) { done <- struct{}{} })
 	go func() {
-		_, _ = s.Execute("u1", func(seq uint64) (any, error) {
+		_, _ = s.Execute(1001, func(seq uint64) (any, error) {
 			mu.Lock()
 			seqs = append(seqs, seq)
 			mu.Unlock()
@@ -146,7 +146,7 @@ func TestSubmitAsync_CountersSharedWithExecute(t *testing.T) {
 		})
 		done <- struct{}{}
 	}()
-	s.SubmitAsync("u1", func(seq uint64) error {
+	s.SubmitAsync(1001, func(seq uint64) error {
 		mu.Lock()
 		seqs = append(seqs, seq)
 		mu.Unlock()
@@ -177,7 +177,7 @@ func TestSubmitAsync_IsolationAcrossUsers(t *testing.T) {
 	u1Done := make(chan struct{}, 1)
 	u2Done := make(chan struct{}, 1)
 
-	s.SubmitAsync("u1",
+	s.SubmitAsync(1001,
 		func(_ uint64) error {
 			<-block
 			return nil
@@ -185,7 +185,7 @@ func TestSubmitAsync_IsolationAcrossUsers(t *testing.T) {
 		func(_ error) { u1Done <- struct{}{} },
 	)
 	// u2 must NOT wait for u1.
-	s.SubmitAsync("u2",
+	s.SubmitAsync(1002,
 		func(_ uint64) error {
 			return nil
 		},
@@ -206,13 +206,13 @@ func TestSubmitAsync_IsolationAcrossUsers(t *testing.T) {
 func TestSubmitAsync_IdleExitThenResume(t *testing.T) {
 	s := New(WithIdleTimeout(30 * time.Millisecond))
 	done1 := make(chan struct{}, 1)
-	s.SubmitAsync("u1", func(_ uint64) error { return nil },
+	s.SubmitAsync(1001, func(_ uint64) error { return nil },
 		func(_ error) { done1 <- struct{}{} })
 	<-done1
 	// Let the drain idle out.
 	time.Sleep(80 * time.Millisecond)
 	done2 := make(chan struct{}, 1)
-	s.SubmitAsync("u1", func(_ uint64) error { return nil },
+	s.SubmitAsync(1001, func(_ uint64) error { return nil },
 		func(_ error) { done2 <- struct{}{} })
 	select {
 	case <-done2:
@@ -225,13 +225,13 @@ func TestSubmitAsync_IdleExitThenResume(t *testing.T) {
 // correctly reports pending tasks under drain pressure.
 func TestQueueDepth_ReflectsPending(t *testing.T) {
 	s := New()
-	if got := s.QueueDepth("u1"); got != 0 {
+	if got := s.QueueDepth(1001); got != 0 {
 		t.Fatalf("initial QueueDepth = %d, want 0", got)
 	}
 	// Block u1's drain so the rest queue up.
 	release := make(chan struct{})
 	started := make(chan struct{})
-	s.SubmitAsync("u1",
+	s.SubmitAsync(1001,
 		func(_ uint64) error {
 			close(started)
 			<-release
@@ -242,28 +242,28 @@ func TestQueueDepth_ReflectsPending(t *testing.T) {
 	<-started
 	// Queue up 10 followers.
 	for i := 0; i < 10; i++ {
-		s.SubmitAsync("u1", func(_ uint64) error { return nil }, nil)
+		s.SubmitAsync(1001, func(_ uint64) error { return nil }, nil)
 	}
 	// Poll for queue depth to stabilize at 10.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if s.QueueDepth("u1") == 10 {
+		if s.QueueDepth(1001) == 10 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := s.QueueDepth("u1"); got != 10 {
+	if got := s.QueueDepth(1001); got != 10 {
 		t.Fatalf("QueueDepth = %d, want 10", got)
 	}
 	close(release)
 	// After drain catches up, depth returns to 0.
 	for i := 0; i < 200; i++ {
-		if s.QueueDepth("u1") == 0 {
+		if s.QueueDepth(1001) == 0 {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("QueueDepth never returned to 0; got %d", s.QueueDepth("u1"))
+	t.Fatalf("QueueDepth never returned to 0; got %d", s.QueueDepth(1001))
 }
 
 // TestSubmitAsync_HighConcurrency exercises the unbounded queue + the
@@ -286,7 +286,7 @@ func TestSubmitAsync_HighConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			uid := "u" + string(rune('A'+w))
+			uid := uint64(1000 + w)
 			for i := 0; i < perWorker; i++ {
 				s.SubmitAsync(uid, func(_ uint64) error { return nil }, cb)
 			}

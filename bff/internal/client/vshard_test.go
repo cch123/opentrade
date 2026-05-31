@@ -36,7 +36,7 @@ func TestVShardCounter_RequiresUserID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	_, err = v.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: ""}))
+	_, err = v.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: 0}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("empty user_id = %v, want InvalidArgument", err)
 	}
@@ -52,7 +52,7 @@ func TestVShardCounter_NoActiveOwnerIsFailedPrecondition(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	_, err = v.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: "alice"}))
+	_, err = v.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: 1001}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Errorf("no owner = %v, want FailedPrecondition", err)
 	}

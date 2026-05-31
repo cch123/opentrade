@@ -29,7 +29,7 @@ message MatchKafkaOffset {
 
 message MatchOrder {
   uint64 id = 1;
-  string user_id = 2;
+  uint64 user_id = 2;
   string client_id = 3;
   uint32 side = 4;
   uint32 type = 5;

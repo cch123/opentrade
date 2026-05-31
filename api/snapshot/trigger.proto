@@ -37,7 +37,7 @@ message TriggerSnapshot {
 message TriggerRecord {
   uint64 id = 1;
   string client_trigger_id = 2;
-  string user_id = 3;
+  uint64 user_id = 3;
   string symbol = 4;
   uint32 side = 5;
   uint32 type = 6;

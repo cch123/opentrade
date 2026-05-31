@@ -115,7 +115,7 @@ func (c *PrivateConsumer) dispatch(rec *kgo.Record) {
 		return
 	}
 	userID := userIDOf(&evt)
-	if userID == "" {
+	if userID == 0 {
 		return // unclassified event; skip
 	}
 	if !c.ownsUser(userID) {
@@ -136,16 +136,16 @@ func (c *PrivateConsumer) dispatch(rec *kgo.Record) {
 
 // ownsUser reports whether userID is routed to this push instance. Returns
 // true when TotalInstances <= 1 (feature disabled, single-instance mode).
-func (c *PrivateConsumer) ownsUser(userID string) bool {
+func (c *PrivateConsumer) ownsUser(userID uint64) bool {
 	if c.totalInstances <= 1 {
 		return true
 	}
 	return shard.OwnsUser(c.instanceOrdinal, c.totalInstances, userID)
 }
 
-func userIDOf(evt *eventpb.CounterJournalEvent) string {
+func userIDOf(evt *eventpb.CounterJournalEvent) uint64 {
 	if evt == nil {
-		return ""
+		return 0
 	}
 	switch p := evt.Payload.(type) {
 	case *eventpb.CounterJournalEvent_Freeze:
@@ -173,5 +173,5 @@ func userIDOf(evt *eventpb.CounterJournalEvent) string {
 			return p.CancelReq.UserId
 		}
 	}
-	return ""
+	return 0
 }

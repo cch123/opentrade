@@ -131,12 +131,12 @@ func (p *TxnProducer) PublishOrderPlacement(
 	ctx context.Context,
 	journalEvt *eventpb.CounterJournalEvent,
 	orderEvt *eventpb.OrderEvent,
-	journalKey string,
+	journalKey uint64,
 	orderKey string,
 ) error {
 	orderTopic := p.orderEventTopicFor(orderKey)
 	return p.runTxnWithRetry(ctx, "PublishOrderPlacement", func() error {
-		if err := p.produce(ctx, p.cfg.JournalTopic, journalKey, journalEvt); err != nil {
+		if err := p.produce(ctx, p.cfg.JournalTopic, strconv.FormatUint(journalKey, 10), journalEvt); err != nil {
 			return fmt.Errorf("produce journal: %w", err)
 		}
 		if err := p.produce(ctx, orderTopic, orderKey, orderEvt); err != nil {
@@ -169,11 +169,11 @@ func (p *TxnProducer) orderEventTopicFor(symbol string) string {
 // must be handed off" (ADR-0058 cold migration picks up).
 func (p *TxnProducer) Publish(
 	ctx context.Context,
-	partitionKey string,
+	partitionKey uint64,
 	evt *eventpb.CounterJournalEvent,
 ) error {
 	return p.runTxnWithRetry(ctx, "Publish", func() error {
-		return p.produce(ctx, p.cfg.JournalTopic, partitionKey, evt)
+		return p.produce(ctx, p.cfg.JournalTopic, strconv.FormatUint(partitionKey, 10), evt)
 	})
 }
 
@@ -416,7 +416,11 @@ func (p *TxnProducer) produce(ctx context.Context, topic, key string, pb proto.M
 	}
 	if topic == p.cfg.JournalTopic {
 		// key == user_id for every counter-journal event.
-		rec.Partition = int32(shard.Index(key, p.cfg.VShardCount))
+		userID, err := strconv.ParseUint(key, 10, 64)
+		if err != nil || userID == 0 {
+			return fmt.Errorf("counter-journal key must be numeric user_id: %q", key)
+		}
+		rec.Partition = int32(shard.Index(userID, p.cfg.VShardCount))
 	}
 	return p.cli.ProduceSync(ctx, rec).FirstErr()
 }

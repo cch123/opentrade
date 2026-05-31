@@ -12,12 +12,12 @@ import (
 // MySQL transaction. All three tables are idempotent under replay:
 //
 //   - orders    : INSERT ... ON DUPLICATE KEY UPDATE order_id=order_id
-//                 (freeze row re-insert is no-op; status updates are separate
-//                  UPDATE statements applied in event order)
+//     (freeze row re-insert is no-op; status updates are separate
+//     UPDATE statements applied in event order)
 //   - accounts  : INSERT ... ON DUPLICATE KEY UPDATE ...
-//                 guarded by counter_seq_id (replays with a smaller seq are ignored)
+//     guarded by counter_seq_id (replays with a smaller seq are ignored)
 //   - account_logs : INSERT ... ON DUPLICATE KEY UPDATE vshard_id=vshard_id
-//                    (PK is (vshard_id, counter_seq_id, asset); ADR-0058 renamed the column)
+//     (PK is (vshard_id, counter_seq_id, asset); ADR-0058 renamed the column)
 func (m *MySQL) ApplyJournalBatch(ctx context.Context, batch JournalBatch) error {
 	if batch.IsEmpty() {
 		return nil

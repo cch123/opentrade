@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/journal"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -389,7 +389,7 @@ func (s *Service) buildSelfTradeFn(ctx context.Context, ti counterstate.TradeInp
 			}
 			if err := s.publisher.Publish(ctx, userID, evt); err != nil {
 				s.logger.Error("publish self-trade settlement",
-					zap.String("user", userID),
+					zap.Uint64("user", userID),
 					zap.Uint64("order_id", party.OrderID),
 					zap.Error(err))
 			}
@@ -679,7 +679,7 @@ func (s *Service) unfreezeResidual(o *counterstate.Order) (unfreezeResult, error
 	b.Frozen = b.Frozen.Sub(residual)
 	b.Available = b.Available.Add(residual)
 	if b.Frozen.Sign() < 0 {
-		return unfreezeResult{}, fmt.Errorf("unfreeze: frozen would be negative for %s %s", o.UserID, o.FrozenAsset)
+		return unfreezeResult{}, fmt.Errorf("unfreeze: frozen would be negative for %d %s", o.UserID, o.FrozenAsset)
 	}
 	// CommitBalance goes through setBalance → version bumps on both layers.
 	s.state.CommitBalance(o.UserID, o.FrozenAsset, b)
@@ -694,10 +694,10 @@ func (s *Service) unfreezeResidual(o *counterstate.Order) (unfreezeResult, error
 // (MVP-8: every Counter instance consumes the full trade-event topic and
 // filters by user_id ownership here). Debug level — foreign traffic is the
 // common case for any single shard so routine info-level logs would be spam.
-func (s *Service) logForeignSkip(kind, userID string, orderID uint64) {
+func (s *Service) logForeignSkip(kind string, userID uint64, orderID uint64) {
 	s.logger.Debug("skip foreign trade-event",
 		zap.String("kind", kind),
-		zap.String("user_id", userID),
+		zap.Uint64("user_id", userID),
 		zap.Uint64("order_id", orderID),
 		zap.Int("shard_id", s.cfg.ShardID),
 		zap.Int("total_shards", s.cfg.TotalShards))

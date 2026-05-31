@@ -21,8 +21,8 @@ import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	tradedumprpc "github.com/xargin/opentrade/api/gen/rpc/tradedump"
 	"github.com/xargin/opentrade/api/gen/rpc/tradedump/tradedumprpcconnect"
-	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 	"github.com/xargin/opentrade/pkg/connectx"
+	countersnap "github.com/xargin/opentrade/pkg/snapshot/counter"
 	countershadow "github.com/xargin/opentrade/trade-dump/internal/snapshot/counter/shadow"
 )
 

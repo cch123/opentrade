@@ -38,7 +38,7 @@ var (
 // Publisher is the minimal non-transactional Kafka interface used by the
 // Transfer path (single counter-journal produce).
 type Publisher interface {
-	Publish(ctx context.Context, partitionKey string, evt *eventpb.CounterJournalEvent) error
+	Publish(ctx context.Context, userID uint64, evt *eventpb.CounterJournalEvent) error
 }
 
 // TxnPublisher is the transactional interface used by PlaceOrder / CancelOrder
@@ -48,7 +48,7 @@ type TxnPublisher interface {
 		ctx context.Context,
 		journalEvt *eventpb.CounterJournalEvent,
 		orderEvt *eventpb.OrderEvent,
-		journalKey string,
+		journalKey uint64,
 		orderKey string,
 	) error
 }
@@ -147,7 +147,7 @@ func (s *Service) ShardID() int { return s.cfg.ShardID }
 
 // OwnsUser reports whether userID belongs to this shard. Returns true when
 // TotalShards==0 (guard disabled).
-func (s *Service) OwnsUser(userID string) bool {
+func (s *Service) OwnsUser(userID uint64) bool {
 	if s.cfg.TotalShards <= 0 {
 		return true
 	}
@@ -254,7 +254,7 @@ func (s *Service) Transfer(ctx context.Context, req counterstate.TransferRequest
 // balance while a concurrent write for the same user is in-flight. This is
 // intentional — ADR-0007 treats query as a best-effort view; authoritative
 // state is Kafka journal.
-func (s *Service) QueryBalance(userID, asset string) (counterstate.Balance, error) {
+func (s *Service) QueryBalance(userID uint64, asset string) (counterstate.Balance, error) {
 	if !s.OwnsUser(userID) {
 		return counterstate.Balance{}, ErrWrongShard
 	}
@@ -262,7 +262,7 @@ func (s *Service) QueryBalance(userID, asset string) (counterstate.Balance, erro
 }
 
 // QueryAccount returns the full map of (asset -> balance) for a user.
-func (s *Service) QueryAccount(userID string) (map[string]counterstate.Balance, error) {
+func (s *Service) QueryAccount(userID uint64) (map[string]counterstate.Balance, error) {
 	if !s.OwnsUser(userID) {
 		return nil, ErrWrongShard
 	}
@@ -270,7 +270,7 @@ func (s *Service) QueryAccount(userID string) (map[string]counterstate.Balance, 
 }
 
 // QueryOrder returns a clone of the order if it exists and belongs to userID.
-func (s *Service) QueryOrder(userID string, orderID uint64) (*counterstate.Order, error) {
+func (s *Service) QueryOrder(userID uint64, orderID uint64) (*counterstate.Order, error) {
 	if !s.OwnsUser(userID) {
 		return nil, ErrWrongShard
 	}
@@ -289,7 +289,7 @@ func (s *Service) QueryOrder(userID string, orderID uint64) (*counterstate.Order
 // ---------------------------------------------------------------------------
 
 func validateTransfer(req counterstate.TransferRequest) error {
-	if req.UserID == "" {
+	if req.UserID == 0 {
 		return ErrMissingUserID
 	}
 	if req.TransferID == "" {

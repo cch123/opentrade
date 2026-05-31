@@ -98,7 +98,7 @@ func ApplyCounterJournalEvent(state *ShardState, evt *eventpb.CounterJournalEven
 // preserves the event's exact Version value (critical for
 // per-(user, asset) Balance.Version consumers that key off it).
 func applyBalanceSnapshot(state *ShardState, bs *eventpb.BalanceSnapshot) error {
-	if bs == nil || bs.UserId == "" || bs.Asset == "" {
+	if bs == nil || bs.UserId == 0 || bs.Asset == "" {
 		return nil
 	}
 	available, err := dec.Parse(bs.Available)
@@ -276,7 +276,7 @@ func applyTransferEvent(state *ShardState, evt *eventpb.TransferEvent) error {
 	if err := applyBalanceSnapshot(state, evt.BalanceAfter); err != nil {
 		return fmt.Errorf("transfer balance: %w", err)
 	}
-	if evt.UserId != "" && evt.TransferId != "" {
+	if evt.UserId != 0 && evt.TransferId != "" {
 		state.Account(evt.UserId).RememberTransfer(evt.TransferId)
 	}
 	return nil

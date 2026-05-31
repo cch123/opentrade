@@ -54,7 +54,7 @@ func TestLoad_HappyPath(t *testing.T) {
 		Pending: []*snapshotpb.TriggerRecord{
 			{
 				Id:         7,
-				UserId:     "u2",
+				UserId:     202,
 				Symbol:     "ETH-USDT",
 				Side:       uint32(eventpb.Side_SIDE_BUY),
 				Type:       uint32(condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT),
@@ -67,7 +67,7 @@ func TestLoad_HappyPath(t *testing.T) {
 		Terminals: []*snapshotpb.TriggerRecord{
 			{
 				Id:        9,
-				UserId:    "u1",
+				UserId:    101,
 				Symbol:    "BTC-USDT",
 				Side:      uint32(eventpb.Side_SIDE_SELL),
 				Type:      uint32(condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS),
@@ -97,11 +97,11 @@ func TestLoad_HappyPath(t *testing.T) {
 	}
 	// Engine state hydrated — pending u2 lookup + canceled u1 in
 	// terminal ring.
-	pending := eng.List("u2", false)
+	pending := eng.List(202, false)
 	if len(pending) != 1 || pending[0].Type != condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT {
 		t.Fatalf("u2 pending = %+v", pending)
 	}
-	inactive := eng.List("u1", true)
+	inactive := eng.List(101, true)
 	if len(inactive) != 1 {
 		t.Fatalf("u1 inactive = %+v", inactive)
 	}
@@ -140,7 +140,7 @@ func TestLoad_BadDecimal(t *testing.T) {
 		Pending: []*snapshotpb.TriggerRecord{
 			{
 				Id:        1,
-				UserId:    "u",
+				UserId:    1,
 				Symbol:    "BTC-USDT",
 				StopPrice: "not-a-number",
 				Status:    uint32(condrpc.TriggerStatus_TRIGGER_STATUS_PENDING),

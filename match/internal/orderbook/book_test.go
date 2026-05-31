@@ -6,7 +6,7 @@ import (
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-func mkOrder(id uint64, user string, side Side, price, qty string) *Order {
+func mkOrder(id uint64, user uint64, side Side, price, qty string) *Order {
 	p := dec.Zero
 	if price != "" {
 		p = dec.New(price)
@@ -36,9 +36,9 @@ func TestInsertAndBest(t *testing.T) {
 		t.Fatal("expected empty ask side")
 	}
 
-	o1 := mkOrder(1, "u1", Bid, "100", "1")
-	o2 := mkOrder(2, "u2", Bid, "101", "1")
-	o3 := mkOrder(3, "u3", Bid, "99", "1")
+	o1 := mkOrder(1, 1001, Bid, "100", "1")
+	o2 := mkOrder(2, 1002, Bid, "101", "1")
+	o3 := mkOrder(3, 1003, Bid, "99", "1")
 	for _, o := range []*Order{o1, o2, o3} {
 		if err := b.Insert(o); err != nil {
 			t.Fatalf("Insert %d: %v", o.ID, err)
@@ -49,8 +49,8 @@ func TestInsertAndBest(t *testing.T) {
 		t.Fatalf("best bid id=%d ok=%v, want 2", best.ID, ok)
 	}
 
-	o4 := mkOrder(4, "u4", Ask, "200", "1")
-	o5 := mkOrder(5, "u5", Ask, "199", "1")
+	o4 := mkOrder(4, 1004, Ask, "200", "1")
+	o5 := mkOrder(5, 1005, Ask, "199", "1")
 	for _, o := range []*Order{o4, o5} {
 		if err := b.Insert(o); err != nil {
 			t.Fatalf("Insert %d: %v", o.ID, err)
@@ -64,8 +64,8 @@ func TestInsertAndBest(t *testing.T) {
 
 func TestTimePriorityWithinLevel(t *testing.T) {
 	b := NewBook("BTC-USDT")
-	a := mkOrder(1, "u1", Bid, "100", "1")
-	c := mkOrder(2, "u2", Bid, "100", "1")
+	a := mkOrder(1, 1001, Bid, "100", "1")
+	c := mkOrder(2, 1002, Bid, "100", "1")
 	if err := b.Insert(a); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestTimePriorityWithinLevel(t *testing.T) {
 
 func TestCancelRemovesLevelWhenEmpty(t *testing.T) {
 	b := NewBook("BTC-USDT")
-	o := mkOrder(1, "u1", Bid, "100", "1")
+	o := mkOrder(1, 1001, Bid, "100", "1")
 	if err := b.Insert(o); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestCancelRemovesLevelWhenEmpty(t *testing.T) {
 
 func TestDuplicateInsert(t *testing.T) {
 	b := NewBook("BTC-USDT")
-	o := mkOrder(1, "u1", Bid, "100", "1")
+	o := mkOrder(1, 1001, Bid, "100", "1")
 	if err := b.Insert(o); err != nil {
 		t.Fatal(err)
 	}
@@ -116,9 +116,9 @@ func TestDuplicateInsert(t *testing.T) {
 func TestDepth(t *testing.T) {
 	b := NewBook("BTC-USDT")
 	orders := []*Order{
-		mkOrder(1, "u1", Bid, "100", "1"),
-		mkOrder(2, "u2", Bid, "100", "2"),
-		mkOrder(3, "u3", Bid, "99", "3"),
+		mkOrder(1, 1001, Bid, "100", "1"),
+		mkOrder(2, 1002, Bid, "100", "2"),
+		mkOrder(3, 1003, Bid, "99", "3"),
 	}
 	for _, o := range orders {
 		if err := b.Insert(o); err != nil {
@@ -133,7 +133,7 @@ func TestDepth(t *testing.T) {
 
 func TestFillPartial(t *testing.T) {
 	b := NewBook("BTC-USDT")
-	o := mkOrder(1, "u1", Bid, "100", "5")
+	o := mkOrder(1, 1001, Bid, "100", "5")
 	if err := b.Insert(o); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestFillPartial(t *testing.T) {
 
 func TestFillFull(t *testing.T) {
 	b := NewBook("BTC-USDT")
-	o := mkOrder(1, "u1", Bid, "100", "5")
+	o := mkOrder(1, 1001, Bid, "100", "5")
 	if err := b.Insert(o); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestFillFull(t *testing.T) {
 
 func TestFillOverflow(t *testing.T) {
 	b := NewBook("BTC-USDT")
-	o := mkOrder(1, "u1", Bid, "100", "5")
+	o := mkOrder(1, 1001, Bid, "100", "5")
 	_ = b.Insert(o)
 	if _, _, err := b.Fill(1, dec.New("6")); err != ErrFillExceedsQty {
 		t.Fatalf("expected ErrFillExceedsQty, got %v", err)
@@ -186,10 +186,10 @@ func TestWalkPriority(t *testing.T) {
 	b := NewBook("BTC-USDT")
 	// Two levels, with multiple orders per level.
 	orders := []*Order{
-		mkOrder(1, "u1", Bid, "100", "1"),
-		mkOrder(2, "u2", Bid, "101", "1"),
-		mkOrder(3, "u3", Bid, "100", "1"),
-		mkOrder(4, "u4", Bid, "101", "1"),
+		mkOrder(1, 1001, Bid, "100", "1"),
+		mkOrder(2, 1002, Bid, "101", "1"),
+		mkOrder(3, 1003, Bid, "100", "1"),
+		mkOrder(4, 1004, Bid, "101", "1"),
 	}
 	for _, o := range orders {
 		_ = b.Insert(o)

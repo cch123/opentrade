@@ -36,7 +36,7 @@ func TestE2E_SubscribeAndBroadcast(t *testing.T) {
 	defer cancel()
 
 	header := http.Header{}
-	header.Set(ws.HeaderUserID, "alice")
+	header.Set(ws.HeaderUserID, "1001")
 	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -103,7 +103,7 @@ func TestE2E_UserStreamAutoSubscribe(t *testing.T) {
 	defer cancel()
 
 	header := http.Header{}
-	header.Set(ws.HeaderUserID, "bob")
+	header.Set(ws.HeaderUserID, "1002")
 	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -116,7 +116,7 @@ func TestE2E_UserStreamAutoSubscribe(t *testing.T) {
 	}
 
 	frame, _ := ws.EncodeData(ws.StreamUser, []byte(`{"priv":true}`))
-	sent, _ := h.SendUser("bob", frame)
+	sent, _ := h.SendUser(1002, frame)
 	if sent != 1 {
 		t.Fatalf("SendUser sent=%d", sent)
 	}

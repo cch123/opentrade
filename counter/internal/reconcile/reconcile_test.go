@@ -13,15 +13,15 @@ import (
 
 // putBalance seeds an in-memory account balance via the restore hook (the
 // only exported path that bypasses transfer validation).
-func putBalance(state *counterstate.ShardState, userID, asset string, avail, frozen dec.Decimal) {
+func putBalance(state *counterstate.ShardState, userID uint64, asset string, avail, frozen dec.Decimal) {
 	state.Account(userID).PutForRestore(asset, counterstate.Balance{Available: avail, Frozen: frozen})
 }
 
 func TestRunOnce_NoMismatches(t *testing.T) {
 	state := counterstate.NewShardState(0)
-	putBalance(state, "u1", "USDT", dec.New("100"), dec.New("10"))
-	putBalance(state, "u1", "BTC", dec.New("0.5"), dec.Zero)
-	putBalance(state, "u2", "USDT", dec.New("200"), dec.Zero)
+	putBalance(state, 1001, "USDT", dec.New("100"), dec.New("10"))
+	putBalance(state, 1001, "BTC", dec.New("0.5"), dec.Zero)
+	putBalance(state, 1002, "USDT", dec.New("200"), dec.Zero)
 
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -33,9 +33,9 @@ func TestRunOnce_NoMismatches(t *testing.T) {
 	// Order of user ids is non-deterministic, so match the SELECT loosely.
 	mock.ExpectQuery(`SELECT user_id, asset, available, frozen FROM accounts WHERE user_id IN`).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen"}).
-			AddRow("u1", "USDT", "100", "10").
-			AddRow("u1", "BTC", "0.5", "0").
-			AddRow("u2", "USDT", "200", "0"))
+			AddRow(uint64(1001), "USDT", "100", "10").
+			AddRow(uint64(1001), "BTC", "0.5", "0").
+			AddRow(uint64(1002), "USDT", "200", "0"))
 
 	r := New(Config{ShardID: 0, BatchSize: 100}, state, db, zap.NewNop())
 	rep, err := r.RunOnce(context.Background())
@@ -55,7 +55,7 @@ func TestRunOnce_NoMismatches(t *testing.T) {
 
 func TestRunOnce_ValueDiff(t *testing.T) {
 	state := counterstate.NewShardState(0)
-	putBalance(state, "u1", "USDT", dec.New("100"), dec.New("10"))
+	putBalance(state, 1001, "USDT", dec.New("100"), dec.New("10"))
 
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -64,7 +64,7 @@ func TestRunOnce_ValueDiff(t *testing.T) {
 	defer db.Close()
 	mock.ExpectQuery(`SELECT user_id, asset, available, frozen FROM accounts WHERE user_id IN`).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen"}).
-			AddRow("u1", "USDT", "99.5", "10"))
+			AddRow(uint64(1001), "USDT", "99.5", "10"))
 
 	r := New(Config{ShardID: 0}, state, db, zap.NewNop())
 	rep, err := r.RunOnce(context.Background())
@@ -78,8 +78,8 @@ func TestRunOnce_ValueDiff(t *testing.T) {
 	if m.Kind != MismatchValueDiff {
 		t.Errorf("kind = %s, want value_diff", m.Kind)
 	}
-	if m.UserID != "u1" || m.Asset != "USDT" {
-		t.Errorf("target = %s/%s", m.UserID, m.Asset)
+	if m.UserID != 1001 || m.Asset != "USDT" {
+		t.Errorf("target = %d/%s", m.UserID, m.Asset)
 	}
 	if m.MemAvailable != "100" || m.DBAvailable != "99.5" {
 		t.Errorf("avail values: mem=%s db=%s", m.MemAvailable, m.DBAvailable)
@@ -88,8 +88,8 @@ func TestRunOnce_ValueDiff(t *testing.T) {
 
 func TestRunOnce_OnlyInMemory(t *testing.T) {
 	state := counterstate.NewShardState(0)
-	putBalance(state, "u1", "USDT", dec.New("100"), dec.Zero)
-	putBalance(state, "u1", "BTC", dec.New("1"), dec.Zero)
+	putBalance(state, 1001, "USDT", dec.New("100"), dec.Zero)
+	putBalance(state, 1001, "BTC", dec.New("1"), dec.Zero)
 
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -99,7 +99,7 @@ func TestRunOnce_OnlyInMemory(t *testing.T) {
 	// DB returns only USDT row — BTC is only in memory (e.g. projection lag).
 	mock.ExpectQuery(`SELECT user_id, asset, available, frozen FROM accounts WHERE user_id IN`).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen"}).
-			AddRow("u1", "USDT", "100", "0"))
+			AddRow(uint64(1001), "USDT", "100", "0"))
 
 	r := New(Config{ShardID: 0}, state, db, zap.NewNop())
 	rep, err := r.RunOnce(context.Background())
@@ -163,20 +163,6 @@ func TestRunOnce_Batching(t *testing.T) {
 	}
 }
 
-func userName(i int) string {
-	return "u" + itoa(i)
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var b [20]byte
-	pos := len(b)
-	for i > 0 {
-		pos--
-		b[pos] = byte('0' + i%10)
-		i /= 10
-	}
-	return string(b[pos:])
+func userName(i int) uint64 {
+	return uint64(1000 + i)
 }

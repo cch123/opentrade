@@ -12,7 +12,7 @@ import (
 // TAKE_PROFIT can reserve funds at Place time and consume them atomically
 // at trigger time.
 type Reservation struct {
-	UserID      string
+	UserID      uint64
 	RefID       string // caller-supplied id (e.g. "trig-<id>")
 	Asset       string
 	Amount      dec.Decimal
@@ -35,13 +35,13 @@ type reservationStore struct {
 	// byRef is the primary index (idempotency hinges on it).
 	byRef map[string]*Reservation
 	// byUser gives us O(users) iteration for snapshot / audit.
-	byUser map[string]map[string]*Reservation
+	byUser map[uint64]map[string]*Reservation
 }
 
 func newReservationStore() *reservationStore {
 	return &reservationStore{
 		byRef:  make(map[string]*Reservation),
-		byUser: make(map[string]map[string]*Reservation),
+		byUser: make(map[uint64]map[string]*Reservation),
 	}
 }
 
@@ -156,8 +156,8 @@ func (s *ShardState) AllReservations() []*Reservation {
 // converges when the reservation is later consumed by PlaceOrder (via the
 // usual FreezeEvent's BalanceAfter) or released (which restores the
 // pre-Reserve state, matching trade-dump's unchanged view).
-func (s *ShardState) CreateReservation(userID, asset, refID string, amount dec.Decimal) (res *Reservation, accepted bool, err error) {
-	if userID == "" {
+func (s *ShardState) CreateReservation(userID uint64, asset, refID string, amount dec.Decimal) (res *Reservation, accepted bool, err error) {
+	if userID == 0 {
 		return nil, false, errors.New("engine: user_id required")
 	}
 	if refID == "" {
@@ -196,7 +196,7 @@ func (s *ShardState) CreateReservation(userID, asset, refID string, amount dec.D
 // ReleaseReservationByRef is the user-cancel path: Frozen → Available,
 // reservation record removed. Returns the released record (for journaling
 // / response) or (nil, false, nil) when refID is unknown (idempotent).
-func (s *ShardState) ReleaseReservationByRef(userID, refID string) (*Reservation, bool, error) {
+func (s *ShardState) ReleaseReservationByRef(userID uint64, refID string) (*Reservation, bool, error) {
 	if refID == "" {
 		return nil, false, errors.New("engine: reservation ref_id required")
 	}
@@ -204,7 +204,7 @@ func (s *ShardState) ReleaseReservationByRef(userID, refID string) (*Reservation
 	if existing == nil {
 		return nil, false, nil
 	}
-	if userID != "" && existing.UserID != userID {
+	if userID != 0 && existing.UserID != userID {
 		return nil, false, ErrReservationUserMismatch
 	}
 	acc := s.Account(existing.UserID)
@@ -226,7 +226,7 @@ func (s *ShardState) ReleaseReservationByRef(userID, refID string) (*Reservation
 // validate the reservation matches the order's computed freeze, delete
 // the reservation record, and leave the balance unchanged (the funds
 // stay in Frozen and become the order's FrozenAmount).
-func (s *ShardState) ConsumeReservationForOrder(userID, refID, asset string, amount dec.Decimal) error {
+func (s *ShardState) ConsumeReservationForOrder(userID uint64, refID, asset string, amount dec.Decimal) error {
 	if refID == "" {
 		return errors.New("engine: reservation ref_id required")
 	}

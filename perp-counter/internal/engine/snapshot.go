@@ -30,14 +30,14 @@ type TransferSnap struct {
 
 // WalletSnap is one user's margin balance.
 type WalletSnap struct {
-	UserID    string `json:"user_id"`
+	UserID    uint64 `json:"user_id"`
 	Available string `json:"available"`
 	Reserved  string `json:"reserved"`
 }
 
 // PositionSnap is one (user, symbol) position with its recovery watermarks.
 type PositionSnap struct {
-	UserID           string `json:"user_id"`
+	UserID           uint64 `json:"user_id"`
 	Symbol           string `json:"symbol"`
 	Side             uint8  `json:"side"`
 	Size             string `json:"size"`
@@ -60,11 +60,11 @@ func (e *Engine) Snapshot() Snapshot {
 
 	s := Snapshot{Marks: map[string]string{}, Insurance: map[string]string{}, Transfers: map[string]TransferSnap{}}
 
-	users := make([]string, 0, len(e.wallets))
+	users := make([]uint64, 0, len(e.wallets))
 	for u := range e.wallets {
 		users = append(users, u)
 	}
-	sort.Strings(users)
+	sort.Slice(users, func(i, j int) bool { return users[i] < users[j] })
 	for _, u := range users {
 		w := e.wallets[u]
 		s.Wallets = append(s.Wallets, WalletSnap{
@@ -72,11 +72,11 @@ func (e *Engine) Snapshot() Snapshot {
 		})
 	}
 
-	posUsers := make([]string, 0, len(e.positions))
+	posUsers := make([]uint64, 0, len(e.positions))
 	for u := range e.positions {
 		posUsers = append(posUsers, u)
 	}
-	sort.Strings(posUsers)
+	sort.Slice(posUsers, func(i, j int) bool { return posUsers[i] < posUsers[j] })
 	for _, u := range posUsers {
 		bySym := e.positions[u]
 		syms := make([]string, 0, len(bySym))
@@ -118,8 +118,8 @@ func (e *Engine) Restore(s Snapshot) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.wallets = map[string]*Wallet{}
-	e.positions = map[string]map[string]*perpstate.Position{}
+	e.wallets = map[uint64]*Wallet{}
+	e.positions = map[uint64]map[string]*perpstate.Position{}
 	e.marks = map[string]dec.Decimal{}
 	e.insurance = map[string]dec.Decimal{}
 	e.transfers = map[string]TransferOutcome{}

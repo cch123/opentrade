@@ -65,7 +65,7 @@ const (
 // matching.
 type Order struct {
 	ID        uint64
-	UserID    string
+	UserID    uint64
 	ClientID  string
 	Symbol    string
 	Side      Side

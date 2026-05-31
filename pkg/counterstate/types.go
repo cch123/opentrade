@@ -63,7 +63,7 @@ func (t TransferType) String() string {
 // TransferRequest is the input to ShardState.ApplyTransfer.
 type TransferRequest struct {
 	TransferID string
-	UserID     string
+	UserID     uint64
 	Asset      string
 	Amount     dec.Decimal
 	Type       TransferType

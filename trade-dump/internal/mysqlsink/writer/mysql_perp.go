@@ -47,6 +47,15 @@ func (m *MySQL) ApplyPerpBatch(ctx context.Context, batch PerpBatch) error {
 	if err := m.insertPerpLiquidations(ctx, tx, batch.Liquidations); err != nil {
 		return err
 	}
+	if err := m.upsertPerpTakeoverLots(ctx, tx, batch.TakeoverLots); err != nil {
+		return err
+	}
+	if err := m.insertPerpADL(ctx, tx, batch.ADL); err != nil {
+		return err
+	}
+	if err := m.insertRiskPoolSettlements(ctx, tx, batch.RiskPool); err != nil {
+		return err
+	}
 	if err := m.insertPerpMargins(ctx, tx, batch.Margins); err != nil {
 		return err
 	}
@@ -186,6 +195,65 @@ func (m *MySQL) insertPerpLiquidations(ctx context.Context, tx *sql.Tx, rows []P
 			strings.Join(ph, ", ") + " ON DUPLICATE KEY UPDATE perp_seq_id = perp_seq_id"
 		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("perp_liquidations insert: %w", err)
+		}
+		return nil
+	})
+}
+
+func (m *MySQL) upsertPerpTakeoverLots(ctx context.Context, tx *sql.Tx, rows []PerpTakeoverLotRow) error {
+	return chunk(rows, m.chunkSize, func(rs []PerpTakeoverLotRow) error {
+		ph := make([]string, len(rs))
+		args := make([]any, 0, len(rs)*13)
+		for i, r := range rs {
+			ph[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+			args = append(args, r.LotID, r.PerpSeqID, r.UserID, r.Symbol, r.Side,
+				zeroIfEmpty(r.TotalQty), zeroIfEmpty(r.LeavesQty), zeroIfEmpty(r.TakeoverPrice),
+				zeroIfEmpty(r.TriggerMarkPrice), zeroIfEmpty(r.TakenOverBalance),
+				r.WorkingCapitalRef, r.Status, r.TsUnixMs)
+		}
+		q := "INSERT INTO perp_takeover_lots (lot_id, perp_seq_id, user_id, symbol, side, total_qty, leaves_qty, takeover_price, trigger_mark_price, taken_over_balance, working_capital_ref, status, ts_unix_ms) VALUES " +
+			strings.Join(ph, ", ") + " ON DUPLICATE KEY UPDATE perp_seq_id = perp_seq_id"
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("perp_takeover_lots upsert: %w", err)
+		}
+		return nil
+	})
+}
+
+func (m *MySQL) insertPerpADL(ctx context.Context, tx *sql.Tx, rows []PerpADLRow) error {
+	return chunk(rows, m.chunkSize, func(rs []PerpADLRow) error {
+		ph := make([]string, len(rs))
+		args := make([]any, 0, len(rs)*10)
+		for i, r := range rs {
+			ph[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+			args = append(args, r.PerpSeqID, r.UserID, r.Symbol, r.LotID, r.AdlRound,
+				zeroIfEmpty(r.Price), zeroIfEmpty(r.RequestedQty), zeroIfEmpty(r.FactQty),
+				zeroIfEmpty(r.RealizedPnl), r.TsUnixMs)
+		}
+		q := "INSERT INTO perp_adl_events (perp_seq_id, user_id, symbol, lot_id, adl_round, price, requested_qty, fact_qty, realized_pnl, ts_unix_ms) VALUES " +
+			strings.Join(ph, ", ") + " ON DUPLICATE KEY UPDATE perp_seq_id = perp_seq_id"
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("perp_adl_events insert: %w", err)
+		}
+		return nil
+	})
+}
+
+func (m *MySQL) insertRiskPoolSettlements(ctx context.Context, tx *sql.Tx, rows []RiskPoolSettlementRow) error {
+	return chunk(rows, m.chunkSize, func(rs []RiskPoolSettlementRow) error {
+		ph := make([]string, len(rs))
+		args := make([]any, 0, len(rs)*13)
+		for i, r := range rs {
+			ph[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+			args = append(args, r.LotID, r.PerpSeqID, r.Symbol, r.Coin, r.WorkingCapitalRef,
+				zeroIfEmpty(r.TakenOverBalance), zeroIfEmpty(r.LiqAdlRealisedPnl), zeroIfEmpty(r.CumFee),
+				zeroIfEmpty(r.WorkingCapitalDrawn), zeroIfEmpty(r.BorrowedBalance),
+				zeroIfEmpty(r.FinalPoolDelta), r.Status, r.TsUnixMs)
+		}
+		q := "INSERT INTO perp_risk_pool_settlements (lot_id, perp_seq_id, symbol, coin, working_capital_ref, taken_over_balance, liq_adl_realised_pnl, cum_fee, working_capital_drawn, borrowed_balance, final_pool_delta, status, ts_unix_ms) VALUES " +
+			strings.Join(ph, ", ") + " ON DUPLICATE KEY UPDATE lot_id = lot_id"
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("perp_risk_pool_settlements insert: %w", err)
 		}
 		return nil
 	})

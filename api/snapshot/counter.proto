@@ -43,7 +43,7 @@ message CounterShardSnapshot {
 }
 
 message CounterAccount {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 version = 2;                            // ADR-0048 #1 user-level version
   repeated CounterBalance balances = 3;
   map<string, uint64> last_match_seq = 4;        // ADR-0048 #2
@@ -60,7 +60,7 @@ message CounterBalance {
 message CounterOrder {
   uint64 id = 1;
   string client_order_id = 2;
-  string user_id = 3;
+  uint64 user_id = 3;
   string symbol = 4;
   uint32 side = 5;                               // engine.Side (uint8)
   uint32 type = 6;                               // engine.OrderType (uint8)
@@ -89,7 +89,7 @@ message CounterDedupEntry {
 }
 
 message CounterReservation {
-  string user_id = 1;
+  uint64 user_id = 1;
   string ref_id = 2;
   string asset = 3;
   string amount = 4;

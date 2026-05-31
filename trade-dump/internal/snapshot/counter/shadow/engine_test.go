@@ -25,14 +25,14 @@ func TestShadow_ApplyFreezeAndCheckpointAdvancesWatermarks(t *testing.T) {
 		CounterSeqId: 7,
 		Payload: &eventpb.CounterJournalEvent_Freeze{
 			Freeze: &eventpb.FreezeEvent{
-				UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
+				UserId: 1001, OrderId: 1, Symbol: "BTC-USDT",
 				Side:      eventpb.Side_SIDE_BUY,
 				OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
 				Price:     "10", Qty: "1",
 				FreezeAsset:  "USDT",
 				FreezeAmount: "10",
 				BalanceAfter: &eventpb.BalanceSnapshot{
-					UserId: "u1", Asset: "USDT",
+					UserId: 1001, Asset: "USDT",
 					Available: "90", Frozen: "10", Version: 1,
 				},
 			},
@@ -141,11 +141,11 @@ func TestShadow_CaptureProducesFullState(t *testing.T) {
 				CounterSeqId: 1,
 				Payload: &eventpb.CounterJournalEvent_Transfer{
 					Transfer: &eventpb.TransferEvent{
-						UserId: "u1", TransferId: "tx-1",
+						UserId: 1001, TransferId: "tx-1",
 						Asset: "USDT", Amount: "1000",
 						Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
 						BalanceAfter: &eventpb.BalanceSnapshot{
-							UserId: "u1", Asset: "USDT",
+							UserId: 1001, Asset: "USDT",
 							Available: "1000", Frozen: "0", Version: 1,
 						},
 					},
@@ -158,13 +158,13 @@ func TestShadow_CaptureProducesFullState(t *testing.T) {
 				CounterSeqId: 2,
 				Payload: &eventpb.CounterJournalEvent_Freeze{
 					Freeze: &eventpb.FreezeEvent{
-						UserId: "u1", OrderId: 10, Symbol: "BTC-USDT",
+						UserId: 1001, OrderId: 10, Symbol: "BTC-USDT",
 						Side:      eventpb.Side_SIDE_BUY,
 						OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
 						Price:     "50000", Qty: "0.1",
 						FreezeAsset: "USDT", FreezeAmount: "5000",
 						BalanceAfter: &eventpb.BalanceSnapshot{
-							UserId: "u1", Asset: "USDT",
+							UserId: 1001, Asset: "USDT",
 							Available: "-4000", Frozen: "5000", Version: 2,
 						},
 					},
@@ -207,7 +207,7 @@ func TestShadow_CaptureProducesFullState(t *testing.T) {
 	if len(snap.Offsets) != 1 || snap.Offsets[0].Partition != 7 || snap.Offsets[0].Offset != 9999 {
 		t.Fatalf("Offsets = %+v, want [{7, 9999}]", snap.Offsets)
 	}
-	if len(snap.Accounts) != 1 || snap.Accounts[0].UserID != "u1" {
+	if len(snap.Accounts) != 1 || snap.Accounts[0].UserID != 1001 {
 		t.Fatalf("Accounts = %+v, want single u1", snap.Accounts)
 	}
 	if !containsTransferID(snap.Accounts[0].RecentTransferIDs, "tx-1") {
@@ -317,10 +317,10 @@ func TestShadow_RestoreFromSnapshotRoundTrip(t *testing.T) {
 		CounterSeqId: 1,
 		Payload: &eventpb.CounterJournalEvent_Transfer{
 			Transfer: &eventpb.TransferEvent{
-				UserId: "u1", TransferId: "tx-1", Asset: "USDT", Amount: "100",
+				UserId: 1001, TransferId: "tx-1", Asset: "USDT", Amount: "100",
 				Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
 				BalanceAfter: &eventpb.BalanceSnapshot{
-					UserId: "u1", Asset: "USDT",
+					UserId: 1001, Asset: "USDT",
 					Available: "100", Frozen: "0", Version: 1,
 				},
 			},
@@ -359,7 +359,7 @@ func TestShadow_RestoreFromSnapshotRoundTrip(t *testing.T) {
 	if b.EventsSinceLastSnapshot() != 0 {
 		t.Fatalf("restored events counter = %d, want 0", b.EventsSinceLastSnapshot())
 	}
-	if bal := b.State().Balance("u1", "USDT"); bal.Available.String() != "100" {
+	if bal := b.State().Balance(1001, "USDT"); bal.Available.String() != "100" {
 		t.Fatalf("restored u1 USDT available = %s, want 100", bal.Available)
 	}
 
@@ -369,13 +369,13 @@ func TestShadow_RestoreFromSnapshotRoundTrip(t *testing.T) {
 		CounterSeqId: 3,
 		Payload: &eventpb.CounterJournalEvent_Freeze{
 			Freeze: &eventpb.FreezeEvent{
-				UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",
+				UserId: 1001, OrderId: 42, Symbol: "BTC-USDT",
 				Side:      eventpb.Side_SIDE_BUY,
 				OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
 				Price:     "50000", Qty: "0.001",
 				FreezeAsset: "USDT", FreezeAmount: "50",
 				BalanceAfter: &eventpb.BalanceSnapshot{
-					UserId: "u1", Asset: "USDT",
+					UserId: 1001, Asset: "USDT",
 					Available: "50", Frozen: "50", Version: 2,
 				},
 			},
@@ -394,7 +394,7 @@ func TestShadow_RestoreFromSnapshotRoundTrip(t *testing.T) {
 	if b.NextJournalOffset() != a.NextJournalOffset() {
 		t.Fatalf("post-restore NextJournalOffset diverged: a=%d b=%d", a.NextJournalOffset(), b.NextJournalOffset())
 	}
-	if b.State().Balance("u1", "USDT").Available.String() != "50" {
+	if b.State().Balance(1001, "USDT").Available.String() != "50" {
 		t.Fatal("post-restore balance diverged from a")
 	}
 	if b.State().Orders().Get(42) == nil {
@@ -413,10 +413,10 @@ func TestShadow_RestoreFromSnapshotRejectsNonEmpty(t *testing.T) {
 		CounterSeqId: 1,
 		Payload: &eventpb.CounterJournalEvent_Transfer{
 			Transfer: &eventpb.TransferEvent{
-				UserId: "u1", TransferId: "tx-1", Asset: "USDT", Amount: "1",
+				UserId: 1001, TransferId: "tx-1", Asset: "USDT", Amount: "1",
 				Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
 				BalanceAfter: &eventpb.BalanceSnapshot{
-					UserId: "u1", Asset: "USDT", Available: "1",
+					UserId: 1001, Asset: "USDT", Available: "1",
 				},
 			},
 		},
@@ -457,14 +457,14 @@ func TestShadow_ApplyStartupFenceIsNoOp(t *testing.T) {
 		CounterSeqId: 5,
 		Payload: &eventpb.CounterJournalEvent_Freeze{
 			Freeze: &eventpb.FreezeEvent{
-				UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
+				UserId: 1001, OrderId: 1, Symbol: "BTC-USDT",
 				Side:      eventpb.Side_SIDE_BUY,
 				OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
 				Price:     "10", Qty: "1",
 				FreezeAsset:  "USDT",
 				FreezeAmount: "10",
 				BalanceAfter: &eventpb.BalanceSnapshot{
-					UserId: "u1", Asset: "USDT",
+					UserId: 1001, Asset: "USDT",
 					Available: "90", Frozen: "10", Version: 1,
 				},
 			},
@@ -475,7 +475,7 @@ func TestShadow_ApplyStartupFenceIsNoOp(t *testing.T) {
 	}
 	csBefore := sh.CounterSeq()
 	teP, teO := sh.TeWatermark()
-	balBefore := sh.State().Balance("u1", "USDT")
+	balBefore := sh.State().Balance(1001, "USDT")
 	// Snapshot order fields as VALUES, not the *Order pointer. The
 	// store returns a live pointer; keeping only the pointer would
 	// alias any in-place mutation by Apply and make the post-check
@@ -527,7 +527,7 @@ func TestShadow_ApplyStartupFenceIsNoOp(t *testing.T) {
 		t.Fatalf("teWatermark mutated by StartupFence: (%d,%d) → (%d,%d)", teP, teO, teP2, teO2)
 	}
 	// ShardState untouched.
-	balAfter := sh.State().Balance("u1", "USDT")
+	balAfter := sh.State().Balance(1001, "USDT")
 	if balAfter.Available.Cmp(balBefore.Available) != 0 ||
 		balAfter.Frozen.Cmp(balBefore.Frozen) != 0 ||
 		balAfter.Version != balBefore.Version {
@@ -602,7 +602,7 @@ func TestShadow_ApplyNilRecord(t *testing.T) {
 // in concurrency stress tests where we want a non-trivial state
 // mutation (not just no-op events) so a racing Capture has an actual
 // walk to perform.
-func settlementAt(user string, seq uint64, orderID uint64, balVer uint64) *eventpb.CounterJournalEvent {
+func settlementAt(user uint64, seq uint64, orderID uint64, balVer uint64) *eventpb.CounterJournalEvent {
 	return &eventpb.CounterJournalEvent{
 		CounterSeqId: seq,
 		Payload: &eventpb.CounterJournalEvent_Settlement{
@@ -688,7 +688,7 @@ func TestShadow_PublishedOffsetTracksApply(t *testing.T) {
 func TestShadow_PublishedOffsetNotAdvancedOnApplyError(t *testing.T) {
 	sh := New(0)
 	// Prime with one good apply so publishedOffset is > 0.
-	if err := sh.Apply(settlementAt("u1", 1, 0, 1), 100); err != nil {
+	if err := sh.Apply(settlementAt(1001, 1, 0, 1), 100); err != nil {
 		t.Fatalf("seed apply: %v", err)
 	}
 	seedPublished := sh.PublishedOffset()
@@ -704,9 +704,9 @@ func TestShadow_PublishedOffsetNotAdvancedOnApplyError(t *testing.T) {
 		CounterSeqId: 2,
 		Payload: &eventpb.CounterJournalEvent_Settlement{
 			Settlement: &eventpb.SettlementEvent{
-				UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
+				UserId: 1001, OrderId: 1, Symbol: "BTC-USDT",
 				BaseBalanceAfter: &eventpb.BalanceSnapshot{
-					UserId: "u1", Asset: "BTC",
+					UserId: 1001, Asset: "BTC",
 					Available: "not-a-decimal", // force parse error
 					Frozen:    "0",
 					Version:   2,
@@ -729,7 +729,7 @@ func TestShadow_PublishedOffsetNotAdvancedOnApplyError(t *testing.T) {
 // behaviour is observable as a sub-millisecond return.
 func TestShadow_WaitAppliedTo_FastPath(t *testing.T) {
 	sh := New(0)
-	if err := sh.Apply(settlementAt("u1", 1, 0, 1), 100); err != nil {
+	if err := sh.Apply(settlementAt(1001, 1, 0, 1), 100); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -753,7 +753,7 @@ func TestShadow_WaitAppliedTo_WakesOnApply(t *testing.T) {
 	// Seed one apply so subsequent concurrent Apply isn't the
 	// very first (exercises the steady-state Apply path, not the
 	// zero-init edge case).
-	if err := sh.Apply(settlementAt("u1", 1, 0, 1), 100); err != nil {
+	if err := sh.Apply(settlementAt(1001, 1, 0, 1), 100); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -768,7 +768,7 @@ func TestShadow_WaitAppliedTo_WakesOnApply(t *testing.T) {
 	// Give the waiter a chance to enter the poll loop, then Apply
 	// enough records to advance publishedOffset to ≥ target.
 	time.Sleep(15 * time.Millisecond)
-	if err := sh.Apply(settlementAt("u1", 2, 0, 2), 199); err != nil {
+	if err := sh.Apply(settlementAt(1001, 2, 0, 2), 199); err != nil {
 		t.Fatalf("advance apply: %v", err)
 	}
 
@@ -843,7 +843,7 @@ func TestShadow_RestoreFromSnapshotSeedsPublishedOffset(t *testing.T) {
 // flake roughly 50% toward ctx.Err.
 func TestShadow_WaitAppliedTo_ReachesTargetAtDeadline(t *testing.T) {
 	sh := New(0)
-	if err := sh.Apply(settlementAt("u1", 1, 0, 1), 99); err != nil {
+	if err := sh.Apply(settlementAt(1001, 1, 0, 1), 99); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	// publishedOffset is now 100, target is 100. Context is
@@ -894,7 +894,7 @@ func TestShadow_ApplyCaptureConcurrent(t *testing.T) {
 		defer wg.Done()
 		defer close(applyDone)
 		for i := int64(0); i < applies; i++ {
-			evt := settlementAt("u1", uint64(i+1), 0, uint64(i+1))
+			evt := settlementAt(1001, uint64(i+1), 0, uint64(i+1))
 			if err := sh.Apply(evt, i); err != nil {
 				t.Errorf("apply %d: %v", i, err)
 				return

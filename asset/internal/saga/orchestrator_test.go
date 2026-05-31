@@ -64,7 +64,7 @@ func newOrchFixture(t *testing.T) *orchFixture {
 // expectCreate queues the INSERT performed by ledger.Create for a fresh
 // saga. Tests that need Create to hit ErrAlreadyExists instead use
 // expectCreateDuplicate.
-func (f *orchFixture) expectCreate(userID, transferID, fromBiz, toBiz, asset, amount string) {
+func (f *orchFixture) expectCreate(userID uint64, transferID, fromBiz, toBiz, asset, amount string) {
 	const q = `INSERT INTO transfer_ledger
 		(transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -93,12 +93,12 @@ func TestOrchestrator_Transfer_HappyPath(t *testing.T) {
 	f.from.outResps = []holder.Result{{Status: holder.StatusConfirmed}}
 	f.to.inResps = []holder.Result{{Status: holder.StatusConfirmed}}
 
-	f.expectCreate("u1", "saga-1", "funding", "spot", "USDT", "100")
+	f.expectCreate(101, "saga-1", "funding", "spot", "USDT", "100")
 	f.expectUpdate("saga-1", transferledger.StateInit, transferledger.StateDebited, "", 1)
 	f.expectUpdate("saga-1", transferledger.StateDebited, transferledger.StateCompleted, "", 1)
 
 	out, err := f.orch.Transfer(context.Background(), TransferInput{
-		UserID: "u1", TransferID: "saga-1",
+		UserID: 101, TransferID: "saga-1",
 		FromBiz: "funding", ToBiz: "spot",
 		Asset: "USDT", Amount: "100",
 	})
@@ -124,13 +124,13 @@ func TestOrchestrator_Transfer_InvalidArgs(t *testing.T) {
 	f := newOrchFixture(t)
 
 	cases := []TransferInput{
-		{TransferID: "t", FromBiz: "funding", ToBiz: "spot", Asset: "USDT", Amount: "100"},             // missing user
-		{UserID: "u1", FromBiz: "funding", ToBiz: "spot", Asset: "USDT", Amount: "100"},                // missing tx
-		{UserID: "u1", TransferID: "t", ToBiz: "spot", Asset: "USDT", Amount: "100"},                   // missing from
-		{UserID: "u1", TransferID: "t", FromBiz: "funding", Asset: "USDT", Amount: "100"},              // missing to
-		{UserID: "u1", TransferID: "t", FromBiz: "funding", ToBiz: "funding", Asset: "X", Amount: "1"}, // same
-		{UserID: "u1", TransferID: "t", FromBiz: "funding", ToBiz: "spot", Amount: "100"},              // missing asset
-		{UserID: "u1", TransferID: "t", FromBiz: "funding", ToBiz: "spot", Asset: "USDT"},              // missing amount
+		{TransferID: "t", FromBiz: "funding", ToBiz: "spot", Asset: "USDT", Amount: "100"},            // missing user
+		{UserID: 101, FromBiz: "funding", ToBiz: "spot", Asset: "USDT", Amount: "100"},                // missing tx
+		{UserID: 101, TransferID: "t", ToBiz: "spot", Asset: "USDT", Amount: "100"},                   // missing from
+		{UserID: 101, TransferID: "t", FromBiz: "funding", Asset: "USDT", Amount: "100"},              // missing to
+		{UserID: 101, TransferID: "t", FromBiz: "funding", ToBiz: "funding", Asset: "X", Amount: "1"}, // same
+		{UserID: 101, TransferID: "t", FromBiz: "funding", ToBiz: "spot", Amount: "100"},              // missing asset
+		{UserID: 101, TransferID: "t", FromBiz: "funding", ToBiz: "spot", Asset: "USDT"},              // missing amount
 	}
 	for i, c := range cases {
 		_, err := f.orch.Transfer(context.Background(), c)
@@ -160,7 +160,7 @@ func TestOrchestrator_Transfer_IdempotentReplay_Terminal(t *testing.T) {
 		(transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	f.mock.ExpectExec(insertQ).
-		WithArgs("saga-1", "u1", "funding", "spot", "USDT", "100",
+		WithArgs("saga-1", 101, "funding", "spot", "USDT", "100",
 			string(transferledger.StateInit), "",
 			int64(1_700_000_000_000), int64(1_700_000_000_000)).
 		WillReturnError(errors.New("Error 1062: Duplicate entry 'saga-1' for key 'PRIMARY'"))
@@ -170,11 +170,11 @@ func TestOrchestrator_Transfer_IdempotentReplay_Terminal(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 			"state", "reject_reason", "created_at_ms", "updated_at_ms",
-		}).AddRow("saga-1", "u1", "funding", "spot", "USDT", "100",
+		}).AddRow("saga-1", 101, "funding", "spot", "USDT", "100",
 			string(transferledger.StateCompleted), "", int64(1_700_000_000_000), int64(1_700_000_000_000)))
 
 	out, err := f.orch.Transfer(context.Background(), TransferInput{
-		UserID: "u1", TransferID: "saga-1",
+		UserID: 101, TransferID: "saga-1",
 		FromBiz: "funding", ToBiz: "spot",
 		Asset: "USDT", Amount: "100",
 	})
@@ -200,7 +200,7 @@ func TestOrchestrator_Transfer_ShapeConflict(t *testing.T) {
 		(transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	f.mock.ExpectExec(insertQ).
-		WithArgs("saga-1", "u1", "funding", "spot", "USDT", "100",
+		WithArgs("saga-1", 101, "funding", "spot", "USDT", "100",
 			string(transferledger.StateInit), "",
 			int64(1_700_000_000_000), int64(1_700_000_000_000)).
 		WillReturnError(errors.New("Error 1062: Duplicate entry"))
@@ -210,11 +210,11 @@ func TestOrchestrator_Transfer_ShapeConflict(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 			"state", "reject_reason", "created_at_ms", "updated_at_ms",
-		}).AddRow("saga-1", "u1", "funding", "spot", "BTC", "100", // different asset!
+		}).AddRow("saga-1", 101, "funding", "spot", "BTC", "100", // different asset!
 			string(transferledger.StateCompleted), "", int64(1_700_000_000_000), int64(1_700_000_000_000)))
 
 	_, err := f.orch.Transfer(context.Background(), TransferInput{
-		UserID: "u1", TransferID: "saga-1",
+		UserID: 101, TransferID: "saga-1",
 		FromBiz: "funding", ToBiz: "spot",
 		Asset: "USDT", Amount: "100",
 	})
@@ -242,7 +242,7 @@ func TestOrchestrator_Recover(t *testing.T) {
 		sqlmock.NewRows([]string{
 			"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 			"state", "reject_reason", "created_at_ms", "updated_at_ms",
-		}).AddRow("saga-recovered", "u1", "funding", "spot", "USDT", "50",
+		}).AddRow("saga-recovered", 101, "funding", "spot", "USDT", "50",
 			string(transferledger.StateDebited), "", int64(1_699_999_999_000), int64(1_699_999_999_000)),
 	)
 	f.expectUpdate("saga-recovered", transferledger.StateDebited, transferledger.StateCompleted, "", 1)
@@ -295,7 +295,7 @@ func TestOrchestrator_Query(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 			"state", "reject_reason", "created_at_ms", "updated_at_ms",
-		}).AddRow("saga-q", "u1", "funding", "spot", "USDT", "5",
+		}).AddRow("saga-q", 101, "funding", "spot", "USDT", "5",
 			string(transferledger.StateFailed), "insufficient_balance", int64(1), int64(2)))
 
 	out, err := f.orch.Query(context.Background(), "saga-q")

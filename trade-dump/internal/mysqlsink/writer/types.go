@@ -19,9 +19,9 @@ type TradeRow struct {
 	Symbol       string
 	Price        string
 	Qty          string
-	MakerUserID  string
+	MakerUserID  uint64
 	MakerOrderID uint64
-	TakerUserID  string
+	TakerUserID  uint64
 	TakerOrderID uint64
 	TakerSide    int8   // opentrade.event.Side (0 unspecified / 1 buy / 2 sell)
 	TS           int64  // ms since epoch, copied from EventMeta.ts_unix_ms

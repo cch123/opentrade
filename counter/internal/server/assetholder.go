@@ -39,8 +39,8 @@ func NewAssetHolderServer(router Router) *AssetHolderServer {
 // routeOrFail is the AssetHolder counterpart of Server.routeOrFail:
 // resolves user_id → Service or replies FailedPrecondition when this
 // node doesn't (yet) own the user's vshard.
-func (s *AssetHolderServer) routeOrFail(userID string) (*service.Service, error) {
-	if userID == "" {
+func (s *AssetHolderServer) routeOrFail(userID uint64) (*service.Service, error) {
+	if userID == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	svc, ok := s.router.Lookup(userID)
@@ -178,7 +178,7 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *conn
 // ---------------------------------------------------------------------------
 
 type holderRequestInput struct {
-	UserID     string
+	UserID     uint64
 	TransferID string
 	Asset      string
 	Amount     string
@@ -193,7 +193,7 @@ type holderRequestInput struct {
 // AND the cross-ref field (counterstate.TransferRequest.SagaTransferID) so
 // downstream trade-dump projections can correlate either way.
 func holderRequestToEngine(in holderRequestInput) (counterstate.TransferRequest, error) {
-	if in.UserID == "" {
+	if in.UserID == 0 {
 		return counterstate.TransferRequest{}, errors.New("user_id required")
 	}
 	if in.TransferID == "" {

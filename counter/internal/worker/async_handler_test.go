@@ -19,11 +19,11 @@ import (
 // Service.HandleTradeRecordAsync does without exercising the entire
 // per-user sequencer + Kafka producer stack.
 type stubSvc struct {
-	mu       sync.Mutex
-	invoked  int
-	plan     []planStep
-	fnErr    error
-	fnDelay  time.Duration
+	mu      sync.Mutex
+	invoked int
+	plan    []planStep
+	fnErr   error
+	fnDelay time.Duration
 }
 
 type planStep struct {

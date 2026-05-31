@@ -19,7 +19,7 @@ import (
 // TrySendCoalesce.
 type Conn struct {
 	id     string
-	userID string
+	userID uint64
 	ws     *websocket.Conn
 	send   chan []byte
 	logger *zap.Logger
@@ -67,7 +67,7 @@ type Config struct {
 
 // NewConn wraps ws into a ready-but-not-running Conn. The caller must call
 // Start(ctx) to spin up the read/write goroutines.
-func NewConn(id, userID string, wsConn *websocket.Conn, h *hub.Hub, cfg Config, logger *zap.Logger) *Conn {
+func NewConn(id string, userID uint64, wsConn *websocket.Conn, h *hub.Hub, cfg Config, logger *zap.Logger) *Conn {
 	if cfg.SendBuffer <= 0 {
 		cfg.SendBuffer = 256
 	}
@@ -93,7 +93,7 @@ func NewConn(id, userID string, wsConn *websocket.Conn, h *hub.Hub, cfg Config, 
 func (c *Conn) ID() string { return c.id }
 
 // UserID implements hub.Sink.
-func (c *Conn) UserID() string { return c.userID }
+func (c *Conn) UserID() uint64 { return c.userID }
 
 // TrySend implements hub.Sink — non-blocking enqueue; returns false if the
 // outbound queue is full (hub will treat as a drop).
@@ -133,7 +133,7 @@ func (c *Conn) TrySendCoalesce(coalesceKey string, payload []byte) bool {
 func (c *Conn) Start(ctx context.Context) {
 	c.hub.Register(c)
 	// Every authenticated connection is implicitly on the private user stream.
-	if c.userID != "" {
+	if c.userID != 0 {
 		c.hub.Subscribe(c.id, []string{StreamUser})
 	}
 

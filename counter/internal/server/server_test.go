@@ -22,7 +22,7 @@ type fakePub struct {
 	events []*eventpb.CounterJournalEvent
 }
 
-func (f *fakePub) Publish(_ context.Context, _ string, evt *eventpb.CounterJournalEvent) error {
+func (f *fakePub) Publish(_ context.Context, _ uint64, evt *eventpb.CounterJournalEvent) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, evt)
@@ -49,7 +49,7 @@ func newServer(t *testing.T) *Server {
 func TestQueryBalanceReturnsZeroForUnknownAsset(t *testing.T) {
 	s := newServer(t)
 	resp, err := s.QueryBalance(context.Background(), connect.NewRequest(&counterrpc.QueryBalanceRequest{
-		UserId: "u1", Asset: "USDT",
+		UserId: 1001, Asset: "USDT",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +63,7 @@ func TestPlaceOrderWithoutOrderDepsReturnsUnavailable(t *testing.T) {
 	s := newServer(t)
 	// newServer wires Transfer only; PlaceOrder requires SetOrderDeps.
 	_, err := s.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{
-		UserId: "u1", Symbol: "BTC-USDT",
+		UserId: 1001, Symbol: "BTC-USDT",
 		Side:      eventpb.Side_SIDE_BUY,
 		OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
 		Tif:       eventpb.TimeInForce_TIME_IN_FORCE_GTC,

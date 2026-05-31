@@ -16,7 +16,7 @@
 -- All three counters are guarded by counter_seq_id on upsert so replays
 -- don't rewind them.
 CREATE TABLE IF NOT EXISTS accounts (
-    user_id          VARCHAR(64)     NOT NULL,
+    user_id          BIGINT UNSIGNED NOT NULL,
     asset            VARCHAR(32)     NOT NULL,
     available        DECIMAL(36, 18) NOT NULL DEFAULT 0,
     frozen           DECIMAL(36, 18) NOT NULL DEFAULT 0,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS orders (
     order_id        BIGINT UNSIGNED NOT NULL,
     client_order_id VARCHAR(64)     NOT NULL DEFAULT '',
-    user_id         VARCHAR(64)     NOT NULL,
+    user_id         BIGINT UNSIGNED NOT NULL,
     symbol          VARCHAR(32)     NOT NULL,
     side            TINYINT         NOT NULL,
     order_type      TINYINT         NOT NULL,
@@ -53,9 +53,9 @@ CREATE TABLE IF NOT EXISTS trades (
     symbol          VARCHAR(32)     NOT NULL,
     price           DECIMAL(36, 18) NOT NULL,
     qty             DECIMAL(36, 18) NOT NULL,
-    maker_user_id   VARCHAR(64)     NOT NULL,
+    maker_user_id   BIGINT UNSIGNED NOT NULL,
     maker_order_id  BIGINT UNSIGNED NOT NULL,
-    taker_user_id   VARCHAR(64)     NOT NULL,
+    taker_user_id   BIGINT UNSIGNED NOT NULL,
     taker_order_id  BIGINT UNSIGNED NOT NULL,
     taker_side      TINYINT         NOT NULL,
     ts              BIGINT          NOT NULL,
@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS account_logs (
     vshard_id      INT             NOT NULL,
     counter_seq_id BIGINT UNSIGNED NOT NULL,
     asset          VARCHAR(32)     NOT NULL,
-    user_id        VARCHAR(64)     NOT NULL,
+    user_id        BIGINT UNSIGNED NOT NULL,
     delta_avail    DECIMAL(36, 18) NOT NULL,
     delta_frozen   DECIMAL(36, 18) NOT NULL,
     avail_after    DECIMAL(36, 18) NOT NULL,
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS account_logs (
 CREATE TABLE IF NOT EXISTS triggers (
     id                    BIGINT UNSIGNED NOT NULL,
     client_trigger_id     VARCHAR(64)     NOT NULL DEFAULT '',
-    user_id               VARCHAR(64)     NOT NULL,
+    user_id               BIGINT UNSIGNED NOT NULL,
     symbol                VARCHAR(32)     NOT NULL,
     side                  TINYINT         NOT NULL,
     type                  TINYINT         NOT NULL,

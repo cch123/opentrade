@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -151,7 +152,7 @@ func (p *Producer) drain() {
 		}
 		rec := &kgo.Record{
 			Topic: p.topic,
-			Key:   []byte(u.UserId),
+			Key:   []byte(strconv.FormatUint(u.UserId, 10)),
 			Value: data,
 		}
 		p.produceWithRetry(u, rec)

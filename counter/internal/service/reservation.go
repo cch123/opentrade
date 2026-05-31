@@ -17,7 +17,7 @@ var (
 // PlaceOrderRequest's freeze-relevant fields; Counter runs its existing
 // ComputeFreeze on these to derive (asset, amount).
 type ReserveRequest struct {
-	UserID        string
+	UserID        uint64
 	ReservationID string // idempotency key
 	Symbol        string
 	Side          counterstate.Side
@@ -37,7 +37,7 @@ type ReserveResult struct {
 
 // Reserve moves Available → Frozen for an upcoming order. See ADR-0041.
 func (s *Service) Reserve(_ context.Context, req ReserveRequest) (*ReserveResult, error) {
-	if req.UserID == "" {
+	if req.UserID == 0 {
 		return nil, ErrMissingUserID
 	}
 	if req.ReservationID == "" {
@@ -70,7 +70,7 @@ func (s *Service) Reserve(_ context.Context, req ReserveRequest) (*ReserveResult
 
 // ReleaseReservationRequest is the input for Service.ReleaseReservation.
 type ReleaseReservationRequest struct {
-	UserID        string
+	UserID        uint64
 	ReservationID string
 }
 
@@ -92,16 +92,16 @@ func (s *Service) ReleaseReservation(_ context.Context, req ReleaseReservationRe
 	// (future internal tooling case) we still allow the release but only
 	// after the engine verifies the record's user. OwnsUser only fires
 	// when we have a user id to check.
-	if req.UserID != "" && !s.OwnsUser(req.UserID) {
+	if req.UserID != 0 && !s.OwnsUser(req.UserID) {
 		return nil, ErrWrongShard
 	}
 	userForSeq := req.UserID
-	if userForSeq == "" {
+	if userForSeq == 0 {
 		if existing := s.state.LookupReservation(req.ReservationID); existing != nil {
 			userForSeq = existing.UserID
 		}
 	}
-	if userForSeq == "" {
+	if userForSeq == 0 {
 		// Unknown ref_id AND no user given: nothing to do.
 		return &ReleaseReservationResult{ReservationID: req.ReservationID, Accepted: false}, nil
 	}

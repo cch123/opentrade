@@ -26,7 +26,7 @@ func newMock(t *testing.T) (*Ledger, sqlmock.Sqlmock) {
 func sampleEntry() Entry {
 	return Entry{
 		TransferID: "tx-1",
-		UserID:     "u-1",
+		UserID:     101,
 		FromBiz:    "funding",
 		ToBiz:      "spot",
 		Asset:      "USDT",
@@ -45,7 +45,7 @@ func TestCreate_Success(t *testing.T) {
 		(transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	mock.ExpectExec(q).
-		WithArgs("tx-1", "u-1", "funding", "spot", "USDT", "100", "INIT", "", frozenMs, frozenMs).
+		WithArgs("tx-1", 101, "funding", "spot", "USDT", "100", "INIT", "", frozenMs, frozenMs).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	got, err := l.Create(context.Background(), sampleEntry())
@@ -70,7 +70,7 @@ func TestCreate_DuplicateReturnsExisting(t *testing.T) {
 		(transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	mock.ExpectExec(insertQ).
-		WithArgs("tx-1", "u-1", "funding", "spot", "USDT", "100", "INIT", "", frozenMs, frozenMs).
+		WithArgs("tx-1", 101, "funding", "spot", "USDT", "100", "INIT", "", frozenMs, frozenMs).
 		WillReturnError(errors.New("Error 1062: Duplicate entry 'tx-1' for key 'PRIMARY'"))
 
 	const selectQ = `SELECT transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms
@@ -78,7 +78,7 @@ func TestCreate_DuplicateReturnsExisting(t *testing.T) {
 	existingRow := sqlmock.NewRows([]string{
 		"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 		"state", "reject_reason", "created_at_ms", "updated_at_ms",
-	}).AddRow("tx-1", "u-1", "funding", "spot", "USDT", "100",
+	}).AddRow("tx-1", 101, "funding", "spot", "USDT", "100",
 		string(StateCompleted), "", frozenMs-1000, frozenMs-500)
 	mock.ExpectQuery(selectQ).WithArgs("tx-1").WillReturnRows(existingRow)
 
@@ -101,7 +101,7 @@ func TestCreate_NonDuplicateErrorPropagates(t *testing.T) {
 		(transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	mock.ExpectExec(insertQ).
-		WithArgs("tx-1", "u-1", "funding", "spot", "USDT", "100", "INIT", "", frozenMs, frozenMs).
+		WithArgs("tx-1", 101, "funding", "spot", "USDT", "100", "INIT", "", frozenMs, frozenMs).
 		WillReturnError(errors.New("connection lost"))
 
 	_, err := l.Create(context.Background(), sampleEntry())
@@ -128,7 +128,7 @@ func TestGet_Success(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 		"state", "reject_reason", "created_at_ms", "updated_at_ms",
-	}).AddRow("tx-1", "u-1", "funding", "spot", "USDT", "100",
+	}).AddRow("tx-1", 101, "funding", "spot", "USDT", "100",
 		string(StateDebited), "", frozenMs, frozenMs)
 	mock.ExpectQuery(q).WithArgs("tx-1").WillReturnRows(rows)
 
@@ -225,7 +225,7 @@ func TestUpdateState_StateMismatch(t *testing.T) {
 		sqlmock.NewRows([]string{
 			"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 			"state", "reject_reason", "created_at_ms", "updated_at_ms",
-		}).AddRow("tx-1", "u-1", "funding", "spot", "USDT", "100",
+		}).AddRow("tx-1", 101, "funding", "spot", "USDT", "100",
 			string(StateCompleted), "", frozenMs, frozenMs),
 	)
 
@@ -283,9 +283,9 @@ func TestListPending(t *testing.T) {
 		"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 		"state", "reject_reason", "created_at_ms", "updated_at_ms",
 	}).
-		AddRow("tx-a", "u-1", "funding", "spot", "USDT", "50",
+		AddRow("tx-a", 101, "funding", "spot", "USDT", "50",
 			string(StateInit), "", frozenMs-1000, frozenMs-1000).
-		AddRow("tx-b", "u-2", "spot", "funding", "BTC", "0.1",
+		AddRow("tx-b", 202, "spot", "funding", "BTC", "0.1",
 			string(StateDebited), "", frozenMs-500, frozenMs-200)
 
 	mock.ExpectQuery(q).WithArgs(50).WillReturnRows(rows)

@@ -30,7 +30,7 @@ type Snapshot struct {
 type OrderSnap struct {
 	OrderID    uint64 `json:"order_id"`
 	ClientID   string `json:"client_id"`
-	UserID     string `json:"user_id"`
+	UserID     uint64 `json:"user_id"`
 	Symbol     string `json:"symbol"`
 	Side       uint8  `json:"side"`
 	Type       int32  `json:"type"`
@@ -49,7 +49,7 @@ type OrderSnap struct {
 // LiqSnap is one in-flight liquidation (bankruptcy order placed, not yet
 // fully filled) so its fills still route to insurance after recovery.
 type LiqSnap struct {
-	UserID     string `json:"user_id"`
+	UserID     uint64 `json:"user_id"`
 	Symbol     string `json:"symbol"`
 	OrderID    uint64 `json:"order_id"`
 	Mode       uint8  `json:"mode"`

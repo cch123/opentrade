@@ -45,7 +45,7 @@ func TestBuildJournalBatch_Freeze(t *testing.T) {
 		Meta:         newMeta(1_700_000_000_000, "counter-vshard-000"),
 		CounterSeqId: 5,
 		Payload: &eventpb.CounterJournalEvent_Freeze{Freeze: &eventpb.FreezeEvent{
-			UserId:        "u1",
+			UserId:        1001,
 			OrderId:       42,
 			ClientOrderId: "coid-1",
 			Symbol:        "BTC-USDT",
@@ -57,7 +57,7 @@ func TestBuildJournalBatch_Freeze(t *testing.T) {
 			FreezeAsset:   "USDT",
 			FreezeAmount:  "100",
 			BalanceAfter: &eventpb.BalanceSnapshot{
-				UserId: "u1", Asset: "USDT", Available: "400", Frozen: "100",
+				UserId: 1001, Asset: "USDT", Available: "400", Frozen: "100",
 			},
 		}},
 	}
@@ -106,7 +106,7 @@ func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 		Meta:         newMeta(1_700_000_000_001, "counter-vshard-003"),
 		CounterSeqId: 11,
 		Payload: &eventpb.CounterJournalEvent_Settlement{Settlement: &eventpb.SettlementEvent{
-			UserId:        "buyer",
+			UserId:        7001,
 			OrderId:       42,
 			TradeId:       "BTC-USDT:17",
 			Symbol:        "BTC-USDT",
@@ -118,10 +118,10 @@ func TestBuildJournalBatch_Settlement_TwoAssetLogs(t *testing.T) {
 			UnfreezeBase:  "0",
 			UnfreezeQuote: "100",
 			BaseBalanceAfter: &eventpb.BalanceSnapshot{
-				UserId: "buyer", Asset: "BTC", Available: "1", Frozen: "0",
+				UserId: 7001, Asset: "BTC", Available: "1", Frozen: "0",
 			},
 			QuoteBalanceAfter: &eventpb.BalanceSnapshot{
-				UserId: "buyer", Asset: "USDT", Available: "300", Frozen: "0",
+				UserId: 7001, Asset: "USDT", Available: "300", Frozen: "0",
 			},
 		}},
 	}
@@ -155,7 +155,7 @@ func TestBuildJournalBatch_OrderStatusUpdate(t *testing.T) {
 		Meta:         newMeta(1_700_000_000_050, "counter-vshard-000"),
 		CounterSeqId: 7,
 		Payload: &eventpb.CounterJournalEvent_OrderStatus{OrderStatus: &eventpb.OrderStatusEvent{
-			UserId:    "u1",
+			UserId:    1001,
 			OrderId:   42,
 			OldStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW,
 			NewStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
@@ -187,10 +187,10 @@ func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 		Meta:         newMeta(10, "counter-vshard-000"),
 		CounterSeqId: 1,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
-			UserId: "u1", TransferId: "tx-1", Asset: "USDT",
+			UserId: 1001, TransferId: "tx-1", Asset: "USDT",
 			Amount: "500", Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
 			BalanceAfter: &eventpb.BalanceSnapshot{
-				UserId: "u1", Asset: "USDT", Available: "500", Frozen: "0",
+				UserId: 1001, Asset: "USDT", Available: "500", Frozen: "0",
 			},
 		}},
 	}
@@ -198,10 +198,10 @@ func TestBuildJournalBatch_Transfer_DepositVsWithdraw(t *testing.T) {
 		Meta:         newMeta(11, "counter-vshard-000"),
 		CounterSeqId: 2,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
-			UserId: "u1", TransferId: "tx-2", Asset: "USDT",
+			UserId: 1001, TransferId: "tx-2", Asset: "USDT",
 			Amount: "100", Type: eventpb.TransferEvent_TRANSFER_TYPE_WITHDRAW,
 			BalanceAfter: &eventpb.BalanceSnapshot{
-				UserId: "u1", Asset: "USDT", Available: "400", Frozen: "0",
+				UserId: 1001, Asset: "USDT", Available: "400", Frozen: "0",
 			},
 		}},
 	}
@@ -223,7 +223,7 @@ func TestBuildJournalBatch_CancelRequestedIsNoop(t *testing.T) {
 		Meta:         newMeta(1, "counter-vshard-000"),
 		CounterSeqId: 9,
 		Payload: &eventpb.CounterJournalEvent_CancelReq{CancelReq: &eventpb.CancelRequested{
-			UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",
+			UserId: 1001, OrderId: 42, Symbol: "BTC-USDT",
 		}},
 	}
 	batch := BuildJournalBatch([]DecoratedJournalEvent{{Event: evt}})
@@ -237,9 +237,9 @@ func TestBuildJournalBatch_DropsUnparseableShard(t *testing.T) {
 		Meta:         newMeta(1, "not-a-counter"),
 		CounterSeqId: 1,
 		Payload: &eventpb.CounterJournalEvent_Transfer{Transfer: &eventpb.TransferEvent{
-			UserId: "u1", TransferId: "tx-1", Asset: "USDT",
+			UserId: 1001, TransferId: "tx-1", Asset: "USDT",
 			Amount: "1", Type: eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
-			BalanceAfter: &eventpb.BalanceSnapshot{UserId: "u1", Asset: "USDT", Available: "1"},
+			BalanceAfter: &eventpb.BalanceSnapshot{UserId: 1001, Asset: "USDT", Available: "1"},
 		}},
 	}
 	batch := BuildJournalBatch([]DecoratedJournalEvent{{Event: evt}})
@@ -256,12 +256,12 @@ func TestBuildJournalBatch_DropsUnparseableShard(t *testing.T) {
 
 func TestNegateDecimal(t *testing.T) {
 	cases := map[string]string{
-		"":      "0",
-		"0":     "0",
-		"1":     "-1",
-		"1.5":   "-1.5",
-		"-1":    "1",
-		"-1.5":  "1.5",
+		"":     "0",
+		"0":    "0",
+		"1":    "-1",
+		"1.5":  "-1.5",
+		"-1":   "1",
+		"-1.5": "1.5",
 	}
 	for in, want := range cases {
 		if got := negateDecimal(in); got != want {
@@ -272,10 +272,10 @@ func TestNegateDecimal(t *testing.T) {
 
 func TestTransferDeltas(t *testing.T) {
 	cases := []struct {
-		t     eventpb.TransferEvent_TransferType
-		amt   string
-		av    string
-		fz    string
+		t   eventpb.TransferEvent_TransferType
+		amt string
+		av  string
+		fz  string
 	}{
 		{eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT, "100", "100", "0"},
 		{eventpb.TransferEvent_TRANSFER_TYPE_WITHDRAW, "50", "-50", "0"},

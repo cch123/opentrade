@@ -39,12 +39,12 @@ func NewSharded(clients []Counter) (*ShardedCounter, error) {
 // Shards returns the configured shard count.
 func (s *ShardedCounter) Shards() int { return len(s.clients) }
 
-// pick returns the client owning userID. Panics if userID is empty —
-// BFF handlers always resolve auth before calling, so an empty id here
+// pick returns the client owning userID. Panics if userID is zero —
+// BFF handlers always resolve auth before calling, so a zero id here
 // is a bug in the handler chain.
-func (s *ShardedCounter) pick(userID string) Counter {
-	if userID == "" {
-		panic("sharded counter: empty user id — auth middleware missed a request")
+func (s *ShardedCounter) pick(userID uint64) Counter {
+	if userID == 0 {
+		panic("sharded counter: zero user id — auth middleware missed a request")
 	}
 	return s.clients[shard.Index(userID, len(s.clients))]
 }
@@ -85,7 +85,7 @@ func (s *ShardedCounter) ReleaseReservation(ctx context.Context, req *connect.Re
 // an aggregated response; per-shard counts are discarded (BFF handler
 // adds them back from ShardResults).
 func (s *ShardedCounter) AdminCancelOrders(ctx context.Context, req *connect.Request[counterrpc.AdminCancelOrdersRequest]) (*connect.Response[counterrpc.AdminCancelOrdersResponse], error) {
-	if req.Msg.UserId != "" {
+	if req.Msg.UserId != 0 {
 		return s.pick(req.Msg.UserId).AdminCancelOrders(ctx, req)
 	}
 	results, err := s.BroadcastAdminCancelOrders(ctx, req)

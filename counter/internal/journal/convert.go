@@ -310,7 +310,7 @@ type UnfreezeEventInput struct {
 	ProducerID     string
 	AccountVersion uint64
 
-	UserID       string
+	UserID       uint64
 	OrderID      uint64
 	Asset        string
 	Amount       string
@@ -361,7 +361,7 @@ type OrderStatusEventInput struct {
 	ProducerID     string
 	AccountVersion uint64
 
-	UserID    string
+	UserID    uint64
 	OrderID   uint64
 	OldStatus counterstate.OrderStatus
 	NewStatus counterstate.OrderStatus

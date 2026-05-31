@@ -17,7 +17,7 @@ var ErrAdminCancelFilterEmpty = errors.New("service: admin cancel requires user_
 // AdminCancelFilter narrows the set of orders to cancel. Empty strings
 // mean "match any".
 type AdminCancelFilter struct {
-	UserID string
+	UserID uint64
 	Symbol string
 }
 
@@ -37,13 +37,13 @@ type AdminCancelResult struct {
 // the overall call only returns an error on filter validation or when
 // PlaceOrder deps are not wired.
 func (s *Service) AdminCancelOrders(ctx context.Context, filter AdminCancelFilter) (*AdminCancelResult, error) {
-	if filter.UserID == "" && filter.Symbol == "" {
+	if filter.UserID == 0 && filter.Symbol == "" {
 		return nil, ErrAdminCancelFilterEmpty
 	}
 	// When UserID is given, verify shard ownership before touching state.
 	// Without a user filter, the call iterates every user owned by this
 	// shard — OwnsUser is checked implicitly inside the loop.
-	if filter.UserID != "" && !s.OwnsUser(filter.UserID) {
+	if filter.UserID != 0 && !s.OwnsUser(filter.UserID) {
 		return nil, ErrWrongShard
 	}
 	return s.cancelOrdersMatching(ctx, filter)
@@ -54,8 +54,8 @@ func (s *Service) AdminCancelOrders(ctx context.Context, filter AdminCancelFilte
 // owned by the user). Shares the post-filter execution with
 // AdminCancelOrders but enforces a stricter precondition (no admin-style
 // "symbol only" scope).
-func (s *Service) CancelMyOrders(ctx context.Context, userID, symbol string) (*AdminCancelResult, error) {
-	if userID == "" {
+func (s *Service) CancelMyOrders(ctx context.Context, userID uint64, symbol string) (*AdminCancelResult, error) {
+	if userID == 0 {
 		return nil, ErrMissingUserID
 	}
 	if !s.OwnsUser(userID) {
@@ -78,7 +78,7 @@ func (s *Service) cancelOrdersMatching(ctx context.Context, filter AdminCancelFi
 	targets := make([]*counterstate.Order, 0, len(snapshot))
 	var skipped uint32
 	for _, o := range snapshot {
-		if filter.UserID != "" && o.UserID != filter.UserID {
+		if filter.UserID != 0 && o.UserID != filter.UserID {
 			continue
 		}
 		if filter.Symbol != "" && o.Symbol != filter.Symbol {
@@ -86,7 +86,7 @@ func (s *Service) cancelOrdersMatching(ctx context.Context, filter AdminCancelFi
 		}
 		// Re-verify ownership when iterating all users (no user filter):
 		// a cross-user symbol cancel must not reach into foreign shards.
-		if filter.UserID == "" && !s.OwnsUser(o.UserID) {
+		if filter.UserID == 0 && !s.OwnsUser(o.UserID) {
 			continue
 		}
 		if o.Status.IsTerminal() || o.Status == counterstate.OrderStatusPendingCancel {
@@ -101,7 +101,7 @@ func (s *Service) cancelOrdersMatching(ctx context.Context, filter AdminCancelFi
 		res, err := s.CancelOrder(ctx, CancelOrderRequest{UserID: o.UserID, OrderID: o.ID})
 		if err != nil {
 			s.logger.Warn("bulk cancel: per-order CancelOrder failed",
-				zap.String("user", o.UserID),
+				zap.Uint64("user", o.UserID),
 				zap.Uint64("order", o.ID),
 				zap.Error(err))
 			skipped++

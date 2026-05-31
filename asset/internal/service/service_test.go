@@ -43,7 +43,7 @@ func (f *fakeFundingStore) Compensate(_ context.Context, req store.Request) (sto
 	return f.TransferIn(context.Background(), req)
 }
 
-func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID, asset string) ([]store.FundingBalance, error) {
+func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID uint64, asset string) ([]store.FundingBalance, error) {
 	acc := f.state.Account(userID)
 	if asset != "" {
 		return []store.FundingBalance{{Asset: asset, Balance: acc.Balance(asset)}}, nil
@@ -91,7 +91,7 @@ func newSvc(t *testing.T) *Service {
 	return New(newFakeFundingStore(), zap.NewNop())
 }
 
-func holder(userID, transferID, asset, amount string, t *testing.T) HolderRequest {
+func holder(userID uint64, transferID, asset, amount string, t *testing.T) HolderRequest {
 	return HolderRequest{
 		UserID:     userID,
 		TransferID: transferID,
@@ -108,7 +108,7 @@ func holder(userID, transferID, asset, amount string, t *testing.T) HolderReques
 func TestTransferIn_Confirmed(t *testing.T) {
 	svc := newSvc(t)
 
-	req := holder("u1", "saga-1", "USDT", "100", t)
+	req := holder(101, "saga-1", "USDT", "100", t)
 	req.PeerBiz = "spot"
 	req.Memo = "hi"
 	res, err := svc.TransferIn(context.Background(), req)
@@ -129,7 +129,7 @@ func TestTransferIn_Confirmed(t *testing.T) {
 func TestTransferOut_Rejected(t *testing.T) {
 	svc := newSvc(t)
 
-	res, err := svc.TransferOut(context.Background(), holder("u1", "saga-out", "USDT", "100", t))
+	res, err := svc.TransferOut(context.Background(), holder(101, "saga-out", "USDT", "100", t))
 	if err != nil {
 		t.Fatalf("out: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestTransferOut_Rejected(t *testing.T) {
 
 func TestTransferIn_Duplicated(t *testing.T) {
 	svc := newSvc(t)
-	req := holder("u1", "saga-1", "USDT", "50", t)
+	req := holder(101, "saga-1", "USDT", "50", t)
 
 	if _, err := svc.TransferIn(context.Background(), req); err != nil {
 		t.Fatalf("first: %v", err)
@@ -159,7 +159,7 @@ func TestTransferIn_Duplicated(t *testing.T) {
 
 func TestCompensate_CreditsFunding(t *testing.T) {
 	svc := newSvc(t)
-	req := holder("u1", "saga-c", "USDT", "40", t)
+	req := holder(101, "saga-c", "USDT", "40", t)
 	req.PeerBiz = "spot"
 	req.CompensateCause = "peer_in_rejected"
 
@@ -177,17 +177,17 @@ func TestCompensate_CreditsFunding(t *testing.T) {
 
 func TestQueryFundingBalance(t *testing.T) {
 	svc := newSvc(t)
-	_, _ = svc.TransferIn(context.Background(), holder("u1", "t-usdt", "USDT", "100", t))
-	_, _ = svc.TransferIn(context.Background(), holder("u1", "t-btc", "BTC", "0.5", t))
+	_, _ = svc.TransferIn(context.Background(), holder(101, "t-usdt", "USDT", "100", t))
+	_, _ = svc.TransferIn(context.Background(), holder(101, "t-btc", "BTC", "0.5", t))
 
-	all, err := svc.QueryFundingBalance(context.Background(), "u1", "")
+	all, err := svc.QueryFundingBalance(context.Background(), 101, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(all) != 2 {
 		t.Fatalf("all = %d, want 2", len(all))
 	}
-	one, err := svc.QueryFundingBalance(context.Background(), "u1", "USDT")
+	one, err := svc.QueryFundingBalance(context.Background(), 101, "USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestQueryFundingBalance(t *testing.T) {
 		t.Errorf("one = %+v", one)
 	}
 
-	miss, err := svc.QueryFundingBalance(context.Background(), "stranger", "USDT")
+	miss, err := svc.QueryFundingBalance(context.Background(), 202, "USDT")
 	if err != nil {
 		t.Fatal(err)
 	}

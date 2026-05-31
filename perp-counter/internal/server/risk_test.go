@@ -27,13 +27,14 @@ type riskJournal struct {
 func (j *riskJournal) Emit(e *eventpb.PerpJournalEvent) { j.events = append(j.events, e) }
 
 func TestRiskHandlers_CandidatesAndTask(t *testing.T) {
+	const winnerUser uint64 = 2001
 	eng := engine.New()
 	journal := &riskJournal{}
 	var id uint64
 	svc := service.New(eng, riskNoopDispatch{}, journal, func() uint64 { id++; return id }, service.Config{
 		MaxLeverage: dec.New("100"), RiskCoordinatorEnabled: true, ProducerID: "perp-shard-0",
 	})
-	openServerRiskPosition(eng, "winner", "BTC-USDT-PERP", perpstate.SideSell, "100", "1", "10")
+	openServerRiskPosition(eng, winnerUser, "BTC-USDT-PERP", perpstate.SideSell, "100", "1", "10")
 	eng.SetMark("BTC-USDT-PERP", dec.New("85"))
 
 	mux := http.NewServeMux()
@@ -51,7 +52,7 @@ func TestRiskHandlers_CandidatesAndTask(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&candidates); err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates.Candidates) != 1 || candidates.Candidates[0].UserID != "winner" {
+	if len(candidates.Candidates) != 1 || candidates.Candidates[0].UserID != winnerUser {
 		t.Fatalf("unexpected candidates: %+v", candidates.Candidates)
 	}
 	if candidates.Candidates[0].PositionVersion == 0 {
@@ -59,7 +60,7 @@ func TestRiskHandlers_CandidatesAndTask(t *testing.T) {
 	}
 
 	task := perprisk.ADLTaskWire{
-		UserID: "winner", Symbol: "BTC-USDT-PERP", Side: uint8(perpstate.SideSell),
+		LotID: "lot-http", UserID: winnerUser, Symbol: "BTC-USDT-PERP", Side: uint8(perpstate.SideSell),
 		Qty: "1", Price: "90", PosSeq: candidates.Candidates[0].PosSeq,
 		PositionVersion: candidates.Candidates[0].PositionVersion, AdlRound: 1,
 	}
@@ -76,12 +77,12 @@ func TestRiskHandlers_CandidatesAndTask(t *testing.T) {
 	if !taskResp.Applied {
 		t.Fatal("task should apply with matching pos_seq")
 	}
-	if _, ok := eng.PositionOf("winner", "BTC-USDT-PERP"); ok {
+	if _, ok := eng.PositionOf(winnerUser, "BTC-USDT-PERP"); ok {
 		t.Fatal("ADL task should close the one-lot winner")
 	}
 }
 
-func openServerRiskPosition(e *engine.Engine, user, symbol string, side perpstate.Side, price, qty, lev string) {
+func openServerRiskPosition(e *engine.Engine, user uint64, symbol string, side perpstate.Side, price, qty, lev string) {
 	p := dec.New(price)
 	q := dec.New(qty)
 	l := dec.New(lev)

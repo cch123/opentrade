@@ -13,7 +13,7 @@ import (
 
 type orderSpec struct {
 	id    uint64
-	user  string
+	user  uint64
 	side  orderbook.Side
 	typ   orderbook.OrderType
 	tif   orderbook.TIF
@@ -66,9 +66,9 @@ func insertRested(t *testing.T, b *orderbook.Book, specs []orderSpec) {
 func TestLimitNoCrossRestsOnBook(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "200", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "200", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, price: "199", qty: "1"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, price: "199", qty: "1"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerAcceptedOnBook {
 		t.Fatalf("status = %d, want TakerAcceptedOnBook", r.Status)
@@ -84,9 +84,9 @@ func TestLimitNoCrossRestsOnBook(t *testing.T) {
 func TestLimitFullCrossFilled(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, price: "100", qty: "1"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, price: "100", qty: "1"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerFilled {
 		t.Fatalf("status = %d, want TakerFilled", r.Status)
@@ -105,9 +105,9 @@ func TestLimitFullCrossFilled(t *testing.T) {
 func TestLimitPartialCrossRemainderOnBook(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, price: "100", qty: "3"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, price: "100", qty: "3"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerPartialOnBook {
 		t.Fatalf("status = %d, want TakerPartialOnBook", r.Status)
@@ -126,10 +126,10 @@ func TestLimitPartialCrossRemainderOnBook(t *testing.T) {
 func TestLimitWalksMultipleLevels(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
-		{id: 2, user: "m2", side: orderbook.Ask, price: "101", qty: "2"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 2, user: 2002, side: orderbook.Ask, price: "101", qty: "2"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, price: "101", qty: "3"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, price: "101", qty: "3"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerFilled {
 		t.Fatalf("status = %d, want TakerFilled", r.Status)
@@ -149,10 +149,10 @@ func TestLimitWalksMultipleLevels(t *testing.T) {
 func TestMarketBuyConsumesUntilFilled(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
-		{id: 2, user: "m2", side: orderbook.Ask, price: "200", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 2, user: 2002, side: orderbook.Ask, price: "200", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, typ: orderbook.Market, qty: "2"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, typ: orderbook.Market, qty: "2"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerFilled {
 		t.Fatalf("status = %d, want TakerFilled", r.Status)
@@ -165,9 +165,9 @@ func TestMarketBuyConsumesUntilFilled(t *testing.T) {
 func TestMarketExpiresWhenBookExhausted(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, typ: orderbook.Market, qty: "5"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, typ: orderbook.Market, qty: "5"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerExpired {
 		t.Fatalf("status = %d, want TakerExpired", r.Status)
@@ -185,7 +185,7 @@ func TestMarketExpiresWhenBookExhausted(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 // newQuoteBuy constructs a quote-driven market buy taker.
-func newQuoteBuy(id uint64, user, quoteQty string) *orderbook.Order {
+func newQuoteBuy(id uint64, user uint64, quoteQty string) *orderbook.Order {
 	q := dec.New(quoteQty)
 	return &orderbook.Order{
 		ID:             id,
@@ -209,10 +209,10 @@ func TestMarketBuyByQuoteBudget_WalksLevels(t *testing.T) {
 	// residual freeze. The important invariant is no trade overspends.
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "50000", qty: "0.3"},
-		{id: 2, user: "m2", side: orderbook.Ask, price: "50100", qty: "0.2"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "50000", qty: "0.3"},
+		{id: 2, user: 2002, side: orderbook.Ask, price: "50100", qty: "0.2"},
 	})
-	taker := newQuoteBuy(100, "t1", "25000")
+	taker := newQuoteBuy(100, 3001, "25000")
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerFilled && r.Status != TakerExpired {
 		t.Fatalf("status = %d, want Filled or Expired", r.Status)
@@ -239,9 +239,9 @@ func TestMarketBuyByQuoteBudget_WalksLevels(t *testing.T) {
 func TestMarketBuyByQuoteBudget_ExpiresWhenBookExhausted(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "50000", qty: "0.1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "50000", qty: "0.1"},
 	})
-	taker := newQuoteBuy(100, "t1", "25000") // budget far exceeds depth
+	taker := newQuoteBuy(100, 3001, "25000") // budget far exceeds depth
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerExpired {
 		t.Fatalf("status = %d, want TakerExpired", r.Status)
@@ -260,7 +260,7 @@ func TestMarketBuyByQuoteBudget_ExpiresWhenBookExhausted(t *testing.T) {
 
 func TestMarketBuyByQuoteBudget_NoCrossExpires(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT") // empty ask side
-	taker := newQuoteBuy(100, "t1", "100")
+	taker := newQuoteBuy(100, 3001, "100")
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerExpired {
 		t.Fatalf("status = %d, want TakerExpired", r.Status)
@@ -277,9 +277,9 @@ func TestMarketBuyByQuoteBudget_NoCrossExpires(t *testing.T) {
 func TestIOCPartialRemainderExpires(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, tif: orderbook.IOC, price: "100", qty: "3"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, tif: orderbook.IOC, price: "100", qty: "3"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerExpired {
 		t.Fatalf("status = %d, want TakerExpired", r.Status)
@@ -295,9 +295,9 @@ func TestIOCPartialRemainderExpires(t *testing.T) {
 func TestIOCNoCrossExpires(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "200", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "200", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, tif: orderbook.IOC, price: "100", qty: "1"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, tif: orderbook.IOC, price: "100", qty: "1"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerExpired {
 		t.Fatalf("status = %d, want TakerExpired", r.Status)
@@ -314,9 +314,9 @@ func TestIOCNoCrossExpires(t *testing.T) {
 func TestFOKRejectedIfUnfillable(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, tif: orderbook.FOK, price: "100", qty: "2"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, tif: orderbook.FOK, price: "100", qty: "2"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerRejected || r.RejectReason != orderbook.RejectFOKNotFilled {
 		t.Fatalf("status=%d reason=%s, want Rejected/FOKNotFilled", r.Status, r.RejectReason)
@@ -333,10 +333,10 @@ func TestFOKRejectedIfUnfillable(t *testing.T) {
 func TestFOKFilledIfFullyFillable(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
-		{id: 2, user: "m2", side: orderbook.Ask, price: "101", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 2, user: 2002, side: orderbook.Ask, price: "101", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, tif: orderbook.FOK, price: "101", qty: "2"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, tif: orderbook.FOK, price: "101", qty: "2"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerFilled {
 		t.Fatalf("status = %d, want TakerFilled", r.Status)
@@ -353,9 +353,9 @@ func TestFOKFilledIfFullyFillable(t *testing.T) {
 func TestPostOnlyRejectedIfCrosses(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "100", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, tif: orderbook.PostOnly, price: "100", qty: "1"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, tif: orderbook.PostOnly, price: "100", qty: "1"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerRejected || r.RejectReason != orderbook.RejectPostOnlyWouldTake {
 		t.Fatalf("status=%d reason=%s, want Rejected/PostOnlyWouldTake", r.Status, r.RejectReason)
@@ -365,9 +365,9 @@ func TestPostOnlyRejectedIfCrosses(t *testing.T) {
 func TestPostOnlyRestsWhenNoCross(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "m1", side: orderbook.Ask, price: "101", qty: "1"},
+		{id: 1, user: 2001, side: orderbook.Ask, price: "101", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "t1", side: orderbook.Bid, tif: orderbook.PostOnly, price: "100", qty: "1"})
+	taker := newOrder(orderSpec{id: 100, user: 3001, side: orderbook.Bid, tif: orderbook.PostOnly, price: "100", qty: "1"})
 	r := Match(b, taker, STPNone)
 	if r.Status != TakerAcceptedOnBook {
 		t.Fatalf("status = %d, want TakerAcceptedOnBook", r.Status)
@@ -384,9 +384,9 @@ func TestPostOnlyRestsWhenNoCross(t *testing.T) {
 func TestSTPRejectTakerDetectsSelfCross(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "u1", side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 1, user: 1001, side: orderbook.Ask, price: "100", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "u1", side: orderbook.Bid, price: "100", qty: "1"})
+	taker := newOrder(orderSpec{id: 100, user: 1001, side: orderbook.Bid, price: "100", qty: "1"})
 	r := Match(b, taker, STPRejectTaker)
 	if r.Status != TakerRejected || r.RejectReason != orderbook.RejectSelfTradePrevented {
 		t.Fatalf("status=%d reason=%s, want Rejected/SelfTrade", r.Status, r.RejectReason)
@@ -396,9 +396,9 @@ func TestSTPRejectTakerDetectsSelfCross(t *testing.T) {
 func TestSTPRejectTakerAllowsDifferentUsers(t *testing.T) {
 	b := orderbook.NewBook("BTC-USDT")
 	insertRested(t, b, []orderSpec{
-		{id: 1, user: "u1", side: orderbook.Ask, price: "100", qty: "1"},
+		{id: 1, user: 1001, side: orderbook.Ask, price: "100", qty: "1"},
 	})
-	taker := newOrder(orderSpec{id: 100, user: "u2", side: orderbook.Bid, price: "100", qty: "1"})
+	taker := newOrder(orderSpec{id: 100, user: 1002, side: orderbook.Bid, price: "100", qty: "1"})
 	r := Match(b, taker, STPRejectTaker)
 	if r.Status != TakerFilled {
 		t.Fatalf("status = %d, want TakerFilled", r.Status)

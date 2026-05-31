@@ -2,6 +2,7 @@ package engine
 
 import (
 	"hash/fnv"
+	"strconv"
 
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/perpstate"
@@ -39,12 +40,12 @@ type liqNode struct {
 }
 
 type liqPositionKey struct {
-	userID string
+	userID uint64
 	symbol string
 }
 
 type liqIndexEntry struct {
-	userID   string
+	userID   uint64
 	symbol   string
 	side     perpstate.Side
 	liqPrice dec.Decimal
@@ -57,7 +58,7 @@ func newLiqIndex() *liqIndex {
 	}
 }
 
-func (idx *liqIndex) rebuild(positions map[string]map[string]*perpstate.Position, mmrOf perpstate.MMRFunc) {
+func (idx *liqIndex) rebuild(positions map[uint64]map[string]*perpstate.Position, mmrOf perpstate.MMRFunc) {
 	idx.symbols = map[string]*symbolLiqIndex{}
 	idx.byPosition = map[liqPositionKey]liqIndexEntry{}
 	if mmrOf == nil {
@@ -70,7 +71,7 @@ func (idx *liqIndex) rebuild(positions map[string]map[string]*perpstate.Position
 	}
 }
 
-func (idx *liqIndex) upsert(user, symbol string, p *perpstate.Position, mmrOf perpstate.MMRFunc) {
+func (idx *liqIndex) upsert(user uint64, symbol string, p *perpstate.Position, mmrOf perpstate.MMRFunc) {
 	idx.remove(user, symbol)
 	if p == nil || p.IsFlat() || mmrOf == nil {
 		return
@@ -89,7 +90,7 @@ func (idx *liqIndex) upsert(user, symbol string, p *perpstate.Position, mmrOf pe
 	idx.byPosition[liqPositionKey{userID: user, symbol: symbol}] = entry
 }
 
-func (idx *liqIndex) remove(user, symbol string) {
+func (idx *liqIndex) remove(user uint64, symbol string) {
 	key := liqPositionKey{userID: user, symbol: symbol}
 	old, ok := idx.byPosition[key]
 	if !ok {
@@ -275,7 +276,7 @@ func liqPriority(entry liqIndexEntry) uint64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(entry.symbol))
 	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(entry.userID))
+	_, _ = h.Write([]byte(strconv.FormatUint(entry.userID, 10)))
 	_, _ = h.Write([]byte{0, byte(entry.side)})
 	return h.Sum64()
 }

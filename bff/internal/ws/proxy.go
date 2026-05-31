@@ -12,6 +12,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -78,12 +79,12 @@ func New(cfg Config, logger *zap.Logger) (*Proxy, error) {
 // and pumps frames to the upstream.
 func (p *Proxy) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID, _ := auth.UserID(r.Context())
+		uid, _ := auth.UserID(r.Context())
 		// Anonymous connections are allowed for public streams; auth middleware
 		// already stamps ctx when X-User-Id is present. Upstream push treats
 		// empty user_id as anonymous too.
 
-		upstreamConn, err := p.dialUpstream(r.Context(), userID)
+		upstreamConn, err := p.dialUpstream(r.Context(), uid)
 		if err != nil {
 			p.logger.Warn("ws upstream dial failed", zap.Error(err))
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
@@ -99,18 +100,18 @@ func (p *Proxy) Handler() http.HandlerFunc {
 			return
 		}
 
-		p.pump(r.Context(), clientConn, upstreamConn, userID)
+		p.pump(r.Context(), clientConn, upstreamConn, uid)
 	}
 }
 
 // dialUpstream opens a WS connection to push, injecting X-User-Id.
-func (p *Proxy) dialUpstream(ctx context.Context, userID string) (*websocket.Conn, error) {
+func (p *Proxy) dialUpstream(ctx context.Context, userID uint64) (*websocket.Conn, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, p.dialTimeout)
 	defer cancel()
 
 	header := http.Header{}
-	if userID != "" {
-		header.Set("X-User-Id", userID)
+	if userID != 0 {
+		header.Set("X-User-Id", strconv.FormatUint(userID, 10))
 	}
 	if p.trustedHeaderSecret != "" {
 		header.Set(headerTrustedAuth, "Bearer "+p.trustedHeaderSecret)
@@ -127,7 +128,7 @@ func (p *Proxy) dialUpstream(ctx context.Context, userID string) (*websocket.Con
 // pump runs two copy loops — client→upstream and upstream→client — and
 // returns when either side closes. Closing either connection unblocks the
 // other via coder/websocket's context propagation.
-func (p *Proxy) pump(ctx context.Context, client, upstream *websocket.Conn, userID string) {
+func (p *Proxy) pump(ctx context.Context, client, upstream *websocket.Conn, userID uint64) {
 	pumpCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -152,14 +153,14 @@ func (p *Proxy) pump(ctx context.Context, client, upstream *websocket.Conn, user
 
 // copyFrames reads from src and writes to dst until either end returns an
 // error or ctx is cancelled.
-func copyFrames(ctx context.Context, src, dst *websocket.Conn, logger *zap.Logger, dir, userID string) {
+func copyFrames(ctx context.Context, src, dst *websocket.Conn, logger *zap.Logger, dir string, userID uint64) {
 	for {
 		mt, data, err := src.Read(ctx)
 		if err != nil {
 			if ctx.Err() == nil && !isClosedError(err) {
 				logger.Debug("ws proxy read ended",
 					zap.String("dir", dir),
-					zap.String("user", userID),
+					zap.Uint64("user_id", userID),
 					zap.Error(err))
 			}
 			return
@@ -168,7 +169,7 @@ func copyFrames(ctx context.Context, src, dst *websocket.Conn, logger *zap.Logge
 			if ctx.Err() == nil {
 				logger.Debug("ws proxy write ended",
 					zap.String("dir", dir),
-					zap.String("user", userID),
+					zap.Uint64("user_id", userID),
 					zap.Error(err))
 			}
 			return

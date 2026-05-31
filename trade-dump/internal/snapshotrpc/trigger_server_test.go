@@ -138,7 +138,7 @@ func apply(t *testing.T, eng *triggershadow.Engine, id uint64, status eventpb.Tr
 	t.Helper()
 	u := &eventpb.TriggerUpdate{
 		Id:           id,
-		UserId:       "u1",
+		UserId:       1001,
 		Symbol:       "BTC-USDT",
 		Status:       status,
 		StopPrice:    "100",

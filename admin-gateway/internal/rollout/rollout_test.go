@@ -292,8 +292,8 @@ func TestExecute_FirstStrictTriggersCancel(t *testing.T) {
 	if cancel.seen[0].Symbol != "BTC-USDT" {
 		t.Errorf("cancel req symbol=%q", cancel.seen[0].Symbol)
 	}
-	if cancel.seen[0].UserId != "" {
-		t.Errorf("cancel req should not scope by user: user_id=%q", cancel.seen[0].UserId)
+	if cancel.seen[0].UserId != 0 {
+		t.Errorf("cancel req should not scope by user: user_id=%d", cancel.seen[0].UserId)
 	}
 	cfgs, _, _ := mem.List(context.Background())
 	got := cfgs["BTC-USDT"]

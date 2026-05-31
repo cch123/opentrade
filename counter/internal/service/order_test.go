@@ -11,9 +11,9 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -26,7 +26,7 @@ type mockTxnPublisher struct {
 type txnPair struct {
 	Journal *eventpb.CounterJournalEvent
 	Order   *eventpb.OrderEvent
-	JKey    string
+	JKey    uint64
 	OKey    string
 }
 
@@ -34,7 +34,7 @@ func (m *mockTxnPublisher) PublishOrderPlacement(
 	_ context.Context,
 	journalEvt *eventpb.CounterJournalEvent,
 	orderEvt *eventpb.OrderEvent,
-	journalKey string,
+	journalKey uint64,
 	orderKey string,
 ) error {
 	m.mu.Lock()
@@ -64,11 +64,11 @@ func newOrderFixture(t *testing.T) (*Service, *counterstate.ShardState, *mockPub
 	svc.SetOrderDeps(txn, &intIDGen{})
 	// Seed u1 with USDT, u2 with BTC.
 	_, _ = svc.Transfer(context.Background(), counterstate.TransferRequest{
-		TransferID: "seed-u1", UserID: "u1", Asset: "USDT",
+		TransferID: "seed-u1", UserID: 1001, Asset: "USDT",
 		Amount: dec.New("1000"), Type: counterstate.TransferDeposit,
 	})
 	_, _ = svc.Transfer(context.Background(), counterstate.TransferRequest{
-		TransferID: "seed-u2", UserID: "u2", Asset: "BTC",
+		TransferID: "seed-u2", UserID: 1002, Asset: "BTC",
 		Amount: dec.New("1"), Type: counterstate.TransferDeposit,
 	})
 	return svc, state, pub, txn
@@ -77,7 +77,7 @@ func newOrderFixture(t *testing.T) (*Service, *counterstate.ShardState, *mockPub
 func TestPlaceOrderBuyFreezesQuote(t *testing.T) {
 	svc, state, _, txn := newOrderFixture(t)
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", ClientOrderID: "c1", Symbol: "BTC-USDT",
+		UserID: 1001, ClientOrderID: "c1", Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("2"),
 	})
@@ -91,7 +91,7 @@ func TestPlaceOrderBuyFreezesQuote(t *testing.T) {
 		t.Fatalf("expected 1 txn pair, got %d", len(txn.pairs))
 	}
 
-	bal := state.Balance("u1", "USDT")
+	bal := state.Balance(1001, "USDT")
 	if bal.Available.String() != "800" || bal.Frozen.String() != "200" {
 		t.Fatalf("u1 USDT = %+v", bal)
 	}
@@ -104,7 +104,7 @@ func TestPlaceOrderBuyFreezesQuote(t *testing.T) {
 func TestPlaceOrderRejectedOnInsufficientBalance(t *testing.T) {
 	svc, state, _, txn := newOrderFixture(t)
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("10000"), Qty: dec.New("1"), // needs 10000 USDT, have 1000
 	})
@@ -117,15 +117,15 @@ func TestPlaceOrderRejectedOnInsufficientBalance(t *testing.T) {
 	if len(txn.pairs) != 0 {
 		t.Fatalf("rejection produced Kafka pair: %d", len(txn.pairs))
 	}
-	if !state.Balance("u1", "USDT").Frozen.IsZero() {
-		t.Fatalf("rejection froze funds: %+v", state.Balance("u1", "USDT"))
+	if !state.Balance(1001, "USDT").Frozen.IsZero() {
+		t.Fatalf("rejection froze funds: %+v", state.Balance(1001, "USDT"))
 	}
 }
 
 func TestPlaceOrderIdempotencyViaCOID(t *testing.T) {
 	svc, _, _, txn := newOrderFixture(t)
 	req := PlaceOrderRequest{
-		UserID: "u1", ClientOrderID: "dup",
+		UserID: 1001, ClientOrderID: "dup",
 		Symbol: "BTC-USDT", Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	}
@@ -151,14 +151,14 @@ func TestPlaceOrderKafkaFailureKeepsStateClean(t *testing.T) {
 	txn.failNext = errors.New("kafka down")
 	txn.mu.Unlock()
 	_, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !state.Balance("u1", "USDT").Frozen.IsZero() {
+	if !state.Balance(1001, "USDT").Frozen.IsZero() {
 		t.Fatal("state mutated despite Kafka failure")
 	}
 }
@@ -166,7 +166,7 @@ func TestPlaceOrderKafkaFailureKeepsStateClean(t *testing.T) {
 func TestCancelOrderTransitionsToPendingCancel(t *testing.T) {
 	svc, state, _, _ := newOrderFixture(t)
 	placed, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -174,7 +174,7 @@ func TestCancelOrderTransitionsToPendingCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancelRes, err := svc.CancelOrder(context.Background(), CancelOrderRequest{
-		UserID: "u1", OrderID: placed.OrderID,
+		UserID: 1001, OrderID: placed.OrderID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestCancelOrderTransitionsToPendingCancel(t *testing.T) {
 func TestCancelOrderNotOwner(t *testing.T) {
 	svc, _, _, _ := newOrderFixture(t)
 	placed, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -199,7 +199,7 @@ func TestCancelOrderNotOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := svc.CancelOrder(context.Background(), CancelOrderRequest{
-		UserID: "u2", OrderID: placed.OrderID, // u2 is not the owner
+		UserID: 1002, OrderID: placed.OrderID, // u2 is not the owner
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestCancelOrderNotOwner(t *testing.T) {
 func TestCancelOrder_ByIDMiss(t *testing.T) {
 	svc, _, _, _ := newOrderFixture(t)
 	res, err := svc.CancelOrder(context.Background(), CancelOrderRequest{
-		UserID: "u1", OrderID: 999,
+		UserID: 1001, OrderID: 999,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +236,7 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 
 	// u1 places BUY 1 BTC @ 100 USDT  -> needs 100 USDT frozen.
 	buy, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -245,7 +245,7 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 	}
 	// u2 places SELL 1 BTC @ 100 USDT -> freezes 1 BTC.
 	sell, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u2", Symbol: "BTC-USDT",
+		UserID: 1002, Symbol: "BTC-USDT",
 		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -256,7 +256,7 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 	// OrderAccepted for both (as Match would produce).
 	if err := svc.HandleTradeEvent(context.Background(), &eventpb.TradeEvent{
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			UserId: "u1", OrderId: buy.OrderID, Symbol: "BTC-USDT",
+			UserId: 1001, OrderId: buy.OrderID, Symbol: "BTC-USDT",
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -269,9 +269,9 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 			Symbol:              "BTC-USDT",
 			Price:               "100",
 			Qty:                 "1",
-			MakerUserId:         "u2",
+			MakerUserId:         1002,
 			MakerOrderId:        sell.OrderID,
-			TakerUserId:         "u1",
+			TakerUserId:         1001,
 			TakerOrderId:        buy.OrderID,
 			TakerSide:           eventpb.Side_SIDE_BUY,
 			MakerFilledQtyAfter: "1",
@@ -285,10 +285,10 @@ func TestEndToEndTradeSettlement(t *testing.T) {
 	// Final balances:
 	//   u1: USDT (1000 - 100) available, 0 frozen;  BTC: +1 available, 0 frozen
 	//   u2: BTC (1 - 1) available, 0 frozen;        USDT: +100 available, 0 frozen
-	u1Q := state.Balance("u1", "USDT")
-	u1B := state.Balance("u1", "BTC")
-	u2Q := state.Balance("u2", "USDT")
-	u2B := state.Balance("u2", "BTC")
+	u1Q := state.Balance(1001, "USDT")
+	u1B := state.Balance(1001, "BTC")
+	u2Q := state.Balance(1002, "USDT")
+	u2B := state.Balance(1002, "BTC")
 	if u1Q.Available.String() != "900" || u1Q.Frozen.String() != "0" {
 		t.Fatalf("u1 USDT = %+v", u1Q)
 	}
@@ -324,7 +324,7 @@ func TestTerminalCancelEmitsUnfreezeBeforeStatus(t *testing.T) {
 	svc, state, pub, txn := newOrderFixture(t)
 
 	placed, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("2"),
 	})
@@ -333,14 +333,14 @@ func TestTerminalCancelEmitsUnfreezeBeforeStatus(t *testing.T) {
 	}
 	if err := svc.HandleTradeEvent(context.Background(), &eventpb.TradeEvent{
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			UserId: "u1", OrderId: placed.OrderID, Symbol: "BTC-USDT",
+			UserId: 1001, OrderId: placed.OrderID, Symbol: "BTC-USDT",
 		}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.HandleTradeEvent(context.Background(), &eventpb.TradeEvent{
 		Payload: &eventpb.TradeEvent_Cancelled{Cancelled: &eventpb.OrderCancelled{
-			UserId: "u1", OrderId: placed.OrderID, Symbol: "BTC-USDT",
+			UserId: 1001, OrderId: placed.OrderID, Symbol: "BTC-USDT",
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -371,14 +371,14 @@ func TestTerminalCancelEmitsUnfreezeBeforeStatus(t *testing.T) {
 			t.Fatalf("replay %T: %v", evt.Payload, err)
 		}
 	}
-	bal := shadow.Balance("u1", "USDT")
+	bal := shadow.Balance(1001, "USDT")
 	if bal.Available.String() != "1000" || bal.Frozen.String() != "0" {
 		t.Fatalf("shadow USDT = %+v, want available=1000 frozen=0", bal)
 	}
 	if o := shadow.Orders().Get(placed.OrderID); o != nil {
 		t.Fatalf("shadow order still present: %+v", o)
 	}
-	if bal = state.Balance("u1", "USDT"); bal.Available.String() != "1000" || bal.Frozen.String() != "0" {
+	if bal = state.Balance(1001, "USDT"); bal.Available.String() != "1000" || bal.Frozen.String() != "0" {
 		t.Fatalf("live USDT = %+v, want available=1000 frozen=0", bal)
 	}
 }

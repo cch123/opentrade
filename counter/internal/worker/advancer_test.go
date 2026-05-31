@@ -11,16 +11,16 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/counter/internal/clustering"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/service"
+	"github.com/xargin/opentrade/pkg/counterstate"
 )
 
 // mockCheckpointPub captures TECheckpointEvent publishes.
 type mockCheckpointPub struct {
 	mu       sync.Mutex
 	events   []*eventpb.TECheckpointEvent
-	failOn   int   // fail the N-th call (1-based); 0 = never
+	failOn   int // fail the N-th call (1-based); 0 = never
 	callNum  int
 	injected error
 }

@@ -41,7 +41,7 @@ type FundingStore interface {
 	TransferOut(context.Context, store.Request) (store.Result, error)
 	TransferIn(context.Context, store.Request) (store.Result, error)
 	Compensate(context.Context, store.Request) (store.Result, error)
-	QueryFundingBalance(context.Context, string, string) ([]store.FundingBalance, error)
+	QueryFundingBalance(context.Context, uint64, string) ([]store.FundingBalance, error)
 }
 
 // Service orchestrates the funding-wallet AssetHolder path.
@@ -66,7 +66,7 @@ func New(funding FundingStore, logger *zap.Logger) *Service {
 // the three AssetHolder RPCs. The server layer validates the amount
 // string BEFORE calling into the service.
 type HolderRequest struct {
-	UserID          string
+	UserID          uint64
 	TransferID      string
 	Asset           string
 	Amount          engine.TransferRequest // engine-typed amount carrier
@@ -110,7 +110,7 @@ func (s *Service) Compensate(ctx context.Context, req HolderRequest) (Result, er
 
 // QueryFundingBalance returns balances for the user. asset == "" returns all
 // persisted assets.
-func (s *Service) QueryFundingBalance(ctx context.Context, userID, asset string) ([]FundingBalance, error) {
+func (s *Service) QueryFundingBalance(ctx context.Context, userID uint64, asset string) ([]FundingBalance, error) {
 	return s.funding.QueryFundingBalance(ctx, userID, asset)
 }
 

@@ -122,7 +122,7 @@ func (s *UserSequencer) AdvanceCounterSeqTo(seq uint64) {
 // fn MUST NOT block indefinitely: it holds the user's serializer
 // until it returns. All I/O inside fn (Kafka produce, etc.) should
 // have a finite timeout.
-func (s *UserSequencer) Execute(userID string, fn func(counterSeq uint64) (any, error)) (any, error) {
+func (s *UserSequencer) Execute(userID uint64, fn func(counterSeq uint64) (any, error)) (any, error) {
 	resp := make(chan taskResult, 1)
 	s.submit(userID, &task{
 		run: func(seq uint64) {
@@ -149,7 +149,7 @@ func (s *UserSequencer) Execute(userID string, fn func(counterSeq uint64) (any, 
 // ADR-0060: queue is unbounded, SubmitAsync is infallible at the
 // enqueue layer.
 func (s *UserSequencer) SubmitAsync(
-	userID string,
+	userID uint64,
 	fn func(counterSeq uint64) error,
 	cb func(err error),
 ) {
@@ -175,7 +175,7 @@ func (s *UserSequencer) ActiveUsers() int {
 // by monitoring / back-pressure signals (ADR-0063 detector may read
 // this to compute per-user queue depth). Zero means no queue entry
 // or empty queue. Safe to call concurrently with enqueue / drain.
-func (s *UserSequencer) QueueDepth(userID string) int {
+func (s *UserSequencer) QueueDepth(userID uint64) int {
 	v, ok := s.users.Load(userID)
 	if !ok {
 		return 0
@@ -211,7 +211,7 @@ type taskResult struct {
 	err error
 }
 
-func (s *UserSequencer) getOrCreate(userID string) *userQueue {
+func (s *UserSequencer) getOrCreate(userID uint64) *userQueue {
 	if v, ok := s.users.Load(userID); ok {
 		return v.(*userQueue)
 	}
@@ -232,7 +232,7 @@ func (s *UserSequencer) getOrCreate(userID string) *userQueue {
 // relies on the concurrent drain picking up the task on its next
 // list.Front() poll — which is safe because our push happened-before
 // their poll under uq.mu.
-func (s *UserSequencer) submit(userID string, t *task) {
+func (s *UserSequencer) submit(userID uint64, t *task) {
 	uq := s.getOrCreate(userID)
 	uq.mu.Lock()
 	uq.tasks.PushBack(t)

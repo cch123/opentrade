@@ -15,10 +15,10 @@ type TradeInput struct {
 	Price   dec.Decimal // maker's price (match price)
 	Qty     dec.Decimal
 
-	MakerUserID  string
+	MakerUserID  uint64
 	MakerOrderID uint64
 
-	TakerUserID  string
+	TakerUserID  uint64
 	TakerOrderID uint64
 	TakerSide    Side // side of the taker
 
@@ -30,7 +30,7 @@ type TradeInput struct {
 // PartySettlement describes the balance deltas for one side of a trade.
 // Positive deltas add, negative deltas subtract.
 type PartySettlement struct {
-	UserID  string
+	UserID  uint64
 	OrderID uint64
 
 	BaseDelta        dec.Decimal // signed change to available base
@@ -186,7 +186,7 @@ func (s *ShardState) ApplyPartySettlement(symbol string, p PartySettlement) erro
 			b.Frozen = b.Frozen.Add(p.FrozenBaseDelta)
 		}
 		if b.Available.Sign() < 0 || b.Frozen.Sign() < 0 {
-			return fmt.Errorf("settlement produced negative balance for %s %s: %+v", p.UserID, base, b)
+			return fmt.Errorf("settlement produced negative balance for %d %s: %+v", p.UserID, base, b)
 		}
 		acc.setBalance(base, b) // bump version; business path
 	}
@@ -199,7 +199,7 @@ func (s *ShardState) ApplyPartySettlement(symbol string, p PartySettlement) erro
 			b.Frozen = b.Frozen.Add(p.FrozenQuoteDelta)
 		}
 		if b.Available.Sign() < 0 || b.Frozen.Sign() < 0 {
-			return fmt.Errorf("settlement produced negative balance for %s %s: %+v", p.UserID, quote, b)
+			return fmt.Errorf("settlement produced negative balance for %d %s: %+v", p.UserID, quote, b)
 		}
 		acc.setBalance(quote, b)
 	}

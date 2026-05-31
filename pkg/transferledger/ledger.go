@@ -66,7 +66,7 @@ func (s State) IsTerminal() bool {
 // Entry mirrors one row in transfer_ledger.
 type Entry struct {
 	TransferID   string
-	UserID       string
+	UserID       uint64
 	FromBiz      string
 	ToBiz        string
 	Asset        string
@@ -393,7 +393,7 @@ var TerminalStates = []State{
 // skip the since/until bounds. States takes raw State values — the
 // scope→states fold lives in asset-service's server.
 type ListFilter struct {
-	UserID  string
+	UserID  uint64
 	FromBiz string
 	ToBiz   string
 	Asset   string
@@ -457,7 +457,7 @@ const MaxListLimit = 200
 // of the returned slice so the caller can pass it straight back in.
 // When exhausted, Cursor is the zero value.
 func (l *Ledger) List(ctx context.Context, f ListFilter, raw string, limit int) ([]Entry, Cursor, error) {
-	if f.UserID == "" {
+	if f.UserID == 0 {
 		return nil, Cursor{}, fmt.Errorf("transferledger: user_id required")
 	}
 	if limit <= 0 {

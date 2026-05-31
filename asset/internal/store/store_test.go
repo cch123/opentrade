@@ -57,16 +57,16 @@ func mutationCols() []string {
 
 func expectLockRows(mock sqlmock.Sqlmock, userVersion uint64, available string, frozen string, balanceVersion uint64) {
 	mock.ExpectExec(insertFundingUserQ).
-		WithArgs("u1", uint64(0), int64(1234)).
+		WithArgs(101, uint64(0), int64(1234)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectFundingUserQ).
-		WithArgs("u1").
+		WithArgs(101).
 		WillReturnRows(sqlmock.NewRows([]string{"funding_version"}).AddRow(userVersion))
 	mock.ExpectExec(insertFundingAccountQ).
-		WithArgs("u1", "USDT", dec.Zero.String(), dec.Zero.String(), uint64(0), int64(1234)).
+		WithArgs(101, "USDT", dec.Zero.String(), dec.Zero.String(), uint64(0), int64(1234)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectFundingAccountQ).
-		WithArgs("u1", "USDT").
+		WithArgs(101, "USDT").
 		WillReturnRows(sqlmock.NewRows([]string{"available", "frozen", "balance_version"}).AddRow(available, frozen, balanceVersion))
 }
 
@@ -79,19 +79,19 @@ func TestTransferInConfirmed(t *testing.T) {
 		WillReturnRows(noMutationRows())
 	expectLockRows(mock, 0, "0", "0", 0)
 	mock.ExpectExec(updateFundingAccountQ).
-		WithArgs("100", "0", uint64(1), int64(1234), "u1", "USDT").
+		WithArgs("100", "0", uint64(1), int64(1234), 101, "USDT").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(updateFundingUserQ).
-		WithArgs(uint64(1), int64(1234), "u1").
+		WithArgs(uint64(1), int64(1234), 101).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(insertMutationQ).
-		WithArgs("tx-1", string(OpTransferIn), "u1", "USDT", "100",
+		WithArgs("tx-1", string(OpTransferIn), 101, "USDT", "100",
 			"spot", "seed", mutationConfirmed, "", "100", "0", uint64(1), uint64(1), int64(1234)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	res, err := st.TransferIn(context.Background(), Request{
-		UserID: "u1", TransferID: "tx-1", Asset: "USDT",
+		UserID: 101, TransferID: "tx-1", Asset: "USDT",
 		Amount: dec.MustParse("100"), PeerBiz: "spot", Memo: "seed",
 	})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestTransferInDuplicateReturnsStoredResult(t *testing.T) {
 	mock.ExpectQuery(selectMutationQ).
 		WithArgs("tx-1", string(OpTransferIn)).
 		WillReturnRows(sqlmock.NewRows(mutationCols()).AddRow(
-			"tx-1", string(OpTransferIn), "u1", "USDT", "100.000000000000000000",
+			"tx-1", string(OpTransferIn), 101, "USDT", "100.000000000000000000",
 			"spot", "seed", mutationConfirmed, "",
 			"100.000000000000000000", "0.000000000000000000",
 			uint64(1), uint64(1), int64(1234),
@@ -123,7 +123,7 @@ func TestTransferInDuplicateReturnsStoredResult(t *testing.T) {
 	mock.ExpectCommit()
 
 	res, err := st.TransferIn(context.Background(), Request{
-		UserID: "u1", TransferID: "tx-1", Asset: "USDT",
+		UserID: 101, TransferID: "tx-1", Asset: "USDT",
 		Amount: dec.MustParse("100"), PeerBiz: "spot", Memo: "seed",
 	})
 	if err != nil {
@@ -149,14 +149,14 @@ func TestTransferOutInsufficientPersistsRejectedMutation(t *testing.T) {
 		WillReturnRows(noMutationRows())
 	expectLockRows(mock, 4, "10", "0", 2)
 	mock.ExpectExec(insertMutationQ).
-		WithArgs("tx-out", string(OpTransferOut), "u1", "USDT", "100",
+		WithArgs("tx-out", string(OpTransferOut), 101, "USDT", "100",
 			"spot", "", mutationRejected, engine.ErrInsufficientAvailable.Error(),
 			"10", "0", uint64(4), uint64(2), int64(1234)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	res, err := st.TransferOut(context.Background(), Request{
-		UserID: "u1", TransferID: "tx-out", Asset: "USDT",
+		UserID: 101, TransferID: "tx-out", Asset: "USDT",
 		Amount: dec.MustParse("100"), PeerBiz: "spot",
 	})
 	if err != nil {
@@ -180,14 +180,14 @@ func TestIdempotencyConflict(t *testing.T) {
 	mock.ExpectQuery(selectMutationQ).
 		WithArgs("tx-1", string(OpTransferIn)).
 		WillReturnRows(sqlmock.NewRows(mutationCols()).AddRow(
-			"tx-1", string(OpTransferIn), "u1", "USDT", "50",
+			"tx-1", string(OpTransferIn), 101, "USDT", "50",
 			"spot", "seed", mutationConfirmed, "", "50", "0",
 			uint64(1), uint64(1), int64(1234),
 		))
 	mock.ExpectRollback()
 
 	_, err := st.TransferIn(context.Background(), Request{
-		UserID: "u1", TransferID: "tx-1", Asset: "USDT",
+		UserID: 101, TransferID: "tx-1", Asset: "USDT",
 		Amount: dec.MustParse("100"), PeerBiz: "spot", Memo: "seed",
 	})
 	if !errors.Is(err, ErrIdempotencyConflict) {
@@ -202,10 +202,10 @@ func TestQuerySingleMissingReturnsZeroBalance(t *testing.T) {
 	st, mock, _ := newMockStore(t)
 
 	mock.ExpectQuery(selectSingleBalanceQ).
-		WithArgs("u1", "USDT").
+		WithArgs(101, "USDT").
 		WillReturnError(sql.ErrNoRows)
 
-	out, err := st.QueryFundingBalance(context.Background(), "u1", "USDT")
+	out, err := st.QueryFundingBalance(context.Background(), 101, "USDT")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

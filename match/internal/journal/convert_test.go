@@ -15,7 +15,7 @@ func TestOrderEventToInternal_Placed(t *testing.T) {
 		CounterSeqId: 1,
 		Payload: &eventpb.OrderEvent_Placed{
 			Placed: &eventpb.OrderPlaced{
-				UserId:        "u1",
+				UserId:        1001,
 				OrderId:       42,
 				ClientOrderId: "c1",
 				Symbol:        "BTC-USDT",
@@ -35,7 +35,7 @@ func TestOrderEventToInternal_Placed(t *testing.T) {
 		t.Fatalf("kind = %d, want EventOrderPlaced", got.Kind)
 	}
 	o := got.Order
-	if o.ID != 42 || o.UserID != "u1" || o.Symbol != "BTC-USDT" {
+	if o.ID != 42 || o.UserID != 1001 || o.Symbol != "BTC-USDT" {
 		t.Fatalf("order fields: %+v", o)
 	}
 	if o.Side != orderbook.Bid || o.Type != orderbook.Limit || o.TIF != orderbook.GTC {
@@ -55,7 +55,7 @@ func TestOrderEventToInternal_Cancel(t *testing.T) {
 		CounterSeqId: 2,
 		Payload: &eventpb.OrderEvent_Cancel{
 			Cancel: &eventpb.OrderCancel{
-				UserId:  "u1",
+				UserId:  1001,
 				OrderId: 42,
 				Symbol:  "BTC-USDT",
 			},
@@ -65,7 +65,7 @@ func TestOrderEventToInternal_Cancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	if got.Kind != sequencer.EventOrderCancel || got.OrderID != 42 || got.UserID != "u1" {
+	if got.Kind != sequencer.EventOrderCancel || got.OrderID != 42 || got.UserID != 1001 {
 		t.Fatalf("cancel mapping: %+v", got)
 	}
 }
@@ -94,12 +94,12 @@ func TestOutputToTradeEvent_Trade(t *testing.T) {
 		Kind:           sequencer.OutputTrade,
 		MatchSeq:       17,
 		Symbol:         "BTC-USDT",
-		UserID:         "t1",
+		UserID:         3001,
 		OrderID:        101,
 		Side:           orderbook.Bid,
 		Price:          dec.New("100"),
 		Qty:            dec.New("1"),
-		MakerUserID:    "m1",
+		MakerUserID:    2001,
 		MakerOrderID:   50,
 		MakerSide:      orderbook.Ask,
 		MakerRemaining: dec.New("0"),
@@ -129,7 +129,7 @@ func TestOutputToTradeEvent_Accepted(t *testing.T) {
 		Kind:           sequencer.OutputOrderAccepted,
 		MatchSeq:       9,
 		Symbol:         "BTC-USDT",
-		UserID:         "u1",
+		UserID:         1001,
 		OrderID:        42,
 		Side:           orderbook.Ask,
 		Price:          dec.New("101.25"),
@@ -143,7 +143,7 @@ func TestOutputToTradeEvent_Accepted(t *testing.T) {
 	if acc == nil {
 		t.Fatalf("expected Accepted payload, got %+v", te.Payload)
 	}
-	if acc.OrderId != 42 || acc.Symbol != "BTC-USDT" || acc.UserId != "u1" {
+	if acc.OrderId != 42 || acc.Symbol != "BTC-USDT" || acc.UserId != 1001 {
 		t.Fatalf("accepted identity: %+v", acc)
 	}
 	if acc.Side != eventpb.Side_SIDE_SELL {
@@ -159,7 +159,7 @@ func TestOutputToTradeEvent_Rejected(t *testing.T) {
 		Kind:         sequencer.OutputOrderRejected,
 		MatchSeq:     5,
 		Symbol:       "BTC-USDT",
-		UserID:       "u1",
+		UserID:       1001,
 		OrderID:      1,
 		RejectReason: orderbook.RejectPostOnlyWouldTake,
 	}

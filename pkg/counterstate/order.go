@@ -139,7 +139,7 @@ const (
 type Order struct {
 	ID            uint64
 	ClientOrderID string
-	UserID        string
+	UserID        uint64
 	Symbol        string
 	Side          Side
 	Type          OrderType

@@ -106,7 +106,7 @@ func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 // ErrNotFound when the row does not exist or belongs to another user —
 // the caller decides whether to split NotFound vs PermissionDenied at
 // the RPC boundary (we don't, to avoid leaking existence).
-func (s *Store) GetOrder(ctx context.Context, userID string, orderID uint64) (*historypb.Order, error) {
+func (s *Store) GetOrder(ctx context.Context, userID uint64, orderID uint64) (*historypb.Order, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 
@@ -138,7 +138,7 @@ func (s *Store) GetOrder(ctx context.Context, userID string, orderID uint64) (*h
 
 // OrdersFilter is the decoded ListOrdersRequest for the store.
 type OrdersFilter struct {
-	UserID   string
+	UserID   uint64
 	Symbol   string
 	Statuses []int8 // projected from scope/statuses at the server layer; empty = any
 	SinceMs  int64
@@ -244,7 +244,7 @@ func (s *Store) ListOrders(ctx context.Context, f OrdersFilter, rawCursor string
 
 // TradesFilter is the decoded ListTradesRequest for the store.
 type TradesFilter struct {
-	UserID  string
+	UserID  uint64
 	Symbol  string
 	SinceMs int64
 	UntilMs int64
@@ -343,7 +343,7 @@ func (s *Store) ListTrades(ctx context.Context, f TradesFilter, rawCursor string
 
 // AccountLogsFilter is the decoded ListAccountLogsRequest for the store.
 type AccountLogsFilter struct {
-	UserID   string
+	UserID   uint64
 	Asset    string
 	BizTypes []string
 	SinceMs  int64
@@ -445,7 +445,7 @@ func (s *Store) ListAccountLogs(ctx context.Context, f AccountLogsFilter, rawCur
 // GetTrigger fetches a single trigger by id, scoped to userID.
 // Returns ErrNotFound when the row does not exist or belongs to another
 // user — same policy as GetOrder.
-func (s *Store) GetTrigger(ctx context.Context, userID string, id uint64) (*historypb.Trigger, error) {
+func (s *Store) GetTrigger(ctx context.Context, userID uint64, id uint64) (*historypb.Trigger, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 
@@ -477,7 +477,7 @@ func (s *Store) GetTrigger(ctx context.Context, userID string, id uint64) (*hist
 
 // TriggersFilter is the decoded ListTriggersRequest for the store.
 type TriggersFilter struct {
-	UserID   string
+	UserID   uint64
 	Symbol   string
 	Statuses []int8
 	SinceMs  int64

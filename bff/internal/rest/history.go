@@ -308,5 +308,3 @@ func accountLogToJSON(l *historypb.AccountLog) map[string]any {
 		"ts":             l.TsUnixMs,
 	}
 }
-
-

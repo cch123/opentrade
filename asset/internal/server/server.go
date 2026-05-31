@@ -160,7 +160,7 @@ func (s *AssetServer) Transfer(ctx context.Context, req *connect.Request[assetrp
 
 // QueryTransfer returns the current state of a saga. Used by BFF
 // polling after a Transfer RPC returned terminal=false, and by
-// reconciliation jobs. When req.UserId is non-empty, the result is
+// reconciliation jobs. When req.UserId is non-zero, the result is
 // guarded against cross-user access — a row belonging to a different
 // user returns NOT_FOUND.
 func (s *AssetServer) QueryTransfer(ctx context.Context, req *connect.Request[assetrpc.QueryTransferRequest]) (*connect.Response[assetrpc.QueryTransferResponse], error) {
@@ -178,7 +178,7 @@ func (s *AssetServer) QueryTransfer(ctx context.Context, req *connect.Request[as
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if m.UserId != "" && e.UserID != m.UserId {
+	if m.UserId != 0 && e.UserID != m.UserId {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("unknown transfer_id"))
 	}
 	return connect.NewResponse(&assetrpc.QueryTransferResponse{
@@ -199,7 +199,7 @@ func (s *AssetServer) QueryTransfer(ctx context.Context, req *connect.Request[as
 // Replaced the trade-dump `transfers` projection post ADR-0065.
 func (s *AssetServer) ListTransfers(ctx context.Context, req *connect.Request[assetrpc.ListTransfersRequest]) (*connect.Response[assetrpc.ListTransfersResponse], error) {
 	m := req.Msg
-	if m == nil || m.UserId == "" {
+	if m == nil || m.UserId == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	if s.orch == nil {
@@ -294,7 +294,7 @@ func entryToProtoTransfer(e transferledger.Entry) *assetrpc.Transfer {
 // shape as counter's QueryBalance).
 func (s *AssetServer) QueryFundingBalance(ctx context.Context, req *connect.Request[assetrpc.QueryFundingBalanceRequest]) (*connect.Response[assetrpc.QueryFundingBalanceResponse], error) {
 	m := req.Msg
-	if m == nil || m.UserId == "" {
+	if m == nil || m.UserId == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
 	}
 	all, err := s.svc.QueryFundingBalance(ctx, m.UserId, m.Asset)
@@ -325,8 +325,8 @@ func (s *AssetServer) QueryFundingBalance(ctx context.Context, req *connect.Requ
 // TransferStatus/RejectReason response body instead (so idempotent
 // retries can observe the same terminal outcome without exception
 // handling).
-func buildHolderReq(userID, transferID, asset, amount, peerBiz, memo, compensateCause string) (service.HolderRequest, error) {
-	if userID == "" {
+func buildHolderReq(userID uint64, transferID, asset, amount, peerBiz, memo, compensateCause string) (service.HolderRequest, error) {
+	if userID == 0 {
 		return service.HolderRequest{}, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	if transferID == "" {

@@ -23,7 +23,7 @@ func approx(t *testing.T, got dec.Decimal, want, eps, what string) {
 }
 
 func longLev10() *Position {
-	return &Position{UserID: "u1", Symbol: "BTC-USDT-PERP", Leverage: d("10"), Mode: MarginIsolated,
+	return &Position{UserID: 1001, Symbol: "BTC-USDT-PERP", Leverage: d("10"), Mode: MarginIsolated,
 		Side: 0, Size: zero, Entry: zero, Margin: zero, Realized: zero}
 }
 

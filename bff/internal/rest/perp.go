@@ -24,6 +24,15 @@ func (s *Server) requirePerp(w http.ResponseWriter) bool {
 	return true
 }
 
+func perpUserID(w http.ResponseWriter, r *http.Request) (uint64, bool) {
+	userID, err := auth.UserID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return 0, false
+	}
+	return userID, true
+}
+
 type perpPlaceOrderBody struct {
 	ClientOrderID string `json:"client_order_id,omitempty"`
 	Symbol        string `json:"symbol"`
@@ -40,9 +49,8 @@ func (s *Server) handlePerpPlaceOrder(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePerp(w) {
 		return
 	}
-	userID, err := auth.UserID(r.Context())
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+	userID, ok := perpUserID(w, r)
+	if !ok {
 		return
 	}
 	var body perpPlaceOrderBody
@@ -98,9 +106,8 @@ func (s *Server) handlePerpCancelOrder(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePerp(w) {
 		return
 	}
-	userID, err := auth.UserID(r.Context())
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+	userID, ok := perpUserID(w, r)
+	if !ok {
 		return
 	}
 	orderID, err := strconv.ParseUint(r.PathValue("order_id"), 10, 64)
@@ -124,9 +131,8 @@ func (s *Server) handlePerpPositions(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePerp(w) {
 		return
 	}
-	userID, err := auth.UserID(r.Context())
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+	userID, ok := perpUserID(w, r)
+	if !ok {
 		return
 	}
 	resp, err := s.perp.QueryPositions(r.Context(), connect.NewRequest(&perprpc.QueryPositionsRequest{
@@ -160,9 +166,8 @@ func (s *Server) handlePerpMargin(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePerp(w) {
 		return
 	}
-	userID, err := auth.UserID(r.Context())
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+	userID, ok := perpUserID(w, r)
+	if !ok {
 		return
 	}
 	resp, err := s.perp.QueryMargin(r.Context(), connect.NewRequest(&perprpc.QueryMarginRequest{UserId: userID}))

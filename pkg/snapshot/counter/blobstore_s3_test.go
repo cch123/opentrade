@@ -104,7 +104,7 @@ func TestS3BlobStore_RoundTrip(t *testing.T) {
 		ShardID:    0,
 		CounterSeq: 123,
 		Accounts: []AccountSnapshot{{
-			UserID:   "u1",
+			UserID:   1001,
 			Balances: []BalanceSnapshot{{Asset: "USDT", Available: "100", Frozen: "50"}},
 		}},
 	}
@@ -115,7 +115,7 @@ func TestS3BlobStore_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got.CounterSeq != 123 || len(got.Accounts) != 1 || got.Accounts[0].UserID != "u1" {
+	if got.CounterSeq != 123 || len(got.Accounts) != 1 || got.Accounts[0].UserID != 1001 {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
 }

@@ -80,7 +80,7 @@ func (m MarginMode) String() string {
 // (kept zeroed). Leverage is fixed at first open for the MVP; tiered
 // leverage (risk tier) is future work.
 type Position struct {
-	UserID   string
+	UserID   uint64
 	Symbol   string
 	Side     Side
 	Size     dec.Decimal // base units, >= 0

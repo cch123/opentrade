@@ -21,7 +21,7 @@ import (
 // HTTP 403 and an X-Correct-Instance header pointing at the owner.
 func TestSticky_RejectsMisroutedUser(t *testing.T) {
 	const total = 10
-	user := "alice"
+	user := uint64(1001)
 	owner := shard.Index(user, total)
 	nonOwner := (owner + 1) % total
 
@@ -44,7 +44,7 @@ func TestSticky_RejectsMisroutedUser(t *testing.T) {
 	defer dialCancel()
 	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws"
 	header := http.Header{}
-	header.Set(ws.HeaderUserID, user)
+	header.Set(ws.HeaderUserID, strconv.FormatUint(user, 10))
 	_, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err == nil {
 		t.Fatal("expected dial to fail")
@@ -67,7 +67,7 @@ func TestSticky_RejectsMisroutedUser(t *testing.T) {
 // Owner accepts the connection; basic subscribe still works.
 func TestSticky_OwnerAccepts(t *testing.T) {
 	const total = 10
-	user := "alice"
+	user := uint64(1001)
 	owner := shard.Index(user, total)
 
 	logger := zap.NewNop()
@@ -89,7 +89,7 @@ func TestSticky_OwnerAccepts(t *testing.T) {
 	defer dialCancel()
 	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws"
 	header := http.Header{}
-	header.Set(ws.HeaderUserID, user)
+	header.Set(ws.HeaderUserID, strconv.FormatUint(user, 10))
 	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("owner should accept: %v", err)
@@ -147,7 +147,7 @@ func TestSticky_SingleInstanceNoFilter(t *testing.T) {
 	defer dialCancel()
 	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws"
 	header := http.Header{}
-	header.Set(ws.HeaderUserID, "any-user-any-shard")
+	header.Set(ws.HeaderUserID, "1001")
 	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("single-instance mode should accept everyone: %v", err)
@@ -174,7 +174,7 @@ func TestTrustedHeaderSecretRejectsSpoofedUserID(t *testing.T) {
 	defer dialCancel()
 	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws"
 	header := http.Header{}
-	header.Set(ws.HeaderUserID, "alice")
+	header.Set(ws.HeaderUserID, "1001")
 	_, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err == nil {
 		t.Fatal("expected dial to fail without trusted auth")
@@ -203,7 +203,7 @@ func TestTrustedHeaderSecretAcceptsBFFHeader(t *testing.T) {
 	defer dialCancel()
 	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws"
 	header := http.Header{}
-	header.Set(ws.HeaderUserID, "alice")
+	header.Set(ws.HeaderUserID, "1001")
 	header.Set(ws.HeaderTrustedAuth, "Bearer shared-secret")
 	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {

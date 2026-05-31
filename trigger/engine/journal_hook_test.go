@@ -58,7 +58,7 @@ func TestJournal_EmitOnCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("place: %v", err)
 	}
-	_, _, err = e.Cancel(context.Background(), "u1", id)
+	_, _, err = e.Cancel(context.Background(), 101, id)
 	if err != nil {
 		t.Fatalf("cancel: %v", err)
 	}

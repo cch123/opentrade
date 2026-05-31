@@ -32,16 +32,16 @@ func TestApplyJournalBatch_FullFlowInSingleTx(t *testing.T) {
 
 	batch := JournalBatch{
 		Orders: []OrderRow{
-			{OrderID: 42, UserID: "u1", Symbol: "BTC-USDT", Side: 1, OrderType: 1, TIF: 1,
+			{OrderID: 42, UserID: 1001, Symbol: "BTC-USDT", Side: 1, OrderType: 1, TIF: 1,
 				Price: "100", Qty: "1", FrozenAmt: "100", Status: 1,
 				CreatedAtMs: 1_700_000_000_000, UpdatedAtMs: 1_700_000_000_000, Kind: OrderRowInsert},
-			{OrderID: 42, UserID: "u1", Status: 4, FilledQty: "1", UpdatedAtMs: 1_700_000_000_001, Kind: OrderRowUpdate},
+			{OrderID: 42, UserID: 1001, Status: 4, FilledQty: "1", UpdatedAtMs: 1_700_000_000_001, Kind: OrderRowUpdate},
 		},
 		Accounts: []AccountRow{
-			{UserID: "u1", Asset: "USDT", Available: "400", Frozen: "100", CounterSeqID: 5},
+			{UserID: 1001, Asset: "USDT", Available: "400", Frozen: "100", CounterSeqID: 5},
 		},
 		AccountLogs: []AccountLogRow{
-			{VShardID: 0, CounterSeqID: 5, Asset: "USDT", UserID: "u1",
+			{VShardID: 0, CounterSeqID: 5, Asset: "USDT", UserID: 1001,
 				DeltaAvail: "-100", DeltaFrozen: "100",
 				AvailAfter: "400", FrozenAfter: "100",
 				BizType: "freeze_place_order", BizRefID: "42", TsUnixMs: 1_700_000_000_000},
@@ -67,7 +67,7 @@ func TestApplyJournalBatch_OnlyOrderUpdate(t *testing.T) {
 	w, mock := newJournalMock(t)
 	batch := JournalBatch{
 		Orders: []OrderRow{
-			{OrderID: 7, UserID: "u1", Status: 6, UpdatedAtMs: 1, Kind: OrderRowUpdate},
+			{OrderID: 7, UserID: 1001, Status: 6, UpdatedAtMs: 1, Kind: OrderRowUpdate},
 		},
 	}
 	mock.ExpectBegin()
@@ -86,7 +86,7 @@ func TestApplyJournalBatch_RollbackOnError(t *testing.T) {
 	w, mock := newJournalMock(t)
 	batch := JournalBatch{
 		Orders: []OrderRow{
-			{OrderID: 42, UserID: "u1", Symbol: "BTC-USDT", Side: 1, OrderType: 1, TIF: 1,
+			{OrderID: 42, UserID: 1001, Symbol: "BTC-USDT", Side: 1, OrderType: 1, TIF: 1,
 				Price: "100", Qty: "1", FrozenAmt: "100", Status: 1,
 				CreatedAtMs: 1, UpdatedAtMs: 1, Kind: OrderRowInsert},
 		},

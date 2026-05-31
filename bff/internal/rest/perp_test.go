@@ -59,7 +59,7 @@ func newPerpServer(fp *fakePerp) *Server {
 
 func TestPerpPlaceOrder_HappyPath(t *testing.T) {
 	fp := &fakePerp{placeFn: func(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrderResponse, error) {
-		if req.UserId != "u1" || req.Symbol != "BTC-USDT-PERP" || req.Leverage != "10" || !req.ReduceOnly {
+		if req.UserId != 1001 || req.Symbol != "BTC-USDT-PERP" || req.Leverage != "10" || !req.ReduceOnly {
 			t.Fatalf("req = %+v", req)
 		}
 		return &perprpc.PlaceOrderResponse{OrderId: 42, Accepted: true, ReceivedTsUnixMs: 7}, nil
@@ -68,7 +68,7 @@ func TestPerpPlaceOrder_HappyPath(t *testing.T) {
 
 	body := `{"symbol":"BTC-USDT-PERP","side":"sell","order_type":"limit","tif":"gtc","price":"100","qty":"1","leverage":"10","reduce_only":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/perp/order", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -86,7 +86,7 @@ func TestPerpPositionsAndMargin(t *testing.T) {
 	srv := newPerpServer(&fakePerp{})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/perp/positions", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -99,7 +99,7 @@ func TestPerpPositionsAndMargin(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/perp/margin", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	var mr map[string]any
@@ -112,7 +112,7 @@ func TestPerpPositionsAndMargin(t *testing.T) {
 func TestPerp_503WhenDisabled(t *testing.T) {
 	srv := newPerpServer(nil) // perp client not wired
 	req := httptest.NewRequest(http.MethodGet, "/v1/perp/margin", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {

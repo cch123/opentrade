@@ -101,7 +101,7 @@ func (c *PerpPrivateConsumer) dispatch(rec *kgo.Record) {
 		return
 	}
 	userID := perpUserIDOf(&evt)
-	if userID == "" {
+	if userID == 0 {
 		return
 	}
 	if !c.ownsUser(userID) {
@@ -120,7 +120,7 @@ func (c *PerpPrivateConsumer) dispatch(rec *kgo.Record) {
 	c.hub.SendUser(userID, frame)
 }
 
-func (c *PerpPrivateConsumer) ownsUser(userID string) bool {
+func (c *PerpPrivateConsumer) ownsUser(userID uint64) bool {
 	if c.totalInstances <= 1 {
 		return true
 	}
@@ -128,9 +128,9 @@ func (c *PerpPrivateConsumer) ownsUser(userID string) bool {
 }
 
 // perpUserIDOf extracts the owning user from any perp-journal payload.
-func perpUserIDOf(evt *eventpb.PerpJournalEvent) string {
+func perpUserIDOf(evt *eventpb.PerpJournalEvent) uint64 {
 	if evt == nil {
-		return ""
+		return 0
 	}
 	switch p := evt.Payload.(type) {
 	case *eventpb.PerpJournalEvent_OrderStatus:
@@ -162,5 +162,5 @@ func perpUserIDOf(evt *eventpb.PerpJournalEvent) string {
 			return p.Adl.UserId
 		}
 	}
-	return ""
+	return 0
 }

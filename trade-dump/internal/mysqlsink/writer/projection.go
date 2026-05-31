@@ -20,7 +20,7 @@ import (
 type OrderRow struct {
 	OrderID       uint64
 	ClientOrderID string
-	UserID        string
+	UserID        uint64
 	Symbol        string
 	Side          int8
 	OrderType     int8
@@ -60,7 +60,7 @@ const (
 // readers (BFF cache, reconciliation) can observe them as optimistic-lock
 // / cache-invalidation handles.
 type AccountRow struct {
-	UserID         string
+	UserID         uint64
 	Asset          string
 	Available      string
 	Frozen         string
@@ -79,7 +79,7 @@ type AccountLogRow struct {
 	VShardID     int32
 	CounterSeqID uint64
 	Asset        string
-	UserID       string
+	UserID       uint64
 	DeltaAvail   string
 	DeltaFrozen  string
 	AvailAfter   string

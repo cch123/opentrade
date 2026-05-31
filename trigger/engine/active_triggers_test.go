@@ -9,8 +9,8 @@ import (
 	"connectrpc.com/connect"
 	"go.uber.org/zap"
 
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 )
 
@@ -21,10 +21,10 @@ import (
 
 func newEngineWithCap(cap uint32, lookup SymbolLookup, placer OrderPlacer) *Engine {
 	return New(Config{
-		TerminalHistoryLimit:              100,
-		Clock:                             func() time.Time { return time.Unix(1_700_000_000, 0) },
+		TerminalHistoryLimit:          100,
+		Clock:                         func() time.Time { return time.Unix(1_700_000_000, 0) },
 		DefaultMaxActiveTriggerOrders: cap,
-		SymbolLookup:                      lookup,
+		SymbolLookup:                  lookup,
 	}, &counterSeq{}, placer, nil, zap.NewNop())
 }
 
@@ -42,7 +42,7 @@ func TestTriggerCap_DefaultEnforced(t *testing.T) {
 	if !errors.Is(err, ErrMaxActiveTriggerOrdersExceeded) {
 		t.Errorf("err = %v, want ErrMaxActiveTriggerOrdersExceeded", err)
 	}
-	if got := e.CountActiveTriggers("u1", "BTC-USDT"); got != 2 {
+	if got := e.CountActiveTriggers(101, "BTC-USDT"); got != 2 {
 		t.Errorf("count = %d, want 2", got)
 	}
 }
@@ -58,10 +58,10 @@ func TestTriggerCap_CancelFreesSlot(t *testing.T) {
 		t.Fatalf("second place should block: ok=%v err=%v", ok, err)
 	}
 	// Cancel the first → slot released (graduateLocked drops the counter).
-	if _, _, err := e.Cancel(context.Background(), "u1", id); err != nil {
+	if _, _, err := e.Cancel(context.Background(), 101, id); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.CountActiveTriggers("u1", "BTC-USDT"); got != 0 {
+	if got := e.CountActiveTriggers(101, "BTC-USDT"); got != 0 {
 		t.Errorf("after cancel count = %d, want 0", got)
 	}
 	if _, _, ok, err := e.Place(context.Background(), goodReq()); !ok {
@@ -93,7 +93,7 @@ func TestTriggerCap_ZeroDisablesCheck(t *testing.T) {
 			t.Fatalf("place %d: err=%v", i, err)
 		}
 	}
-	if got := e.CountActiveTriggers("u1", "BTC-USDT"); got != 20 {
+	if got := e.CountActiveTriggers(101, "BTC-USDT"); got != 20 {
 		t.Errorf("cap=0 should allow unlimited, got %d", got)
 	}
 }
@@ -101,19 +101,19 @@ func TestTriggerCap_ZeroDisablesCheck(t *testing.T) {
 func TestTriggerCap_RestoreRebuildsIndex(t *testing.T) {
 	e := newEngineWithCap(0, nil, &fakePlacer{})
 	pending := []*Trigger{
-		{ID: 1, UserID: "u1", Symbol: "BTC-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
-		{ID: 2, UserID: "u1", Symbol: "BTC-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
-		{ID: 3, UserID: "u1", Symbol: "ETH-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
-		{ID: 4, UserID: "u2", Symbol: "BTC-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
+		{ID: 1, UserID: 101, Symbol: "BTC-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
+		{ID: 2, UserID: 101, Symbol: "BTC-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
+		{ID: 3, UserID: 101, Symbol: "ETH-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
+		{ID: 4, UserID: 202, Symbol: "BTC-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
 	}
 	e.Restore(pending, nil, nil)
-	if got := e.CountActiveTriggers("u1", "BTC-USDT"); got != 2 {
+	if got := e.CountActiveTriggers(101, "BTC-USDT"); got != 2 {
 		t.Errorf("u1 BTC = %d, want 2", got)
 	}
-	if got := e.CountActiveTriggers("u1", "ETH-USDT"); got != 1 {
+	if got := e.CountActiveTriggers(101, "ETH-USDT"); got != 1 {
 		t.Errorf("u1 ETH = %d, want 1", got)
 	}
-	if got := e.CountActiveTriggers("u2", "BTC-USDT"); got != 1 {
+	if got := e.CountActiveTriggers(202, "BTC-USDT"); got != 1 {
 		t.Errorf("u2 BTC = %d, want 1", got)
 	}
 }
@@ -135,7 +135,7 @@ func TestTryFire_CounterMaxOpenLimitOrders_RoutesToExpiredInMatch(t *testing.T) 
 	// triggers when price <= 100).
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "99"), 0, 0)
 
-	got, err := e.Get("u1", id)
+	got, err := e.Get(101, id)
 	if err != nil {
 		t.Fatalf("Get after trigger: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestTryFire_GenericCounterReject_StaysAsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "99"), 0, 0)
-	got, err := e.Get("u1", id)
+	got, err := e.Get(101, id)
 	if err != nil {
 		t.Fatalf("Get after trigger: %v", err)
 	}

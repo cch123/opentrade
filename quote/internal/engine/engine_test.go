@@ -29,7 +29,7 @@ func TestHandle_Accepted_NoEmit(t *testing.T) {
 		Meta:       &eventpb.EventMeta{TsUnixMs: 120_001},
 		MatchSeqId: 1,
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			UserId: "u1", OrderId: 42, Symbol: "BTC-USDT",
+			UserId: 1001, OrderId: 42, Symbol: "BTC-USDT",
 			Side: eventpb.Side_SIDE_BUY, Price: "100", RemainingQty: "2",
 		}},
 	})
@@ -110,9 +110,9 @@ func TestHandle_Trade_DualEmitDedup(t *testing.T) {
 			Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 				TradeId: "BTC-USDT:42", Symbol: "BTC-USDT",
 				Price: "100", Qty: "2",
-				MakerUserId:  "maker",
+				MakerUserId:  2001,
 				MakerOrderId: 1,
-				TakerUserId:  "taker",
+				TakerUserId:  3001,
 				TakerOrderId: 2,
 				TakerSide:    eventpb.Side_SIDE_BUY,
 			}},

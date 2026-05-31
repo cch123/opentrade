@@ -16,14 +16,14 @@ import (
 
 type placeTriggerBody struct {
 	ClientTriggerID string `json:"client_trigger_id,omitempty"`
-	Symbol              string `json:"symbol"`
-	Side                string `json:"side"`       // "buy" / "sell"
-	Type                string `json:"type"`       // "stop_loss" / "stop_loss_limit" / "take_profit" / "take_profit_limit" / "trailing_stop_loss"
-	StopPrice           string `json:"stop_price,omitempty"`
-	LimitPrice          string `json:"limit_price,omitempty"`
-	Qty                 string `json:"qty,omitempty"`
-	QuoteQty            string `json:"quote_qty,omitempty"`
-	TIF                 string `json:"tif,omitempty"`
+	Symbol          string `json:"symbol"`
+	Side            string `json:"side"` // "buy" / "sell"
+	Type            string `json:"type"` // "stop_loss" / "stop_loss_limit" / "take_profit" / "take_profit_limit" / "trailing_stop_loss"
+	StopPrice       string `json:"stop_price,omitempty"`
+	LimitPrice      string `json:"limit_price,omitempty"`
+	Qty             string `json:"qty,omitempty"`
+	QuoteQty        string `json:"quote_qty,omitempty"`
+	TIF             string `json:"tif,omitempty"`
 	// Optional absolute expiry (unix ms); 0 = never expires. ADR-0043.
 	ExpiresAtUnixMs int64 `json:"expires_at_unix_ms,omitempty"`
 	// Trailing-stop fields (ADR-0045). trailing_delta_bps required for
@@ -173,7 +173,7 @@ func (s *Server) handleQueryTrigger(w http.ResponseWriter, r *http.Request) {
 
 // placeOCOBody is the REST request for POST /v1/trigger/oco.
 type placeOCOBody struct {
-	ClientOCOID string                 `json:"client_oco_id,omitempty"`
+	ClientOCOID string             `json:"client_oco_id,omitempty"`
 	Legs        []placeTriggerBody `json:"legs"`
 }
 
@@ -222,19 +222,19 @@ func (s *Server) handlePlaceOCO(w http.ResponseWriter, r *http.Request) {
 			tif = t
 		}
 		legs[i] = &condrpc.PlaceTriggerRequest{
-			UserId:              userID,
-			ClientTriggerId: lb.ClientTriggerID,
-			Symbol:              lb.Symbol,
-			Side:                side,
-			Type:                typ,
-			StopPrice:           lb.StopPrice,
-			LimitPrice:          lb.LimitPrice,
-			Qty:                 lb.Qty,
-			QuoteQty:            lb.QuoteQty,
-			Tif:                 tif,
-			ExpiresAtUnixMs:     lb.ExpiresAtUnixMs,
-			TrailingDeltaBps:    lb.TrailingDeltaBps,
-			ActivationPrice:     lb.ActivationPrice,
+			UserId:           userID,
+			ClientTriggerId:  lb.ClientTriggerID,
+			Symbol:           lb.Symbol,
+			Side:             side,
+			Type:             typ,
+			StopPrice:        lb.StopPrice,
+			LimitPrice:       lb.LimitPrice,
+			Qty:              lb.Qty,
+			QuoteQty:         lb.QuoteQty,
+			Tif:              tif,
+			ExpiresAtUnixMs:  lb.ExpiresAtUnixMs,
+			TrailingDeltaBps: lb.TrailingDeltaBps,
+			ActivationPrice:  lb.ActivationPrice,
 		}
 	}
 	resp, err := s.trigger.PlaceOCO(r.Context(), connect.NewRequest(&condrpc.PlaceOCORequest{
@@ -369,27 +369,27 @@ func triggerToJSON(c *condrpc.Trigger) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"id":                    c.Id,
-		"client_trigger_id": c.ClientTriggerId,
-		"symbol":                c.Symbol,
-		"side":                  sideToString(c.Side),
-		"type":                  triggerTypeLabel(c.Type),
-		"stop_price":            c.StopPrice,
-		"limit_price":           c.LimitPrice,
-		"qty":                   c.Qty,
-		"quote_qty":             c.QuoteQty,
-		"tif":                   tifToString(c.Tif),
-		"status":                triggerStatusLabel(c.Status),
-		"created_at_unix_ms":    c.CreatedAtUnixMs,
-		"triggered_at_unix_ms":  c.TriggeredAtUnixMs,
-		"placed_order_id":       c.PlacedOrderId,
-		"reject_reason":         c.RejectReason,
-		"expires_at_unix_ms":    c.ExpiresAtUnixMs,
-		"oco_group_id":          c.OcoGroupId,
-		"trailing_delta_bps":    c.TrailingDeltaBps,
-		"activation_price":      c.ActivationPrice,
-		"trailing_watermark":    c.TrailingWatermark,
-		"trailing_active":       c.TrailingActive,
+		"id":                   c.Id,
+		"client_trigger_id":    c.ClientTriggerId,
+		"symbol":               c.Symbol,
+		"side":                 sideToString(c.Side),
+		"type":                 triggerTypeLabel(c.Type),
+		"stop_price":           c.StopPrice,
+		"limit_price":          c.LimitPrice,
+		"qty":                  c.Qty,
+		"quote_qty":            c.QuoteQty,
+		"tif":                  tifToString(c.Tif),
+		"status":               triggerStatusLabel(c.Status),
+		"created_at_unix_ms":   c.CreatedAtUnixMs,
+		"triggered_at_unix_ms": c.TriggeredAtUnixMs,
+		"placed_order_id":      c.PlacedOrderId,
+		"reject_reason":        c.RejectReason,
+		"expires_at_unix_ms":   c.ExpiresAtUnixMs,
+		"oco_group_id":         c.OcoGroupId,
+		"trailing_delta_bps":   c.TrailingDeltaBps,
+		"activation_price":     c.ActivationPrice,
+		"trailing_watermark":   c.TrailingWatermark,
+		"trailing_active":      c.TrailingActive,
 	}
 }
 
@@ -402,28 +402,28 @@ func historyTriggerToJSON(c *historypb.Trigger) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"id":                    c.Id,
-		"client_trigger_id": c.ClientTriggerId,
-		"symbol":                c.Symbol,
-		"side":                  sideToString(c.Side),
-		"type":                  triggerTypeLabel(c.Type),
-		"stop_price":            c.StopPrice,
-		"limit_price":           c.LimitPrice,
-		"qty":                   c.Qty,
-		"quote_qty":             c.QuoteQty,
-		"tif":                   tifToString(c.Tif),
-		"status":                triggerStatusLabel(c.Status),
-		"created_at_unix_ms":    c.CreatedAtUnixMs,
-		"triggered_at_unix_ms":  c.TriggeredAtUnixMs,
-		"placed_order_id":       c.TriggeredOrderId,
-		"reject_reason":         c.RejectReason,
-		"expires_at_unix_ms":    c.ExpiresAtUnixMs,
-		"oco_group_id":          c.OcoGroupId,
-		"trailing_delta_bps":    c.TrailingDeltaBps,
-		"activation_price":      c.ActivationPrice,
-		"trailing_watermark":    c.TrailingWatermark,
-		"trailing_active":       c.TrailingActive,
-		"source":                "history",
+		"id":                   c.Id,
+		"client_trigger_id":    c.ClientTriggerId,
+		"symbol":               c.Symbol,
+		"side":                 sideToString(c.Side),
+		"type":                 triggerTypeLabel(c.Type),
+		"stop_price":           c.StopPrice,
+		"limit_price":          c.LimitPrice,
+		"qty":                  c.Qty,
+		"quote_qty":            c.QuoteQty,
+		"tif":                  tifToString(c.Tif),
+		"status":               triggerStatusLabel(c.Status),
+		"created_at_unix_ms":   c.CreatedAtUnixMs,
+		"triggered_at_unix_ms": c.TriggeredAtUnixMs,
+		"placed_order_id":      c.TriggeredOrderId,
+		"reject_reason":        c.RejectReason,
+		"expires_at_unix_ms":   c.ExpiresAtUnixMs,
+		"oco_group_id":         c.OcoGroupId,
+		"trailing_delta_bps":   c.TrailingDeltaBps,
+		"activation_price":     c.ActivationPrice,
+		"trailing_watermark":   c.TrailingWatermark,
+		"trailing_active":      c.TrailingActive,
+		"source":               "history",
 	}
 }
 

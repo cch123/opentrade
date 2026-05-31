@@ -20,7 +20,7 @@ func mustDec(t *testing.T, s string) dec.Decimal {
 func TestApplyTransferIn_CreditsAndBumpsVersions(t *testing.T) {
 	st := NewState()
 	res, err := st.ApplyTransferIn(TransferRequest{
-		UserID: "u1", TransferID: "t1", Asset: "USDT", Amount: mustDec(t, "100"),
+		UserID: 101, TransferID: "t1", Asset: "USDT", Amount: mustDec(t, "100"),
 	})
 	if err != nil {
 		t.Fatalf("in: %v", err)
@@ -41,7 +41,7 @@ func TestApplyTransferIn_CreditsAndBumpsVersions(t *testing.T) {
 
 func TestApplyTransferIn_Idempotent(t *testing.T) {
 	st := NewState()
-	req := TransferRequest{UserID: "u1", TransferID: "t1", Asset: "USDT", Amount: mustDec(t, "100")}
+	req := TransferRequest{UserID: 101, TransferID: "t1", Asset: "USDT", Amount: mustDec(t, "100")}
 
 	if _, err := st.ApplyTransferIn(req); err != nil {
 		t.Fatalf("first: %v", err)
@@ -64,9 +64,9 @@ func TestApplyTransferIn_Idempotent(t *testing.T) {
 
 func TestApplyTransferOut_Confirmed(t *testing.T) {
 	st := NewState()
-	_, _ = st.ApplyTransferIn(TransferRequest{UserID: "u1", TransferID: "seed", Asset: "USDT", Amount: mustDec(t, "200")})
+	_, _ = st.ApplyTransferIn(TransferRequest{UserID: 101, TransferID: "seed", Asset: "USDT", Amount: mustDec(t, "200")})
 
-	res, err := st.ApplyTransferOut(TransferRequest{UserID: "u1", TransferID: "out-1", Asset: "USDT", Amount: mustDec(t, "75")})
+	res, err := st.ApplyTransferOut(TransferRequest{UserID: 101, TransferID: "out-1", Asset: "USDT", Amount: mustDec(t, "75")})
 	if err != nil {
 		t.Fatalf("out: %v", err)
 	}
@@ -83,15 +83,15 @@ func TestApplyTransferOut_Confirmed(t *testing.T) {
 
 func TestApplyTransferOut_InsufficientBalance(t *testing.T) {
 	st := NewState()
-	_, _ = st.ApplyTransferIn(TransferRequest{UserID: "u1", TransferID: "seed", Asset: "USDT", Amount: mustDec(t, "10")})
+	_, _ = st.ApplyTransferIn(TransferRequest{UserID: 101, TransferID: "seed", Asset: "USDT", Amount: mustDec(t, "10")})
 
-	_, err := st.ApplyTransferOut(TransferRequest{UserID: "u1", TransferID: "out-1", Asset: "USDT", Amount: mustDec(t, "100")})
+	_, err := st.ApplyTransferOut(TransferRequest{UserID: 101, TransferID: "out-1", Asset: "USDT", Amount: mustDec(t, "100")})
 	if !errors.Is(err, ErrInsufficientAvailable) {
 		t.Fatalf("err = %v, want ErrInsufficientAvailable", err)
 	}
 	// Rejection must NOT remember the id, so the caller can retry with
 	// corrected params.
-	acc := st.Account("u1")
+	acc := st.Account(101)
 	acc.mu.Lock()
 	defer acc.mu.Unlock()
 	if acc.seen("out-1") {
@@ -101,7 +101,7 @@ func TestApplyTransferOut_InsufficientBalance(t *testing.T) {
 
 func TestApplyCompensate_EquivalentToIn(t *testing.T) {
 	st := NewState()
-	res, err := st.ApplyCompensate(TransferRequest{UserID: "u1", TransferID: "c1", Asset: "USDT", Amount: mustDec(t, "50")})
+	res, err := st.ApplyCompensate(TransferRequest{UserID: 101, TransferID: "c1", Asset: "USDT", Amount: mustDec(t, "50")})
 	if err != nil {
 		t.Fatalf("compensate: %v", err)
 	}
@@ -118,9 +118,9 @@ func TestValidate_MissingFields(t *testing.T) {
 		err  error
 	}{
 		{"user", TransferRequest{TransferID: "t", Asset: "USDT", Amount: mustDec(t, "10")}, ErrMissingUserID},
-		{"transfer", TransferRequest{UserID: "u1", Asset: "USDT", Amount: mustDec(t, "10")}, ErrMissingTransferID},
-		{"asset", TransferRequest{UserID: "u1", TransferID: "t", Amount: mustDec(t, "10")}, ErrMissingAsset},
-		{"amount=0", TransferRequest{UserID: "u1", TransferID: "t", Asset: "USDT", Amount: mustDec(t, "0")}, ErrInvalidAmount},
+		{"transfer", TransferRequest{UserID: 101, Asset: "USDT", Amount: mustDec(t, "10")}, ErrMissingTransferID},
+		{"asset", TransferRequest{UserID: 101, TransferID: "t", Amount: mustDec(t, "10")}, ErrMissingAsset},
+		{"amount=0", TransferRequest{UserID: 101, TransferID: "t", Asset: "USDT", Amount: mustDec(t, "0")}, ErrInvalidAmount},
 	}
 	for _, tc := range cases {
 		_, err := st.ApplyTransferIn(tc.req)
@@ -136,7 +136,7 @@ func TestRingEvicts(t *testing.T) {
 	st := NewState()
 	for i := 0; i < 300; i++ {
 		_, err := st.ApplyTransferIn(TransferRequest{
-			UserID:     "u1",
+			UserID:     101,
 			TransferID: "t-" + pad(i),
 			Asset:      "USDT",
 			Amount:     mustDec(t, "1"),
@@ -145,7 +145,7 @@ func TestRingEvicts(t *testing.T) {
 			t.Fatalf("apply %d: %v", i, err)
 		}
 	}
-	acc := st.Account("u1")
+	acc := st.Account(101)
 	acc.mu.Lock()
 	defer acc.mu.Unlock()
 
@@ -179,20 +179,20 @@ func TestConcurrentDifferentUsers(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			uid := "u-" + pad(i)
+			uid := uint64(i + 1)
 			_, err := st.ApplyTransferIn(TransferRequest{
 				UserID: uid, TransferID: "seed", Asset: "USDT", Amount: mustDec(t, "10"),
 			})
 			if err != nil {
-				t.Errorf("apply %s: %v", uid, err)
+				t.Errorf("apply %d: %v", uid, err)
 			}
 		}(i)
 	}
 	wg.Wait()
 	for i := 0; i < N; i++ {
-		uid := "u-" + pad(i)
+		uid := uint64(i + 1)
 		if st.Account(uid).Balance("USDT").Available.String() != "10" {
-			t.Errorf("%s: not credited", uid)
+			t.Errorf("%d: not credited", uid)
 		}
 	}
 }

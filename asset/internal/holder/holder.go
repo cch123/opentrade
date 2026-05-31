@@ -60,7 +60,7 @@ func (r RejectReason) String() string {
 
 // Request is the uniform input shape for any of the three methods.
 type Request struct {
-	UserID          string
+	UserID          uint64
 	TransferID      string
 	Asset           string
 	Amount          string // decimal string; preserved verbatim across leg boundaries

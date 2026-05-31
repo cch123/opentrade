@@ -50,7 +50,7 @@ func mustPipeline(t *testing.T, cfg Config) *Pipeline {
 
 // depositEvt builds a Transfer journal event that drives a
 // deterministic balance mutation for tests.
-func depositEvt(user, tx, amount string, seq uint64) *eventpb.CounterJournalEvent {
+func depositEvt(user uint64, tx, amount string, seq uint64) *eventpb.CounterJournalEvent {
 	return &eventpb.CounterJournalEvent{
 		CounterSeqId: seq,
 		Payload: &eventpb.CounterJournalEvent_Transfer{
@@ -201,7 +201,7 @@ func TestHandleRecord_AppliesAndAdvances(t *testing.T) {
 	if err := p.primeEnginesFromStore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rec := mustMarshalRecord(t, depositEvt("u1", "tx-1", "100", 7), 2, 500)
+	rec := mustMarshalRecord(t, depositEvt(1001, "tx-1", "100", 7), 2, 500)
 	p.handleRecord(context.Background(), rec)
 
 	eng := p.engines[2]
@@ -211,7 +211,7 @@ func TestHandleRecord_AppliesAndAdvances(t *testing.T) {
 	if eng.NextJournalOffset() != 501 {
 		t.Fatalf("NextJournalOffset = %d, want 501", eng.NextJournalOffset())
 	}
-	bal := eng.State().Balance("u1", "USDT")
+	bal := eng.State().Balance(1001, "USDT")
 	if bal.Available.String() != "100" {
 		t.Fatalf("balance = %+v, want 100", bal)
 	}
@@ -224,7 +224,7 @@ func TestHandleRecord_UnknownPartitionDropped(t *testing.T) {
 	if err := p.primeEnginesFromStore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rec := mustMarshalRecord(t, depositEvt("u", "tx", "1", 1), 99, 0)
+	rec := mustMarshalRecord(t, depositEvt(1001, "tx", "1", 1), 99, 0)
 	p.handleRecord(context.Background(), rec) // must not panic
 }
 
@@ -258,7 +258,7 @@ func TestMaybeCapture_EventCountTrigger(t *testing.T) {
 	}
 
 	for i := int64(0); i < 3; i++ {
-		rec := mustMarshalRecord(t, depositEvt("u1", fmt.Sprintf("tx-%d", i), "1", uint64(i+1)), 0, i)
+		rec := mustMarshalRecord(t, depositEvt(1001, fmt.Sprintf("tx-%d", i), "1", uint64(i+1)), 0, i)
 		p.handleRecord(context.Background(), rec)
 	}
 	p.saveWG.Wait()
@@ -294,8 +294,8 @@ func TestMaybeCapture_TimeTrigger(t *testing.T) {
 	}
 
 	// First two events arrive within interval — no save fires.
-	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt("u1", "tx-1", "1", 1), 0, 0))
-	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt("u1", "tx-2", "1", 2), 0, 1))
+	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt(1001, "tx-1", "1", 1), 0, 0))
+	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt(1001, "tx-2", "1", 2), 0, 1))
 	p.saveWG.Wait()
 
 	if _, err := countersnap.Load(context.Background(), store, "vshard-000"); !errors.Is(err, os.ErrNotExist) {
@@ -304,7 +304,7 @@ func TestMaybeCapture_TimeTrigger(t *testing.T) {
 
 	// Past interval, next event triggers a time-window save.
 	time.Sleep(40 * time.Millisecond)
-	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt("u1", "tx-3", "1", 3), 0, 2))
+	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt(1001, "tx-3", "1", 3), 0, 2))
 	p.saveWG.Wait()
 
 	snap, err := countersnap.Load(context.Background(), store, "vshard-000")
@@ -339,12 +339,12 @@ func TestMaybeCapture_InFlightSkipped(t *testing.T) {
 	}
 
 	// First event: triggers save, which blocks inside slowStore.Put.
-	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt("u1", "tx-1", "1", 1), 0, 0))
+	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt(1001, "tx-1", "1", 1), 0, 0))
 	waitFor(t, func() bool { return slow.putsInFlight.Load() == 1 }, time.Second)
 
 	// Second event: trigger condition met but save in flight →
 	// maybeCapture must skip (no new Put attempt).
-	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt("u1", "tx-2", "1", 2), 0, 1))
+	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt(1001, "tx-2", "1", 2), 0, 1))
 
 	// Give any erroneous second save time to attempt Put.
 	time.Sleep(20 * time.Millisecond)
@@ -375,7 +375,7 @@ func TestClose_WaitsForInFlightSaves(t *testing.T) {
 	if err := p.primeEnginesFromStore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt("u1", "tx-1", "1", 1), 0, 0))
+	p.handleRecord(context.Background(), mustMarshalRecord(t, depositEvt(1001, "tx-1", "1", 1), 0, 0))
 	waitFor(t, func() bool { return slow.putsInFlight.Load() == 1 }, time.Second)
 
 	closeDone := make(chan struct{})

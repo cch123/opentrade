@@ -16,13 +16,13 @@ type Trade struct {
 	Price dec.Decimal // maker's price (taker may receive price improvement)
 	Qty   dec.Decimal
 
-	MakerUserID      string
+	MakerUserID      uint64
 	MakerOrderID     uint64
 	MakerSide        orderbook.Side
 	MakerRemaining   dec.Decimal // after this fill
 	MakerFilledAfter dec.Decimal // cumulative base filled after this trade
 
-	TakerUserID      string
+	TakerUserID      uint64
 	TakerOrderID     uint64
 	TakerSide        orderbook.Side
 	TakerRemaining   dec.Decimal // after this fill

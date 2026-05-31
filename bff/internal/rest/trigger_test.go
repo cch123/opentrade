@@ -75,7 +75,7 @@ func TestPlaceTrigger_503WhenUnconfigured(t *testing.T) {
 	}, &fakeCounter{}, nil, nil, nil, nil, zap.NewNop())
 	req := httptest.NewRequest(http.MethodPost, "/v1/trigger",
 		bytes.NewBufferString(`{"symbol":"BTC-USDT","side":"sell","type":"stop_loss","stop_price":"100","qty":"0.5"}`))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
@@ -98,7 +98,7 @@ func TestPlaceTrigger_ForwardsToService(t *testing.T) {
 	srv := newCondServer(fc)
 	body := `{"symbol":"BTC-USDT","side":"sell","type":"stop_loss","stop_price":"100","qty":"0.5"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/trigger", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -112,7 +112,7 @@ func TestPlaceTrigger_ForwardsToService(t *testing.T) {
 	if got["accepted"] != true {
 		t.Errorf("accepted: %v", got["accepted"])
 	}
-	if seen == nil || seen.UserId != "u1" || seen.StopPrice != "100" {
+	if seen == nil || seen.UserId != 1001 || seen.StopPrice != "100" {
 		t.Fatalf("forwarded: %+v", seen)
 	}
 	if seen.Type != condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS {
@@ -131,7 +131,7 @@ func TestPlaceTrigger_LimitTypeShape(t *testing.T) {
 	srv := newCondServer(fc)
 	body := `{"symbol":"BTC-USDT","side":"buy","type":"take_profit_limit","stop_price":"100","limit_price":"99.5","qty":"1","tif":"ioc"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/trigger", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -149,7 +149,7 @@ func TestPlaceTrigger_BadTypeRejectedAtBFF(t *testing.T) {
 	srv := newCondServer(&fakeTrigger{})
 	body := `{"symbol":"BTC-USDT","side":"sell","type":"nonsense","stop_price":"100","qty":"1"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/trigger", bytes.NewBufferString(body))
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
@@ -160,7 +160,7 @@ func TestPlaceTrigger_BadTypeRejectedAtBFF(t *testing.T) {
 func TestCancelTrigger_ForwardsToService(t *testing.T) {
 	fc := &fakeTrigger{
 		cancelFn: func(req *condrpc.CancelTriggerRequest) (*condrpc.CancelTriggerResponse, error) {
-			if req.Id != 7 || req.UserId != "u1" {
+			if req.Id != 7 || req.UserId != 1001 {
 				t.Fatalf("unexpected: %+v", req)
 			}
 			return &condrpc.CancelTriggerResponse{Id: 7, Accepted: true,
@@ -169,7 +169,7 @@ func TestCancelTrigger_ForwardsToService(t *testing.T) {
 	}
 	srv := newCondServer(fc)
 	req := httptest.NewRequest(http.MethodDelete, "/v1/trigger/7", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -192,7 +192,7 @@ func TestListTriggers_IncludeInactiveFlag(t *testing.T) {
 	}
 	srv := newCondServer(fc)
 	req := httptest.NewRequest(http.MethodGet, "/v1/trigger?include_inactive=true", nil)
-	req.Header.Set(auth.HeaderUserID, "u1")
+	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {

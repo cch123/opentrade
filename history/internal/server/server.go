@@ -28,7 +28,7 @@ func New(store *mysqlstore.Store) *Server {
 // GetOrder fetches one order by id scoped to user_id.
 func (s *Server) GetOrder(ctx context.Context, req *connect.Request[historypb.GetOrderRequest]) (*connect.Response[historypb.GetOrderResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	if m.GetOrderId() == 0 {
@@ -47,7 +47,7 @@ func (s *Server) GetOrder(ctx context.Context, req *connect.Request[historypb.Ge
 // ListOrders folds scope → statuses, then delegates to the store.
 func (s *Server) ListOrders(ctx context.Context, req *connect.Request[historypb.ListOrdersRequest]) (*connect.Response[historypb.ListOrdersResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	// Pick statuses: explicit list wins; else fall back to scope.
@@ -77,7 +77,7 @@ func (s *Server) ListOrders(ctx context.Context, req *connect.Request[historypb.
 // ListTrades pages user fills (maker + taker).
 func (s *Server) ListTrades(ctx context.Context, req *connect.Request[historypb.ListTradesRequest]) (*connect.Response[historypb.ListTradesResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	rows, next, err := s.store.ListTrades(ctx,
@@ -97,7 +97,7 @@ func (s *Server) ListTrades(ctx context.Context, req *connect.Request[historypb.
 // GetTrigger fetches one trigger by id scoped to user_id.
 func (s *Server) GetTrigger(ctx context.Context, req *connect.Request[historypb.GetTriggerRequest]) (*connect.Response[historypb.GetTriggerResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	if m.GetId() == 0 {
@@ -116,7 +116,7 @@ func (s *Server) GetTrigger(ctx context.Context, req *connect.Request[historypb.
 // ListTriggers folds scope → statuses, then delegates to the store.
 func (s *Server) ListTriggers(ctx context.Context, req *connect.Request[historypb.ListTriggersRequest]) (*connect.Response[historypb.ListTriggersResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	var external = m.GetStatuses()
@@ -141,7 +141,7 @@ func (s *Server) ListTriggers(ctx context.Context, req *connect.Request[historyp
 // ListAccountLogs pages the user's funds-flow journal.
 func (s *Server) ListAccountLogs(ctx context.Context, req *connect.Request[historypb.ListAccountLogsRequest]) (*connect.Response[historypb.ListAccountLogsResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	rows, next, err := s.store.ListAccountLogs(ctx,

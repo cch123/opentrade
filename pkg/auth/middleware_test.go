@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 // the HTTP layer.
 var terminalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	if uid, err := UserID(r.Context()); err == nil {
-		_, _ = io.WriteString(w, uid)
+		_, _ = io.WriteString(w, strconv.FormatUint(uid, 10))
 		return
 	}
 	_, _ = io.WriteString(w, "-")
@@ -34,10 +35,10 @@ func newHandler(t *testing.T, cfg Config) http.Handler {
 func TestMiddleware_Header(t *testing.T) {
 	h := newHandler(t, Config{Mode: ModeHeader})
 	r := httptest.NewRequest("GET", "/x", nil)
-	r.Header.Set(HeaderUserID, "alice")
+	r.Header.Set(HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, r)
-	if rr.Body.String() != "alice" {
+	if rr.Body.String() != "1001" {
 		t.Errorf("body = %q", rr.Body.String())
 	}
 }
@@ -45,7 +46,7 @@ func TestMiddleware_Header(t *testing.T) {
 func TestMiddleware_JWT(t *testing.T) {
 	secret := []byte("secret-32-bytes-is-enough-for-now")
 	now := time.Unix(1_700_000_000, 0)
-	tok, _ := SignHS256("alice", secret, now, now.Add(time.Hour))
+	tok, _ := SignHS256(1001, secret, now, now.Add(time.Hour))
 	h := newHandler(t, Config{
 		Mode:      ModeJWT,
 		JWTSecret: secret,
@@ -55,7 +56,7 @@ func TestMiddleware_JWT(t *testing.T) {
 	r.Header.Set(HeaderAuthorization, "Bearer "+tok)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, r)
-	if rr.Body.String() != "alice" {
+	if rr.Body.String() != "1001" {
 		t.Errorf("body = %q", rr.Body.String())
 	}
 }
@@ -81,7 +82,7 @@ func TestMiddleware_JWT_MissingSecretRejectsConfig(t *testing.T) {
 func TestMiddleware_Mixed_PrefersJWT(t *testing.T) {
 	secret := []byte("mixed-secret-bytes-32-chars-abcde")
 	now := time.Unix(1_700_000_000, 0)
-	tok, _ := SignHS256("jwt-user", secret, now, now.Add(time.Hour))
+	tok, _ := SignHS256(2001, secret, now, now.Add(time.Hour))
 	h := newHandler(t, Config{
 		Mode:      ModeMixed,
 		JWTSecret: secret,
@@ -91,11 +92,11 @@ func TestMiddleware_Mixed_PrefersJWT(t *testing.T) {
 	// JWT should win.
 	r := httptest.NewRequest("GET", "/x", nil)
 	r.Header.Set(HeaderAuthorization, "Bearer "+tok)
-	r.Header.Set(HeaderUserID, "header-user")
+	r.Header.Set(HeaderUserID, "3001")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, r)
-	if rr.Body.String() != "jwt-user" {
-		t.Errorf("body = %q, want jwt-user", rr.Body.String())
+	if rr.Body.String() != "2001" {
+		t.Errorf("body = %q, want 2001", rr.Body.String())
 	}
 }
 
@@ -103,10 +104,10 @@ func TestMiddleware_Mixed_FallsBackToHeader(t *testing.T) {
 	secret := []byte("some-secret-32-chars-or-more-aaaa")
 	h := newHandler(t, Config{Mode: ModeMixed, JWTSecret: secret})
 	r := httptest.NewRequest("GET", "/x", nil)
-	r.Header.Set(HeaderUserID, "legacy")
+	r.Header.Set(HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, r)
-	if rr.Body.String() != "legacy" {
+	if rr.Body.String() != "1001" {
 		t.Errorf("body = %q", rr.Body.String())
 	}
 }
@@ -116,7 +117,7 @@ func TestMiddleware_Mixed_BadJWTDoesNotFallBackToHeader(t *testing.T) {
 	h := newHandler(t, Config{Mode: ModeMixed, JWTSecret: secret})
 	r := httptest.NewRequest("GET", "/x", nil)
 	r.Header.Set(HeaderAuthorization, "Bearer not-a-real-jwt")
-	r.Header.Set(HeaderUserID, "spoofed")
+	r.Header.Set(HeaderUserID, "3001")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, r)
 	if rr.Body.String() != "-" {
@@ -125,8 +126,12 @@ func TestMiddleware_Mixed_BadJWTDoesNotFallBackToHeader(t *testing.T) {
 }
 
 func TestMiddleware_Mixed_BadAPIKeyDoesNotFallBackToHeader(t *testing.T) {
-	store := &fakeStore{m: map[string]struct{ s, u, role string }{
-		"K": {s: "S", u: "api-user", role: RoleUser},
+	store := &fakeStore{m: map[string]struct {
+		s    string
+		u    uint64
+		role string
+	}{
+		"K": {s: "S", u: 4001, role: RoleUser},
 	}}
 	now := time.Unix(1_700_000_000, 0)
 	h := newHandler(t, Config{
@@ -136,7 +141,7 @@ func TestMiddleware_Mixed_BadAPIKeyDoesNotFallBackToHeader(t *testing.T) {
 	})
 	r := httptest.NewRequest("GET", "/x?timestamp="+itoa(now.UnixMilli())+"&signature=deadbeef", nil)
 	r.Header.Set(HeaderAPIKey, "K")
-	r.Header.Set(HeaderUserID, "spoofed")
+	r.Header.Set(HeaderUserID, "3001")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, r)
 	if rr.Body.String() != "-" {
@@ -151,15 +156,20 @@ func TestMiddleware_UnknownModeFails(t *testing.T) {
 }
 
 func TestMiddleware_APIKey_AttachesRole(t *testing.T) {
-	store := &fakeStore{m: map[string]struct{ s, u, role string }{
-		"K": {s: "S", u: "ops", role: RoleAdmin},
+	store := &fakeStore{m: map[string]struct {
+		s    string
+		u    uint64
+		role string
+	}{
+		"K": {s: "S", u: 9001, role: RoleAdmin},
 	}}
 	now := time.Unix(1_700_000_000, 0)
 	rawQ := "timestamp=" + itoa(now.UnixMilli())
 	sig := SignAPIKeyRequest([]byte("S"), rawQ, nil)
 
 	// Terminal handler records both user id and role.
-	var gotUser, gotRole string
+	var gotUser uint64
+	var gotRole string
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if uid, err := UserID(r.Context()); err == nil {
 			gotUser = uid
@@ -178,8 +188,8 @@ func TestMiddleware_APIKey_AttachesRole(t *testing.T) {
 	r.Header.Set(HeaderAPIKey, "K")
 	mw(h).ServeHTTP(httptest.NewRecorder(), r)
 
-	if gotUser != "ops" || gotRole != RoleAdmin {
-		t.Fatalf("user=%q role=%q", gotUser, gotRole)
+	if gotUser != 9001 || gotRole != RoleAdmin {
+		t.Fatalf("user=%d role=%q", gotUser, gotRole)
 	}
 }
 

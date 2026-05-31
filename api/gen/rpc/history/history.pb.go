@@ -244,7 +244,7 @@ func (TriggerScope) EnumDescriptor() ([]byte, []int) {
 
 type GetOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	OrderId       uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -280,11 +280,11 @@ func (*GetOrderRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *GetOrderRequest) GetUserId() string {
+func (x *GetOrderRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *GetOrderRequest) GetOrderId() uint64 {
@@ -340,7 +340,7 @@ func (x *GetOrderResponse) GetOrder() *Order {
 
 type ListOrdersRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
-	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = any
 	// Coarse category filter covering the two common UI tabs:
 	//
@@ -392,11 +392,11 @@ func (*ListOrdersRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ListOrdersRequest) GetUserId() string {
+func (x *ListOrdersRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *ListOrdersRequest) GetSymbol() string {
@@ -507,7 +507,7 @@ type Order struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	OrderId         uint64                 `protobuf:"varint,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
 	ClientOrderId   string                 `protobuf:"bytes,2,opt,name=client_order_id,json=clientOrderId,proto3" json:"client_order_id,omitempty"`
-	UserId          string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId          uint64                 `protobuf:"varint,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol          string                 `protobuf:"bytes,4,opt,name=symbol,proto3" json:"symbol,omitempty"`
 	Side            event.Side             `protobuf:"varint,5,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
 	OrderType       event.OrderType        `protobuf:"varint,6,opt,name=order_type,json=orderType,proto3,enum=opentrade.event.OrderType" json:"order_type,omitempty"`
@@ -568,11 +568,11 @@ func (x *Order) GetClientOrderId() string {
 	return ""
 }
 
-func (x *Order) GetUserId() string {
+func (x *Order) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *Order) GetSymbol() string {
@@ -661,7 +661,7 @@ func (x *Order) GetUpdatedAtUnixMs() int64 {
 
 type ListTradesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = any
 	SinceMs       int64                  `protobuf:"varint,3,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
 	UntilMs       int64                  `protobuf:"varint,4,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
@@ -701,11 +701,11 @@ func (*ListTradesRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *ListTradesRequest) GetUserId() string {
+func (x *ListTradesRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *ListTradesRequest) GetSymbol() string {
@@ -899,7 +899,7 @@ func (x *Trade) GetTsUnixMs() int64 {
 
 type ListAccountLogsRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
-	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Asset  string                 `protobuf:"bytes,2,opt,name=asset,proto3" json:"asset,omitempty"` // "" = any
 	// Free-form biz_type filter matching the strings written by trade-dump:
 	// "freeze_place_order", "unfreeze", "settlement", "deposit", "withdraw",
@@ -943,11 +943,11 @@ func (*ListAccountLogsRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *ListAccountLogsRequest) GetUserId() string {
+func (x *ListAccountLogsRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *ListAccountLogsRequest) GetAsset() string {
@@ -1046,7 +1046,7 @@ func (x *ListAccountLogsResponse) GetNextCursor() string {
 
 type GetTriggerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Id            uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1082,11 +1082,11 @@ func (*GetTriggerRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{10}
 }
 
-func (x *GetTriggerRequest) GetUserId() string {
+func (x *GetTriggerRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *GetTriggerRequest) GetId() uint64 {
@@ -1142,7 +1142,7 @@ func (x *GetTriggerResponse) GetTrigger() *Trigger {
 
 type ListTriggersRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
-	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = any
 	// Coarse category filter. ACTIVE folds PENDING, TERMINAL folds
 	// TRIGGERED + CANCELED + REJECTED + EXPIRED, ALL disables the filter.
@@ -1187,11 +1187,11 @@ func (*ListTriggersRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{12}
 }
 
-func (x *ListTriggersRequest) GetUserId() string {
+func (x *ListTriggersRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *ListTriggersRequest) GetSymbol() string {
@@ -1302,7 +1302,7 @@ type Trigger struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Id                uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	ClientTriggerId   string                 `protobuf:"bytes,2,opt,name=client_trigger_id,json=clientTriggerId,proto3" json:"client_trigger_id,omitempty"`
-	UserId            string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId            uint64                 `protobuf:"varint,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol            string                 `protobuf:"bytes,4,opt,name=symbol,proto3" json:"symbol,omitempty"`
 	Side              event.Side             `protobuf:"varint,5,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
 	Type              trigger.TriggerType    `protobuf:"varint,6,opt,name=type,proto3,enum=opentrade.rpc.trigger.TriggerType" json:"type,omitempty"`
@@ -1370,11 +1370,11 @@ func (x *Trigger) GetClientTriggerId() string {
 	return ""
 }
 
-func (x *Trigger) GetUserId() string {
+func (x *Trigger) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *Trigger) GetSymbol() string {
@@ -1516,7 +1516,7 @@ type AccountLog struct {
 	ShardId       int32                  `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	CounterSeqId  uint64                 `protobuf:"varint,2,opt,name=counter_seq_id,json=counterSeqId,proto3" json:"counter_seq_id,omitempty"`
 	Asset         string                 `protobuf:"bytes,3,opt,name=asset,proto3" json:"asset,omitempty"`
-	UserId        string                 `protobuf:"bytes,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	DeltaAvail    string                 `protobuf:"bytes,5,opt,name=delta_avail,json=deltaAvail,proto3" json:"delta_avail,omitempty"`
 	DeltaFrozen   string                 `protobuf:"bytes,6,opt,name=delta_frozen,json=deltaFrozen,proto3" json:"delta_frozen,omitempty"`
 	AvailAfter    string                 `protobuf:"bytes,7,opt,name=avail_after,json=availAfter,proto3" json:"avail_after,omitempty"`
@@ -1579,11 +1579,11 @@ func (x *AccountLog) GetAsset() string {
 	return ""
 }
 
-func (x *AccountLog) GetUserId() string {
+func (x *AccountLog) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *AccountLog) GetDeltaAvail() string {
@@ -1637,7 +1637,7 @@ func (x *AccountLog) GetTsUnixMs() int64 {
 
 type ListPerpPositionsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = all symbols
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1673,11 +1673,11 @@ func (*ListPerpPositionsRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{16}
 }
 
-func (x *ListPerpPositionsRequest) GetUserId() string {
+func (x *ListPerpPositionsRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *ListPerpPositionsRequest) GetSymbol() string {
@@ -1734,7 +1734,7 @@ func (x *ListPerpPositionsResponse) GetPositions() []*PerpPosition {
 // PerpPosition mirrors the `perp_positions` projection row.
 type PerpPosition struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	UserId          string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId          uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol          string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
 	Side            event.Side             `protobuf:"varint,3,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
 	Size            string                 `protobuf:"bytes,4,opt,name=size,proto3" json:"size,omitempty"`
@@ -1777,11 +1777,11 @@ func (*PerpPosition) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{18}
 }
 
-func (x *PerpPosition) GetUserId() string {
+func (x *PerpPosition) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *PerpPosition) GetSymbol() string {
@@ -1842,7 +1842,7 @@ func (x *PerpPosition) GetUpdatedAtUnixMs() int64 {
 
 type ListPerpFundingRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = any
 	SinceMs       int64                  `protobuf:"varint,3,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
 	UntilMs       int64                  `protobuf:"varint,4,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
@@ -1882,11 +1882,11 @@ func (*ListPerpFundingRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{19}
 }
 
-func (x *ListPerpFundingRequest) GetUserId() string {
+func (x *ListPerpFundingRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *ListPerpFundingRequest) GetSymbol() string {
@@ -2071,7 +2071,7 @@ func (x *PerpFunding) GetTsUnixMs() int64 {
 
 type ListPerpLiquidationsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = any
 	SinceMs       int64                  `protobuf:"varint,3,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
 	UntilMs       int64                  `protobuf:"varint,4,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
@@ -2111,11 +2111,11 @@ func (*ListPerpLiquidationsRequest) Descriptor() ([]byte, []int) {
 	return file_rpc_history_history_proto_rawDescGZIP(), []int{22}
 }
 
-func (x *ListPerpLiquidationsRequest) GetUserId() string {
+func (x *ListPerpLiquidationsRequest) GetUserId() uint64 {
 	if x != nil {
 		return x.UserId
 	}
-	return ""
+	return 0
 }
 
 func (x *ListPerpLiquidationsRequest) GetSymbol() string {
@@ -2322,18 +2322,263 @@ func (x *PerpLiquidation) GetTsUnixMs() int64 {
 	return 0
 }
 
+type ListPerpADLRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = any
+	SinceMs       int64                  `protobuf:"varint,3,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
+	UntilMs       int64                  `protobuf:"varint,4,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
+	Cursor        string                 `protobuf:"bytes,5,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         int32                  `protobuf:"varint,6,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPerpADLRequest) Reset() {
+	*x = ListPerpADLRequest{}
+	mi := &file_rpc_history_history_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPerpADLRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPerpADLRequest) ProtoMessage() {}
+
+func (x *ListPerpADLRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPerpADLRequest.ProtoReflect.Descriptor instead.
+func (*ListPerpADLRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ListPerpADLRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ListPerpADLRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *ListPerpADLRequest) GetSinceMs() int64 {
+	if x != nil {
+		return x.SinceMs
+	}
+	return 0
+}
+
+func (x *ListPerpADLRequest) GetUntilMs() int64 {
+	if x != nil {
+		return x.UntilMs
+	}
+	return 0
+}
+
+func (x *ListPerpADLRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListPerpADLRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListPerpADLResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Adl           []*PerpADL             `protobuf:"bytes,1,rep,name=adl,proto3" json:"adl,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPerpADLResponse) Reset() {
+	*x = ListPerpADLResponse{}
+	mi := &file_rpc_history_history_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPerpADLResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPerpADLResponse) ProtoMessage() {}
+
+func (x *ListPerpADLResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPerpADLResponse.ProtoReflect.Descriptor instead.
+func (*ListPerpADLResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ListPerpADLResponse) GetAdl() []*PerpADL {
+	if x != nil {
+		return x.Adl
+	}
+	return nil
+}
+
+func (x *ListPerpADLResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+// PerpADL mirrors the `perp_adl_events` projection row.
+type PerpADL struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PerpSeqId     uint64                 `protobuf:"varint,1,opt,name=perp_seq_id,json=perpSeqId,proto3" json:"perp_seq_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	LotId         string                 `protobuf:"bytes,3,opt,name=lot_id,json=lotId,proto3" json:"lot_id,omitempty"`
+	AdlRound      uint64                 `protobuf:"varint,4,opt,name=adl_round,json=adlRound,proto3" json:"adl_round,omitempty"`
+	Price         string                 `protobuf:"bytes,5,opt,name=price,proto3" json:"price,omitempty"`
+	RequestedQty  string                 `protobuf:"bytes,6,opt,name=requested_qty,json=requestedQty,proto3" json:"requested_qty,omitempty"`
+	FactQty       string                 `protobuf:"bytes,7,opt,name=fact_qty,json=factQty,proto3" json:"fact_qty,omitempty"`
+	RealizedPnl   string                 `protobuf:"bytes,8,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"`
+	TsUnixMs      int64                  `protobuf:"varint,9,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PerpADL) Reset() {
+	*x = PerpADL{}
+	mi := &file_rpc_history_history_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PerpADL) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PerpADL) ProtoMessage() {}
+
+func (x *PerpADL) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PerpADL.ProtoReflect.Descriptor instead.
+func (*PerpADL) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *PerpADL) GetPerpSeqId() uint64 {
+	if x != nil {
+		return x.PerpSeqId
+	}
+	return 0
+}
+
+func (x *PerpADL) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *PerpADL) GetLotId() string {
+	if x != nil {
+		return x.LotId
+	}
+	return ""
+}
+
+func (x *PerpADL) GetAdlRound() uint64 {
+	if x != nil {
+		return x.AdlRound
+	}
+	return 0
+}
+
+func (x *PerpADL) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *PerpADL) GetRequestedQty() string {
+	if x != nil {
+		return x.RequestedQty
+	}
+	return ""
+}
+
+func (x *PerpADL) GetFactQty() string {
+	if x != nil {
+		return x.FactQty
+	}
+	return ""
+}
+
+func (x *PerpADL) GetRealizedPnl() string {
+	if x != nil {
+		return x.RealizedPnl
+	}
+	return ""
+}
+
+func (x *PerpADL) GetTsUnixMs() int64 {
+	if x != nil {
+		return x.TsUnixMs
+	}
+	return 0
+}
+
 var File_rpc_history_history_proto protoreflect.FileDescriptor
 
 const file_rpc_history_history_proto_rawDesc = "" +
 	"\n" +
 	"\x19rpc/history/history.proto\x12\x15opentrade.rpc.history\x1a\x12event/common.proto\x1a\x19rpc/trigger/trigger.proto\"E\n" +
 	"\x0fGetOrderRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\"F\n" +
 	"\x10GetOrderResponse\x122\n" +
 	"\x05order\x18\x01 \x01(\v2\x1c.opentrade.rpc.history.OrderR\x05order\"\xa1\x02\n" +
 	"\x11ListOrdersRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x127\n" +
 	"\x05scope\x18\x03 \x01(\x0e2!.opentrade.rpc.history.OrderScopeR\x05scope\x12>\n" +
 	"\bstatuses\x18\x04 \x03(\x0e2\".opentrade.rpc.history.OrderStatusR\bstatuses\x12\x19\n" +
@@ -2348,7 +2593,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x05Order\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x17\n" +
-	"\auser_id\x18\x03 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x03 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x04 \x01(\tR\x06symbol\x12)\n" +
 	"\x04side\x18\x05 \x01(\x0e2\x15.opentrade.event.SideR\x04side\x129\n" +
 	"\n" +
@@ -2366,7 +2611,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x12created_at_unix_ms\x18\x0e \x01(\x03R\x0fcreatedAtUnixMs\x12+\n" +
 	"\x12updated_at_unix_ms\x18\x0f \x01(\x03R\x0fupdatedAtUnixMs\"\xa8\x01\n" +
 	"\x11ListTradesRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
 	"\bsince_ms\x18\x03 \x01(\x03R\asinceMs\x12\x19\n" +
 	"\buntil_ms\x18\x04 \x01(\x03R\auntilMs\x12\x16\n" +
@@ -2387,7 +2632,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\n" +
 	"ts_unix_ms\x18\b \x01(\x03R\btsUnixMs\"\xc8\x01\n" +
 	"\x16ListAccountLogsRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x14\n" +
 	"\x05asset\x18\x02 \x01(\tR\x05asset\x12\x1b\n" +
 	"\tbiz_types\x18\x03 \x03(\tR\bbizTypes\x12\x19\n" +
 	"\bsince_ms\x18\x04 \x01(\x03R\asinceMs\x12\x19\n" +
@@ -2399,12 +2644,12 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
 	"nextCursor\"<\n" +
 	"\x11GetTriggerRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x0e\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\x04R\x02id\"N\n" +
 	"\x12GetTriggerResponse\x128\n" +
 	"\atrigger\x18\x01 \x01(\v2\x1e.opentrade.rpc.history.TriggerR\atrigger\"\xa7\x02\n" +
 	"\x13ListTriggersRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x129\n" +
 	"\x05scope\x18\x03 \x01(\x0e2#.opentrade.rpc.history.TriggerScopeR\x05scope\x12@\n" +
 	"\bstatuses\x18\x04 \x03(\x0e2$.opentrade.rpc.trigger.TriggerStatusR\bstatuses\x12\x19\n" +
@@ -2419,7 +2664,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\aTrigger\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12*\n" +
 	"\x11client_trigger_id\x18\x02 \x01(\tR\x0fclientTriggerId\x12\x17\n" +
-	"\auser_id\x18\x03 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x03 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x04 \x01(\tR\x06symbol\x12)\n" +
 	"\x04side\x18\x05 \x01(\x0e2\x15.opentrade.event.SideR\x04side\x126\n" +
 	"\x04type\x18\x06 \x01(\x0e2\".opentrade.rpc.trigger.TriggerTypeR\x04type\x12\x1d\n" +
@@ -2448,7 +2693,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12$\n" +
 	"\x0ecounter_seq_id\x18\x02 \x01(\x04R\fcounterSeqId\x12\x14\n" +
 	"\x05asset\x18\x03 \x01(\tR\x05asset\x12\x17\n" +
-	"\auser_id\x18\x04 \x01(\tR\x06userId\x12\x1f\n" +
+	"\auser_id\x18\x04 \x01(\x04R\x06userId\x12\x1f\n" +
 	"\vdelta_avail\x18\x05 \x01(\tR\n" +
 	"deltaAvail\x12!\n" +
 	"\fdelta_frozen\x18\x06 \x01(\tR\vdeltaFrozen\x12\x1f\n" +
@@ -2462,12 +2707,12 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\n" +
 	"ts_unix_ms\x18\v \x01(\x03R\btsUnixMs\"K\n" +
 	"\x18ListPerpPositionsRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"^\n" +
 	"\x19ListPerpPositionsResponse\x12A\n" +
 	"\tpositions\x18\x01 \x03(\v2#.opentrade.rpc.history.PerpPositionR\tpositions\"\xa3\x02\n" +
 	"\fPerpPosition\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12)\n" +
 	"\x04side\x18\x03 \x01(\x0e2\x15.opentrade.event.SideR\x04side\x12\x12\n" +
 	"\x04size\x18\x04 \x01(\tR\x04size\x12\x1f\n" +
@@ -2478,7 +2723,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\frealized_pnl\x18\b \x01(\tR\vrealizedPnl\x12+\n" +
 	"\x12updated_at_unix_ms\x18\t \x01(\x03R\x0fupdatedAtUnixMs\"\xad\x01\n" +
 	"\x16ListPerpFundingRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
 	"\bsince_ms\x18\x03 \x01(\x03R\asinceMs\x12\x19\n" +
 	"\buntil_ms\x18\x04 \x01(\x03R\auntilMs\x12\x16\n" +
@@ -2499,7 +2744,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\n" +
 	"ts_unix_ms\x18\a \x01(\x03R\btsUnixMs\"\xb2\x01\n" +
 	"\x1bListPerpLiquidationsRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
 	"\bsince_ms\x18\x03 \x01(\x03R\asinceMs\x12\x19\n" +
 	"\buntil_ms\x18\x04 \x01(\x03R\auntilMs\x12\x16\n" +
@@ -2525,7 +2770,29 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"adl_queued\x18\t \x01(\bR\tadlQueued\x12\x1c\n" +
 	"\n" +
 	"ts_unix_ms\x18\n" +
-	" \x01(\x03R\btsUnixMs*n\n" +
+	" \x01(\x03R\btsUnixMs\"\xa9\x01\n" +
+	"\x12ListPerpADLRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
+	"\bsince_ms\x18\x03 \x01(\x03R\asinceMs\x12\x19\n" +
+	"\buntil_ms\x18\x04 \x01(\x03R\auntilMs\x12\x16\n" +
+	"\x06cursor\x18\x05 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\x06 \x01(\x05R\x05limit\"h\n" +
+	"\x13ListPerpADLResponse\x120\n" +
+	"\x03adl\x18\x01 \x03(\v2\x1e.opentrade.rpc.history.PerpADLR\x03adl\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"\x8c\x02\n" +
+	"\aPerpADL\x12\x1e\n" +
+	"\vperp_seq_id\x18\x01 \x01(\x04R\tperpSeqId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x15\n" +
+	"\x06lot_id\x18\x03 \x01(\tR\x05lotId\x12\x1b\n" +
+	"\tadl_round\x18\x04 \x01(\x04R\badlRound\x12\x14\n" +
+	"\x05price\x18\x05 \x01(\tR\x05price\x12#\n" +
+	"\rrequested_qty\x18\x06 \x01(\tR\frequestedQty\x12\x19\n" +
+	"\bfact_qty\x18\a \x01(\tR\afactQty\x12!\n" +
+	"\frealized_pnl\x18\b \x01(\tR\vrealizedPnl\x12\x1c\n" +
+	"\n" +
+	"ts_unix_ms\x18\t \x01(\x03R\btsUnixMs*n\n" +
 	"\n" +
 	"OrderScope\x12\x1b\n" +
 	"\x17ORDER_SCOPE_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -2548,7 +2815,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x19TRIGGER_SCOPE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14TRIGGER_SCOPE_ACTIVE\x10\x01\x12\x1a\n" +
 	"\x16TRIGGER_SCOPE_TERMINAL\x10\x02\x12\x15\n" +
-	"\x11TRIGGER_SCOPE_ALL\x10\x032\xdc\a\n" +
+	"\x11TRIGGER_SCOPE_ALL\x10\x032\xc2\b\n" +
 	"\x0eHistoryService\x12[\n" +
 	"\bGetOrder\x12&.opentrade.rpc.history.GetOrderRequest\x1a'.opentrade.rpc.history.GetOrderResponse\x12a\n" +
 	"\n" +
@@ -2558,7 +2825,8 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x0fListAccountLogs\x12-.opentrade.rpc.history.ListAccountLogsRequest\x1a..opentrade.rpc.history.ListAccountLogsResponse\x12v\n" +
 	"\x11ListPerpPositions\x12/.opentrade.rpc.history.ListPerpPositionsRequest\x1a0.opentrade.rpc.history.ListPerpPositionsResponse\x12p\n" +
 	"\x0fListPerpFunding\x12-.opentrade.rpc.history.ListPerpFundingRequest\x1a..opentrade.rpc.history.ListPerpFundingResponse\x12\x7f\n" +
-	"\x14ListPerpLiquidations\x122.opentrade.rpc.history.ListPerpLiquidationsRequest\x1a3.opentrade.rpc.history.ListPerpLiquidationsResponse\x12a\n" +
+	"\x14ListPerpLiquidations\x122.opentrade.rpc.history.ListPerpLiquidationsRequest\x1a3.opentrade.rpc.history.ListPerpLiquidationsResponse\x12d\n" +
+	"\vListPerpADL\x12).opentrade.rpc.history.ListPerpADLRequest\x1a*.opentrade.rpc.history.ListPerpADLResponse\x12a\n" +
 	"\n" +
 	"GetTrigger\x12(.opentrade.rpc.history.GetTriggerRequest\x1a).opentrade.rpc.history.GetTriggerResponse\x12g\n" +
 	"\fListTriggers\x12*.opentrade.rpc.history.ListTriggersRequest\x1a+.opentrade.rpc.history.ListTriggersResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/history;historyrpcb\x06proto3"
@@ -2576,7 +2844,7 @@ func file_rpc_history_history_proto_rawDescGZIP() []byte {
 }
 
 var file_rpc_history_history_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_rpc_history_history_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_rpc_history_history_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_rpc_history_history_proto_goTypes = []any{
 	(OrderScope)(0),                      // 0: opentrade.rpc.history.OrderScope
 	(OrderStatus)(0),                     // 1: opentrade.rpc.history.OrderStatus
@@ -2607,60 +2875,66 @@ var file_rpc_history_history_proto_goTypes = []any{
 	(*ListPerpLiquidationsRequest)(nil),  // 26: opentrade.rpc.history.ListPerpLiquidationsRequest
 	(*ListPerpLiquidationsResponse)(nil), // 27: opentrade.rpc.history.ListPerpLiquidationsResponse
 	(*PerpLiquidation)(nil),              // 28: opentrade.rpc.history.PerpLiquidation
-	(event.Side)(0),                      // 29: opentrade.event.Side
-	(event.OrderType)(0),                 // 30: opentrade.event.OrderType
-	(event.TimeInForce)(0),               // 31: opentrade.event.TimeInForce
-	(trigger.TriggerStatus)(0),           // 32: opentrade.rpc.trigger.TriggerStatus
-	(trigger.TriggerType)(0),             // 33: opentrade.rpc.trigger.TriggerType
+	(*ListPerpADLRequest)(nil),           // 29: opentrade.rpc.history.ListPerpADLRequest
+	(*ListPerpADLResponse)(nil),          // 30: opentrade.rpc.history.ListPerpADLResponse
+	(*PerpADL)(nil),                      // 31: opentrade.rpc.history.PerpADL
+	(event.Side)(0),                      // 32: opentrade.event.Side
+	(event.OrderType)(0),                 // 33: opentrade.event.OrderType
+	(event.TimeInForce)(0),               // 34: opentrade.event.TimeInForce
+	(trigger.TriggerStatus)(0),           // 35: opentrade.rpc.trigger.TriggerStatus
+	(trigger.TriggerType)(0),             // 36: opentrade.rpc.trigger.TriggerType
 }
 var file_rpc_history_history_proto_depIdxs = []int32{
 	8,  // 0: opentrade.rpc.history.GetOrderResponse.order:type_name -> opentrade.rpc.history.Order
 	0,  // 1: opentrade.rpc.history.ListOrdersRequest.scope:type_name -> opentrade.rpc.history.OrderScope
 	1,  // 2: opentrade.rpc.history.ListOrdersRequest.statuses:type_name -> opentrade.rpc.history.OrderStatus
 	8,  // 3: opentrade.rpc.history.ListOrdersResponse.orders:type_name -> opentrade.rpc.history.Order
-	29, // 4: opentrade.rpc.history.Order.side:type_name -> opentrade.event.Side
-	30, // 5: opentrade.rpc.history.Order.order_type:type_name -> opentrade.event.OrderType
-	31, // 6: opentrade.rpc.history.Order.tif:type_name -> opentrade.event.TimeInForce
+	32, // 4: opentrade.rpc.history.Order.side:type_name -> opentrade.event.Side
+	33, // 5: opentrade.rpc.history.Order.order_type:type_name -> opentrade.event.OrderType
+	34, // 6: opentrade.rpc.history.Order.tif:type_name -> opentrade.event.TimeInForce
 	1,  // 7: opentrade.rpc.history.Order.status:type_name -> opentrade.rpc.history.OrderStatus
 	11, // 8: opentrade.rpc.history.ListTradesResponse.trades:type_name -> opentrade.rpc.history.Trade
 	2,  // 9: opentrade.rpc.history.Trade.role:type_name -> opentrade.rpc.history.TradeRole
-	29, // 10: opentrade.rpc.history.Trade.side:type_name -> opentrade.event.Side
+	32, // 10: opentrade.rpc.history.Trade.side:type_name -> opentrade.event.Side
 	19, // 11: opentrade.rpc.history.ListAccountLogsResponse.logs:type_name -> opentrade.rpc.history.AccountLog
 	18, // 12: opentrade.rpc.history.GetTriggerResponse.trigger:type_name -> opentrade.rpc.history.Trigger
 	3,  // 13: opentrade.rpc.history.ListTriggersRequest.scope:type_name -> opentrade.rpc.history.TriggerScope
-	32, // 14: opentrade.rpc.history.ListTriggersRequest.statuses:type_name -> opentrade.rpc.trigger.TriggerStatus
+	35, // 14: opentrade.rpc.history.ListTriggersRequest.statuses:type_name -> opentrade.rpc.trigger.TriggerStatus
 	18, // 15: opentrade.rpc.history.ListTriggersResponse.triggers:type_name -> opentrade.rpc.history.Trigger
-	29, // 16: opentrade.rpc.history.Trigger.side:type_name -> opentrade.event.Side
-	33, // 17: opentrade.rpc.history.Trigger.type:type_name -> opentrade.rpc.trigger.TriggerType
-	31, // 18: opentrade.rpc.history.Trigger.tif:type_name -> opentrade.event.TimeInForce
-	32, // 19: opentrade.rpc.history.Trigger.status:type_name -> opentrade.rpc.trigger.TriggerStatus
+	32, // 16: opentrade.rpc.history.Trigger.side:type_name -> opentrade.event.Side
+	36, // 17: opentrade.rpc.history.Trigger.type:type_name -> opentrade.rpc.trigger.TriggerType
+	34, // 18: opentrade.rpc.history.Trigger.tif:type_name -> opentrade.event.TimeInForce
+	35, // 19: opentrade.rpc.history.Trigger.status:type_name -> opentrade.rpc.trigger.TriggerStatus
 	22, // 20: opentrade.rpc.history.ListPerpPositionsResponse.positions:type_name -> opentrade.rpc.history.PerpPosition
-	29, // 21: opentrade.rpc.history.PerpPosition.side:type_name -> opentrade.event.Side
+	32, // 21: opentrade.rpc.history.PerpPosition.side:type_name -> opentrade.event.Side
 	25, // 22: opentrade.rpc.history.ListPerpFundingResponse.funding:type_name -> opentrade.rpc.history.PerpFunding
 	28, // 23: opentrade.rpc.history.ListPerpLiquidationsResponse.liquidations:type_name -> opentrade.rpc.history.PerpLiquidation
-	4,  // 24: opentrade.rpc.history.HistoryService.GetOrder:input_type -> opentrade.rpc.history.GetOrderRequest
-	6,  // 25: opentrade.rpc.history.HistoryService.ListOrders:input_type -> opentrade.rpc.history.ListOrdersRequest
-	9,  // 26: opentrade.rpc.history.HistoryService.ListTrades:input_type -> opentrade.rpc.history.ListTradesRequest
-	12, // 27: opentrade.rpc.history.HistoryService.ListAccountLogs:input_type -> opentrade.rpc.history.ListAccountLogsRequest
-	20, // 28: opentrade.rpc.history.HistoryService.ListPerpPositions:input_type -> opentrade.rpc.history.ListPerpPositionsRequest
-	23, // 29: opentrade.rpc.history.HistoryService.ListPerpFunding:input_type -> opentrade.rpc.history.ListPerpFundingRequest
-	26, // 30: opentrade.rpc.history.HistoryService.ListPerpLiquidations:input_type -> opentrade.rpc.history.ListPerpLiquidationsRequest
-	14, // 31: opentrade.rpc.history.HistoryService.GetTrigger:input_type -> opentrade.rpc.history.GetTriggerRequest
-	16, // 32: opentrade.rpc.history.HistoryService.ListTriggers:input_type -> opentrade.rpc.history.ListTriggersRequest
-	5,  // 33: opentrade.rpc.history.HistoryService.GetOrder:output_type -> opentrade.rpc.history.GetOrderResponse
-	7,  // 34: opentrade.rpc.history.HistoryService.ListOrders:output_type -> opentrade.rpc.history.ListOrdersResponse
-	10, // 35: opentrade.rpc.history.HistoryService.ListTrades:output_type -> opentrade.rpc.history.ListTradesResponse
-	13, // 36: opentrade.rpc.history.HistoryService.ListAccountLogs:output_type -> opentrade.rpc.history.ListAccountLogsResponse
-	21, // 37: opentrade.rpc.history.HistoryService.ListPerpPositions:output_type -> opentrade.rpc.history.ListPerpPositionsResponse
-	24, // 38: opentrade.rpc.history.HistoryService.ListPerpFunding:output_type -> opentrade.rpc.history.ListPerpFundingResponse
-	27, // 39: opentrade.rpc.history.HistoryService.ListPerpLiquidations:output_type -> opentrade.rpc.history.ListPerpLiquidationsResponse
-	15, // 40: opentrade.rpc.history.HistoryService.GetTrigger:output_type -> opentrade.rpc.history.GetTriggerResponse
-	17, // 41: opentrade.rpc.history.HistoryService.ListTriggers:output_type -> opentrade.rpc.history.ListTriggersResponse
-	33, // [33:42] is the sub-list for method output_type
-	24, // [24:33] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	31, // 24: opentrade.rpc.history.ListPerpADLResponse.adl:type_name -> opentrade.rpc.history.PerpADL
+	4,  // 25: opentrade.rpc.history.HistoryService.GetOrder:input_type -> opentrade.rpc.history.GetOrderRequest
+	6,  // 26: opentrade.rpc.history.HistoryService.ListOrders:input_type -> opentrade.rpc.history.ListOrdersRequest
+	9,  // 27: opentrade.rpc.history.HistoryService.ListTrades:input_type -> opentrade.rpc.history.ListTradesRequest
+	12, // 28: opentrade.rpc.history.HistoryService.ListAccountLogs:input_type -> opentrade.rpc.history.ListAccountLogsRequest
+	20, // 29: opentrade.rpc.history.HistoryService.ListPerpPositions:input_type -> opentrade.rpc.history.ListPerpPositionsRequest
+	23, // 30: opentrade.rpc.history.HistoryService.ListPerpFunding:input_type -> opentrade.rpc.history.ListPerpFundingRequest
+	26, // 31: opentrade.rpc.history.HistoryService.ListPerpLiquidations:input_type -> opentrade.rpc.history.ListPerpLiquidationsRequest
+	29, // 32: opentrade.rpc.history.HistoryService.ListPerpADL:input_type -> opentrade.rpc.history.ListPerpADLRequest
+	14, // 33: opentrade.rpc.history.HistoryService.GetTrigger:input_type -> opentrade.rpc.history.GetTriggerRequest
+	16, // 34: opentrade.rpc.history.HistoryService.ListTriggers:input_type -> opentrade.rpc.history.ListTriggersRequest
+	5,  // 35: opentrade.rpc.history.HistoryService.GetOrder:output_type -> opentrade.rpc.history.GetOrderResponse
+	7,  // 36: opentrade.rpc.history.HistoryService.ListOrders:output_type -> opentrade.rpc.history.ListOrdersResponse
+	10, // 37: opentrade.rpc.history.HistoryService.ListTrades:output_type -> opentrade.rpc.history.ListTradesResponse
+	13, // 38: opentrade.rpc.history.HistoryService.ListAccountLogs:output_type -> opentrade.rpc.history.ListAccountLogsResponse
+	21, // 39: opentrade.rpc.history.HistoryService.ListPerpPositions:output_type -> opentrade.rpc.history.ListPerpPositionsResponse
+	24, // 40: opentrade.rpc.history.HistoryService.ListPerpFunding:output_type -> opentrade.rpc.history.ListPerpFundingResponse
+	27, // 41: opentrade.rpc.history.HistoryService.ListPerpLiquidations:output_type -> opentrade.rpc.history.ListPerpLiquidationsResponse
+	30, // 42: opentrade.rpc.history.HistoryService.ListPerpADL:output_type -> opentrade.rpc.history.ListPerpADLResponse
+	15, // 43: opentrade.rpc.history.HistoryService.GetTrigger:output_type -> opentrade.rpc.history.GetTriggerResponse
+	17, // 44: opentrade.rpc.history.HistoryService.ListTriggers:output_type -> opentrade.rpc.history.ListTriggersResponse
+	35, // [35:45] is the sub-list for method output_type
+	25, // [25:35] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_rpc_history_history_proto_init() }
@@ -2674,7 +2948,7 @@ func file_rpc_history_history_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_history_history_proto_rawDesc), len(file_rpc_history_history_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   25,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

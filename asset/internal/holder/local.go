@@ -66,7 +66,7 @@ func (c *LocalFundingClient) run(ctx context.Context, req Request, call func(con
 // wrapping — the saga driver consumes errors as rejected Results, not
 // gRPC codes.
 func buildServiceReq(req Request) (service.HolderRequest, error) {
-	if req.UserID == "" {
+	if req.UserID == 0 {
 		return service.HolderRequest{}, errors.New("user_id required")
 	}
 	if req.TransferID == "" {

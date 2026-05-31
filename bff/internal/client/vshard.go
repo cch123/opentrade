@@ -89,10 +89,10 @@ func (v *VShardCounter) clientFor(endpoint string) (counterrpcconnect.CounterSer
 // FailedPrecondition (counter node tells us we're on the wrong vshard)
 // it kicks the watcher to refresh and retries fn exactly once.
 func (v *VShardCounter) dispatch(
-	userID string,
+	userID uint64,
 	fn func(counterrpcconnect.CounterServiceClient) error,
 ) error {
-	if userID == "" {
+	if userID == 0 {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -209,7 +209,7 @@ func (v *VShardCounter) ReleaseReservation(ctx context.Context, req *connect.Req
 // Callers that need a cluster-wide sweep should drive it from an
 // operator tool.
 func (v *VShardCounter) AdminCancelOrders(ctx context.Context, req *connect.Request[counterrpc.AdminCancelOrdersRequest]) (*connect.Response[counterrpc.AdminCancelOrdersResponse], error) {
-	if req.Msg.UserId == "" {
+	if req.Msg.UserId == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("user_id required under vshard routing (symbol-only fan-out moves to operator tooling)"))
 	}

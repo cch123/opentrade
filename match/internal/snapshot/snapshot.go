@@ -78,7 +78,7 @@ type KafkaOffset struct {
 // OrderSnapshot is the serialized form of an orderbook.Order.
 type OrderSnapshot struct {
 	ID        uint64 `json:"id"`
-	UserID    string `json:"user_id"`
+	UserID    uint64 `json:"user_id"`
 	ClientID  string `json:"client_id,omitempty"`
 	Side      uint8  `json:"side"`
 	Type      uint8  `json:"type"`

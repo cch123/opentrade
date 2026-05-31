@@ -19,7 +19,7 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 
 	// u1 BUY 1 BTC @ 100 (frozen 100 USDT).
 	buy, err := svc.PlaceOrder(ctx, PlaceOrderRequest{
-		UserID: "u1", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -28,7 +28,7 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 	}
 	// u2 SELL 1 BTC @ 100 (frozen 1 BTC).
 	sell, err := svc.PlaceOrder(ctx, PlaceOrderRequest{
-		UserID: "u2", Symbol: "BTC-USDT",
+		UserID: 1002, Symbol: "BTC-USDT",
 		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -44,9 +44,9 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 			Symbol:              "BTC-USDT",
 			Price:               "100",
 			Qty:                 "1",
-			MakerUserId:         "u2",
+			MakerUserId:         1002,
 			MakerOrderId:        sell.OrderID,
-			TakerUserId:         "u1",
+			TakerUserId:         1001,
 			TakerOrderId:        buy.OrderID,
 			TakerSide:           eventpb.Side_SIDE_BUY,
 			MakerFilledQtyAfter: "1",
@@ -59,7 +59,7 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstEvents := len(pub.Events())
-	u1BTC := state.Balance("u1", "BTC")
+	u1BTC := state.Balance(1001, "BTC")
 	if u1BTC.Available.String() != "1" {
 		t.Fatalf("after first apply u1 BTC = %+v", u1BTC)
 	}
@@ -76,10 +76,10 @@ func TestMatchSeqGuard_DuplicateTradeSkipped(t *testing.T) {
 		t.Fatalf("replay leaked journal events: %d → %d", firstEvents, got)
 	}
 	// Verify guard advanced for both users on the symbol.
-	if got := state.Account("u1").LastMatchSeq("BTC-USDT"); got != 42 {
+	if got := state.Account(1001).LastMatchSeq("BTC-USDT"); got != 42 {
 		t.Errorf("u1 LastMatchSeq = %d, want 42", got)
 	}
-	if got := state.Account("u2").LastMatchSeq("BTC-USDT"); got != 42 {
+	if got := state.Account(1002).LastMatchSeq("BTC-USDT"); got != 42 {
 		t.Errorf("u2 LastMatchSeq = %d, want 42", got)
 	}
 }
@@ -96,7 +96,7 @@ func TestMatchSeqGuard_DifferentSymbolsIndependent(t *testing.T) {
 		Meta:       &eventpb.EventMeta{},
 		MatchSeqId: 100,
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			UserId: "u1", OrderId: 999, Symbol: "BTC-USDT",
+			UserId: 1001, OrderId: 999, Symbol: "BTC-USDT",
 		}},
 	}
 	if err := svc.HandleTradeEvent(ctx, evtBTC); err != nil {
@@ -108,13 +108,13 @@ func TestMatchSeqGuard_DifferentSymbolsIndependent(t *testing.T) {
 		Meta:       &eventpb.EventMeta{},
 		MatchSeqId: 50,
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			UserId: "u1", OrderId: 998, Symbol: "ETH-USDT",
+			UserId: 1001, OrderId: 998, Symbol: "ETH-USDT",
 		}},
 	}
 	if err := svc.HandleTradeEvent(ctx, evtETH); err != nil {
 		t.Fatal(err)
 	}
-	acc := state.Account("u1")
+	acc := state.Account(1001)
 	if got := acc.LastMatchSeq("BTC-USDT"); got != 100 {
 		t.Errorf("BTC-USDT seq = %d, want 100", got)
 	}
@@ -134,7 +134,7 @@ func TestMatchSeqGuard_ZeroSeqBypasses(t *testing.T) {
 	evt := &eventpb.TradeEvent{
 		// No Meta at all → matchSeq=0 → guard skipped.
 		Payload: &eventpb.TradeEvent_Accepted{Accepted: &eventpb.OrderAccepted{
-			UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
+			UserId: 1001, OrderId: 1, Symbol: "BTC-USDT",
 		}},
 	}
 	if err := svc.HandleTradeEvent(ctx, evt); err != nil {
@@ -142,7 +142,7 @@ func TestMatchSeqGuard_ZeroSeqBypasses(t *testing.T) {
 	}
 	// LastMatchSeq stays 0 — zero is never advanced, so a real seq=1 later
 	// is still considered fresh.
-	if got := state.Account("u1").LastMatchSeq("BTC-USDT"); got != 0 {
+	if got := state.Account(1001).LastMatchSeq("BTC-USDT"); got != 0 {
 		t.Errorf("zero-seq apply advanced guard to %d, want 0", got)
 	}
 }

@@ -72,7 +72,7 @@ type BalanceSnapshot struct {
 // (ADR-0048 backlog item 4 / 方案 A). RecentTransferIDs is stored in
 // insertion order (oldest → newest) so Restore can rebuild the ring.
 type AccountSnapshot struct {
-	UserID            string            `json:"user_id"`
+	UserID            uint64            `json:"user_id"`
 	Version           uint64            `json:"version,omitempty"`
 	Balances          []BalanceSnapshot `json:"balances"`
 	LastMatchSeq      map[string]uint64 `json:"last_match_seq,omitempty"`
@@ -94,7 +94,7 @@ type DedupEntrySnapshot struct {
 type OrderSnapshot struct {
 	ID              uint64 `json:"id"`
 	ClientOrderID   string `json:"client_order_id,omitempty"`
-	UserID          string `json:"user_id"`
+	UserID          uint64 `json:"user_id"`
 	Symbol          string `json:"symbol"`
 	Side            uint8  `json:"side"`
 	OrderType       uint8  `json:"type"`
@@ -116,7 +116,7 @@ type OrderSnapshot struct {
 // (ADR-0041). Reservations are not Kafka-journaled — they only persist
 // across graceful restarts via this snapshot. See ADR-0041 §Durability.
 type ReservationSnapshot struct {
-	UserID      string `json:"user_id"`
+	UserID      uint64 `json:"user_id"`
 	RefID       string `json:"ref_id"`
 	Asset       string `json:"asset"`
 	Amount      string `json:"amount"`
@@ -266,11 +266,11 @@ func RestoreState(shardID int, state *counterstate.ShardState, snap *ShardSnapsh
 		for _, bs := range as.Balances {
 			available, err := dec.Parse(bs.Available)
 			if err != nil {
-				return fmt.Errorf("account %s %s available: %w", as.UserID, bs.Asset, err)
+				return fmt.Errorf("account %d %s available: %w", as.UserID, bs.Asset, err)
 			}
 			frozen, err := dec.Parse(bs.Frozen)
 			if err != nil {
-				return fmt.Errorf("account %s %s frozen: %w", as.UserID, bs.Asset, err)
+				return fmt.Errorf("account %d %s frozen: %w", as.UserID, bs.Asset, err)
 			}
 			putBalance(acc, bs.Asset, counterstate.Balance{
 				Available: available,

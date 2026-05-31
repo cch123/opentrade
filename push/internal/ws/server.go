@@ -42,19 +42,28 @@ const HeaderTrustedAuth = "X-OpenTrade-Internal-Auth"
 // Server.Shutdown can cascade-cancel live connections.
 func Handler(base context.Context, h *hub.Hub, cfg Config, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID := r.Header.Get(HeaderUserID)
-		if userID != "" && cfg.TrustedHeaderSecret != "" && !trustedHeaderOK(r, cfg.TrustedHeaderSecret) {
+		rawUserID := r.Header.Get(HeaderUserID)
+		var userID uint64
+		if rawUserID != "" {
+			parsed, err := strconv.ParseUint(rawUserID, 10, 64)
+			if err != nil || parsed == 0 {
+				http.Error(w, "invalid user id", http.StatusBadRequest)
+				return
+			}
+			userID = parsed
+		}
+		if userID != 0 && cfg.TrustedHeaderSecret != "" && !trustedHeaderOK(r, cfg.TrustedHeaderSecret) {
 			http.Error(w, "invalid trusted header", http.StatusUnauthorized)
 			logger.Warn("ws trusted header rejected", zap.String("remote", r.RemoteAddr))
 			return
 		}
 
-		if cfg.TotalInstances > 1 && userID != "" {
+		if cfg.TotalInstances > 1 && userID != 0 {
 			if owner := shard.Index(userID, cfg.TotalInstances); owner != cfg.InstanceOrdinal {
 				w.Header().Set(HeaderCorrectInstance, strconv.Itoa(owner))
 				http.Error(w, "wrong push instance", http.StatusForbidden)
 				logger.Debug("ws sticky reject",
-					zap.String("user", userID),
+					zap.Uint64("user", userID),
 					zap.Int("owner", owner),
 					zap.Int("self", cfg.InstanceOrdinal))
 				return
@@ -73,10 +82,10 @@ func Handler(base context.Context, h *hub.Hub, cfg Config, logger *zap.Logger) h
 		id := newConnID()
 		c := NewConn(id, userID, wsConn, h, cfg, logger.With(
 			zap.String("conn", id),
-			zap.String("user", userID),
+			zap.Uint64("user", userID),
 		))
 		logger.Debug("ws connected",
-			zap.String("conn", id), zap.String("user", userID),
+			zap.String("conn", id), zap.Uint64("user", userID),
 			zap.String("remote", r.RemoteAddr))
 
 		// Run in the caller goroutine to keep the handler busy until the

@@ -16,9 +16,9 @@ func TestTradeRowFromEvent_Trade(t *testing.T) {
 				Symbol:       "BTC-USDT",
 				Price:        "42000.5",
 				Qty:          "0.125",
-				MakerUserId:  "u-maker",
+				MakerUserId:  2001,
 				MakerOrderId: 1001,
-				TakerUserId:  "u-taker",
+				TakerUserId:  3001,
 				TakerOrderId: 2002,
 				TakerSide:    eventpb.Side_SIDE_BUY,
 			},
@@ -35,10 +35,10 @@ func TestTradeRowFromEvent_Trade(t *testing.T) {
 	if row.Symbol != "BTC-USDT" || row.Price != "42000.5" || row.Qty != "0.125" {
 		t.Errorf("base fields: %+v", row)
 	}
-	if row.MakerUserID != "u-maker" || row.MakerOrderID != 1001 {
+	if row.MakerUserID != 2001 || row.MakerOrderID != 1001 {
 		t.Errorf("maker fields: %+v", row)
 	}
-	if row.TakerUserID != "u-taker" || row.TakerOrderID != 2002 {
+	if row.TakerUserID != 3001 || row.TakerOrderID != 2002 {
 		t.Errorf("taker fields: %+v", row)
 	}
 	if row.TakerSide != int8(eventpb.Side_SIDE_BUY) {

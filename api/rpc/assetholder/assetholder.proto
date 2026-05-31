@@ -72,7 +72,7 @@ enum RejectReason {
 // -----------------------------------------------------------------------------
 
 message TransferOutRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   // Saga-scoped idempotency key. Also the key under which this holder's
   // dedup table stores the outcome. Clients must generate a globally-
   // unique value (UUID or client-monotonic string).
@@ -103,7 +103,7 @@ message TransferOutResponse {
 // -----------------------------------------------------------------------------
 
 message TransferInRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string transfer_id = 2;
   string asset = 3;
   string amount = 4;
@@ -123,7 +123,7 @@ message TransferInResponse {
 // -----------------------------------------------------------------------------
 
 message CompensateTransferOutRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   // MUST equal the transfer_id of the original TransferOut being
   // compensated.
   string transfer_id = 2;

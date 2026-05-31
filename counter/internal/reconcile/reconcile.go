@@ -117,7 +117,7 @@ const (
 // Mismatch is one drift observation. Fields stringify decimals so callers
 // can log without adding shopspring to their context.
 type Mismatch struct {
-	UserID       string
+	UserID       uint64
 	Asset        string
 	Kind         MismatchKind
 	MemAvailable string
@@ -134,7 +134,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Report, error) {
 	}
 	// Build memory view first. This may miss transfers that land mid-run,
 	// but the ticker cadence (hour scale) makes that negligible.
-	mem := make(map[string]map[string]counterstate.Balance, len(users))
+	mem := make(map[uint64]map[string]counterstate.Balance, len(users))
 	for _, u := range users {
 		cp := r.state.Account(u).Copy()
 		if len(cp) == 0 {
@@ -188,7 +188,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Report, error) {
 	for _, m := range rep.Mismatches {
 		r.logger.Warn("reconcile mismatch",
 			zap.String("kind", string(m.Kind)),
-			zap.String("user_id", m.UserID),
+			zap.Uint64("user_id", m.UserID),
 			zap.String("asset", m.Asset),
 			zap.String("mem_available", m.MemAvailable),
 			zap.String("mem_frozen", m.MemFrozen),
@@ -200,8 +200,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Report, error) {
 
 // loadAccounts queries MySQL in batches and returns a
 // user_id → asset → Balance map.
-func (r *Reconciler) loadAccounts(ctx context.Context, users []string) (map[string]map[string]counterstate.Balance, error) {
-	out := make(map[string]map[string]counterstate.Balance, len(users))
+func (r *Reconciler) loadAccounts(ctx context.Context, users []uint64) (map[uint64]map[string]counterstate.Balance, error) {
+	out := make(map[uint64]map[string]counterstate.Balance, len(users))
 	for start := 0; start < len(users); start += r.cfg.BatchSize {
 		end := start + r.cfg.BatchSize
 		if end > len(users) {
@@ -215,7 +215,7 @@ func (r *Reconciler) loadAccounts(ctx context.Context, users []string) (map[stri
 	return out, nil
 }
 
-func (r *Reconciler) loadBatch(ctx context.Context, batch []string, out map[string]map[string]counterstate.Balance) error {
+func (r *Reconciler) loadBatch(ctx context.Context, batch []uint64, out map[uint64]map[string]counterstate.Balance) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -232,17 +232,18 @@ func (r *Reconciler) loadBatch(ctx context.Context, batch []string, out map[stri
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var userID, asset, avail, frozen string
+		var userID uint64
+		var asset, avail, frozen string
 		if err := rows.Scan(&userID, &asset, &avail, &frozen); err != nil {
 			return fmt.Errorf("scan: %w", err)
 		}
 		availDec, err := dec.Parse(avail)
 		if err != nil {
-			return fmt.Errorf("parse available for %s/%s: %w", userID, asset, err)
+			return fmt.Errorf("parse available for %d/%s: %w", userID, asset, err)
 		}
 		frozenDec, err := dec.Parse(frozen)
 		if err != nil {
-			return fmt.Errorf("parse frozen for %s/%s: %w", userID, asset, err)
+			return fmt.Errorf("parse frozen for %d/%s: %w", userID, asset, err)
 		}
 		if out[userID] == nil {
 			out[userID] = make(map[string]counterstate.Balance)

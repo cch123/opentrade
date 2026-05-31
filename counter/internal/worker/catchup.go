@@ -30,8 +30,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/counterstate"
 )
 
 const (

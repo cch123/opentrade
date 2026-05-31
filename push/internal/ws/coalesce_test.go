@@ -14,7 +14,7 @@ import (
 func newBareConn(t *testing.T) *Conn {
 	t.Helper()
 	h := hub.New(zap.NewNop())
-	return NewConn("c1", "u1", nil, h, Config{SendBuffer: 4}, zap.NewNop())
+	return NewConn("c1", 1001, nil, h, Config{SendBuffer: 4}, zap.NewNop())
 }
 
 func TestTrySendCoalesce_StoresLatestByKey(t *testing.T) {

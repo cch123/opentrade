@@ -60,6 +60,9 @@ service HistoryService {
   // ListPerpLiquidations pages a user's liquidation events, newest first by ts.
   rpc ListPerpLiquidations(ListPerpLiquidationsRequest) returns (ListPerpLiquidationsResponse);
 
+  // ListPerpADL pages a user's ADL forced-close events, newest first by ts.
+  rpc ListPerpADL(ListPerpADLRequest) returns (ListPerpADLResponse);
+
   // GetTrigger returns one trigger by id from the long-term
   // projection (ADR-0047). Use this for looking up a trigger after
   // it has aged out of the trigger service's in-memory terminal
@@ -92,7 +95,7 @@ service HistoryService {
 // -----------------------------------------------------------------------------
 
 message GetOrderRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
 }
 
@@ -101,7 +104,7 @@ message GetOrderResponse {
 }
 
 message ListOrdersRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;                        // "" = any
   // Coarse category filter covering the two common UI tabs:
   //   OPEN     → NEW + PARTIALLY_FILLED   ("open orders" / 未完成)
@@ -139,7 +142,7 @@ message ListOrdersResponse {
 message Order {
   uint64 order_id = 1;
   string client_order_id = 2;
-  string user_id = 3;
+  uint64 user_id = 3;
   string symbol = 4;
   opentrade.event.Side side = 5;
   opentrade.event.OrderType order_type = 6;
@@ -172,7 +175,7 @@ enum OrderStatus {
 // -----------------------------------------------------------------------------
 
 message ListTradesRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;                        // "" = any
   int64 since_ms = 3;
   int64 until_ms = 4;
@@ -209,7 +212,7 @@ enum TradeRole {
 // -----------------------------------------------------------------------------
 
 message ListAccountLogsRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string asset = 2;                         // "" = any
   // Free-form biz_type filter matching the strings written by trade-dump:
   // "freeze_place_order", "unfreeze", "settlement", "deposit", "withdraw",
@@ -231,7 +234,7 @@ message ListAccountLogsResponse {
 // -----------------------------------------------------------------------------
 
 message GetTriggerRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 id = 2;
 }
 
@@ -240,7 +243,7 @@ message GetTriggerResponse {
 }
 
 message ListTriggersRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;                              // "" = any
   // Coarse category filter. ACTIVE folds PENDING, TERMINAL folds
   // TRIGGERED + CANCELED + REJECTED + EXPIRED, ALL disables the filter.
@@ -271,7 +274,7 @@ enum TriggerScope {
 message Trigger {
   uint64 id = 1;
   string client_trigger_id = 2;
-  string user_id = 3;
+  uint64 user_id = 3;
   string symbol = 4;
   opentrade.event.Side side = 5;
   opentrade.rpc.trigger.TriggerType type = 6;
@@ -298,7 +301,7 @@ message AccountLog {
   int32 shard_id = 1;
   uint64 counter_seq_id = 2;
   string asset = 3;
-  string user_id = 4;
+  uint64 user_id = 4;
   string delta_avail = 5;
   string delta_frozen = 6;
   string avail_after = 7;
@@ -313,7 +316,7 @@ message AccountLog {
 // -----------------------------------------------------------------------------
 
 message ListPerpPositionsRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2; // "" = all symbols
 }
 
@@ -323,7 +326,7 @@ message ListPerpPositionsResponse {
 
 // PerpPosition mirrors the `perp_positions` projection row.
 message PerpPosition {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2;
   opentrade.event.Side side = 3;
   string size = 4;
@@ -335,7 +338,7 @@ message PerpPosition {
 }
 
 message ListPerpFundingRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2; // "" = any
   int64 since_ms = 3;
   int64 until_ms = 4;
@@ -360,7 +363,7 @@ message PerpFunding {
 }
 
 message ListPerpLiquidationsRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2; // "" = any
   int64 since_ms = 3;
   int64 until_ms = 4;
@@ -385,4 +388,31 @@ message PerpLiquidation {
   string insurance_delta = 8;
   bool adl_queued = 9;
   int64 ts_unix_ms = 10;
+}
+
+message ListPerpADLRequest {
+  uint64 user_id = 1;
+  string symbol = 2; // "" = any
+  int64 since_ms = 3;
+  int64 until_ms = 4;
+  string cursor = 5;
+  int32 limit = 6;
+}
+
+message ListPerpADLResponse {
+  repeated PerpADL adl = 1;
+  string next_cursor = 2;
+}
+
+// PerpADL mirrors the `perp_adl_events` projection row.
+message PerpADL {
+  uint64 perp_seq_id = 1;
+  string symbol = 2;
+  string lot_id = 3;
+  uint64 adl_round = 4;
+  string price = 5;
+  string requested_qty = 6;
+  string fact_qty = 7;
+  string realized_pnl = 8;
+  int64 ts_unix_ms = 9;
 }

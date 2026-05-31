@@ -16,7 +16,7 @@ func TestBuildTransferEvent(t *testing.T) {
 		ProducerID:   "counter-shard-0-main",
 		Req: counterstate.TransferRequest{
 			TransferID: "tx-1",
-			UserID:     "u1",
+			UserID:     1001,
 			Asset:      "USDT",
 			Amount:     dec.New("100.5"),
 			Type:       counterstate.TransferDeposit,
@@ -39,7 +39,7 @@ func TestBuildTransferEvent(t *testing.T) {
 	if te == nil {
 		t.Fatalf("expected Transfer payload, got %T", cje.Payload)
 	}
-	if te.UserId != "u1" || te.Asset != "USDT" || te.Amount != "100.5" {
+	if te.UserId != 1001 || te.Asset != "USDT" || te.Amount != "100.5" {
 		t.Fatalf("payload = %+v", te)
 	}
 	if te.Type != eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT {
@@ -78,7 +78,7 @@ func TestBuildSettlementEventCarriesReplayFields(t *testing.T) {
 	state := counterstate.NewShardState(0)
 	state.Orders().RestoreInsert(&counterstate.Order{
 		ID:           77,
-		UserID:       "u1",
+		UserID:       1001,
 		Symbol:       "BTC-USDT",
 		Side:         counterstate.SideBid,
 		Type:         counterstate.OrderTypeLimit,
@@ -98,7 +98,7 @@ func TestBuildSettlementEventCarriesReplayFields(t *testing.T) {
 		Price:          "50000",
 		Qty:            "0.1",
 		Party: counterstate.PartySettlement{
-			UserID:           "u1",
+			UserID:           1001,
 			OrderID:          77,
 			BaseDelta:        dec.New("0.1"),
 			QuoteDelta:       dec.New("-5000"),
@@ -143,7 +143,7 @@ func TestBuildUnfreezeEvent(t *testing.T) {
 		CounterSeqID:   19,
 		ProducerID:     "counter-shard-0-main",
 		AccountVersion: 4,
-		UserID:         "u1",
+		UserID:         1001,
 		OrderID:        77,
 		Asset:          "USDT",
 		Amount:         "2500",
@@ -157,7 +157,7 @@ func TestBuildUnfreezeEvent(t *testing.T) {
 	if unfreeze == nil {
 		t.Fatalf("payload = %T, want Unfreeze", evt.Payload)
 	}
-	if unfreeze.UserId != "u1" || unfreeze.OrderId != 77 || unfreeze.Asset != "USDT" || unfreeze.Amount != "2500" {
+	if unfreeze.UserId != 1001 || unfreeze.OrderId != 77 || unfreeze.Asset != "USDT" || unfreeze.Amount != "2500" {
 		t.Fatalf("unfreeze = %+v", unfreeze)
 	}
 	if unfreeze.BalanceAfter.Available != "47500" || unfreeze.BalanceAfter.Frozen != "0" || unfreeze.BalanceAfter.Version != 5 {

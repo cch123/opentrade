@@ -8,8 +8,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/xargin/opentrade/counter/internal/dedup"
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 )
@@ -36,13 +36,13 @@ func newCapFixture(t *testing.T, cap uint32, lookup SymbolLookup) (*Service, *co
 		svc.SetSymbolLookup(lookup)
 	}
 	_, _ = svc.Transfer(context.Background(), counterstate.TransferRequest{
-		TransferID: "seed-u1", UserID: "u1", Asset: "USDT",
+		TransferID: "seed-u1", UserID: 1001, Asset: "USDT",
 		Amount: dec.New("1000000"), Type: counterstate.TransferDeposit,
 	})
 	return svc, state
 }
 
-func placeLimit(t *testing.T, svc *Service, user, symbol, coid string) *PlaceOrderResult {
+func placeLimit(t *testing.T, svc *Service, user uint64, symbol, coid string) *PlaceOrderResult {
 	t.Helper()
 	res, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
 		UserID: user, ClientOrderID: coid, Symbol: symbol,
@@ -57,13 +57,13 @@ func placeLimit(t *testing.T, svc *Service, user, symbol, coid string) *PlaceOrd
 
 func TestPlaceOrder_DefaultCapEnforced(t *testing.T) {
 	svc, _ := newCapFixture(t, 2, nil)
-	if r := placeLimit(t, svc, "u1", "BTC-USDT", "c1"); !r.Accepted {
+	if r := placeLimit(t, svc, 1001, "BTC-USDT", "c1"); !r.Accepted {
 		t.Fatalf("place 1: %+v", r)
 	}
-	if r := placeLimit(t, svc, "u1", "BTC-USDT", "c2"); !r.Accepted {
+	if r := placeLimit(t, svc, 1001, "BTC-USDT", "c2"); !r.Accepted {
 		t.Fatalf("place 2: %+v", r)
 	}
-	r3 := placeLimit(t, svc, "u1", "BTC-USDT", "c3")
+	r3 := placeLimit(t, svc, 1001, "BTC-USDT", "c3")
 	if r3.Accepted {
 		t.Fatalf("place 3 must be rejected: %+v", r3)
 	}
@@ -74,12 +74,12 @@ func TestPlaceOrder_DefaultCapEnforced(t *testing.T) {
 
 func TestPlaceOrder_CancelFreesSlot(t *testing.T) {
 	svc, _ := newCapFixture(t, 1, nil)
-	r := placeLimit(t, svc, "u1", "BTC-USDT", "c1")
+	r := placeLimit(t, svc, 1001, "BTC-USDT", "c1")
 	if !r.Accepted {
 		t.Fatalf("place 1: %+v", r)
 	}
 	// Second attempt at cap blocks.
-	if r := placeLimit(t, svc, "u1", "BTC-USDT", "c2"); r.Accepted {
+	if r := placeLimit(t, svc, 1001, "BTC-USDT", "c2"); r.Accepted {
 		t.Fatalf("place 2 should block: %+v", r)
 	}
 	// Cancel drives the slot back to 0 via UpdateStatus(PENDING_CANCEL →
@@ -90,7 +90,7 @@ func TestPlaceOrder_CancelFreesSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Third attempt should now pass.
-	if r := placeLimit(t, svc, "u1", "BTC-USDT", "c3"); !r.Accepted {
+	if r := placeLimit(t, svc, 1001, "BTC-USDT", "c3"); !r.Accepted {
 		t.Fatalf("place 3 after cancel: %+v", r)
 	}
 }
@@ -101,10 +101,10 @@ func TestPlaceOrder_SymbolConfigOverridesDefault(t *testing.T) {
 		return etcdcfg.SymbolConfig{MaxOpenLimitOrders: 1}, true
 	}
 	svc, _ := newCapFixture(t, 100, lookup)
-	if r := placeLimit(t, svc, "u1", "BTC-USDT", "c1"); !r.Accepted {
+	if r := placeLimit(t, svc, 1001, "BTC-USDT", "c1"); !r.Accepted {
 		t.Fatalf("place 1: %+v", r)
 	}
-	if r := placeLimit(t, svc, "u1", "BTC-USDT", "c2"); r.Accepted {
+	if r := placeLimit(t, svc, 1001, "BTC-USDT", "c2"); r.Accepted {
 		t.Fatalf("place 2 must be blocked by symbol override: %+v", r)
 	}
 }
@@ -114,7 +114,7 @@ func TestPlaceOrder_CapZeroDisablesCheck(t *testing.T) {
 	svc, _ := newCapFixture(t, 0, nil)
 	for i := 0; i < 5; i++ {
 		coid := "c-" + string(rune('0'+i))
-		if r := placeLimit(t, svc, "u1", "BTC-USDT", coid); !r.Accepted {
+		if r := placeLimit(t, svc, 1001, "BTC-USDT", coid); !r.Accepted {
 			t.Fatalf("place %d: %+v", i, r)
 		}
 	}
@@ -125,11 +125,11 @@ func TestPlaceOrder_DedupDoesNotDoubleCount(t *testing.T) {
 	// dedup and must not produce a rejection (it returns the existing
 	// order with Accepted=false).
 	svc, _ := newCapFixture(t, 1, nil)
-	r1 := placeLimit(t, svc, "u1", "BTC-USDT", "dup")
+	r1 := placeLimit(t, svc, 1001, "BTC-USDT", "dup")
 	if !r1.Accepted {
 		t.Fatalf("place 1: %+v", r1)
 	}
-	r2 := placeLimit(t, svc, "u1", "BTC-USDT", "dup")
+	r2 := placeLimit(t, svc, 1001, "BTC-USDT", "dup")
 	if r2.Accepted {
 		t.Errorf("dedup should return accepted=false on repeat: %+v", r2)
 	}
@@ -144,18 +144,18 @@ func TestPlaceOrder_DedupDoesNotDoubleCount(t *testing.T) {
 func TestPlaceOrder_MarketOrdersDoNotConsumeSlot(t *testing.T) {
 	svc, _ := newCapFixture(t, 1, nil)
 	// Fill the one LIMIT slot.
-	if r := placeLimit(t, svc, "u1", "BTC-USDT", "l1"); !r.Accepted {
+	if r := placeLimit(t, svc, 1001, "BTC-USDT", "l1"); !r.Accepted {
 		t.Fatalf("place limit: %+v", r)
 	}
 	// MARKET sell from u2 (not u1, but the point is MARKETs of any user
 	// must not touch LIMIT accounting). Use u2 with BTC balance seeded
 	// below.
 	_, _ = svc.Transfer(context.Background(), counterstate.TransferRequest{
-		TransferID: "seed-u2", UserID: "u2", Asset: "BTC",
+		TransferID: "seed-u2", UserID: 1002, Asset: "BTC",
 		Amount: dec.New("10"), Type: counterstate.TransferDeposit,
 	})
 	_, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u2", Symbol: "BTC-USDT",
+		UserID: 1002, Symbol: "BTC-USDT",
 		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeMarket, TIF: counterstate.TIFGTC,
 		Qty: dec.New("1"),
 	})
@@ -164,7 +164,7 @@ func TestPlaceOrder_MarketOrdersDoNotConsumeSlot(t *testing.T) {
 	}
 	// MARKET didn't count against u2's slots, MARKET-sell orders never
 	// consume a LIMIT slot even if the user would later want one.
-	if got := svc.state.Orders().CountActiveLimits("u2", "BTC-USDT"); got != 0 {
+	if got := svc.state.Orders().CountActiveLimits(1002, "BTC-USDT"); got != 0 {
 		t.Errorf("MARKET leaked into LIMIT counter: %d", got)
 	}
 }

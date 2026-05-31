@@ -33,7 +33,7 @@ func TestApplyTriggerBatch_UpsertUsesGuardClause(t *testing.T) {
 	batch := TriggerBatch{Rows: []TriggerRow{
 		{
 			ID:                1,
-			UserID:            "u1",
+			UserID:            1001,
 			Symbol:            "BTC-USDT",
 			Side:              2,
 			Type:              1,

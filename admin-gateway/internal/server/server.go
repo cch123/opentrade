@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,11 +130,11 @@ type symbolJSON struct {
 
 	// Precision block (ADR-0053). Omitted entirely when the symbol has no
 	// tiers — legacy clients see no new fields.
-	BaseAsset        string                    `json:"base_asset,omitempty"`
-	QuoteAsset       string                    `json:"quote_asset,omitempty"`
-	PrecisionVersion uint64                    `json:"precision_version,omitempty"`
-	Tiers            []etcdcfg.PrecisionTier   `json:"tiers,omitempty"`
-	ScheduledChange  *etcdcfg.PrecisionChange  `json:"scheduled_change,omitempty"`
+	BaseAsset        string                   `json:"base_asset,omitempty"`
+	QuoteAsset       string                   `json:"quote_asset,omitempty"`
+	PrecisionVersion uint64                   `json:"precision_version,omitempty"`
+	Tiers            []etcdcfg.PrecisionTier  `json:"tiers,omitempty"`
+	ScheduledChange  *etcdcfg.PrecisionChange `json:"scheduled_change,omitempty"`
 }
 
 func symbolJSONFrom(symbol string, c etcdcfg.SymbolConfig) symbolJSON {
@@ -165,7 +166,7 @@ type putSymbolBody struct {
 	ScheduledChange  *etcdcfg.PrecisionChange `json:"scheduled_change,omitempty"`
 
 	// ADR-0054 order slot limits. Zero = use service default.
-	MaxOpenLimitOrders         uint32 `json:"max_open_limit_orders,omitempty"`
+	MaxOpenLimitOrders     uint32 `json:"max_open_limit_orders,omitempty"`
 	MaxActiveTriggerOrders uint32 `json:"max_active_trigger_orders,omitempty"`
 }
 
@@ -280,15 +281,15 @@ func (s *Server) handlePutSymbol(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
 	rev, putErr := s.etcd.Put(ctx, symbol, etcdcfg.SymbolConfig{
-		Shard:                      body.Shard,
-		Trading:                    body.Trading,
-		Version:                    body.Version,
-		BaseAsset:                  body.BaseAsset,
-		QuoteAsset:                 body.QuoteAsset,
-		PrecisionVersion:           body.PrecisionVersion,
-		Tiers:                      body.Tiers,
-		ScheduledChange:            body.ScheduledChange,
-		MaxOpenLimitOrders:         body.MaxOpenLimitOrders,
+		Shard:                  body.Shard,
+		Trading:                body.Trading,
+		Version:                body.Version,
+		BaseAsset:              body.BaseAsset,
+		QuoteAsset:             body.QuoteAsset,
+		PrecisionVersion:       body.PrecisionVersion,
+		Tiers:                  body.Tiers,
+		ScheduledChange:        body.ScheduledChange,
+		MaxOpenLimitOrders:     body.MaxOpenLimitOrders,
 		MaxActiveTriggerOrders: body.MaxActiveTriggerOrders,
 	})
 	params := map[string]any{"shard": body.Shard, "trading": body.Trading}
@@ -517,9 +518,9 @@ func (s *Server) handleCancelSchedulePrecision(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"revision":         rev,
-		"symbol":           symbol,
-		"had_scheduled":    hadChange,
+		"revision":      rev,
+		"symbol":        symbol,
+		"had_scheduled": hadChange,
 	})
 }
 
@@ -528,7 +529,7 @@ func (s *Server) handleCancelSchedulePrecision(w http.ResponseWriter, r *http.Re
 // ---------------------------------------------------------------------------
 
 type cancelOrdersBody struct {
-	UserID string `json:"user_id,omitempty"`
+	UserID uint64 `json:"user_id,omitempty"`
 	Symbol string `json:"symbol,omitempty"`
 	Reason string `json:"reason,omitempty"`
 }
@@ -539,7 +540,7 @@ func (s *Server) handleCancelOrders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if body.UserID == "" && body.Symbol == "" {
+	if body.UserID == 0 && body.Symbol == "" {
 		writeError(w, http.StatusBadRequest, "user_id or symbol required")
 		return
 	}
@@ -560,7 +561,7 @@ func (s *Server) handleCancelOrders(w http.ResponseWriter, r *http.Request) {
 		Reason: body.Reason,
 	}
 
-	if body.UserID != "" {
+	if body.UserID != 0 {
 		// Single shard: xxhash-route the user (same fn BFF uses).
 		shardID := shard.Index(body.UserID, s.shardedCounter.Shards())
 		resp, err := s.shardedCounter.Shard(shardID).AdminCancelOrders(ctx, connect.NewRequest(req))
@@ -595,7 +596,7 @@ func (s *Server) handleCancelOrders(w http.ResponseWriter, r *http.Request) {
 		"cancelled": totalCancelled,
 		"skipped":   totalSkipped,
 	}
-	if body.UserID != "" {
+	if body.UserID != 0 {
 		params["user_id"] = body.UserID
 	}
 	if body.Symbol != "" {
@@ -632,7 +633,7 @@ func (s *Server) handleCancelOrders(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeAudit(r *http.Request, e adminaudit.Entry) error {
 	if e.AdminID == "" {
 		if uid, err := auth.UserID(r.Context()); err == nil {
-			e.AdminID = uid
+			e.AdminID = strconv.FormatUint(uid, 10)
 		}
 	}
 	if e.RemoteIP == "" {
@@ -669,11 +670,12 @@ func shardErrString(agg error, i int, results []*counterrpc.AdminCancelOrdersRes
 }
 
 func cancelTarget(b cancelOrdersBody) string {
+	userID := strconv.FormatUint(b.UserID, 10)
 	switch {
-	case b.UserID != "" && b.Symbol != "":
-		return b.UserID + "|" + b.Symbol
-	case b.UserID != "":
-		return b.UserID
+	case b.UserID != 0 && b.Symbol != "":
+		return userID + "|" + b.Symbol
+	case b.UserID != 0:
+		return userID
 	default:
 		return b.Symbol
 	}

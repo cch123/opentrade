@@ -34,7 +34,7 @@ enum MarginMode {
 }
 
 message PlaceOrderRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string client_order_id = 2;                 // optional idempotency key
   string symbol = 3;                          // e.g. BTC-USDT-PERP
   opentrade.event.Side side = 4;
@@ -56,7 +56,7 @@ message PlaceOrderResponse {
 }
 
 message CancelOrderRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
 }
 
@@ -66,7 +66,7 @@ message CancelOrderResponse {
 }
 
 message QueryOrderRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
 }
 
@@ -87,7 +87,7 @@ message QueryOrderResponse {
 }
 
 message QueryPositionsRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string symbol = 2; // empty = all symbols
 }
 
@@ -114,7 +114,7 @@ message Position {
 }
 
 message QueryMarginRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
 }
 
 message QueryMarginResponse {

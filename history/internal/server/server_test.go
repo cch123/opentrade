@@ -22,7 +22,7 @@ func TestGetOrder_InvalidArgs(t *testing.T) {
 	if _, err := s.GetOrder(context.Background(), connect.NewRequest(&historypb.GetOrderRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("empty user_id: got %v", err)
 	}
-	if _, err := s.GetOrder(context.Background(), connect.NewRequest(&historypb.GetOrderRequest{UserId: "u1"})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := s.GetOrder(context.Background(), connect.NewRequest(&historypb.GetOrderRequest{UserId: 101})); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("zero order_id: got %v", err)
 	}
 }
@@ -36,10 +36,10 @@ func TestGetOrder_NotFoundMapsToCode(t *testing.T) {
 	s := New(mysqlstore.NewStoreWithDB(db, time.Second))
 
 	mock.ExpectQuery(regexp.QuoteMeta("FROM orders WHERE order_id = ? AND user_id = ?")).
-		WithArgs(uint64(1), "u1").
+		WithArgs(uint64(1), 101).
 		WillReturnRows(sqlmock.NewRows(nil))
 
-	_, err = s.GetOrder(context.Background(), connect.NewRequest(&historypb.GetOrderRequest{UserId: "u1", OrderId: 1}))
+	_, err = s.GetOrder(context.Background(), connect.NewRequest(&historypb.GetOrderRequest{UserId: 101, OrderId: 1}))
 	if connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("code = %v want NotFound; err = %v", connect.CodeOf(err), err)
 	}
@@ -67,7 +67,7 @@ func TestListOrders_ScopeTranslatesToStatuses(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(cols))
 
 	_, err = s.ListOrders(context.Background(), connect.NewRequest(&historypb.ListOrdersRequest{
-		UserId: "u1",
+		UserId: 101,
 		Scope:  historypb.OrderScope_ORDER_SCOPE_OPEN,
 	}))
 	if err != nil {
@@ -98,7 +98,7 @@ func TestListOrders_ExplicitStatusesWinOverScope(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(cols))
 
 	_, err = s.ListOrders(context.Background(), connect.NewRequest(&historypb.ListOrdersRequest{
-		UserId:   "u1",
+		UserId:   101,
 		Scope:    historypb.OrderScope_ORDER_SCOPE_ALL,
 		Statuses: []historypb.OrderStatus{historypb.OrderStatus_ORDER_STATUS_FILLED},
 	}))
@@ -116,7 +116,7 @@ func TestListOrders_InvalidCursorMapsToInvalidArgument(t *testing.T) {
 	s := New(mysqlstore.NewStoreWithDB(db, time.Second))
 
 	_, err := s.ListOrders(context.Background(), connect.NewRequest(&historypb.ListOrdersRequest{
-		UserId: "u1",
+		UserId: 101,
 		Cursor: "!!!", // not valid base64
 	}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {

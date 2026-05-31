@@ -80,8 +80,8 @@ type placeOrderBody struct {
 	OrderType     string `json:"order_type"` // "limit" / "market"
 	TIF           string `json:"tif"`        // "gtc" / "ioc" / "fok" / "post_only"; ignored for market
 	Price         string `json:"price,omitempty"`
-	Qty           string `json:"qty,omitempty"`        // base qty; empty for market buy with quote_qty
-	QuoteQty      string `json:"quote_qty,omitempty"`  // market buy quote budget (BN quoteOrderQty, ADR-0035)
+	Qty           string `json:"qty,omitempty"`       // base qty; empty for market buy with quote_qty
+	QuoteQty      string `json:"quote_qty,omitempty"` // market buy quote budget (BN quoteOrderQty, ADR-0035)
 
 	// Optional slippage protection for market orders (ADR-0035 §路径 B).
 	// When SlippageBps > 0 the client MUST also supply LastPrice; BFF

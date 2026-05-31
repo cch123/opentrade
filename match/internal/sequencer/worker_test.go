@@ -10,7 +10,7 @@ import (
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-func newLimitOrder(id uint64, user string, side orderbook.Side, price, qty string) *orderbook.Order {
+func newLimitOrder(id uint64, user uint64, side orderbook.Side, price, qty string) *orderbook.Order {
 	p := dec.Zero
 	if price != "" {
 		p = dec.New(price)
@@ -52,8 +52,8 @@ func TestWorkerProcessesInFIFOOrder(t *testing.T) {
 	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
 	// Place ask 100@1, then bid 100@1 — expect one trade.
-	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "m1", orderbook.Ask, "100", "1")})
-	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(2, "t1", orderbook.Bid, "100", "1")})
+	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, 2001, orderbook.Ask, "100", "1")})
+	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(2, 3001, orderbook.Bid, "100", "1")})
 
 	// Give the worker a tick to drain, then shut down.
 	collect := runWorker(t, w, outbox)
@@ -78,8 +78,8 @@ func TestWorkerCancelEmitsCancelled(t *testing.T) {
 	outbox := make(chan *Output, 16)
 	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
-	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "m1", orderbook.Bid, "100", "2")})
-	w.Submit(&Event{Kind: EventOrderCancel, OrderID: 1, UserID: "m1"})
+	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, 2001, orderbook.Bid, "100", "2")})
+	w.Submit(&Event{Kind: EventOrderCancel, OrderID: 1, UserID: 2001})
 
 	collect := runWorker(t, w, outbox)
 	time.Sleep(20 * time.Millisecond)
@@ -106,7 +106,7 @@ func TestWorkerCancelUnknownOrderStillEmits(t *testing.T) {
 	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
 	// Cancel for an order that was never placed on this worker's book.
-	w.Submit(&Event{Kind: EventOrderCancel, Symbol: "BTC-USDT", OrderID: 999, UserID: "u1"})
+	w.Submit(&Event{Kind: EventOrderCancel, Symbol: "BTC-USDT", OrderID: 999, UserID: 1001})
 
 	collect := runWorker(t, w, outbox)
 	time.Sleep(20 * time.Millisecond)
@@ -121,7 +121,7 @@ func TestWorkerCancelUnknownOrderStillEmits(t *testing.T) {
 	if got[0].MatchSeq != 1 {
 		t.Errorf("match_seq = %d, want 1 (invariant: every input bumps seq)", got[0].MatchSeq)
 	}
-	if got[0].OrderID != 999 || got[0].UserID != "u1" || got[0].Symbol != "BTC-USDT" {
+	if got[0].OrderID != 999 || got[0].UserID != 1001 || got[0].Symbol != "BTC-USDT" {
 		t.Errorf("identity mismatch: %+v", got[0])
 	}
 	if got[0].FilledQty.String() != "0" {
@@ -133,8 +133,8 @@ func TestWorkerDedupDuplicateOrderID(t *testing.T) {
 	outbox := make(chan *Output, 16)
 	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
-	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "m1", orderbook.Bid, "100", "1")})
-	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "m1", orderbook.Bid, "100", "1")})
+	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, 2001, orderbook.Bid, "100", "1")})
+	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, 2001, orderbook.Bid, "100", "1")})
 
 	collect := runWorker(t, w, outbox)
 	time.Sleep(20 * time.Millisecond)
@@ -152,7 +152,7 @@ func TestWorkerRejectsWrongSymbol(t *testing.T) {
 	outbox := make(chan *Output, 8)
 	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8}, outbox, nil)
 
-	o := newLimitOrder(1, "u1", orderbook.Bid, "100", "1")
+	o := newLimitOrder(1, 1001, orderbook.Bid, "100", "1")
 	o.Symbol = "ETH-USDT"
 	w.Submit(&Event{Kind: EventOrderPlaced, Order: o})
 
@@ -172,9 +172,9 @@ func TestWorkerSTPRejection(t *testing.T) {
 	outbox := make(chan *Output, 8)
 	w := NewSymbolWorker(Config{Symbol: "BTC-USDT", Inbox: 8, STPMode: engine.STPRejectTaker}, outbox, nil)
 
-	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, "u1", orderbook.Ask, "100", "1")})
+	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(1, 1001, orderbook.Ask, "100", "1")})
 	// Same user on the other side would self-trade → rejected.
-	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(2, "u1", orderbook.Bid, "100", "1")})
+	w.Submit(&Event{Kind: EventOrderPlaced, Order: newLimitOrder(2, 1001, orderbook.Bid, "100", "1")})
 
 	collect := runWorker(t, w, outbox)
 	time.Sleep(20 * time.Millisecond)

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,7 +71,9 @@ type Config struct {
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if uid := r.Header.Get(HeaderUserID); uid != "" {
-			r = r.WithContext(WithUserID(r.Context(), uid))
+			if parsed, err := parseUserID(uid); err == nil {
+				r = r.WithContext(WithUserID(r.Context(), parsed))
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -143,7 +146,7 @@ const (
 // schemes such as the trusted header.
 type authResult struct {
 	state  authState
-	userID string
+	userID uint64
 	role   string
 }
 
@@ -154,7 +157,7 @@ func wrap(fn authFn) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			res := fn(r)
-			if res.state == authSuccess && res.userID != "" {
+			if res.state == authSuccess && res.userID != 0 {
 				ctx := WithUserID(r.Context(), res.userID)
 				role := res.role
 				if role == "" {
@@ -169,9 +172,13 @@ func wrap(fn authFn) func(http.Handler) http.Handler {
 }
 
 func authHeader(r *http.Request) authResult {
-	uid := r.Header.Get(HeaderUserID)
-	if uid == "" {
+	raw := r.Header.Get(HeaderUserID)
+	if raw == "" {
 		return authResult{}
+	}
+	uid, err := parseUserID(raw)
+	if err != nil {
+		return authResult{state: authFailure}
 	}
 	return authResult{state: authSuccess, userID: uid, role: RoleUser}
 }
@@ -222,8 +229,8 @@ func authFirstMatch(fns ...authFn) authFn {
 	}
 }
 
-// WithUserID attaches a user id to ctx.
-func WithUserID(ctx context.Context, userID string) context.Context {
+// WithUserID attaches a numeric user id to ctx.
+func WithUserID(ctx context.Context, userID uint64) context.Context {
 	return context.WithValue(ctx, ctxKeyUserID, userID)
 }
 
@@ -232,13 +239,21 @@ func WithRole(ctx context.Context, role string) context.Context {
 	return context.WithValue(ctx, ctxKeyRole, role)
 }
 
-// UserID retrieves the user id attached by Middleware, or ErrMissingUserID.
-func UserID(ctx context.Context) (string, error) {
-	v, ok := ctx.Value(ctxKeyUserID).(string)
-	if !ok || v == "" {
-		return "", ErrMissingUserID
+// UserID retrieves the numeric user id attached by Middleware, or ErrMissingUserID.
+func UserID(ctx context.Context) (uint64, error) {
+	v, ok := ctx.Value(ctxKeyUserID).(uint64)
+	if !ok || v == 0 {
+		return 0, ErrMissingUserID
 	}
 	return v, nil
+}
+
+func parseUserID(raw string) (uint64, error) {
+	uid, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || uid == 0 {
+		return 0, ErrMissingUserID
+	}
+	return uid, nil
 }
 
 // Role retrieves the role attached by Middleware. Unauthenticated requests

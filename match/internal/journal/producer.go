@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -173,7 +174,7 @@ func (p *TradeProducer) encodeBatch(batch []*sequencer.Output) ([]*kgo.Record, e
 		for _, target := range outputTargets(out, p.cfg.VShardCount) {
 			recs = append(recs, &kgo.Record{
 				Topic:     p.cfg.Topic,
-				Key:       []byte(target.userID),
+				Key:       []byte(strconv.FormatUint(target.userID, 10)),
 				Value:     payload,
 				Partition: int32(target.partition),
 			})
@@ -185,7 +186,7 @@ func (p *TradeProducer) encodeBatch(batch []*sequencer.Output) ([]*kgo.Record, e
 // routeTarget is one (user_id → vshard partition) tuple. Trade
 // Outputs expand to two when maker != taker; everything else is one.
 type routeTarget struct {
-	userID    string
+	userID    uint64
 	partition int
 }
 
@@ -194,7 +195,7 @@ type routeTarget struct {
 // emits one record per side (collapsing to a single record on
 // self-trade). Every other OutputKind is tied to one user (out.UserID).
 func outputTargets(out *sequencer.Output, vshardCount int) []routeTarget {
-	if out.Kind == sequencer.OutputTrade && out.MakerUserID != "" && out.MakerUserID != out.UserID {
+	if out.Kind == sequencer.OutputTrade && out.MakerUserID != 0 && out.MakerUserID != out.UserID {
 		return []routeTarget{
 			{out.MakerUserID, shard.Index(out.MakerUserID, vshardCount)},
 			{out.UserID, shard.Index(out.UserID, vshardCount)}, // taker side (out.UserID == taker)

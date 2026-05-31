@@ -29,11 +29,12 @@ func NewAssetHolderServer(svc *service.Service) *AssetHolderServer {
 }
 
 type holderInput struct {
-	user, transferID, asset, amount string
+	user                      uint64
+	transferID, asset, amount string
 }
 
-func parseHolder(user, transferID, asset, amount string) (holderInput, dec.Decimal, error) {
-	if user == "" {
+func parseHolder(user uint64, transferID, asset, amount string) (holderInput, dec.Decimal, error) {
+	if user == 0 {
 		return holderInput{}, dec.Decimal{}, errors.New("user_id required")
 	}
 	if transferID == "" {

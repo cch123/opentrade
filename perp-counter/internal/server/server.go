@@ -57,7 +57,7 @@ func (s *Server) QueryOrder(_ context.Context, req *connect.Request[perprpc.Quer
 
 func (s *Server) QueryPositions(_ context.Context, req *connect.Request[perprpc.QueryPositionsRequest]) (*connect.Response[perprpc.QueryPositionsResponse], error) {
 	user := req.Msg.GetUserId()
-	if user == "" {
+	if user == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	var src []perpstate.Position
@@ -78,7 +78,7 @@ func (s *Server) QueryPositions(_ context.Context, req *connect.Request[perprpc.
 
 func (s *Server) QueryMargin(_ context.Context, req *connect.Request[perprpc.QueryMarginRequest]) (*connect.Response[perprpc.QueryMarginResponse], error) {
 	user := req.Msg.GetUserId()
-	if user == "" {
+	if user == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	w := s.eng.WalletOf(user)

@@ -22,7 +22,7 @@ func TestAssetHolder_TransferInThenOut(t *testing.T) {
 	ctx := context.Background()
 
 	in, err := h.TransferIn(ctx, connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId: "u1", TransferId: "tx1", Asset: "USDT", Amount: "250"}))
+		UserId: 1001, TransferId: "tx1", Asset: "USDT", Amount: "250"}))
 	if err != nil {
 		t.Fatalf("transfer in: %v", err)
 	}
@@ -34,15 +34,15 @@ func TestAssetHolder_TransferInThenOut(t *testing.T) {
 	}
 
 	out, err := h.TransferOut(ctx, connect.NewRequest(&assetholderrpc.TransferOutRequest{
-		UserId: "u1", TransferId: "tx2", Asset: "USDT", Amount: "100"}))
+		UserId: 1001, TransferId: "tx2", Asset: "USDT", Amount: "100"}))
 	if err != nil {
 		t.Fatalf("transfer out: %v", err)
 	}
 	if out.Msg.GetAvailableAfter() != "150" {
 		t.Fatalf("available_after = %s, want 150", out.Msg.GetAvailableAfter())
 	}
-	if eng.WalletOf("u1").Available.String() != "150" {
-		t.Fatalf("wallet = %s, want 150", eng.WalletOf("u1").Available)
+	if eng.WalletOf(1001).Available.String() != "150" {
+		t.Fatalf("wallet = %s, want 150", eng.WalletOf(1001).Available)
 	}
 }
 
@@ -52,7 +52,7 @@ func TestAssetHolder_RejectAndDuplicate(t *testing.T) {
 
 	// Over-withdraw on an empty wallet → REJECTED / INSUFFICIENT_BALANCE.
 	rej, err := h.TransferOut(ctx, connect.NewRequest(&assetholderrpc.TransferOutRequest{
-		UserId: "u1", TransferId: "tx1", Asset: "USDT", Amount: "5"}))
+		UserId: 1001, TransferId: "tx1", Asset: "USDT", Amount: "5"}))
 	if err != nil {
 		t.Fatalf("transfer out: %v", err)
 	}
@@ -63,9 +63,9 @@ func TestAssetHolder_RejectAndDuplicate(t *testing.T) {
 
 	// Idempotent credit.
 	h.TransferIn(ctx, connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId: "u1", TransferId: "dep", Asset: "USDT", Amount: "10"}))
+		UserId: 1001, TransferId: "dep", Asset: "USDT", Amount: "10"}))
 	dup, _ := h.TransferIn(ctx, connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId: "u1", TransferId: "dep", Asset: "USDT", Amount: "10"}))
+		UserId: 1001, TransferId: "dep", Asset: "USDT", Amount: "10"}))
 	if dup.Msg.GetStatus() != assetholderrpc.TransferStatus_TRANSFER_STATUS_DUPLICATED {
 		t.Fatalf("repeat status = %v, want duplicated", dup.Msg.GetStatus())
 	}
@@ -75,11 +75,12 @@ func TestAssetHolder_Validation(t *testing.T) {
 	h, _ := newHolder()
 	ctx := context.Background()
 	bad := []*assetholderrpc.TransferInRequest{
-		{UserId: "", TransferId: "t", Asset: "USDT", Amount: "1"},
-		{UserId: "u1", TransferId: "", Asset: "USDT", Amount: "1"},
-		{UserId: "u1", TransferId: "t", Asset: "", Amount: "1"},
-		{UserId: "u1", TransferId: "t", Asset: "USDT", Amount: "0"},
-		{UserId: "u1", TransferId: "t", Asset: "USDT", Amount: "-5"},
+		{UserId: 0, TransferId: "t", Asset: "USDT", Amount: "1"},
+		{UserId: 1001, TransferId: "t", Asset: "USDT", Amount: "abc"},
+		{UserId: 1001, TransferId: "", Asset: "USDT", Amount: "1"},
+		{UserId: 1001, TransferId: "t", Asset: "", Amount: "1"},
+		{UserId: 1001, TransferId: "t", Asset: "USDT", Amount: "0"},
+		{UserId: 1001, TransferId: "t", Asset: "USDT", Amount: "-5"},
 	}
 	for i, req := range bad {
 		if _, err := h.TransferIn(ctx, connect.NewRequest(req)); err == nil {

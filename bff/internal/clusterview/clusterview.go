@@ -160,7 +160,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 // owner node isn't registered. Callers treat ok=false as
 // "FailedPrecondition" — the BFF has stale routing info and should
 // Resync + retry (ADR-0058 §5).
-func (w *Watcher) Lookup(userID string) (endpoint string, ok bool) {
+func (w *Watcher) Lookup(userID uint64) (endpoint string, ok bool) {
 	vid := shard.Index(userID, w.vshardCount)
 	w.mu.RLock()
 	defer w.mu.RUnlock()

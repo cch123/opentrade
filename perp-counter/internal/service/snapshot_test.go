@@ -20,9 +20,9 @@ func restoreInto(engSnap engine.Snapshot, svcSnap Snapshot, cfg Config) (*Servic
 
 func TestSnapshot_OrderAndOffsetRoundTrip(t *testing.T) {
 	svc, eng, _, _ := newSvc()
-	eng.Deposit("u1", dec.New("1000"))
-	r, _ := svc.PlaceOrder(placeReq("u1", perpSym, eventpb.Side_SIDE_BUY, "100", "2", "10", false))
-	svc.HandleTradeEvent(acceptedEvt(1, "u1", r.OrderId), 3, 70) // NEW + offset[3]=71
+	eng.Deposit(user1, dec.New("1000"))
+	r, _ := svc.PlaceOrder(placeReq(user1, perpSym, eventpb.Side_SIDE_BUY, "100", "2", "10", false))
+	svc.HandleTradeEvent(acceptedEvt(1, user1s, r.OrderId), 3, 70) // NEW + offset[3]=71
 
 	engSnap, svcSnap, err := svc.Capture(nil)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestSnapshot_OrderAndOffsetRoundTrip(t *testing.T) {
 
 	svc2, eng2 := restoreInto(engSnap, svcSnap, Config{MaxLeverage: dec.New("100"), ProducerID: "p"})
 
-	q, ok := svc2.QueryOrder(queryReq("u1", r.OrderId))
+	q, ok := svc2.QueryOrder(queryReq(user1, r.OrderId))
 	if !ok {
 		t.Fatal("order not restored")
 	}
@@ -45,17 +45,17 @@ func TestSnapshot_OrderAndOffsetRoundTrip(t *testing.T) {
 		t.Fatalf("restored offset[3] = %d, want 71", got)
 	}
 	// Wallet (reserved IM) survived via the engine half.
-	if w := eng2.WalletOf("u1"); w.Reserved.String() != "20" {
+	if w := eng2.WalletOf(user1); w.Reserved.String() != "20" {
 		t.Fatalf("restored reserved = %s, want 20", w.Reserved)
 	}
 }
 
 func TestSnapshot_SeqCountersRoundTrip(t *testing.T) {
 	svc, eng, _, _ := newSvc()
-	eng.Deposit("u1", dec.New("1000"))
+	eng.Deposit(user1, dec.New("1000"))
 	// Two placements advance both the order-event and perp-journal sequences.
-	svc.PlaceOrder(placeReq("u1", perpSym, eventpb.Side_SIDE_BUY, "100", "1", "10", false))
-	svc.PlaceOrder(placeReq("u1", perpSym, eventpb.Side_SIDE_BUY, "100", "1", "10", false))
+	svc.PlaceOrder(placeReq(user1, perpSym, eventpb.Side_SIDE_BUY, "100", "1", "10", false))
+	svc.PlaceOrder(placeReq(user1, perpSym, eventpb.Side_SIDE_BUY, "100", "1", "10", false))
 	_, svcSnap, _ := svc.Capture(nil)
 	if svcSnap.OrderSeq == 0 || svcSnap.PerpSeq == 0 {
 		t.Fatalf("sequences not captured: order=%d perp=%d", svcSnap.OrderSeq, svcSnap.PerpSeq)
@@ -80,18 +80,18 @@ func TestSnapshot_InFlightLiquidationRoundTrip(t *testing.T) {
 	liqCfg := Config{MaxLeverage: dec.New("100"), MMR: dec.New("0.05"), ProducerID: "p"}
 	svc2, eng2 := restoreInto(engSnap, svcSnap, liqCfg)
 
-	if !svc2.hasLiquidation(liqKey("u1", perpSym)) {
+	if !svc2.hasLiquidation(liqKey(user1, perpSym)) {
 		t.Fatal("in-flight liquidation guard not restored")
 	}
 	if svc2.liquidationFor(bankID) == nil {
 		t.Fatal("bankruptcy order → liquidation mapping not restored")
 	}
-	if _, ok := eng2.PositionOf("u1", perpSym); !ok {
+	if _, ok := eng2.PositionOf(user1, perpSym); !ok {
 		t.Fatal("liquidated position not restored")
 	}
 	// The restored bankruptcy order can still settle to insurance.
 	liqFill(svc2, bankID, "90", "1", 5)
-	if _, ok := eng2.PositionOf("u1", perpSym); ok {
+	if _, ok := eng2.PositionOf(user1, perpSym); ok {
 		t.Fatal("position should close on the post-restore liquidation fill")
 	}
 }

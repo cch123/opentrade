@@ -11,6 +11,8 @@
 package journal
 
 import (
+	"strconv"
+
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
@@ -27,27 +29,36 @@ func orderEventTopicFor(prefix, symbol string) string {
 }
 
 // journalPartitionKey extracts the user_id a perp-journal record is keyed by
-// (perp_journal.proto: partition key is user_id). Every payload variant carries
-// a user_id; an unrecognized/empty payload returns "" (default partitioner).
+// (perp_journal.proto: partition key is user_id). System-level risk-pool
+// settlement events have no user and return "" (default partitioner).
 func journalPartitionKey(evt *eventpb.PerpJournalEvent) string {
 	switch p := evt.GetPayload().(type) {
 	case *eventpb.PerpJournalEvent_OrderStatus:
-		return p.OrderStatus.GetUserId()
+		return journalUserKey(p.OrderStatus.GetUserId())
 	case *eventpb.PerpJournalEvent_Settlement:
-		return p.Settlement.GetUserId()
+		return journalUserKey(p.Settlement.GetUserId())
 	case *eventpb.PerpJournalEvent_Margin:
-		return p.Margin.GetUserId()
+		return journalUserKey(p.Margin.GetUserId())
 	case *eventpb.PerpJournalEvent_Funding:
-		return p.Funding.GetUserId()
+		return journalUserKey(p.Funding.GetUserId())
 	case *eventpb.PerpJournalEvent_Liquidation:
-		return p.Liquidation.GetUserId()
+		return journalUserKey(p.Liquidation.GetUserId())
 	case *eventpb.PerpJournalEvent_Takeover:
-		return p.Takeover.GetUserId()
+		return journalUserKey(p.Takeover.GetUserId())
 	case *eventpb.PerpJournalEvent_Adl:
-		return p.Adl.GetUserId()
+		return journalUserKey(p.Adl.GetUserId())
+	case *eventpb.PerpJournalEvent_RiskPoolSettlement:
+		return ""
 	default:
 		return ""
 	}
+}
+
+func journalUserKey(userID uint64) string {
+	if userID == 0 {
+		return ""
+	}
+	return strconv.FormatUint(userID, 10)
 }
 
 // orderEventKey returns the Kafka record key for an order-event. Match consumes

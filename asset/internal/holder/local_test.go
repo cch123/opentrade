@@ -37,7 +37,7 @@ func (f *fakeFundingStore) Compensate(ctx context.Context, req store.Request) (s
 	return f.TransferIn(ctx, req)
 }
 
-func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID, asset string) ([]store.FundingBalance, error) {
+func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID uint64, asset string) ([]store.FundingBalance, error) {
 	acc := f.state.Account(userID)
 	if asset != "" {
 		return []store.FundingBalance{{Asset: asset, Balance: acc.Balance(asset)}}, nil
@@ -80,7 +80,7 @@ func newLocal(t *testing.T) *LocalFundingClient {
 func TestLocal_TransferIn_Confirmed(t *testing.T) {
 	c := newLocal(t)
 	res, err := c.TransferIn(context.Background(), Request{
-		UserID: "u1", TransferID: "t1", Asset: "USDT", Amount: "100", PeerBiz: "spot",
+		UserID: 101, TransferID: "t1", Asset: "USDT", Amount: "100", PeerBiz: "spot",
 	})
 	if err != nil {
 		t.Fatalf("in: %v", err)
@@ -93,7 +93,7 @@ func TestLocal_TransferIn_Confirmed(t *testing.T) {
 func TestLocal_TransferOut_Insufficient(t *testing.T) {
 	c := newLocal(t)
 	res, err := c.TransferOut(context.Background(), Request{
-		UserID: "u1", TransferID: "t1", Asset: "USDT", Amount: "100", PeerBiz: "spot",
+		UserID: 101, TransferID: "t1", Asset: "USDT", Amount: "100", PeerBiz: "spot",
 	})
 	if err != nil {
 		t.Fatalf("out: %v", err)
@@ -108,7 +108,7 @@ func TestLocal_TransferOut_Insufficient(t *testing.T) {
 
 func TestLocal_Idempotent(t *testing.T) {
 	c := newLocal(t)
-	req := Request{UserID: "u1", TransferID: "t1", Asset: "USDT", Amount: "10", PeerBiz: "spot"}
+	req := Request{UserID: 101, TransferID: "t1", Asset: "USDT", Amount: "10", PeerBiz: "spot"}
 	if _, err := c.TransferIn(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -125,10 +125,10 @@ func TestLocal_ValidationRejects(t *testing.T) {
 	c := newLocal(t)
 	bad := []Request{
 		{TransferID: "t", Asset: "USDT", Amount: "1"},
-		{UserID: "u1", Asset: "USDT", Amount: "1"},
-		{UserID: "u1", TransferID: "t", Amount: "1"},
-		{UserID: "u1", TransferID: "t", Asset: "USDT", Amount: "0"},
-		{UserID: "u1", TransferID: "t", Asset: "USDT", Amount: "abc"},
+		{UserID: 101, Asset: "USDT", Amount: "1"},
+		{UserID: 101, TransferID: "t", Amount: "1"},
+		{UserID: 101, TransferID: "t", Asset: "USDT", Amount: "0"},
+		{UserID: 101, TransferID: "t", Asset: "USDT", Amount: "abc"},
 	}
 	for i, r := range bad {
 		res, err := c.TransferIn(context.Background(), r)

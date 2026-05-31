@@ -1,7 +1,6 @@
 package clusterview
 
 import (
-	"strconv"
 	"testing"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -32,15 +31,15 @@ func TestLookup_ActiveOwner(t *testing.T) {
 	u42 := firstUserHashingTo(t, 42, 256)
 
 	if ep, ok := w.Lookup(u0); !ok || ep != "10.0.0.1:8081" {
-		t.Errorf("Lookup(%q) = (%q, %v), want node-A endpoint", u0, ep, ok)
+		t.Errorf("Lookup(%d) = (%q, %v), want node-A endpoint", u0, ep, ok)
 	}
 	if ep, ok := w.Lookup(u42); !ok || ep != "10.0.0.2:8081" {
-		t.Errorf("Lookup(%q) = (%q, %v), want node-B endpoint", u42, ep, ok)
+		t.Errorf("Lookup(%d) = (%q, %v), want node-B endpoint", u42, ep, ok)
 	}
 
-	if u99 := firstUserHashingToOrEmpty(99, 256); u99 != "" {
+	if u99 := firstUserHashingToOrEmpty(99, 256); u99 != 0 {
 		if ep, ok := w.Lookup(u99); ok {
-			t.Errorf("Lookup(%q) on MIGRATING vshard = (%q, true), want false", u99, ep)
+			t.Errorf("Lookup(%d) on MIGRATING vshard = (%q, true), want false", u99, ep)
 		}
 	}
 }
@@ -92,21 +91,21 @@ func fakeClient() *clientv3.Client {
 	return &clientv3.Client{}
 }
 
-func firstUserHashingTo(t *testing.T, target, n int) string {
+func firstUserHashingTo(t *testing.T, target, n int) uint64 {
 	t.Helper()
-	if u := firstUserHashingToOrEmpty(target, n); u != "" {
+	if u := firstUserHashingToOrEmpty(target, n); u != 0 {
 		return u
 	}
 	t.Fatalf("no user in test pool hashes to vshard %d (n=%d)", target, n)
-	return ""
+	return 0
 }
 
-func firstUserHashingToOrEmpty(target, n int) string {
-	for i := 0; i < 100_000; i++ {
-		u := "u-" + strconv.Itoa(i)
+func firstUserHashingToOrEmpty(target, n int) uint64 {
+	for i := uint64(1); i < 100_000; i++ {
+		u := 1000 + i
 		if shard.Index(u, n) == target {
 			return u
 		}
 	}
-	return ""
+	return 0
 }

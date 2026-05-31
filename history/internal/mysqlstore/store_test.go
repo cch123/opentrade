@@ -32,16 +32,16 @@ func TestGetOrder_FoundAndNotFound(t *testing.T) {
 		"status", "reject_reason",
 		"created_at_ms", "updated_at_ms",
 	}).AddRow(
-		uint64(42), "cli-1", "u1", "BTC-USDT",
+		uint64(42), "cli-1", 101, "BTC-USDT",
 		int8(1), int8(1), int8(1),
 		"100", "1", "0.5", "100",
 		int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED), int8(0),
 		int64(1_700_000_000_000), int64(1_700_000_001_000),
 	)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM orders WHERE order_id = ? AND user_id = ?")).
-		WithArgs(uint64(42), "u1").WillReturnRows(rows)
+		WithArgs(uint64(42), 101).WillReturnRows(rows)
 
-	o, err := store.GetOrder(context.Background(), "u1", 42)
+	o, err := store.GetOrder(context.Background(), 101, 42)
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
 	}
@@ -54,8 +54,8 @@ func TestGetOrder_FoundAndNotFound(t *testing.T) {
 
 	// NotFound path.
 	mock.ExpectQuery(regexp.QuoteMeta("FROM orders WHERE order_id = ? AND user_id = ?")).
-		WithArgs(uint64(99), "u1").WillReturnRows(sqlmock.NewRows(nil))
-	if _, err := store.GetOrder(context.Background(), "u1", 99); err != ErrNotFound {
+		WithArgs(uint64(99), 101).WillReturnRows(sqlmock.NewRows(nil))
+	if _, err := store.GetOrder(context.Background(), 101, 99); err != ErrNotFound {
 		t.Fatalf("err = %v want ErrNotFound", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -85,13 +85,13 @@ func TestListOrders_ProducesNextCursor(t *testing.T) {
 		"created_at_ms", "updated_at_ms",
 	}
 	rows := sqlmock.NewRows(cols).
-		AddRow(uint64(3), "", "u1", "BTC-USDT", int8(1), int8(1), int8(1), "100", "1", "0", "100", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW), int8(0), int64(300), int64(300)).
-		AddRow(uint64(2), "", "u1", "BTC-USDT", int8(1), int8(1), int8(1), "100", "1", "0", "100", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW), int8(0), int64(200), int64(200)).
-		AddRow(uint64(1), "", "u1", "BTC-USDT", int8(1), int8(1), int8(1), "100", "1", "0", "100", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW), int8(0), int64(100), int64(100))
+		AddRow(uint64(3), "", 101, "BTC-USDT", int8(1), int8(1), int8(1), "100", "1", "0", "100", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW), int8(0), int64(300), int64(300)).
+		AddRow(uint64(2), "", 101, "BTC-USDT", int8(1), int8(1), int8(1), "100", "1", "0", "100", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW), int8(0), int64(200), int64(200)).
+		AddRow(uint64(1), "", 101, "BTC-USDT", int8(1), int8(1), int8(1), "100", "1", "0", "100", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW), int8(0), int64(100), int64(100))
 
 	mock.ExpectQuery("FROM orders").WillReturnRows(rows)
 
-	out, next, err := store.ListOrders(context.Background(), OrdersFilter{UserID: "u1"}, "", 2)
+	out, next, err := store.ListOrders(context.Background(), OrdersFilter{UserID: 101}, "", 2)
 	if err != nil {
 		t.Fatalf("ListOrders: %v", err)
 	}
@@ -128,12 +128,12 @@ func TestListOrders_EndOfStreamEmptyCursor(t *testing.T) {
 	}
 	// limit=5 but only 2 rows → no next cursor.
 	rows := sqlmock.NewRows(cols).
-		AddRow(uint64(2), "", "u1", "", int8(1), int8(1), int8(1), "0", "0", "0", "0", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED), int8(0), int64(200), int64(200)).
-		AddRow(uint64(1), "", "u1", "", int8(1), int8(1), int8(1), "0", "0", "0", "0", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED), int8(0), int64(100), int64(100))
+		AddRow(uint64(2), "", 101, "", int8(1), int8(1), int8(1), "0", "0", "0", "0", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED), int8(0), int64(200), int64(200)).
+		AddRow(uint64(1), "", 101, "", int8(1), int8(1), int8(1), "0", "0", "0", "0", int8(eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED), int8(0), int64(100), int64(100))
 
 	mock.ExpectQuery("FROM orders").WillReturnRows(rows)
 
-	out, next, err := store.ListOrders(context.Background(), OrdersFilter{UserID: "u1"}, "", 5)
+	out, next, err := store.ListOrders(context.Background(), OrdersFilter{UserID: 101}, "", 5)
 	if err != nil {
 		t.Fatalf("ListOrders: %v", err)
 	}
@@ -201,12 +201,12 @@ func TestListAccountLogs_Basic(t *testing.T) {
 		"biz_type", "biz_ref_id", "ts",
 	}
 	rows := sqlmock.NewRows(cols).
-		AddRow(int32(3), uint64(10), "USDT", "u1", "-100", "100", "900", "100", "freeze_place_order", "42", int64(1_700_000_000_000))
+		AddRow(int32(3), uint64(10), "USDT", 101, "-100", "100", "900", "100", "freeze_place_order", "42", int64(1_700_000_000_000))
 
 	mock.ExpectQuery("FROM account_logs").WillReturnRows(rows)
 
 	out, next, err := store.ListAccountLogs(context.Background(),
-		AccountLogsFilter{UserID: "u1"}, "", 10)
+		AccountLogsFilter{UserID: 101}, "", 10)
 	if err != nil {
 		t.Fatalf("ListAccountLogs: %v", err)
 	}

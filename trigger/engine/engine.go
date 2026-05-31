@@ -33,8 +33,8 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 )
@@ -100,25 +100,25 @@ type Reservations interface {
 // Trigger record (in-memory twin of the proto wire form).
 // -----------------------------------------------------------------------------
 
-// Trigger holds the parsed numeric state for speed. External surfaces
-// (ToProto) re-stringify on the way out.
+// Trigger holds the parsed decimal state for speed while preserving the
+// project-wide uint64 user id contract at every internal boundary.
 type Trigger struct {
-	ID            uint64
-	ClientTriggerID  string
-	UserID        string
-	Symbol        string
-	Side          eventpb.Side
-	Type          condrpc.TriggerType
-	StopPrice     dec.Decimal
-	LimitPrice    dec.Decimal
-	Qty           dec.Decimal
-	QuoteQty      dec.Decimal
-	TIF           eventpb.TimeInForce
-	Status        condrpc.TriggerStatus
-	CreatedAtMs   int64
-	TriggeredAtMs int64
-	PlacedOrderID uint64
-	RejectReason  string
+	ID              uint64
+	ClientTriggerID string
+	UserID          uint64
+	Symbol          string
+	Side            eventpb.Side
+	Type            condrpc.TriggerType
+	StopPrice       dec.Decimal
+	LimitPrice      dec.Decimal
+	Qty             dec.Decimal
+	QuoteQty        dec.Decimal
+	TIF             eventpb.TimeInForce
+	Status          condrpc.TriggerStatus
+	CreatedAtMs     int64
+	TriggeredAtMs   int64
+	PlacedOrderID   uint64
+	RejectReason    string
 	// ExpiresAtMs, when > 0, is the absolute wall-clock ms at which a
 	// PENDING trigger flips to EXPIRED via SweepExpired (ADR-0043).
 	ExpiresAtMs int64
@@ -197,7 +197,7 @@ type Engine struct {
 	// activeTriggers counts pending triggers per (user, symbol) for
 	// the ADR-0054 slot cap. Derived index, rebuilt from pending on
 	// Restore — not persisted.
-	activeTriggers map[string]map[string]int
+	activeTriggers map[uint64]map[string]int
 
 	journal JournalSink // may be nil; set via SetJournal at main wiring time (ADR-0047)
 }
@@ -241,18 +241,18 @@ func New(cfg Config, idgen IDGen, placer OrderPlacer, reserver Reservations, log
 		cfg.TerminalHistoryLimit = 0
 	}
 	return &Engine{
-		cfg:                cfg,
-		idgen:              idgen,
-		placer:             placer,
-		reserver:           reserver,
-		logger:             logger,
-		pending:            make(map[uint64]*Trigger),
-		terminals:          make(map[uint64]*Trigger),
-		byClient:           make(map[string]uint64),
-		ocoByClient:        make(map[string]string),
-		lastPrice:          make(map[string]dec.Decimal),
-		offsets:            make(map[int32]int64),
-		activeTriggers: make(map[string]map[string]int),
+		cfg:            cfg,
+		idgen:          idgen,
+		placer:         placer,
+		reserver:       reserver,
+		logger:         logger,
+		pending:        make(map[uint64]*Trigger),
+		terminals:      make(map[uint64]*Trigger),
+		byClient:       make(map[string]uint64),
+		ocoByClient:    make(map[string]string),
+		lastPrice:      make(map[string]dec.Decimal),
+		offsets:        make(map[int32]int64),
+		activeTriggers: make(map[uint64]map[string]int),
 	}
 }
 
@@ -270,7 +270,7 @@ func (e *Engine) capActiveTriggersLocked(symbol string) uint32 {
 
 // incActiveTriggerLocked / decActiveTriggerLocked maintain the
 // per-(user, symbol) pending counter. Callers must hold e.mu.
-func (e *Engine) incActiveTriggerLocked(userID, symbol string) {
+func (e *Engine) incActiveTriggerLocked(userID uint64, symbol string) {
 	bySymbol, ok := e.activeTriggers[userID]
 	if !ok {
 		bySymbol = make(map[string]int)
@@ -279,7 +279,7 @@ func (e *Engine) incActiveTriggerLocked(userID, symbol string) {
 	bySymbol[symbol]++
 }
 
-func (e *Engine) decActiveTriggerLocked(userID, symbol string) {
+func (e *Engine) decActiveTriggerLocked(userID uint64, symbol string) {
 	bySymbol, ok := e.activeTriggers[userID]
 	if !ok {
 		return
@@ -295,7 +295,7 @@ func (e *Engine) decActiveTriggerLocked(userID, symbol string) {
 
 // CountActiveTriggers returns the number of pending triggers user
 // currently holds on symbol. Used by tests and for admin surfacing.
-func (e *Engine) CountActiveTriggers(userID, symbol string) int {
+func (e *Engine) CountActiveTriggers(userID uint64, symbol string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	bySymbol, ok := e.activeTriggers[userID]
@@ -404,7 +404,7 @@ type OCOLegResult struct {
 // hangs off `clientOCOID`: a duplicate call with the same id returns the
 // prior group's ids + accepted=false. Per-leg `client_trigger_id`s
 // still dedup independently.
-func (e *Engine) PlaceOCO(ctx context.Context, userID, clientOCOID string, legs []*condrpc.PlaceTriggerRequest) (groupID string, results []OCOLegResult, accepted bool, err error) {
+func (e *Engine) PlaceOCO(ctx context.Context, userID uint64, clientOCOID string, legs []*condrpc.PlaceTriggerRequest) (groupID string, results []OCOLegResult, accepted bool, err error) {
 	if len(legs) < 2 {
 		return "", nil, false, ErrOCONeedsTwoLegs
 	}
@@ -415,7 +415,7 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID, clientOCOID string, legs 
 			return "", nil, false, fmt.Errorf("trigger: OCO leg %d is nil", i)
 		}
 		// Force leg.user_id = outer user_id (defensive).
-		if lreq.UserId == "" {
+		if lreq.UserId == 0 {
 			lreq.UserId = userID
 		} else if lreq.UserId != userID {
 			return "", nil, false, ErrOCOUserMismatch
@@ -546,8 +546,8 @@ func (e *Engine) legResultsForGroupLocked(groupID string) []OCOLegResult {
 // Cancel transitions a PENDING trigger to CANCELED and releases its
 // reservation (if any). Returns accepted=true only when a state change
 // actually happened.
-func (e *Engine) Cancel(ctx context.Context, userID string, id uint64) (condrpc.TriggerStatus, bool, error) {
-	if userID == "" {
+func (e *Engine) Cancel(ctx context.Context, userID uint64, id uint64) (condrpc.TriggerStatus, bool, error) {
+	if userID == 0 {
 		return 0, false, ErrMissingUserID
 	}
 	e.mu.Lock()
@@ -582,7 +582,7 @@ func (e *Engine) Cancel(ctx context.Context, userID string, id uint64) (condrpc.
 
 // Get returns a clone of the stored trigger. ErrNotFound if unknown or
 // owned by another user.
-func (e *Engine) Get(userID string, id uint64) (*Trigger, error) {
+func (e *Engine) Get(userID uint64, id uint64) (*Trigger, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c := e.lookupLocked(id)
@@ -598,7 +598,7 @@ func (e *Engine) Get(userID string, id uint64) (*Trigger, error) {
 
 // List returns all records for a user. includeInactive=false only returns
 // PENDING; true returns the full retention window.
-func (e *Engine) List(userID string, includeInactive bool) []*Trigger {
+func (e *Engine) List(userID uint64, includeInactive bool) []*Trigger {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make([]*Trigger, 0)
@@ -778,7 +778,7 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 		if e.logger != nil {
 			e.logger.Warn("trigger trigger rejected",
 				zap.Uint64("id", id),
-				zap.String("user_id", c.UserID),
+				zap.Uint64("user_id", c.UserID),
 				zap.String("symbol", c.Symbol),
 				zap.String("err", c.RejectReason))
 		}
@@ -815,7 +815,7 @@ func (e *Engine) Restore(pending, terminals []*Trigger, offsets map[int32]int64)
 	defer e.mu.Unlock()
 	e.pending = make(map[uint64]*Trigger, len(pending))
 	e.byClient = make(map[string]uint64, len(pending))
-	e.activeTriggers = make(map[string]map[string]int)
+	e.activeTriggers = make(map[uint64]map[string]int)
 	for _, c := range pending {
 		cp := *c
 		e.pending[cp.ID] = &cp
@@ -906,7 +906,7 @@ func buildTrigger(req *condrpc.PlaceTriggerRequest) (*Trigger, error) {
 	if req == nil {
 		return nil, fmt.Errorf("trigger: nil request")
 	}
-	if req.UserId == "" {
+	if req.UserId == 0 {
 		return nil, ErrMissingUserID
 	}
 	if req.Symbol == "" {
@@ -984,7 +984,7 @@ func buildTrigger(req *condrpc.PlaceTriggerRequest) (*Trigger, error) {
 		return nil, err
 	}
 	return &Trigger{
-		ClientTriggerID:     req.ClientTriggerId,
+		ClientTriggerID:  req.ClientTriggerId,
 		UserID:           req.UserId,
 		Symbol:           req.Symbol,
 		Side:             req.Side,
@@ -1050,7 +1050,7 @@ func (e *Engine) SweepExpired(ctx context.Context) int {
 	nowMs := e.cfg.Clock().UnixMilli()
 	type expired struct {
 		id     uint64
-		userID string
+		userID uint64
 	}
 	var victims []expired
 	var cascaded []releaseTarget
@@ -1074,7 +1074,7 @@ func (e *Engine) SweepExpired(ctx context.Context) int {
 		if e.logger != nil {
 			e.logger.Info("trigger expired",
 				zap.Uint64("id", v.id),
-				zap.String("user_id", v.userID))
+				zap.Uint64("user_id", v.userID))
 		}
 	}
 	e.releaseAll(ctx, cascaded)
@@ -1084,7 +1084,10 @@ func (e *Engine) SweepExpired(ctx context.Context) int {
 
 // releaseTarget identifies one (user, refID) pair the cascade / OCO path
 // wants to release outside the engine lock.
-type releaseTarget struct{ userID, refID string }
+type releaseTarget struct {
+	userID uint64
+	refID  string
+}
 
 // cascadeOCOCancelLocked: if c is part of an OCO group, mark every still-
 // PENDING sibling as CANCELED and graduate them. Caller must hold e.mu.
@@ -1140,7 +1143,7 @@ func (e *Engine) refIDFor(id uint64) string { return "trig-" + formatUint(id) }
 // bestEffortRelease calls Counter.ReleaseReservation ignoring failures.
 // Used in Place dedup races, Cancel, and trigger rejection cleanup paths.
 // Release is idempotent on Counter, so retries are safe.
-func (e *Engine) bestEffortRelease(ctx context.Context, userID, refID string) {
+func (e *Engine) bestEffortRelease(ctx context.Context, userID uint64, refID string) {
 	if e.reserver == nil {
 		return
 	}
@@ -1151,7 +1154,7 @@ func (e *Engine) bestEffortRelease(ctx context.Context, userID, refID string) {
 	if err != nil && e.logger != nil {
 		e.logger.Warn("release reservation failed",
 			zap.String("ref_id", refID),
-			zap.String("user_id", userID),
+			zap.Uint64("user_id", userID),
 			zap.Error(err))
 	}
 }

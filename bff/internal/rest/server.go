@@ -5,6 +5,7 @@ package rest
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,7 +175,7 @@ func (s *Server) rateLimitMW(next http.Handler) http.Handler {
 			return
 		}
 		if uid, err := auth.UserID(r.Context()); err == nil {
-			if !s.userLimiter.Allow(uid) {
+			if !s.userLimiter.Allow(strconv.FormatUint(uid, 10)) {
 				writeError(w, http.StatusTooManyRequests, "user rate limit exceeded")
 				return
 			}

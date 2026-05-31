@@ -21,16 +21,16 @@ import (
 // received and echoes every client frame back with a "server:" prefix so
 // tests can verify both directions without depending on the real push hub.
 type fakeUpstream struct {
-	receivedUserID      string
-	receivedTrustedAuth string
-	recvMu              sync.Mutex
-	recv                [][]byte
-	ready               chan struct{}
+	receivedUserIDHeader string
+	receivedTrustedAuth  string
+	recvMu               sync.Mutex
+	recv                 [][]byte
+	ready                chan struct{}
 }
 
 func (u *fakeUpstream) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		u.receivedUserID = r.Header.Get("X-User-Id")
+		u.receivedUserIDHeader = r.Header.Get("X-User-Id")
 		u.receivedTrustedAuth = r.Header.Get("X-OpenTrade-Internal-Auth")
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
@@ -101,7 +101,7 @@ func TestProxy_ForwardsBothDirectionsAndInjectsUserID(t *testing.T) {
 	defer cancel()
 
 	header := http.Header{}
-	header.Set("X-User-Id", "alice")
+	header.Set("X-User-Id", "1001")
 	client, _, err := websocket.Dial(ctx, wsURL(proxySrv.URL), &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("client dial: %v", err)
@@ -121,8 +121,8 @@ func TestProxy_ForwardsBothDirectionsAndInjectsUserID(t *testing.T) {
 
 	// Give the upstream handler a moment to record the frame before asserting.
 	<-upstream.ready
-	if upstream.receivedUserID != "alice" {
-		t.Errorf("upstream user id: %q", upstream.receivedUserID)
+	if upstream.receivedUserIDHeader != "1001" {
+		t.Errorf("upstream user id: %q", upstream.receivedUserIDHeader)
 	}
 	if frames := upstream.frames(); len(frames) != 1 || string(frames[0]) != "hello" {
 		t.Errorf("upstream frames: %q", frames)
@@ -137,7 +137,7 @@ func TestProxy_InjectsTrustedHeaderSecret(t *testing.T) {
 	defer cancel()
 
 	header := http.Header{}
-	header.Set("X-User-Id", "alice")
+	header.Set("X-User-Id", "1001")
 	client, _, err := websocket.Dial(ctx, wsURL(proxySrv.URL), &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("client dial: %v", err)

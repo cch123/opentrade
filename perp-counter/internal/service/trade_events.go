@@ -55,9 +55,13 @@ func (s *Service) HandleTradeEvent(evt *eventpb.TradeEvent, partition int32, off
 // onto the book). No margin moves — the IM was reserved at PlaceOrder. Replays
 // (status already past PENDING_NEW) are no-ops.
 func (s *Service) handleAccepted(a *eventpb.OrderAccepted) {
-	s.seq.do(a.GetUserId(), func() {
+	user := a.GetUserId()
+	if user == 0 {
+		return
+	}
+	s.seq.do(user, func() {
 		o := s.getOrder(a.GetOrderId())
-		if o == nil || o.UserID != a.GetUserId() {
+		if o == nil || o.UserID != user {
 			return
 		}
 		if o.Status != eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW {
@@ -73,9 +77,13 @@ func (s *Service) handleAccepted(a *eventpb.OrderAccepted) {
 // handleRejected terminates an order Match refused (e.g. post-only would take,
 // symbol halted) and releases its full remaining reserved IM.
 func (s *Service) handleRejected(r *eventpb.OrderRejected) {
-	s.seq.do(r.GetUserId(), func() {
+	user := r.GetUserId()
+	if user == 0 {
+		return
+	}
+	s.seq.do(user, func() {
 		o := s.getOrder(r.GetOrderId())
-		if o == nil || o.UserID != r.GetUserId() || isTerminal(o.Status) {
+		if o == nil || o.UserID != user || isTerminal(o.Status) {
 			return
 		}
 		old := o.Status
@@ -91,9 +99,13 @@ func (s *Service) handleRejected(r *eventpb.OrderRejected) {
 // handleCancelled terminates an order whose cancel Match confirmed, releasing
 // the IM still held against the unfilled remainder.
 func (s *Service) handleCancelled(c *eventpb.OrderCancelled) {
-	s.seq.do(c.GetUserId(), func() {
+	user := c.GetUserId()
+	if user == 0 {
+		return
+	}
+	s.seq.do(user, func() {
 		o := s.getOrder(c.GetOrderId())
-		if o == nil || o.UserID != c.GetUserId() || isTerminal(o.Status) {
+		if o == nil || o.UserID != user || isTerminal(o.Status) {
 			return
 		}
 		old := o.Status
@@ -109,9 +121,13 @@ func (s *Service) handleCancelled(c *eventpb.OrderCancelled) {
 // handleExpired terminates the unfilled remainder of an IOC/FOK order, releasing
 // the IM held against it.
 func (s *Service) handleExpired(e *eventpb.OrderExpired) {
-	s.seq.do(e.GetUserId(), func() {
+	user := e.GetUserId()
+	if user == 0 {
+		return
+	}
+	s.seq.do(user, func() {
 		o := s.getOrder(e.GetOrderId())
-		if o == nil || o.UserID != e.GetUserId() || isTerminal(o.Status) {
+		if o == nil || o.UserID != user || isTerminal(o.Status) {
 			return
 		}
 		old := o.Status

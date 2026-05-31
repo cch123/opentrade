@@ -15,7 +15,7 @@ import (
 func TestApplyFreezeEvent_InsertsOrderAndSetsBalance(t *testing.T) {
 	state := NewShardState(0)
 	evt := &eventpb.FreezeEvent{
-		UserId:        "u1",
+		UserId:        1001,
 		OrderId:       100,
 		ClientOrderId: "coid-A",
 		Symbol:        "BTC-USDT",
@@ -27,7 +27,7 @@ func TestApplyFreezeEvent_InsertsOrderAndSetsBalance(t *testing.T) {
 		FreezeAsset:   "USDT",
 		FreezeAmount:  "5000",
 		BalanceAfter: &eventpb.BalanceSnapshot{
-			UserId:    "u1",
+			UserId:    1001,
 			Asset:     "USDT",
 			Available: "15000",
 			Frozen:    "5000",
@@ -41,7 +41,7 @@ func TestApplyFreezeEvent_InsertsOrderAndSetsBalance(t *testing.T) {
 	if o == nil {
 		t.Fatal("order 100 not inserted")
 	}
-	if o.UserID != "u1" || o.Symbol != "BTC-USDT" || o.Status != OrderStatusPendingNew {
+	if o.UserID != 1001 || o.Symbol != "BTC-USDT" || o.Status != OrderStatusPendingNew {
 		t.Fatalf("order = %+v, want (u1/BTC-USDT/PendingNew)", o)
 	}
 	if o.Price.String() != "50000" || o.Qty.String() != "0.1" {
@@ -50,7 +50,7 @@ func TestApplyFreezeEvent_InsertsOrderAndSetsBalance(t *testing.T) {
 	if o.FrozenAsset != "USDT" || o.FrozenAmount.String() != "5000" {
 		t.Fatalf("order = %+v, want frozen USDT 5000", o)
 	}
-	b := state.Balance("u1", "USDT")
+	b := state.Balance(1001, "USDT")
 	if b.Available.String() != "15000" || b.Frozen.String() != "5000" || b.Version != 42 {
 		t.Fatalf("balance = %+v, want (15000/5000/v42)", b)
 	}
@@ -64,13 +64,13 @@ func TestApplyFreezeEvent_IdempotentOnExistingOrder(t *testing.T) {
 	state := NewShardState(0)
 	state.Orders().RestoreInsert(&Order{
 		ID:        100,
-		UserID:    "u1",
+		UserID:    1001,
 		Symbol:    "BTC-USDT",
 		Status:    OrderStatusPartiallyFilled,
 		FilledQty: dec.New("0.05"),
 	})
 	evt := &eventpb.FreezeEvent{
-		UserId:       "u1",
+		UserId:       1001,
 		OrderId:      100,
 		Symbol:       "BTC-USDT",
 		Side:         eventpb.Side_SIDE_BUY,
@@ -80,7 +80,7 @@ func TestApplyFreezeEvent_IdempotentOnExistingOrder(t *testing.T) {
 		FreezeAsset:  "USDT",
 		FreezeAmount: "5000",
 		BalanceAfter: &eventpb.BalanceSnapshot{
-			UserId: "u1", Asset: "USDT",
+			UserId: 1001, Asset: "USDT",
 			Available: "15000", Frozen: "5000", Version: 10,
 		},
 	}
@@ -94,7 +94,7 @@ func TestApplyFreezeEvent_IdempotentOnExistingOrder(t *testing.T) {
 	if o.FilledQty.String() != "0.05" {
 		t.Fatalf("filled_qty = %s, want preserved 0.05", o.FilledQty)
 	}
-	b := state.Balance("u1", "USDT")
+	b := state.Balance(1001, "USDT")
 	if b.Available.String() != "15000" {
 		t.Fatalf("balance.available = %s, want 15000 (from event)", b.Available)
 	}
@@ -106,22 +106,22 @@ func TestApplyFreezeEvent_IdempotentOnExistingOrder(t *testing.T) {
 // advance the order's terminal status in a separate apply.
 func TestApplyUnfreezeEvent_SetsBalance(t *testing.T) {
 	state := NewShardState(0)
-	state.Account("u1").PutForRestore("USDT", Balance{
+	state.Account(1001).PutForRestore("USDT", Balance{
 		Available: dec.New("10000"),
 		Frozen:    dec.New("5000"),
 		Version:   5,
 	})
 	evt := &eventpb.UnfreezeEvent{
-		UserId: "u1", OrderId: 100, Asset: "USDT", Amount: "5000",
+		UserId: 1001, OrderId: 100, Asset: "USDT", Amount: "5000",
 		BalanceAfter: &eventpb.BalanceSnapshot{
-			UserId: "u1", Asset: "USDT",
+			UserId: 1001, Asset: "USDT",
 			Available: "15000", Frozen: "0", Version: 6,
 		},
 	}
 	if err := applyUnfreezeEvent(state, evt); err != nil {
 		t.Fatalf("applyUnfreezeEvent: %v", err)
 	}
-	b := state.Balance("u1", "USDT")
+	b := state.Balance(1001, "USDT")
 	if b.Available.String() != "15000" || b.Frozen.String() != "0" || b.Version != 6 {
 		t.Fatalf("balance = %+v, want (15000/0/v6)", b)
 	}
@@ -134,7 +134,7 @@ func TestApplySettlementEvent_AdvancesFilledAndBalances(t *testing.T) {
 	state := NewShardState(0)
 	state.Orders().RestoreInsert(&Order{
 		ID:           100,
-		UserID:       "u1",
+		UserID:       1001,
 		Symbol:       "BTC-USDT",
 		Side:         SideBid,
 		Type:         OrderTypeLimit,
@@ -147,18 +147,18 @@ func TestApplySettlementEvent_AdvancesFilledAndBalances(t *testing.T) {
 		Status:       OrderStatusPartiallyFilled,
 	})
 	evt := &eventpb.SettlementEvent{
-		UserId: "u1", OrderId: 100, Symbol: "BTC-USDT",
+		UserId: 1001, OrderId: 100, Symbol: "BTC-USDT",
 		Side:       eventpb.Side_SIDE_BUY,
 		Price:      "50000",
 		Qty:        "0.1",
 		DeltaBase:  "0.1",
 		DeltaQuote: "-5000",
 		BaseBalanceAfter: &eventpb.BalanceSnapshot{
-			UserId: "u1", Asset: "BTC",
+			UserId: 1001, Asset: "BTC",
 			Available: "0.3", Frozen: "0", Version: 3,
 		},
 		QuoteBalanceAfter: &eventpb.BalanceSnapshot{
-			UserId: "u1", Asset: "USDT",
+			UserId: 1001, Asset: "USDT",
 			Available: "25000", Frozen: "30000", Version: 8,
 		},
 	}
@@ -173,7 +173,7 @@ func TestApplySettlementEvent_AdvancesFilledAndBalances(t *testing.T) {
 	if o.FrozenSpent.String() != "15000" {
 		t.Fatalf("frozen_spent = %s, want 15000 (10000 + 5000)", o.FrozenSpent)
 	}
-	b := state.Balance("u1", "BTC")
+	b := state.Balance(1001, "BTC")
 	if b.Available.String() != "0.3" {
 		t.Fatalf("BTC balance = %+v, want available=0.3", b)
 	}
@@ -186,7 +186,7 @@ func TestApplySettlementEvent_AdvancesFilledAndBalances(t *testing.T) {
 func TestApplySettlementEvent_SequentialReplayAccumulates(t *testing.T) {
 	state := NewShardState(0)
 	state.Orders().RestoreInsert(&Order{
-		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
+		ID: 100, UserID: 1001, Symbol: "BTC-USDT",
 		Side: SideAsk, Type: OrderTypeLimit,
 		Price: dec.New("50000"), Qty: dec.New("1"),
 		FilledQty:   dec.New("0.5"),
@@ -194,7 +194,7 @@ func TestApplySettlementEvent_SequentialReplayAccumulates(t *testing.T) {
 		Status: OrderStatusPartiallyFilled,
 	})
 	evt := &eventpb.SettlementEvent{
-		UserId: "u1", OrderId: 100, Symbol: "BTC-USDT",
+		UserId: 1001, OrderId: 100, Symbol: "BTC-USDT",
 		Price: "50000", Qty: "0.1",
 	}
 	if err := applySettlementEvent(state, evt); err != nil {
@@ -212,23 +212,23 @@ func TestApplySettlementEvent_SequentialReplayAccumulates(t *testing.T) {
 func TestApplyTransferEvent_RememberInRing(t *testing.T) {
 	state := NewShardState(0)
 	evt := &eventpb.TransferEvent{
-		UserId:     "u1",
+		UserId:     1001,
 		TransferId: "tx-42",
 		Asset:      "USDT",
 		Amount:     "100",
 		Type:       eventpb.TransferEvent_TRANSFER_TYPE_DEPOSIT,
 		BalanceAfter: &eventpb.BalanceSnapshot{
-			UserId: "u1", Asset: "USDT",
+			UserId: 1001, Asset: "USDT",
 			Available: "100", Frozen: "0", Version: 1,
 		},
 	}
 	if err := applyTransferEvent(state, evt); err != nil {
 		t.Fatalf("applyTransferEvent: %v", err)
 	}
-	if !state.Account("u1").TransferSeen("tx-42") {
+	if !state.Account(1001).TransferSeen("tx-42") {
 		t.Fatal("transfer_id not remembered in ring")
 	}
-	b := state.Balance("u1", "USDT")
+	b := state.Balance(1001, "USDT")
 	if b.Available.String() != "100" {
 		t.Fatalf("balance = %+v, want 100", b)
 	}
@@ -240,11 +240,11 @@ func TestApplyTransferEvent_RememberInRing(t *testing.T) {
 func TestApplyOrderStatusEvent_TransitionsToTerminalDeletes(t *testing.T) {
 	state := NewShardState(0)
 	state.Orders().RestoreInsert(&Order{
-		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
+		ID: 100, UserID: 1001, Symbol: "BTC-USDT",
 		Type: OrderTypeLimit, Status: OrderStatusNew,
 	})
 	evt := &eventpb.OrderStatusEvent{
-		UserId: "u1", OrderId: 100,
+		UserId: 1001, OrderId: 100,
 		OldStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW,
 		NewStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED,
 		FilledQty: "0.5",
@@ -263,11 +263,11 @@ func TestApplyOrderStatusEvent_TransitionsToTerminalDeletes(t *testing.T) {
 func TestApplyOrderStatusEvent_NonTerminalKeepsByID(t *testing.T) {
 	state := NewShardState(0)
 	state.Orders().RestoreInsert(&Order{
-		ID: 100, UserID: "u1", Symbol: "BTC-USDT",
+		ID: 100, UserID: 1001, Symbol: "BTC-USDT",
 		Type: OrderTypeLimit, Status: OrderStatusPendingNew,
 	})
 	evt := &eventpb.OrderStatusEvent{
-		UserId: "u1", OrderId: 100,
+		UserId: 1001, OrderId: 100,
 		OldStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 		NewStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW,
 	}
@@ -289,7 +289,7 @@ func TestApplyOrderStatusEvent_NonTerminalKeepsByID(t *testing.T) {
 func TestApplyOrderStatusEvent_TerminalReplayIsIdempotent(t *testing.T) {
 	state := NewShardState(0)
 	evt := &eventpb.OrderStatusEvent{
-		UserId: "u1", OrderId: 999,
+		UserId: 1001, OrderId: 999,
 		NewStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_CANCELED,
 	}
 	// Order never existed (or already evicted) — apply is a no-op.
@@ -310,7 +310,7 @@ func TestApplyOrderStatusEvent_TerminalReplayIsIdempotent(t *testing.T) {
 func TestApplyOrderStatusEvent_MissingOrderIsNoOp(t *testing.T) {
 	state := NewShardState(0)
 	evt := &eventpb.OrderStatusEvent{
-		UserId: "u1", OrderId: 999,
+		UserId: 1001, OrderId: 999,
 		NewStatus: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_NEW,
 	}
 	if err := applyOrderStatusEvent(state, evt); err != nil {
@@ -336,12 +336,12 @@ func TestApplyCounterJournalEvent_DispatchesByPayload(t *testing.T) {
 			evt: &eventpb.CounterJournalEvent{
 				Payload: &eventpb.CounterJournalEvent_Freeze{
 					Freeze: &eventpb.FreezeEvent{
-						UserId: "u1", OrderId: 1, Symbol: "BTC-USDT",
+						UserId: 1001, OrderId: 1, Symbol: "BTC-USDT",
 						Side:      eventpb.Side_SIDE_BUY,
 						OrderType: eventpb.OrderType_ORDER_TYPE_LIMIT,
 						Price:     "10", Qty: "1", FreezeAsset: "USDT", FreezeAmount: "10",
 						BalanceAfter: &eventpb.BalanceSnapshot{
-							UserId: "u1", Asset: "USDT", Available: "90", Frozen: "10",
+							UserId: 1001, Asset: "USDT", Available: "90", Frozen: "10",
 						},
 					},
 				},
@@ -391,11 +391,11 @@ func TestApplyCounterJournalEvent_DispatchesByPayload(t *testing.T) {
 func TestApplyCounterJournalEvent_StartupFenceIsNoOp(t *testing.T) {
 	state := NewShardState(0)
 	// Seed some benign state so "unchanged after apply" is observable.
-	state.Account("u1").PutForRestore("USDT", Balance{
+	state.Account(1001).PutForRestore("USDT", Balance{
 		Available: dec.New("100"), Frozen: dec.New("0"), Version: 1,
 	})
 	state.Orders().RestoreInsert(&Order{
-		ID: 42, UserID: "u1", Symbol: "BTC-USDT",
+		ID: 42, UserID: 1001, Symbol: "BTC-USDT",
 		Status: OrderStatusNew,
 	})
 
@@ -414,7 +414,7 @@ func TestApplyCounterJournalEvent_StartupFenceIsNoOp(t *testing.T) {
 	}
 
 	// Balance unchanged.
-	b := state.Balance("u1", "USDT")
+	b := state.Balance(1001, "USDT")
 	if b.Available.String() != "100" || b.Frozen.String() != "0" || b.Version != 1 {
 		t.Fatalf("balance mutated by StartupFence apply: %+v", b)
 	}
@@ -442,7 +442,7 @@ func TestApplyCounterJournalEvent_StartupFenceIsNoOp(t *testing.T) {
 // the oneof without a corresponding case will hit it.
 func TestApplyCounterJournalEvent_UnknownPayloadIsNoOp(t *testing.T) {
 	state := NewShardState(0)
-	state.Account("u1").PutForRestore("USDT", Balance{
+	state.Account(1001).PutForRestore("USDT", Balance{
 		Available: dec.New("100"), Frozen: dec.New("0"), Version: 1,
 	})
 
@@ -462,7 +462,7 @@ func TestApplyCounterJournalEvent_UnknownPayloadIsNoOp(t *testing.T) {
 	}
 
 	// Sanity: state untouched.
-	b := state.Balance("u1", "USDT")
+	b := state.Balance(1001, "USDT")
 	if b.Available.String() != "100" || b.Version != 1 {
 		t.Fatalf("balance mutated by no-op applies: %+v", b)
 	}

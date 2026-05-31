@@ -8,6 +8,8 @@ package service
 // and ADL tasks are handed to the profitable users' own sequencers.
 
 import (
+	"strconv"
+
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/pkg/dec"
@@ -27,7 +29,7 @@ const (
 // Match order is partially filled; the tick counter drives the ADR-0070
 // liquidity-escalation path into the internal backstop.
 type liquidation struct {
-	userID     string
+	userID     uint64
 	symbol     string
 	orderID    uint64
 	mode       liquidationMode
@@ -39,7 +41,7 @@ type liquidation struct {
 	ticks      int
 }
 
-func liqKey(user, symbol string) string { return user + "|" + symbol }
+func liqKey(user uint64, symbol string) string { return userIDString(user) + "|" + symbol }
 
 // scanLiquidations runs on every mark tick: ADR-0072 narrows the read side to a
 // liq-price threshold query, while the later sequencer step still performs the
@@ -121,7 +123,7 @@ func (s *Service) beginLiquidation(cand engine.LiquidationCandidate) {
 // cancelOrdersFor dispatches cancels for all of (user, symbol)'s live orders.
 // Caller holds the user's seq lock. The bankruptcy order does not exist yet, so
 // nothing here cancels it.
-func (s *Service) cancelOrdersFor(user, symbol string) {
+func (s *Service) cancelOrdersFor(user uint64, symbol string) {
 	for _, o := range s.ordersFor(user, symbol) {
 		if isTerminal(o.Status) || o.Status == eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL {
 			continue
@@ -251,12 +253,18 @@ func (s *Service) emitLiquidation(o *Order, liq *liquidation, t *eventpb.Trade, 
 
 func (s *Service) emitTakeover(o *Order, liq *liquidation, qty dec.Decimal, res perpstate.FillResult, insDelta dec.Decimal) {
 	takeoverNotional := qty.Mul(liq.bankruptcy)
+	lotID := s.takeoverLotID(o.Symbol, o.OrderID)
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_Takeover{Takeover: &eventpb.PerpTakeoverEvent{
 			UserId: o.UserID, Symbol: o.Symbol, LiqOrderId: o.OrderID,
 			BankruptcyPrice: liq.bankruptcy.String(), MarkPrice: s.eng.MarkOf(o.Symbol).String(),
 			ClosedQty: qty.String(), RealizedPnl: res.Realized.String(),
+			LotId:            lotID,
+			TakenOverQty:     qty.String(),
+			TakeoverPrice:    liq.bankruptcy.String(),
+			TakenOverBalance: insDelta.String(),
+			PositionVersion:  s.positionSnap(o.UserID, o.Symbol).GetVersion(),
 			InsuranceDelta:   insDelta.String(),
 			TakeoverNotional: takeoverNotional.String(),
 			BackstopUserId:   s.cfg.BackstopAccount,
@@ -269,56 +277,18 @@ func (s *Service) emitTakeover(o *Order, liq *liquidation, qty dec.Decimal, res 
 	})
 }
 
-func (s *Service) runADL(liquidatedUser, symbol string, liquidatedSide perpstate.Side, bankruptcy dec.Decimal) {
-	if s.cfg.RiskCoordinatorEnabled {
-		return
-	}
-	deficit := s.eng.InsuranceFund(symbol).Neg()
-	if deficit.Sign() <= 0 {
-		return
-	}
-	candidates := s.eng.SelectAdlCandidates(symbol, liquidatedSide, bankruptcy, liquidatedUser)
-	if len(candidates) == 0 {
-		return
-	}
-	round := s.nextAdlRound()
-	for _, cand := range candidates {
-		if deficit.Sign() <= 0 {
-			return
-		}
-		qty := cand.Size
-		if cand.SacrificePerQty.Sign() > 0 {
-			// Close only the quantity needed to cover the current deficit. ADL is
-			// intentionally incremental because every forced close is visible user
-			// impact; after each task we re-read the insurance fund before moving
-			// to the next ranked candidate.
-			needQty := deficit.Div(cand.SacrificePerQty)
-			qty = dec.Min(qty, needQty)
-		}
-		if qty.Sign() <= 0 {
-			continue
-		}
-		s.seq.do(cand.UserID, func() {
-			res, insDelta, applied := s.eng.ApplyAdlCloseGuarded(cand.UserID, symbol, qty, bankruptcy,
-				cand.Side, cand.LastMatchSeq, cand.PositionVersion, round, true)
-			if !applied {
-				return
-			}
-			s.emitADL(cand.UserID, symbol, bankruptcy, qty, res, insDelta, round)
-			deficit = s.eng.InsuranceFund(symbol).Neg()
-		})
-	}
+func (s *Service) runADL(liquidatedUser uint64, symbol string, liquidatedSide perpstate.Side, bankruptcy dec.Decimal) {
+	// ADR-0073 makes perp-risk the lot owner and ADL planner. A shard may only
+	// execute a version-stamped task for a specific lot via ExecuteAdlTask; it
+	// must not locally turn an insurance deficit into ADL fund credit.
 }
 
 func (s *Service) shouldRunLocalADL(symbol string) bool {
-	return !s.cfg.RiskCoordinatorEnabled && s.eng.InsuranceFund(symbol).Sign() < 0
+	return false
 }
 
 func (s *Service) adlQueued(symbol string) bool {
-	if s.cfg.RiskCoordinatorEnabled {
-		return false
-	}
-	return s.eng.InsuranceFund(symbol).Sign() < 0
+	return false
 }
 
 // ExecuteAdlTask is the shard-side ADR-0071 entrypoint for the external
@@ -326,24 +296,24 @@ func (s *Service) adlQueued(symbol string) bool {
 // applied only if the coordinator's observed side/PosSeq/PositionVersion still
 // match the current position; this is the cross-shard TOCTOU guard that
 // replaces the old same-process candidate read.
-func (s *Service) ExecuteAdlTask(task perprisk.ADLTask) bool {
-	applied := false
+func (s *Service) ExecuteAdlTask(task perprisk.ADLTask) perprisk.ADLTaskResult {
+	result := perprisk.ADLTaskResult{}
 	s.seq.do(task.UserID, func() {
-		res, insDelta, ok := s.eng.ApplyAdlCloseGuarded(task.UserID, task.Symbol, task.Qty, task.Price,
+		res, factQty, ok := s.eng.ApplyAdlCloseGuarded(task.UserID, task.Symbol, task.Qty, task.Price,
 			task.Side, task.PosSeq, task.PositionVersion, task.AdlRound, true)
 		if !ok {
 			return
 		}
-		s.emitADL(task.UserID, task.Symbol, task.Price, task.Qty, res, insDelta, task.AdlRound)
-		applied = true
+		s.emitADL(task.UserID, task.Symbol, task.LotID, task.Price, task.Qty, factQty, res, task.AdlRound)
+		result = perprisk.ADLTaskResult{Applied: true, FactQty: factQty, RealizedPnL: res.Realized}
 	})
-	return applied
+	return result
 }
 
 // ADLCandidates is the shard-local candidate source for ADR-0071. The external
 // coordinator asks every shard for candidates scoped to one bankruptcy/ADL
 // price, then dispatches version-stamped tasks back to the owning shard.
-func (s *Service) ADLCandidates(symbol string, adlPrice dec.Decimal, excludeUser string) []perprisk.ADLCandidate {
+func (s *Service) ADLCandidates(symbol string, adlPrice dec.Decimal, excludeUser uint64) []perprisk.ADLCandidate {
 	src := s.eng.SelectAnyAdlCandidates(symbol, adlPrice, excludeUser)
 	out := make([]perprisk.ADLCandidate, 0, len(src))
 	for _, c := range src {
@@ -356,16 +326,25 @@ func (s *Service) ADLCandidates(symbol string, adlPrice dec.Decimal, excludeUser
 	return out
 }
 
-func (s *Service) emitADL(user, symbol string, price, qty dec.Decimal, res perpstate.FillResult, insDelta dec.Decimal, round uint64) {
+func (s *Service) emitADL(user uint64, symbol, lotID string, price, requestedQty, factQty dec.Decimal, res perpstate.FillResult, round uint64) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_Adl{Adl: &eventpb.PerpAdlEvent{
-			UserId: user, Symbol: symbol, AdlRound: round,
-			Price: price.String(), ClosedQty: qty.String(),
-			RealizedPnl: res.Realized.String(), InsuranceDelta: insDelta.String(),
-			PositionAfter: s.positionSnap(user, symbol),
+			UserId: user, Symbol: symbol, LotId: lotID, AdlRound: round,
+			Price: price.String(), RequestedQty: requestedQty.String(), FactQty: factQty.String(),
+			ClosedQty: factQty.String(), RealizedPnl: res.Realized.String(),
+			InsuranceDelta: zero.String(),
+			PositionAfter:  s.positionSnap(user, symbol),
 		}},
 	})
+}
+
+func (s *Service) takeoverLotID(symbol string, orderID uint64) string {
+	producer := s.cfg.ProducerID
+	if producer == "" {
+		producer = "perp-counter"
+	}
+	return producer + ":" + symbol + ":" + strconv.FormatUint(orderID, 10)
 }
 
 // --- liquidation registry (guarded by s.mu) --------------------------------
@@ -419,7 +398,7 @@ func (s *Service) clearLiquidationIfAny(orderID uint64) bool {
 }
 
 // ordersFor returns the tracked orders for (user, symbol).
-func (s *Service) ordersFor(user, symbol string) []*Order {
+func (s *Service) ordersFor(user uint64, symbol string) []*Order {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []*Order

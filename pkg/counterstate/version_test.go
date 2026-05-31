@@ -12,14 +12,14 @@ import (
 // but only the mutated asset's Balance moves.
 func TestVersion_TransferBumpsBothLayers(t *testing.T) {
 	state := NewShardState(0)
-	acc := state.Account("u1")
+	acc := state.Account(1001)
 
 	if got := acc.Version(); got != 0 {
 		t.Fatalf("initial account version = %d, want 0", got)
 	}
 
 	if _, err := state.ApplyTransfer(TransferRequest{
-		UserID: "u1", Asset: "USDT", Amount: dec.New("100"), Type: TransferDeposit,
+		UserID: 1001, Asset: "USDT", Amount: dec.New("100"), Type: TransferDeposit,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestVersion_TransferBumpsBothLayers(t *testing.T) {
 
 	// A second mutation on the same asset bumps both.
 	if _, err := state.ApplyTransfer(TransferRequest{
-		UserID: "u1", Asset: "USDT", Amount: dec.New("10"), Type: TransferFreeze,
+		UserID: 1001, Asset: "USDT", Amount: dec.New("10"), Type: TransferFreeze,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestVersion_TransferBumpsBothLayers(t *testing.T) {
 	// A mutation on a different asset bumps account-level but its own
 	// balance-level starts fresh at 1.
 	if _, err := state.ApplyTransfer(TransferRequest{
-		UserID: "u1", Asset: "BTC", Amount: dec.New("0.5"), Type: TransferDeposit,
+		UserID: 1001, Asset: "BTC", Amount: dec.New("0.5"), Type: TransferDeposit,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -69,22 +69,22 @@ func TestVersion_SettlementBumpsBothAssets(t *testing.T) {
 	state := NewShardState(0)
 	// Seed and freeze quote on the buyer.
 	if _, err := state.ApplyTransfer(TransferRequest{
-		UserID: "u1", Asset: "USDT", Amount: dec.New("1000"), Type: TransferDeposit,
+		UserID: 1001, Asset: "USDT", Amount: dec.New("1000"), Type: TransferDeposit,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := state.ApplyTransfer(TransferRequest{
-		UserID: "u1", Asset: "USDT", Amount: dec.New("100"), Type: TransferFreeze,
+		UserID: 1001, Asset: "USDT", Amount: dec.New("100"), Type: TransferFreeze,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	acc := state.Account("u1")
+	acc := state.Account(1001)
 	accVerBefore := acc.Version()
 	usdtVerBefore := acc.Balance("USDT").Version
 
 	// Apply a buy-side settlement: +1 BTC available, -100 USDT frozen (consumed).
 	p := PartySettlement{
-		UserID:           "u1",
+		UserID:           1001,
 		OrderID:          1,
 		BaseDelta:        dec.New("1"),
 		QuoteDelta:       dec.Zero,
@@ -95,7 +95,7 @@ func TestVersion_SettlementBumpsBothAssets(t *testing.T) {
 	}
 	// Need the order to exist for UpdateStatus to work.
 	if err := state.Orders().Insert(&Order{
-		ID: 1, UserID: "u1", Symbol: "BTC-USDT", Side: SideBid, Type: OrderTypeLimit,
+		ID: 1, UserID: 1001, Symbol: "BTC-USDT", Side: SideBid, Type: OrderTypeLimit,
 		Price: dec.New("100"), Qty: dec.New("1"), FilledQty: dec.Zero,
 		FrozenAsset: "USDT", FrozenAmount: dec.New("100"), FrozenSpent: dec.Zero,
 		Status: OrderStatusNew,
@@ -125,7 +125,7 @@ func TestVersion_SettlementBumpsBothAssets(t *testing.T) {
 // semantics across process restart.
 func TestVersion_RestoreDoesNotBump(t *testing.T) {
 	state := NewShardState(0)
-	acc := state.Account("u1")
+	acc := state.Account(1001)
 
 	acc.PutForRestore("USDT", Balance{
 		Available: dec.New("100"), Frozen: dec.New("0"), Version: 42,

@@ -27,8 +27,8 @@ type Sink interface {
 	TrySendCoalesce(coalesceKey string, payload []byte) bool
 	// ID is the connection id used as the map key.
 	ID() string
-	// UserID is the authenticated user id; may be empty for anonymous.
-	UserID() string
+	// UserID is the authenticated user id; zero means anonymous.
+	UserID() uint64
 }
 
 // Hub is safe for concurrent use by the WS accept goroutine, read loops (for
@@ -38,7 +38,7 @@ type Hub struct {
 
 	mu       sync.RWMutex
 	conns    map[string]Sink
-	byUser   map[string]map[string]struct{} // userID → set<connID>
+	byUser   map[uint64]map[string]struct{} // userID → set<connID>
 	byStream map[string]map[string]struct{} // streamKey → set<connID>
 	connSubs map[string]map[string]struct{} // connID → set<streamKey> (for cleanup)
 }
@@ -48,7 +48,7 @@ func New(logger *zap.Logger) *Hub {
 	return &Hub{
 		logger:   logger,
 		conns:    make(map[string]Sink),
-		byUser:   make(map[string]map[string]struct{}),
+		byUser:   make(map[uint64]map[string]struct{}),
 		byStream: make(map[string]map[string]struct{}),
 		connSubs: make(map[string]map[string]struct{}),
 	}
@@ -61,7 +61,7 @@ func (h *Hub) Register(c Sink) {
 	defer h.mu.Unlock()
 	h.conns[c.ID()] = c
 	h.connSubs[c.ID()] = make(map[string]struct{})
-	if uid := c.UserID(); uid != "" {
+	if uid := c.UserID(); uid != 0 {
 		set, ok := h.byUser[uid]
 		if !ok {
 			set = make(map[string]struct{})
@@ -81,7 +81,7 @@ func (h *Hub) Unregister(connID string) {
 	}
 	delete(h.conns, connID)
 
-	if uid := c.UserID(); uid != "" {
+	if uid := c.UserID(); uid != 0 {
 		if set, ok := h.byUser[uid]; ok {
 			delete(set, connID)
 			if len(set) == 0 {
@@ -222,8 +222,8 @@ func (h *Hub) subscribers(streamKey string) []Sink {
 
 // SendUser delivers payload to every connection owned by userID. Same slow
 // consumer policy as BroadcastStream.
-func (h *Hub) SendUser(userID string, payload []byte) (sent, dropped int) {
-	if userID == "" {
+func (h *Hub) SendUser(userID uint64, payload []byte) (sent, dropped int) {
+	if userID == 0 {
 		return 0, 0
 	}
 	h.mu.RLock()
@@ -248,7 +248,7 @@ func (h *Hub) SendUser(userID string, payload []byte) (sent, dropped int) {
 		dropped++
 		h.logger.Warn("dropped private message for slow consumer",
 			zap.String("conn", c.ID()),
-			zap.String("user", userID))
+			zap.Uint64("user", userID))
 	}
 	return sent, dropped
 }

@@ -41,7 +41,7 @@ type Journal interface {
 type Order struct {
 	OrderID    uint64
 	ClientID   string
-	UserID     string
+	UserID     uint64
 	Symbol     string
 	Side       perpstate.Side
 	Type       eventpb.OrderType
@@ -70,13 +70,12 @@ type Config struct {
 	// enabled liquidation flow never wedges on missing liquidity forever.
 	LiquidationFeeRate dec.Decimal
 	TargetMarginBuffer dec.Decimal
-	BackstopAccount    string
+	BackstopAccount    uint64
 	BackstopAfterTicks int
 
-	// ADR-0071: when the global perp-risk coordinator is enabled, this shard
-	// must stop treating its local insurance cache as the authority for ADL
-	// decisions. The shard still emits InsuranceDelta and can execute
-	// version-stamped ADL tasks, but deficit detection belongs to perp-risk.
+	// ADR-0073: the global perp-risk coordinator owns TakenOverLot lifecycle and
+	// ADL planning. The shard keeps a local insurance cache for legacy market
+	// liquidation math, but ADL is only executed from version-stamped lot tasks.
 	RiskCoordinatorEnabled bool
 
 	Clock func() time.Time // nil → time.Now
@@ -124,9 +123,6 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	if journal == nil {
 		journal = noopJournal{}
 	}
-	if cfg.BackstopAccount == "" {
-		cfg.BackstopAccount = "__perp_backstop__"
-	}
 	if cfg.BackstopAfterTicks <= 0 {
 		cfg.BackstopAfterTicks = 2
 	}
@@ -151,7 +147,7 @@ func (s *Service) now() int64 { return s.cfg.Clock().UnixMilli() }
 // PlaceOrder runs the pre-trade margin gate and dispatches to Match. The
 // match outcome arrives asynchronously via HandleTrade (ADR-0007).
 func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrderResponse, error) {
-	if req.GetUserId() == "" || req.GetSymbol() == "" {
+	if req.GetUserId() == 0 || req.GetSymbol() == "" {
 		return nil, errors.New("user_id and symbol required")
 	}
 	side := fromEventSide(req.GetSide())
@@ -292,18 +288,23 @@ func (s *Service) QueryOrder(req *perprpc.QueryOrderRequest) (*perprpc.QueryOrde
 // (maker == taker) are applied as one guarded operation so the second leg is
 // not dropped by the match_seq replay guard (cf. spot bug 4ccaf23).
 func (s *Service) HandleTrade(t *eventpb.Trade, matchSeq uint64) {
-	if t.GetMakerUserId() != "" && t.GetMakerUserId() == t.GetTakerUserId() {
-		s.settleSelfTrade(t, matchSeq)
+	if t.GetMakerUserId() != 0 && t.GetMakerUserId() == t.GetTakerUserId() {
+		user := t.GetTakerUserId()
+		s.settleSelfTrade(user, t, matchSeq)
 		return
 	}
 	takerSide := fromEventSide(t.GetTakerSide())
-	s.settleLeg(t.GetTakerUserId(), t.GetTakerOrderId(), takerSide, matchSeq, t,
-		t.GetTakerStatusAfter(), t.GetTakerFilledQtyAfter())
-	s.settleLeg(t.GetMakerUserId(), t.GetMakerOrderId(), takerSide.Opposite(), matchSeq, t,
-		t.GetMakerStatusAfter(), t.GetMakerFilledQtyAfter())
+	if taker := t.GetTakerUserId(); taker != 0 {
+		s.settleLeg(taker, t.GetTakerOrderId(), takerSide, matchSeq, t,
+			t.GetTakerStatusAfter(), t.GetTakerFilledQtyAfter())
+	}
+	if maker := t.GetMakerUserId(); maker != 0 {
+		s.settleLeg(maker, t.GetMakerOrderId(), takerSide.Opposite(), matchSeq, t,
+			t.GetMakerStatusAfter(), t.GetMakerFilledQtyAfter())
+	}
 }
 
-func (s *Service) settleLeg(user string, orderID uint64, side perpstate.Side, matchSeq uint64,
+func (s *Service) settleLeg(user uint64, orderID uint64, side perpstate.Side, matchSeq uint64,
 	t *eventpb.Trade, statusAfter eventpb.InternalOrderStatus, filledAfter string) {
 	s.seq.do(user, func() {
 		o := s.getOrder(orderID)
@@ -328,8 +329,7 @@ func (s *Service) settleLeg(user string, orderID uint64, side perpstate.Side, ma
 // settleSelfTrade applies both legs of a same-user trade in one serialized
 // step, bypassing the per-leg seq guard (it would skip the second leg) and
 // advancing the watermark once at the end.
-func (s *Service) settleSelfTrade(t *eventpb.Trade, matchSeq uint64) {
-	user := t.GetTakerUserId()
+func (s *Service) settleSelfTrade(user uint64, t *eventpb.Trade, matchSeq uint64) {
 	takerSide := fromEventSide(t.GetTakerSide())
 	s.seq.do(user, func() {
 		taker := s.getOrder(t.GetTakerOrderId())

@@ -29,7 +29,7 @@ var (
 const TransferRingCapacity = 256
 
 type Account struct {
-	UserID string
+	UserID uint64
 
 	// mu guards balances, matchSeq, version and the transfer ring. In the
 	// common path the UserSequencer already serializes per-user access and
@@ -58,7 +58,7 @@ type Account struct {
 	recentTransferSize int // 0..TransferRingCapacity
 }
 
-func newAccount(userID string) *Account {
+func newAccount(userID uint64) *Account {
 	return &Account{
 		UserID:   userID,
 		balances: make(map[string]*Balance),
@@ -341,7 +341,7 @@ func (s *ShardState) Orders() *OrderStore { return s.orders }
 
 // Account returns the account for userID (creating on demand if it does not
 // exist). Always non-nil.
-func (s *ShardState) Account(userID string) *Account {
+func (s *ShardState) Account(userID uint64) *Account {
 	if v, ok := s.accounts.Load(userID); ok {
 		return v.(*Account)
 	}
@@ -351,7 +351,7 @@ func (s *ShardState) Account(userID string) *Account {
 
 // Balance returns the balance of (userID, asset). Missing accounts / assets
 // yield a zero balance.
-func (s *ShardState) Balance(userID, asset string) Balance {
+func (s *ShardState) Balance(userID uint64, asset string) Balance {
 	if v, ok := s.accounts.Load(userID); ok {
 		return v.(*Account).Balance(asset)
 	}
@@ -360,10 +360,10 @@ func (s *ShardState) Balance(userID, asset string) Balance {
 
 // Users returns all user ids currently tracked. Order is non-deterministic.
 // Useful for snapshot.
-func (s *ShardState) Users() []string {
-	var out []string
+func (s *ShardState) Users() []uint64 {
+	var out []uint64
 	s.accounts.Range(func(k, _ any) bool {
-		out = append(out, k.(string))
+		out = append(out, k.(uint64))
 		return true
 	})
 	return out
@@ -397,7 +397,7 @@ func (s *ShardState) ComputeTransfer(req TransferRequest) (Balance, error) {
 
 // CommitBalance writes balance for (userID, asset). Caller is responsible for
 // running this inside the per-user sequencer.
-func (s *ShardState) CommitBalance(userID, asset string, b Balance) {
+func (s *ShardState) CommitBalance(userID uint64, asset string, b Balance) {
 	s.Account(userID).setBalance(asset, b)
 }
 

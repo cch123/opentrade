@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strconv"
 	"sync"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
@@ -16,12 +17,12 @@ import (
 // needed.
 type userSeq struct {
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[uint64]*sync.Mutex
 }
 
-func newUserSeq() *userSeq { return &userSeq{locks: map[string]*sync.Mutex{}} }
+func newUserSeq() *userSeq { return &userSeq{locks: map[uint64]*sync.Mutex{}} }
 
-func (s *userSeq) do(user string, fn func()) {
+func (s *userSeq) do(user uint64, fn func()) {
 	s.mu.Lock()
 	l := s.locks[user]
 	if l == nil {
@@ -32,6 +33,10 @@ func (s *userSeq) do(user string, fn func()) {
 	l.Lock()
 	defer l.Unlock()
 	fn()
+}
+
+func userIDString(user uint64) string {
+	return strconv.FormatUint(user, 10)
 }
 
 // --- order store (guarded by s.mu; ops run inside seq.do) -------------------
@@ -95,7 +100,7 @@ func (s *Service) meta() *eventpb.EventMeta {
 // tier selection. It stays intentionally conservative for flips: if an incoming
 // order could both close and reopen, we size the tier from the submitted order
 // notional because Match, not perp-counter, determines the exact execution mix.
-func (s *Service) maxLeverageForOrder(user, symbol string, side perpstate.Side, price, qty dec.Decimal) dec.Decimal {
+func (s *Service) maxLeverageForOrder(user uint64, symbol string, side perpstate.Side, price, qty dec.Decimal) dec.Decimal {
 	notional := price.Mul(qty)
 	if pos, ok := s.eng.PositionOf(user, symbol); ok && pos.Side == side {
 		mark := s.eng.MarkOf(symbol)
@@ -168,7 +173,7 @@ func (s *Service) emitSettlement(o *Order, t *eventpb.Trade, side perpstate.Side
 
 // positionSnap builds the post-change snapshot, including a flat position
 // (zeros) so consumers always see the resulting state.
-func (s *Service) positionSnap(user, symbol string) *eventpb.PerpPositionSnapshot {
+func (s *Service) positionSnap(user uint64, symbol string) *eventpb.PerpPositionSnapshot {
 	p, ok := s.eng.PositionRaw(user, symbol)
 	if !ok {
 		return &eventpb.PerpPositionSnapshot{UserId: user, Symbol: symbol,

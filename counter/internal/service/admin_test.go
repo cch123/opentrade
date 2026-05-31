@@ -17,7 +17,7 @@ func place3Orders(t *testing.T) (*Service, []uint64) {
 	svc, _, _, _ := newOrderFixture(t)
 	// u1 buy BTC-USDT — limit buy freezes USDT.
 	r1, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", ClientOrderID: "c1", Symbol: "BTC-USDT",
+		UserID: 1001, ClientOrderID: "c1", Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("50000"), Qty: dec.New("0.01"),
 	})
@@ -26,7 +26,7 @@ func place3Orders(t *testing.T) (*Service, []uint64) {
 	}
 	// u1 buy ETH-USDT — different symbol same user.
 	r2, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u1", ClientOrderID: "c2", Symbol: "ETH-USDT",
+		UserID: 1001, ClientOrderID: "c2", Symbol: "ETH-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("3000"), Qty: dec.New("0.01"),
 	})
@@ -35,7 +35,7 @@ func place3Orders(t *testing.T) (*Service, []uint64) {
 	}
 	// u2 sell BTC-USDT — different user same symbol as r1.
 	r3, err := svc.PlaceOrder(context.Background(), PlaceOrderRequest{
-		UserID: "u2", ClientOrderID: "s1", Symbol: "BTC-USDT",
+		UserID: 1002, ClientOrderID: "s1", Symbol: "BTC-USDT",
 		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("51000"), Qty: dec.New("0.01"),
 	})
@@ -47,7 +47,7 @@ func place3Orders(t *testing.T) (*Service, []uint64) {
 
 func TestAdminCancel_ByUser(t *testing.T) {
 	svc, ids := place3Orders(t)
-	res, err := svc.AdminCancelOrders(context.Background(), AdminCancelFilter{UserID: "u1"})
+	res, err := svc.AdminCancelOrders(context.Background(), AdminCancelFilter{UserID: 1001})
 	if err != nil {
 		t.Fatalf("admin cancel: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestAdminCancel_BySymbol(t *testing.T) {
 
 func TestAdminCancel_ByUserAndSymbolIntersection(t *testing.T) {
 	svc, ids := place3Orders(t)
-	res, err := svc.AdminCancelOrders(context.Background(), AdminCancelFilter{UserID: "u1", Symbol: "BTC-USDT"})
+	res, err := svc.AdminCancelOrders(context.Background(), AdminCancelFilter{UserID: 1001, Symbol: "BTC-USDT"})
 	if err != nil {
 		t.Fatalf("admin cancel: %v", err)
 	}
@@ -112,10 +112,10 @@ func TestAdminCancel_EmptyFilterRejected(t *testing.T) {
 func TestAdminCancel_AlreadyPendingCancelIsSkipped(t *testing.T) {
 	svc, ids := place3Orders(t)
 	// Pre-cancel id[0] through the normal path.
-	if _, err := svc.CancelOrder(context.Background(), CancelOrderRequest{UserID: "u1", OrderID: ids[0]}); err != nil {
+	if _, err := svc.CancelOrder(context.Background(), CancelOrderRequest{UserID: 1001, OrderID: ids[0]}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := svc.AdminCancelOrders(context.Background(), AdminCancelFilter{UserID: "u1"})
+	res, err := svc.AdminCancelOrders(context.Background(), AdminCancelFilter{UserID: 1001})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestAdminCancel_AlreadyPendingCancelIsSkipped(t *testing.T) {
 
 func TestCancelMyOrders_UserScope(t *testing.T) {
 	svc, ids := place3Orders(t)
-	res, err := svc.CancelMyOrders(context.Background(), "u1", "")
+	res, err := svc.CancelMyOrders(context.Background(), 1001, "")
 	if err != nil {
 		t.Fatalf("cancel my orders: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCancelMyOrders_UserScope(t *testing.T) {
 
 func TestCancelMyOrders_SymbolScope(t *testing.T) {
 	svc, ids := place3Orders(t)
-	res, err := svc.CancelMyOrders(context.Background(), "u1", "BTC-USDT")
+	res, err := svc.CancelMyOrders(context.Background(), 1001, "BTC-USDT")
 	if err != nil {
 		t.Fatalf("cancel my orders: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestCancelMyOrders_SymbolScope(t *testing.T) {
 
 func TestCancelMyOrders_MissingUserIDRejected(t *testing.T) {
 	svc, _ := place3Orders(t)
-	_, err := svc.CancelMyOrders(context.Background(), "", "")
+	_, err := svc.CancelMyOrders(context.Background(), 0, "")
 	if !errors.Is(err, ErrMissingUserID) {
 		t.Fatalf("err = %v, want ErrMissingUserID", err)
 	}
@@ -171,20 +171,20 @@ func TestCancelMyOrders_MissingUserIDRejected(t *testing.T) {
 
 func TestAdminCancel_WrongShardForUser(t *testing.T) {
 	svc, _ := place3Orders(t)
-	// Flip the service into a 2-shard world where u1 hashes to shard 1 (not
-	// this shard 0). Any filter that names u1 should bail out before
+	// Flip the service into a 2-shard world where the target user hashes away
+	// from this shard. Any filter that names that user should bail out before
 	// touching state.
 	svc.cfg.TotalShards = 2
-	if svc.OwnsUser("u1") {
-		// If u1 happens to hash to shard 0 the assertion below is vacuous;
-		// pick the user that this shard does NOT own.
+	if svc.OwnsUser(1001) {
+		// If 1001 happens to hash to shard 0 the assertion below is vacuous;
+		// flip the shard to make it non-owned in this two-shard setup.
 		svc.cfg.ShardID = 1
 	}
-	// Pick a user id we know does not belong to this shard: try "u1" first,
-	// and if OwnsUser("u1") now true, use a different id.
-	nonOwned := "u1"
+	// Pick a user id we know does not belong to this shard: try 1001 first,
+	// and if OwnsUser(1001) is still true, use a nearby id.
+	nonOwned := uint64(1001)
 	if svc.OwnsUser(nonOwned) {
-		nonOwned = "u-other"
+		nonOwned = 1003
 	}
 	_, err := svc.AdminCancelOrders(context.Background(), AdminCancelFilter{UserID: nonOwned})
 	if !errors.Is(err, ErrWrongShard) {

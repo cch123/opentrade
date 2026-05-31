@@ -9,6 +9,7 @@
 package shard
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/cespare/xxhash/v2"
@@ -16,17 +17,19 @@ import (
 
 // Index maps userID to a shard id in [0, totalShards).
 // totalShards must be > 0.
-func Index(userID string, totalShards int) int {
+func Index(userID uint64, totalShards int) int {
 	if totalShards <= 0 {
 		panic(fmt.Sprintf("shard: totalShards must be > 0, got %d", totalShards))
 	}
-	h := xxhash.Sum64String(userID)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], userID)
+	h := xxhash.Sum64(buf[:])
 	return int(h % uint64(totalShards))
 }
 
 // OwnsUser reports whether shardID is the owner of userID under
 // totalShards shards. Returns false on a nonsense totalShards.
-func OwnsUser(shardID, totalShards int, userID string) bool {
+func OwnsUser(shardID, totalShards int, userID uint64) bool {
 	if totalShards <= 0 || shardID < 0 || shardID >= totalShards {
 		return false
 	}

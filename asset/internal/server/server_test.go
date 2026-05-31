@@ -41,7 +41,7 @@ func (f *fakeFundingStore) Compensate(ctx context.Context, req store.Request) (s
 	return f.TransferIn(ctx, req)
 }
 
-func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID, asset string) ([]store.FundingBalance, error) {
+func (f *fakeFundingStore) QueryFundingBalance(_ context.Context, userID uint64, asset string) ([]store.FundingBalance, error) {
 	acc := f.state.Account(userID)
 	if asset != "" {
 		return []store.FundingBalance{{Asset: asset, Balance: acc.Balance(asset)}}, nil
@@ -84,7 +84,7 @@ func newServers(t *testing.T) (*AssetHolderServer, *AssetServer) {
 func TestHolder_TransferIn_Confirmed(t *testing.T) {
 	h, _ := newServers(t)
 	resp, err := h.TransferIn(context.Background(), connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId: "u1", TransferId: "t1", Asset: "USDT", Amount: "100", PeerBiz: "spot",
+		UserId: 101, TransferId: "t1", Asset: "USDT", Amount: "100", PeerBiz: "spot",
 	}))
 	if err != nil {
 		t.Fatalf("in: %v", err)
@@ -100,7 +100,7 @@ func TestHolder_TransferIn_Confirmed(t *testing.T) {
 func TestHolder_TransferOut_InsufficientBalance(t *testing.T) {
 	h, _ := newServers(t)
 	resp, err := h.TransferOut(context.Background(), connect.NewRequest(&assetholderrpc.TransferOutRequest{
-		UserId: "u1", TransferId: "t1", Asset: "USDT", Amount: "50", PeerBiz: "spot",
+		UserId: 101, TransferId: "t1", Asset: "USDT", Amount: "50", PeerBiz: "spot",
 	}))
 	if err != nil {
 		t.Fatalf("out: %v", err)
@@ -117,7 +117,7 @@ func TestHolder_Idempotent(t *testing.T) {
 	h, _ := newServers(t)
 	build := func() *connect.Request[assetholderrpc.TransferInRequest] {
 		return connect.NewRequest(&assetholderrpc.TransferInRequest{
-			UserId: "u1", TransferId: "t1", Asset: "USDT", Amount: "40", PeerBiz: "spot",
+			UserId: 101, TransferId: "t1", Asset: "USDT", Amount: "40", PeerBiz: "spot",
 		})
 	}
 	first, err := h.TransferIn(context.Background(), build())
@@ -136,7 +136,7 @@ func TestHolder_Idempotent(t *testing.T) {
 func TestHolder_Compensate(t *testing.T) {
 	h, _ := newServers(t)
 	resp, err := h.CompensateTransferOut(context.Background(), connect.NewRequest(&assetholderrpc.CompensateTransferOutRequest{
-		UserId: "u1", TransferId: "t-comp", Asset: "USDT", Amount: "20",
+		UserId: 101, TransferId: "t-comp", Asset: "USDT", Amount: "20",
 		PeerBiz: "spot", CompensateCause: "peer_in_timeout",
 	}))
 	if err != nil {
@@ -154,11 +154,11 @@ func TestHolder_InvalidArgument(t *testing.T) {
 		req  *assetholderrpc.TransferInRequest
 	}{
 		{"nil_user", &assetholderrpc.TransferInRequest{TransferId: "t", Asset: "USDT", Amount: "1"}},
-		{"nil_tx", &assetholderrpc.TransferInRequest{UserId: "u1", Asset: "USDT", Amount: "1"}},
-		{"nil_asset", &assetholderrpc.TransferInRequest{UserId: "u1", TransferId: "t", Amount: "1"}},
-		{"bad_amount", &assetholderrpc.TransferInRequest{UserId: "u1", TransferId: "t", Asset: "USDT", Amount: "abc"}},
-		{"zero_amount", &assetholderrpc.TransferInRequest{UserId: "u1", TransferId: "t", Asset: "USDT", Amount: "0"}},
-		{"neg_amount", &assetholderrpc.TransferInRequest{UserId: "u1", TransferId: "t", Asset: "USDT", Amount: "-5"}},
+		{"nil_tx", &assetholderrpc.TransferInRequest{UserId: 101, Asset: "USDT", Amount: "1"}},
+		{"nil_asset", &assetholderrpc.TransferInRequest{UserId: 101, TransferId: "t", Amount: "1"}},
+		{"bad_amount", &assetholderrpc.TransferInRequest{UserId: 101, TransferId: "t", Asset: "USDT", Amount: "abc"}},
+		{"zero_amount", &assetholderrpc.TransferInRequest{UserId: 101, TransferId: "t", Asset: "USDT", Amount: "0"}},
+		{"neg_amount", &assetholderrpc.TransferInRequest{UserId: 101, TransferId: "t", Asset: "USDT", Amount: "-5"}},
 	}
 	for _, b := range bad {
 		_, err := h.TransferIn(context.Background(), connect.NewRequest(b.req))
@@ -192,16 +192,16 @@ func TestAsset_QueryFundingBalance_All(t *testing.T) {
 	h, a := newServers(t)
 	ctx := context.Background()
 	if _, err := h.TransferIn(ctx, connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId: "u1", TransferId: "t-usdt", Asset: "USDT", Amount: "100", PeerBiz: "spot",
+		UserId: 101, TransferId: "t-usdt", Asset: "USDT", Amount: "100", PeerBiz: "spot",
 	})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.TransferIn(ctx, connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId: "u1", TransferId: "t-btc", Asset: "BTC", Amount: "0.5", PeerBiz: "spot",
+		UserId: 101, TransferId: "t-btc", Asset: "BTC", Amount: "0.5", PeerBiz: "spot",
 	})); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := a.QueryFundingBalance(ctx, connect.NewRequest(&assetrpc.QueryFundingBalanceRequest{UserId: "u1"}))
+	resp, err := a.QueryFundingBalance(ctx, connect.NewRequest(&assetrpc.QueryFundingBalanceRequest{UserId: 101}))
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -214,12 +214,12 @@ func TestAsset_QueryFundingBalance_Single(t *testing.T) {
 	h, a := newServers(t)
 	ctx := context.Background()
 	if _, err := h.TransferIn(ctx, connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId: "u1", TransferId: "t-usdt", Asset: "USDT", Amount: "75", PeerBiz: "spot",
+		UserId: 101, TransferId: "t-usdt", Asset: "USDT", Amount: "75", PeerBiz: "spot",
 	})); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := a.QueryFundingBalance(ctx, connect.NewRequest(&assetrpc.QueryFundingBalanceRequest{
-		UserId: "u1", Asset: "USDT",
+		UserId: 101, Asset: "USDT",
 	}))
 	if err != nil {
 		t.Fatalf("query: %v", err)

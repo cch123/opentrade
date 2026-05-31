@@ -28,7 +28,7 @@ func newLiqSvcWithConfig(cfg Config) (*Service, *engine.Engine, *fakeDispatcher,
 func liqFill(svc *Service, bankruptcyID uint64, price, qty string, matchSeq uint64) {
 	svc.HandleTrade(&eventpb.Trade{
 		TradeId: "liq", Symbol: perpSym, Price: price, Qty: qty,
-		MakerUserId: "mm", MakerOrderId: 9999, TakerUserId: "u1", TakerOrderId: bankruptcyID,
+		MakerUserId: marketMakerUserS, MakerOrderId: 9999, TakerUserId: user1s, TakerOrderId: bankruptcyID,
 		TakerSide:           eventpb.Side_SIDE_SELL,
 		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
 		TakerFilledQtyAfter: qty,
@@ -39,7 +39,7 @@ func liqFill(svc *Service, bankruptcyID uint64, price, qty string, matchSeq uint
 // mark below maintenance, and returns the dispatched bankruptcy order id.
 func triggerLiquidation(t *testing.T, svc *Service, eng *engine.Engine, disp *fakeDispatcher) uint64 {
 	t.Helper()
-	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
+	openPosition(eng, user1, perpSym, perpstate.SideBuy, "100", "1", "10")
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90")) // ratio (10-10)/90 = 0 <= 0.05
 	if len(disp.orders) != 1 {
 		t.Fatalf("expected one bankruptcy order dispatched, got %d", len(disp.orders))
@@ -60,7 +60,7 @@ func TestLiquidation_FillAtBankruptcy_InsuranceUnchanged(t *testing.T) {
 
 	liqFill(svc, bankID, "90", "1", 5) // fill exactly at bankruptcy
 
-	if _, ok := eng.PositionOf("u1", perpSym); ok {
+	if _, ok := eng.PositionOf(user1, perpSym); ok {
 		t.Fatal("position should be closed after full liquidation")
 	}
 	if got := eng.InsuranceFund(perpSym); got.Sign() != 0 {
@@ -69,7 +69,7 @@ func TestLiquidation_FillAtBankruptcy_InsuranceUnchanged(t *testing.T) {
 	if jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetLiquidation() != nil }) != 1 {
 		t.Fatal("expected one liquidation journal event")
 	}
-	if svc.hasLiquidation(liqKey("u1", perpSym)) {
+	if svc.hasLiquidation(liqKey(user1, perpSym)) {
 		t.Fatal("liquidation guard should clear once the position is closed")
 	}
 	if svc.OrderCount() != 0 {
@@ -105,8 +105,8 @@ func TestLiquidation_FillBelowBankruptcy_FundCoversAndAdlFlag(t *testing.T) {
 			adl = true
 		}
 	}
-	if !adl {
-		t.Fatal("adl_queued should be set when the fund goes negative")
+	if adl {
+		t.Fatal("adl_queued should not be derived from the shard-local fund under ADR-0073")
 	}
 }
 
@@ -124,34 +124,34 @@ func TestLiquidation_OneOrderPerPosition(t *testing.T) {
 func TestLiquidation_PartialFillThenClose(t *testing.T) {
 	svc, eng, disp, _ := newLiqSvc()
 	// Long 2 @ 100 lev 10 → margin 20, bankruptcy 90.
-	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "2", "10")
+	openPosition(eng, user1, perpSym, perpstate.SideBuy, "100", "2", "10")
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90"))
 	bankID := disp.orders[0].GetPlaced().GetOrderId()
 
 	// Partial fill 1 of 2 at bankruptcy: position still open, guard held.
 	svc.HandleTrade(&eventpb.Trade{
 		TradeId: "p1", Symbol: perpSym, Price: "90", Qty: "1",
-		MakerUserId: "mm", MakerOrderId: 1, TakerUserId: "u1", TakerOrderId: bankID,
+		MakerUserId: marketMakerUserS, MakerOrderId: 1, TakerUserId: user1s, TakerOrderId: bankID,
 		TakerSide:           eventpb.Side_SIDE_SELL,
 		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED,
 		TakerFilledQtyAfter: "1",
 	}, 5)
-	if _, ok := eng.PositionOf("u1", perpSym); !ok {
+	if _, ok := eng.PositionOf(user1, perpSym); !ok {
 		t.Fatal("position should still be open after partial liquidation fill")
 	}
-	if !svc.hasLiquidation(liqKey("u1", perpSym)) {
+	if !svc.hasLiquidation(liqKey(user1, perpSym)) {
 		t.Fatal("guard should stay set during a partial liquidation")
 	}
 	// Final fill (incremental qty 1, cumulative 2) closes it; insurance nets 0
 	// across both fills at bankruptcy.
 	svc.HandleTrade(&eventpb.Trade{
 		TradeId: "p2", Symbol: perpSym, Price: "90", Qty: "1",
-		MakerUserId: "mm", MakerOrderId: 2, TakerUserId: "u1", TakerOrderId: bankID,
+		MakerUserId: marketMakerUserS, MakerOrderId: 2, TakerUserId: user1s, TakerOrderId: bankID,
 		TakerSide:           eventpb.Side_SIDE_SELL,
 		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
 		TakerFilledQtyAfter: "2",
 	}, 6)
-	if _, ok := eng.PositionOf("u1", perpSym); ok {
+	if _, ok := eng.PositionOf(user1, perpSym); ok {
 		t.Fatal("position should be closed after the final fill")
 	}
 	if got := eng.InsuranceFund(perpSym); got.Sign() != 0 {
@@ -165,7 +165,7 @@ func TestLiquidation_PartialReduceToSafe(t *testing.T) {
 		TargetMarginBuffer: dec.New("0.01"), BackstopAfterTicks: 99,
 		ProducerID: "perp-shard-0",
 	})
-	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
+	openPosition(eng, user1, perpSym, perpstate.SideBuy, "100", "1", "10")
 
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "94"))
 	if len(disp.orders) != 1 {
@@ -182,12 +182,12 @@ func TestLiquidation_PartialReduceToSafe(t *testing.T) {
 
 	svc.HandleTrade(&eventpb.Trade{
 		TradeId: "partial-liq", Symbol: perpSym, Price: placed.GetPrice(), Qty: placed.GetQty(),
-		MakerUserId: "mm", MakerOrderId: 1, TakerUserId: "u1", TakerOrderId: placed.GetOrderId(),
+		MakerUserId: marketMakerUserS, MakerOrderId: 1, TakerUserId: user1s, TakerOrderId: placed.GetOrderId(),
 		TakerSide:           eventpb.Side_SIDE_SELL,
 		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
 		TakerFilledQtyAfter: placed.GetQty(),
 	}, 5)
-	pos, ok := eng.PositionOf("u1", perpSym)
+	pos, ok := eng.PositionOf(user1, perpSym)
 	if !ok {
 		t.Fatal("partial liquidation should keep a residual position")
 	}
@@ -197,7 +197,7 @@ func TestLiquidation_PartialReduceToSafe(t *testing.T) {
 	if ratio := pos.MarginRatio(dec.New("94")); ratio.Cmp(dec.New("0.06")) < 0 {
 		t.Fatalf("post-partial margin ratio = %s, want >= 0.06", ratio)
 	}
-	if svc.hasLiquidation(liqKey("u1", perpSym)) {
+	if svc.hasLiquidation(liqKey(user1, perpSym)) {
 		t.Fatal("partial liquidation guard should clear after the partial order is terminal")
 	}
 	foundPartial := false
@@ -214,15 +214,15 @@ func TestLiquidation_PartialReduceToSafe(t *testing.T) {
 func TestLiquidation_BackstopClosesInFlightOrder(t *testing.T) {
 	svc, eng, disp, jr := newLiqSvcWithConfig(Config{
 		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
-		BackstopAfterTicks: 1, BackstopAccount: "backstop", ProducerID: "perp-shard-0",
+		BackstopAfterTicks: 1, BackstopAccount: backstopUser, ProducerID: "perp-shard-0",
 	})
 	triggerLiquidation(t, svc, eng, disp)
 
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "89"))
-	if _, ok := eng.PositionOf("u1", perpSym); ok {
+	if _, ok := eng.PositionOf(user1, perpSym); ok {
 		t.Fatal("backstop escalation should close the liquidated position")
 	}
-	if pos, ok := eng.PositionOf("backstop", perpSym); !ok || pos.Side != perpstate.SideBuy || pos.Size.Sign() <= 0 {
+	if pos, ok := eng.PositionOf(backstopUser, perpSym); !ok || pos.Side != perpstate.SideBuy || pos.Size.Sign() <= 0 {
 		t.Fatalf("backstop inventory not recorded correctly: pos=%+v ok=%v", pos, ok)
 	}
 	if disp.cancels == 0 {
@@ -235,7 +235,7 @@ func TestLiquidation_BackstopClosesInFlightOrder(t *testing.T) {
 	for _, e := range jr.evts {
 		if tk := e.GetTakeover(); tk != nil {
 			foundTakeover = true
-			if tk.GetBackstopUserId() != "backstop" || tk.GetTakeoverNotional() == "" || tk.GetInventorySide() != eventpb.Side_SIDE_BUY {
+			if tk.GetBackstopUserId() != backstopUser || tk.GetTakeoverNotional() == "" || tk.GetInventorySide() != eventpb.Side_SIDE_BUY {
 				t.Fatalf("takeover event missing backstop accounting fields: %+v", tk)
 			}
 		}
@@ -245,13 +245,13 @@ func TestLiquidation_BackstopClosesInFlightOrder(t *testing.T) {
 	}
 }
 
-func TestLiquidation_DeficitTriggersADL(t *testing.T) {
+func TestLiquidation_DeficitDoesNotLocallyCreditFundViaADL(t *testing.T) {
 	svc, eng, disp, jr := newLiqSvcWithConfig(Config{
 		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
 		BackstopAfterTicks: 99, ProducerID: "perp-shard-0",
 	})
-	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
-	openPosition(eng, "u2", perpSym, perpstate.SideSell, "100", "1", "10")
+	openPosition(eng, user1, perpSym, perpstate.SideBuy, "100", "1", "10")
+	openPosition(eng, user2, perpSym, perpstate.SideSell, "100", "1", "10")
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90"))
 	bankID := disp.orders[0].GetPlaced().GetOrderId()
 	// Move the mark further down while the liquidation order is in flight so
@@ -259,14 +259,14 @@ func TestLiquidation_DeficitTriggersADL(t *testing.T) {
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "85"))
 
 	liqFill(svc, bankID, "85", "1", 5)
-	if got := eng.InsuranceFund(perpSym); got.Sign() != 0 {
-		t.Fatalf("ADL should repair the insurance deficit, got fund=%s", got)
+	if got := eng.InsuranceFund(perpSym); got.Cmp(dec.New("-5")) != 0 {
+		t.Fatalf("liquidation deficit should remain for RiskPool settlement, got fund=%s", got)
 	}
-	if _, ok := eng.PositionOf("u2", perpSym); ok {
-		t.Fatal("ADL should close the profitable short in this one-lot scenario")
+	if _, ok := eng.PositionOf(user2, perpSym); !ok {
+		t.Fatal("local shard must not ADL a profitable user to credit insurance")
 	}
-	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 1 {
-		t.Fatalf("expected one ADL journal event, got %d", n)
+	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 0 {
+		t.Fatalf("expected no ADL journal event, got %d", n)
 	}
 }
 
@@ -275,54 +275,57 @@ func TestExecuteAdlTask_RejectsStaleObservedPosition(t *testing.T) {
 		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
 		RiskCoordinatorEnabled: true, ProducerID: "perp-shard-0",
 	})
-	openPosition(eng, "winner", perpSym, perpstate.SideSell, "100", "1", "10")
+	openPosition(eng, winnerUser, perpSym, perpstate.SideSell, "100", "1", "10")
 	eng.SetMark(perpSym, dec.New("85"))
-	pos, ok := eng.PositionOf("winner", perpSym)
+	pos, ok := eng.PositionOf(winnerUser, perpSym)
 	if !ok {
 		t.Fatal("winner position missing")
 	}
 
 	if svc.ExecuteAdlTask(perprisk.ADLTask{
-		UserID: "winner", Symbol: perpSym, Side: perpstate.SideSell,
+		UserID: winnerUser, Symbol: perpSym, Side: perpstate.SideSell,
 		Qty: dec.New("1"), Price: dec.New("90"),
 		PosSeq: 99, PositionVersion: pos.Version, AdlRound: 1,
-	}) {
+	}).Applied {
 		t.Fatal("stale pos_seq task must be rejected")
 	}
 	if svc.ExecuteAdlTask(perprisk.ADLTask{
-		UserID: "winner", Symbol: perpSym, Side: perpstate.SideBuy,
+		UserID: winnerUser, Symbol: perpSym, Side: perpstate.SideBuy,
 		Qty: dec.New("1"), Price: dec.New("90"),
 		PosSeq: pos.LastMatchSeq, PositionVersion: pos.Version, AdlRound: 1,
-	}) {
+	}).Applied {
 		t.Fatal("side-mismatch task must be rejected")
 	}
-	_ = eng.ApplyFunding("winner", perpSym, dec.New("0"))
+	_ = eng.ApplyFunding(winnerUser, perpSym, dec.New("0"))
 	if svc.ExecuteAdlTask(perprisk.ADLTask{
-		UserID: "winner", Symbol: perpSym, Side: perpstate.SideSell,
+		UserID: winnerUser, Symbol: perpSym, Side: perpstate.SideSell,
 		Qty: dec.New("1"), Price: dec.New("90"),
 		PosSeq: pos.LastMatchSeq, PositionVersion: pos.Version, AdlRound: 1,
-	}) {
+	}).Applied {
 		t.Fatal("stale position_version task must be rejected")
 	}
 	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 0 {
 		t.Fatalf("stale task emitted %d ADL events, want 0", n)
 	}
-	pos, ok = eng.PositionOf("winner", perpSym)
+	pos, ok = eng.PositionOf(winnerUser, perpSym)
 	if !ok {
 		t.Fatal("winner position missing after stale rejections")
 	}
 	if !svc.ExecuteAdlTask(perprisk.ADLTask{
-		UserID: "winner", Symbol: perpSym, Side: perpstate.SideSell,
+		LotID: "lot-1", UserID: winnerUser, Symbol: perpSym, Side: perpstate.SideSell,
 		Qty: dec.New("1"), Price: dec.New("90"),
 		PosSeq: pos.LastMatchSeq, PositionVersion: pos.Version, AdlRound: 1,
-	}) {
+	}).Applied {
 		t.Fatal("matching observed-position task should apply")
 	}
-	if _, ok := eng.PositionOf("winner", perpSym); ok {
+	if _, ok := eng.PositionOf(winnerUser, perpSym); ok {
 		t.Fatal("matching ADL task should close the one-lot winner")
 	}
 	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 1 {
 		t.Fatalf("matching task emitted %d ADL events, want 1", n)
+	}
+	if got := jr.evts[len(jr.evts)-1].GetAdl(); got == nil || got.GetLotId() != "lot-1" || got.GetFactQty() != "1" || got.GetInsuranceDelta() != "0" {
+		t.Fatalf("ADL event should report lot/fact qty without fund credit: %+v", got)
 	}
 }
 
@@ -331,8 +334,8 @@ func TestRiskCoordinatorMode_DisablesLocalADLDecision(t *testing.T) {
 		MaxLeverage: dec.New("100"), MMR: dec.New("0.05"),
 		RiskCoordinatorEnabled: true, ProducerID: "perp-shard-0",
 	})
-	openPosition(eng, "u1", perpSym, perpstate.SideBuy, "100", "1", "10")
-	openPosition(eng, "u2", perpSym, perpstate.SideSell, "100", "1", "10")
+	openPosition(eng, user1, perpSym, perpstate.SideBuy, "100", "1", "10")
+	openPosition(eng, user2, perpSym, perpstate.SideSell, "100", "1", "10")
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "90"))
 	bankID := disp.orders[0].GetPlaced().GetOrderId()
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "85"))
@@ -341,7 +344,7 @@ func TestRiskCoordinatorMode_DisablesLocalADLDecision(t *testing.T) {
 	if got := eng.InsuranceFund(perpSym); got.Cmp(dec.New("-5")) != 0 {
 		t.Fatalf("local cache should still fold delta for journal parity, got %s", got)
 	}
-	if _, ok := eng.PositionOf("u2", perpSym); !ok {
+	if _, ok := eng.PositionOf(user2, perpSym); !ok {
 		t.Fatal("external coordinator mode must not run local same-process ADL")
 	}
 	for _, e := range jr.evts {

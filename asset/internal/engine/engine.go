@@ -130,16 +130,16 @@ func (a *Account) remember(transferID string) {
 // serialized.
 type State struct {
 	mu       sync.RWMutex
-	accounts map[string]*Account
+	accounts map[uint64]*Account
 }
 
 // NewState constructs an empty State.
 func NewState() *State {
-	return &State{accounts: make(map[string]*Account)}
+	return &State{accounts: make(map[uint64]*Account)}
 }
 
 // Account returns (or lazily creates) the user's account.
-func (s *State) Account(userID string) *Account {
+func (s *State) Account(userID uint64) *Account {
 	s.mu.RLock()
 	acc, ok := s.accounts[userID]
 	s.mu.RUnlock()
@@ -161,7 +161,7 @@ func (s *State) Account(userID string) *Account {
 // memo, compensate_cause) are handled by the service/store boundary and are
 // not needed here.
 type TransferRequest struct {
-	UserID     string
+	UserID     uint64
 	TransferID string
 	Asset      string
 	Amount     dec.Decimal
@@ -296,7 +296,7 @@ func (s *State) ApplyCompensateCommitted(req TransferRequest, commit func(Result
 }
 
 func validate(req TransferRequest) error {
-	if req.UserID == "" {
+	if req.UserID == 0 {
 		return ErrMissingUserID
 	}
 	if req.TransferID == "" {

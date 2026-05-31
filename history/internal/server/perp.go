@@ -16,7 +16,7 @@ import (
 
 func (s *Server) ListPerpPositions(ctx context.Context, req *connect.Request[historypb.ListPerpPositionsRequest]) (*connect.Response[historypb.ListPerpPositionsResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	rows, err := s.store.ListPerpPositions(ctx, m.UserId, m.Symbol)
@@ -28,7 +28,7 @@ func (s *Server) ListPerpPositions(ctx context.Context, req *connect.Request[his
 
 func (s *Server) ListPerpFunding(ctx context.Context, req *connect.Request[historypb.ListPerpFundingRequest]) (*connect.Response[historypb.ListPerpFundingResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	rows, next, err := s.store.ListPerpFunding(ctx, mysqlstore.PerpLedgerFilter{
@@ -42,7 +42,7 @@ func (s *Server) ListPerpFunding(ctx context.Context, req *connect.Request[histo
 
 func (s *Server) ListPerpLiquidations(ctx context.Context, req *connect.Request[historypb.ListPerpLiquidationsRequest]) (*connect.Response[historypb.ListPerpLiquidationsResponse], error) {
 	m := req.Msg
-	if m.GetUserId() == "" {
+	if m.GetUserId() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	rows, next, err := s.store.ListPerpLiquidations(ctx, mysqlstore.PerpLedgerFilter{
@@ -52,4 +52,18 @@ func (s *Server) ListPerpLiquidations(ctx context.Context, req *connect.Request[
 		return nil, translateErr(err)
 	}
 	return connect.NewResponse(&historypb.ListPerpLiquidationsResponse{Liquidations: rows, NextCursor: next}), nil
+}
+
+func (s *Server) ListPerpADL(ctx context.Context, req *connect.Request[historypb.ListPerpADLRequest]) (*connect.Response[historypb.ListPerpADLResponse], error) {
+	m := req.Msg
+	if m.GetUserId() == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
+	}
+	rows, next, err := s.store.ListPerpADL(ctx, mysqlstore.PerpLedgerFilter{
+		UserID: m.UserId, Symbol: m.Symbol, SinceMs: m.SinceMs, UntilMs: m.UntilMs,
+	}, m.Cursor, int(m.Limit))
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return connect.NewResponse(&historypb.ListPerpADLResponse{Adl: rows, NextCursor: next}), nil
 }

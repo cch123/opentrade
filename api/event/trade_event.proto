@@ -30,7 +30,7 @@ message TradeEvent {
 }
 
 message OrderAccepted {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
 
@@ -44,7 +44,7 @@ message OrderAccepted {
 }
 
 message OrderRejected {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
   RejectReason reason = 4;
@@ -58,11 +58,11 @@ message Trade {
   string qty = 4;
 
   // Maker side
-  string maker_user_id = 10;
+  uint64 maker_user_id = 10;
   uint64 maker_order_id = 11;
 
   // Taker side
-  string taker_user_id = 20;
+  uint64 taker_user_id = 20;
   uint64 taker_order_id = 21;
   Side   taker_side = 22;
 
@@ -75,14 +75,14 @@ message Trade {
 }
 
 message OrderCancelled {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
   string filled_qty = 4;  // how much was filled before cancel took effect
 }
 
 message OrderExpired {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
   string filled_qty = 4;

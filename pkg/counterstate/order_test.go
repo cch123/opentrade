@@ -91,34 +91,34 @@ func TestOrderStatusExternalMapping(t *testing.T) {
 
 func TestOrderStoreInsertDedup(t *testing.T) {
 	s := newOrderStore()
-	o := &Order{ID: 1, UserID: "u1", ClientOrderID: "c1", Status: OrderStatusPendingNew}
+	o := &Order{ID: 1, UserID: 1001, ClientOrderID: "c1", Status: OrderStatusPendingNew}
 	if err := s.Insert(o); err != nil {
 		t.Fatal(err)
 	}
 	// Second order, same user + COID → collision with active.
-	o2 := &Order{ID: 2, UserID: "u1", ClientOrderID: "c1", Status: OrderStatusPendingNew}
+	o2 := &Order{ID: 2, UserID: 1001, ClientOrderID: "c1", Status: OrderStatusPendingNew}
 	if err := s.Insert(o2); err != ErrClientOrderIDActive {
 		t.Fatalf("err = %v, want ErrClientOrderIDActive", err)
 	}
 	// Different user OK.
-	o3 := &Order{ID: 3, UserID: "u2", ClientOrderID: "c1", Status: OrderStatusPendingNew}
+	o3 := &Order{ID: 3, UserID: 1002, ClientOrderID: "c1", Status: OrderStatusPendingNew}
 	if err := s.Insert(o3); err != nil {
 		t.Fatal(err)
 	}
 	// Same ID → Duplicate.
-	if err := s.Insert(&Order{ID: 1, UserID: "u1"}); err != ErrDuplicateOrder {
+	if err := s.Insert(&Order{ID: 1, UserID: 1001}); err != ErrDuplicateOrder {
 		t.Fatalf("err = %v, want ErrDuplicateOrder", err)
 	}
 }
 
 func TestOrderStoreReleaseOnTerminal(t *testing.T) {
 	s := newOrderStore()
-	_ = s.Insert(&Order{ID: 1, UserID: "u1", ClientOrderID: "c1", Status: OrderStatusNew})
+	_ = s.Insert(&Order{ID: 1, UserID: 1001, ClientOrderID: "c1", Status: OrderStatusNew})
 	if _, err := s.UpdateStatus(1, OrderStatusFilled, 1); err != nil {
 		t.Fatal(err)
 	}
 	// COID must no longer collide with new orders.
-	if err := s.Insert(&Order{ID: 2, UserID: "u1", ClientOrderID: "c1", Status: OrderStatusPendingNew}); err != nil {
+	if err := s.Insert(&Order{ID: 2, UserID: 1001, ClientOrderID: "c1", Status: OrderStatusPendingNew}); err != nil {
 		t.Fatalf("COID not released: %v", err)
 	}
 }
@@ -127,13 +127,13 @@ func TestComputeSettlementLimitBuyMatchesAtMakerPrice(t *testing.T) {
 	state := NewShardState(0)
 	// Seed maker (sell) and taker (buy) orders in the store.
 	_ = state.Orders().Insert(&Order{
-		ID: 1, UserID: "mkr", Symbol: "BTC-USDT", Side: SideAsk,
+		ID: 1, UserID: 9001, Symbol: "BTC-USDT", Side: SideAsk,
 		Type: OrderTypeLimit, TIF: TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("2"), Status: OrderStatusNew,
 		FrozenAsset: "BTC", FrozenAmount: dec.New("2"),
 	})
 	_ = state.Orders().Insert(&Order{
-		ID: 2, UserID: "tkr", Symbol: "BTC-USDT", Side: SideBid,
+		ID: 2, UserID: 9002, Symbol: "BTC-USDT", Side: SideBid,
 		Type: OrderTypeLimit, TIF: TIFGTC,
 		Price: dec.New("105"), Qty: dec.New("1"), Status: OrderStatusPendingNew,
 		FrozenAsset: "USDT", FrozenAmount: dec.New("105"),
@@ -142,8 +142,8 @@ func TestComputeSettlementLimitBuyMatchesAtMakerPrice(t *testing.T) {
 	maker, taker, err := ComputeSettlement(state, TradeInput{
 		TradeID: "t1", Symbol: "BTC-USDT",
 		Price: dec.New("100"), Qty: dec.New("1"),
-		MakerUserID: "mkr", MakerOrderID: 1,
-		TakerUserID: "tkr", TakerOrderID: 2, TakerSide: SideBid,
+		MakerUserID: 9001, MakerOrderID: 1,
+		TakerUserID: 9002, TakerOrderID: 2, TakerSide: SideBid,
 		MakerFilledQtyAfter: dec.New("1"),
 		TakerFilledQtyAfter: dec.New("1"),
 	})
@@ -180,16 +180,16 @@ func TestComputeSettlementLimitBuyMatchesAtMakerPrice(t *testing.T) {
 func TestApplyPartySettlement(t *testing.T) {
 	state := NewShardState(0)
 	// Preload user with frozen USDT + initial order.
-	acc := state.Account("u1")
+	acc := state.Account(1001)
 	acc.PutForRestore("USDT", Balance{Available: dec.New("0"), Frozen: dec.New("105")})
 	_ = state.Orders().Insert(&Order{
-		ID: 1, UserID: "u1", Symbol: "BTC-USDT", Side: SideBid,
+		ID: 1, UserID: 1001, Symbol: "BTC-USDT", Side: SideBid,
 		Qty: dec.New("1"), Status: OrderStatusPendingNew,
 		FrozenAsset: "USDT", FrozenAmount: dec.New("105"),
 	})
 
 	settlement := PartySettlement{
-		UserID: "u1", OrderID: 1,
+		UserID: 1001, OrderID: 1,
 		BaseDelta: dec.New("1"), FrozenQuoteDelta: dec.New("-105"), QuoteDelta: dec.New("5"),
 		FilledQtyAfter: dec.New("1"),
 		StatusAfter:    OrderStatusFilled,
@@ -198,10 +198,10 @@ func TestApplyPartySettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := state.Balance("u1", "BTC"); got.Available.String() != "1" {
+	if got := state.Balance(1001, "BTC"); got.Available.String() != "1" {
 		t.Fatalf("BTC = %+v", got)
 	}
-	if got := state.Balance("u1", "USDT"); got.Available.String() != "5" || got.Frozen.String() != "0" {
+	if got := state.Balance(1001, "USDT"); got.Available.String() != "5" || got.Frozen.String() != "0" {
 		t.Fatalf("USDT = %+v", got)
 	}
 	o := state.Orders().Get(1)

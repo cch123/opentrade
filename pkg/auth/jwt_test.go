@@ -9,7 +9,7 @@ import (
 func TestSignVerifyHS256_RoundTrip(t *testing.T) {
 	secret := []byte("very-secret-32-bytes-for-testing-only")
 	now := time.Unix(1_700_000_000, 0)
-	tok, err := SignHS256("alice", secret, now, now.Add(time.Hour))
+	tok, err := SignHS256(1001, secret, now, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,15 +17,15 @@ func TestSignVerifyHS256_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if sub != "alice" {
-		t.Errorf("sub = %q", sub)
+	if sub != 1001 {
+		t.Errorf("sub = %d", sub)
 	}
 }
 
 func TestVerifyHS256_WrongSecretFails(t *testing.T) {
 	secret := []byte("aaa")
 	now := time.Unix(1_700_000_000, 0)
-	tok, _ := SignHS256("alice", secret, now, now.Add(time.Hour))
+	tok, _ := SignHS256(1001, secret, now, now.Add(time.Hour))
 	if _, err := VerifyHS256(tok, []byte("bbb"), now); err == nil {
 		t.Fatal("expected error")
 	} else if !errors.Is(err, ErrInvalidJWT) {
@@ -36,7 +36,7 @@ func TestVerifyHS256_WrongSecretFails(t *testing.T) {
 func TestVerifyHS256_ExpiredFails(t *testing.T) {
 	secret := []byte("secret")
 	now := time.Unix(1_700_000_000, 0)
-	tok, _ := SignHS256("alice", secret, now, now.Add(time.Minute))
+	tok, _ := SignHS256(1001, secret, now, now.Add(time.Minute))
 	if _, err := VerifyHS256(tok, secret, now.Add(time.Hour)); !errors.Is(err, ErrExpiredJWT) {
 		t.Errorf("err = %v, want ErrExpiredJWT", err)
 	}

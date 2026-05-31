@@ -49,7 +49,7 @@ var ErrIdempotencyConflict = errors.New("funding store: idempotency conflict")
 
 // Request is the store-level shape for a funding holder mutation.
 type Request struct {
-	UserID          string
+	UserID          uint64
 	TransferID      string
 	Asset           string
 	Amount          dec.Decimal
@@ -265,8 +265,8 @@ func (s *Store) apply(ctx context.Context, op Operation, req Request) (Result, e
 // QueryFundingBalance returns current funding balances. When asset is set
 // and the row is missing, it returns a single zero-valued balance for shape
 // compatibility with counter's balance query.
-func (s *Store) QueryFundingBalance(ctx context.Context, userID, asset string) ([]FundingBalance, error) {
-	if userID == "" {
+func (s *Store) QueryFundingBalance(ctx context.Context, userID uint64, asset string) ([]FundingBalance, error) {
+	if userID == 0 {
 		return nil, engine.ErrMissingUserID
 	}
 	if asset != "" {
@@ -320,7 +320,7 @@ func (s *Store) QueryFundingBalance(ctx context.Context, userID, asset string) (
 }
 
 func validate(req Request) error {
-	if req.UserID == "" {
+	if req.UserID == 0 {
 		return engine.ErrMissingUserID
 	}
 	if req.TransferID == "" {
@@ -350,7 +350,7 @@ func getMutation(ctx context.Context, tx *sql.Tx, transferID string, op Operatio
 	return m, true, nil
 }
 
-func lockFundingUser(ctx context.Context, tx *sql.Tx, userID string, now int64) (uint64, error) {
+func lockFundingUser(ctx context.Context, tx *sql.Tx, userID uint64, now int64) (uint64, error) {
 	const insertQ = `INSERT IGNORE INTO funding_users (user_id, funding_version, updated_at_ms)
 		VALUES (?, ?, ?)`
 	if _, err := tx.ExecContext(ctx, insertQ, userID, uint64(0), now); err != nil {
@@ -364,7 +364,7 @@ func lockFundingUser(ctx context.Context, tx *sql.Tx, userID string, now int64) 
 	return version, nil
 }
 
-func lockFundingAccount(ctx context.Context, tx *sql.Tx, userID, asset string, now int64) (engine.Balance, error) {
+func lockFundingAccount(ctx context.Context, tx *sql.Tx, userID uint64, asset string, now int64) (engine.Balance, error) {
 	const insertQ = `INSERT IGNORE INTO funding_accounts (user_id, asset, available, frozen, balance_version, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?)`
 	if _, err := tx.ExecContext(ctx, insertQ, userID, asset, dec.Zero.String(), dec.Zero.String(), uint64(0), now); err != nil {
@@ -383,7 +383,7 @@ func lockFundingAccount(ctx context.Context, tx *sql.Tx, userID, asset string, n
 	return balanceFromStrings(avail, frozen, ver)
 }
 
-func updateFundingAccount(ctx context.Context, tx *sql.Tx, userID, asset string, bal engine.Balance, now int64) error {
+func updateFundingAccount(ctx context.Context, tx *sql.Tx, userID uint64, asset string, bal engine.Balance, now int64) error {
 	const q = `UPDATE funding_accounts
 		SET available = ?, frozen = ?, balance_version = ?, updated_at_ms = ?
 		WHERE user_id = ? AND asset = ?`
@@ -391,7 +391,7 @@ func updateFundingAccount(ctx context.Context, tx *sql.Tx, userID, asset string,
 	return err
 }
 
-func updateFundingUser(ctx context.Context, tx *sql.Tx, userID string, version uint64, now int64) error {
+func updateFundingUser(ctx context.Context, tx *sql.Tx, userID uint64, version uint64, now int64) error {
 	const q = `UPDATE funding_users
 		SET funding_version = ?, updated_at_ms = ?
 		WHERE user_id = ?`
@@ -416,7 +416,7 @@ func insertMutation(ctx context.Context, tx *sql.Tx, m mutationRow) error {
 type mutationRow struct {
 	TransferID      string
 	OpType          Operation
-	UserID          string
+	UserID          uint64
 	Asset           string
 	Amount          dec.Decimal
 	PeerBiz         string

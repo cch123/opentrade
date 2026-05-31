@@ -48,11 +48,15 @@ func RegisterRiskHandlers(mux *http.ServeMux, svc *service.Service) {
 			return
 		}
 		task, err := perprisk.TaskFromWire(wire)
-		if err != nil || task.UserID == "" || task.Symbol == "" || task.Qty.Sign() <= 0 || task.Price.Sign() <= 0 {
-			http.Error(w, "valid task with user_id, symbol, qty, and price required", http.StatusBadRequest)
+		if err != nil || task.LotID == "" || task.UserID == 0 || task.Symbol == "" ||
+			task.Qty.Sign() <= 0 || task.Price.Sign() <= 0 || task.AdlRound == 0 {
+			http.Error(w, "valid task with lot_id, user_id, symbol, qty, price, and adl_round required", http.StatusBadRequest)
 			return
 		}
-		writeJSON(w, perprisk.ADLTaskResponse{Applied: svc.ExecuteAdlTask(task)})
+		result := svc.ExecuteAdlTask(task)
+		writeJSON(w, perprisk.ADLTaskResponse{
+			Applied: result.Applied, FactQty: result.FactQty.String(), RealizedPnL: result.RealizedPnL.String(),
+		})
 	})
 }
 

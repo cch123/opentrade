@@ -22,7 +22,7 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 // so downstream readers (BFF cache, reconciliation) can use it as an
 // optimistic-lock / cache-invalidation handle.
 message BalanceSnapshot {
-  string user_id = 1;
+  uint64 user_id = 1;
   string asset = 2;
   string available = 3;  // decimal string
   string frozen = 4;     // decimal string
@@ -73,7 +73,7 @@ message CounterJournalEvent {
 
 // Funds frozen as result of PlaceOrder.
 message FreezeEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string client_order_id = 3;
   string symbol = 4;
@@ -89,7 +89,7 @@ message FreezeEvent {
 
 // Reverse of freeze (Match rejected, full cancel without fill, etc.).
 message UnfreezeEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string asset = 3;
   string amount = 4;
@@ -98,7 +98,7 @@ message UnfreezeEvent {
 
 // Settlement of a trade — Counter consumes trade-event and produces this.
 message SettlementEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string trade_id = 3;
   string symbol = 4;
@@ -132,7 +132,7 @@ message TransferEvent {
     TRANSFER_TYPE_UNFREEZE = 4;
   }
 
-  string user_id = 1;
+  uint64 user_id = 1;
   string transfer_id = 2;       // idempotency key
   string asset = 3;
   string amount = 4;
@@ -153,7 +153,7 @@ message TransferEvent {
 // Status transition of an order (purely informational for consumers that
 // materialize order state, e.g. push / trade-dump).
 message OrderStatusEvent {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   InternalOrderStatus old_status = 3;
   InternalOrderStatus new_status = 4;
@@ -163,7 +163,7 @@ message OrderStatusEvent {
 
 // Cancel has been received by Counter and forwarded to Match.
 message CancelRequested {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
 }

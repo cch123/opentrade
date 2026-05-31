@@ -35,19 +35,19 @@ func TestJournalPartitionKey_AllPayloads(t *testing.T) {
 		want string
 	}{
 		{"order_status", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_OrderStatus{
-			OrderStatus: &eventpb.PerpOrderStatusEvent{UserId: "u1"}}}, "u1"},
+			OrderStatus: &eventpb.PerpOrderStatusEvent{UserId: 1001}}}, "1001"},
 		{"settlement", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_Settlement{
-			Settlement: &eventpb.PerpSettlementEvent{UserId: "u2"}}}, "u2"},
+			Settlement: &eventpb.PerpSettlementEvent{UserId: 1002}}}, "1002"},
 		{"margin", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_Margin{
-			Margin: &eventpb.PerpMarginEvent{UserId: "u3"}}}, "u3"},
+			Margin: &eventpb.PerpMarginEvent{UserId: 1003}}}, "1003"},
 		{"funding", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_Funding{
-			Funding: &eventpb.PerpFundingEvent{UserId: "u4"}}}, "u4"},
+			Funding: &eventpb.PerpFundingEvent{UserId: 1004}}}, "1004"},
 		{"liquidation", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_Liquidation{
-			Liquidation: &eventpb.PerpLiquidationEvent{UserId: "u5"}}}, "u5"},
+			Liquidation: &eventpb.PerpLiquidationEvent{UserId: 1005}}}, "1005"},
 		{"takeover", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_Takeover{
-			Takeover: &eventpb.PerpTakeoverEvent{UserId: "u6"}}}, "u6"},
+			Takeover: &eventpb.PerpTakeoverEvent{UserId: 1006}}}, "1006"},
 		{"adl", &eventpb.PerpJournalEvent{Payload: &eventpb.PerpJournalEvent_Adl{
-			Adl: &eventpb.PerpAdlEvent{UserId: "u7"}}}, "u7"},
+			Adl: &eventpb.PerpAdlEvent{UserId: 1007}}}, "1007"},
 		{"empty", &eventpb.PerpJournalEvent{}, ""},
 	}
 	for _, c := range cases {

@@ -15,7 +15,7 @@ import (
 // PerpLedgerFilter is the shared filter for the perp funding / liquidation
 // ledgers.
 type PerpLedgerFilter struct {
-	UserID  string
+	UserID  uint64
 	Symbol  string
 	SinceMs int64
 	UntilMs int64
@@ -23,7 +23,7 @@ type PerpLedgerFilter struct {
 
 // ListPerpPositions returns a user's current positions (state, not paged),
 // ordered by symbol.
-func (s *Store) ListPerpPositions(ctx context.Context, userID, symbol string) ([]*historypb.PerpPosition, error) {
+func (s *Store) ListPerpPositions(ctx context.Context, userID uint64, symbol string) ([]*historypb.PerpPosition, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 
@@ -142,6 +142,57 @@ func (s *Store) ListPerpLiquidations(ctx context.Context, f PerpLedgerFilter, ra
 		var r historypb.PerpLiquidation
 		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.LiqOrderId, &r.BankruptcyPrice,
 			&r.MarkPrice, &r.ClosedQty, &r.RealizedPnl, &r.InsuranceDelta, &r.AdlQueued, &r.TsUnixMs); err != nil {
+			return nil, "", err
+		}
+		out = append(out, &r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		out = out[:limit]
+		next, err = cursor.Encode(cursor.PerpLedgerCursor{Ts: last.TsUnixMs, PerpSeqID: last.PerpSeqId})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return out, next, nil
+}
+
+// ListPerpADL pages a user's ADL forced-close events, newest first.
+func (s *Store) ListPerpADL(ctx context.Context, f PerpLedgerFilter, rawCursor string, limit int) ([]*historypb.PerpADL, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	limit = clampLimit(limit)
+
+	conds, args, err := perpLedgerConds(f, rawCursor)
+	if err != nil {
+		return nil, "", err
+	}
+	q := `
+		SELECT perp_seq_id, symbol, lot_id, adl_round, CAST(price AS CHAR),
+		       CAST(requested_qty AS CHAR), CAST(fact_qty AS CHAR), CAST(realized_pnl AS CHAR),
+		       ts_unix_ms
+		FROM perp_adl_events
+		WHERE ` + strings.Join(conds, " AND ") + `
+		ORDER BY ts_unix_ms DESC, perp_seq_id DESC
+		LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	var out []*historypb.PerpADL
+	for rows.Next() {
+		var r historypb.PerpADL
+		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.LotId, &r.AdlRound, &r.Price,
+			&r.RequestedQty, &r.FactQty, &r.RealizedPnl, &r.TsUnixMs); err != nil {
 			return nil, "", err
 		}
 		out = append(out, &r)

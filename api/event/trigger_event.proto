@@ -81,7 +81,7 @@ message TriggerUpdate {
 
   uint64 id = 2;
   string client_trigger_id = 3;
-  string user_id = 4;
+  uint64 user_id = 4;
   string symbol = 5;
   Side side = 6;
   TriggerEventType type = 7;

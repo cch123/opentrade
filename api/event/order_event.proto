@@ -24,7 +24,7 @@ message OrderEvent {
 }
 
 message OrderPlaced {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string client_order_id = 3;
   string symbol = 4;
@@ -46,7 +46,7 @@ message OrderPlaced {
 }
 
 message OrderCancel {
-  string user_id = 1;
+  uint64 user_id = 1;
   uint64 order_id = 2;
   string symbol = 3;
 }

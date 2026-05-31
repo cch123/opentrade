@@ -57,11 +57,11 @@ func NewSharded(clients []counterrpcconnect.CounterServiceClient) (*Sharded, err
 // Shards reports the configured shard count.
 func (s *Sharded) Shards() int { return len(s.clients) }
 
-// PlaceOrder routes to the user's shard. Empty user_id is a caller bug
+// PlaceOrder routes to the user's shard. Zero user_id is a caller bug
 // (engine.buildPlaceOrderReq should never emit one).
 func (s *Sharded) PlaceOrder(ctx context.Context, req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
-	if req.UserId == "" {
-		return nil, fmt.Errorf("sharded counter: empty user id")
+	if req.UserId == 0 {
+		return nil, fmt.Errorf("sharded counter: zero user id")
 	}
 	idx := shard.Index(req.UserId, len(s.clients))
 	resp, err := s.clients[idx].PlaceOrder(ctx, connect.NewRequest(req))
@@ -73,8 +73,8 @@ func (s *Sharded) PlaceOrder(ctx context.Context, req *counterrpc.PlaceOrderRequ
 
 // Reserve routes a ReserveRequest to the user's shard (ADR-0041).
 func (s *Sharded) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error) {
-	if req.UserId == "" {
-		return nil, fmt.Errorf("sharded counter: empty user id")
+	if req.UserId == 0 {
+		return nil, fmt.Errorf("sharded counter: zero user id")
 	}
 	idx := shard.Index(req.UserId, len(s.clients))
 	resp, err := s.clients[idx].Reserve(ctx, connect.NewRequest(req))
@@ -87,8 +87,8 @@ func (s *Sharded) Reserve(ctx context.Context, req *counterrpc.ReserveRequest) (
 // ReleaseReservation routes to the user's shard. UserId is required so we
 // can pick a shard; the engine always passes it.
 func (s *Sharded) ReleaseReservation(ctx context.Context, req *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error) {
-	if req.UserId == "" {
-		return nil, fmt.Errorf("sharded counter: empty user id")
+	if req.UserId == 0 {
+		return nil, fmt.Errorf("sharded counter: zero user id")
 	}
 	idx := shard.Index(req.UserId, len(s.clients))
 	resp, err := s.clients[idx].ReleaseReservation(ctx, connect.NewRequest(req))

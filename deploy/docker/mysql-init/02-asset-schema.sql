@@ -16,7 +16,7 @@ USE opentrade_asset;
 
 CREATE TABLE IF NOT EXISTS transfer_ledger (
     transfer_id    VARCHAR(64)  PRIMARY KEY,
-    user_id        VARCHAR(64)  NOT NULL,
+    user_id        BIGINT UNSIGNED NOT NULL,
     from_biz       VARCHAR(32)  NOT NULL,
     to_biz         VARCHAR(32)  NOT NULL,
     asset          VARCHAR(16)  NOT NULL,
@@ -30,13 +30,13 @@ CREATE TABLE IF NOT EXISTS transfer_ledger (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS funding_users (
-    user_id          VARCHAR(64)     PRIMARY KEY,
+    user_id          BIGINT UNSIGNED NOT NULL PRIMARY KEY,
     funding_version  BIGINT UNSIGNED NOT NULL DEFAULT 0,
     updated_at_ms    BIGINT          NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS funding_accounts (
-    user_id          VARCHAR(64)     NOT NULL,
+    user_id          BIGINT UNSIGNED NOT NULL,
     asset            VARCHAR(16)     NOT NULL,
     available        DECIMAL(36,18)  NOT NULL DEFAULT 0,
     frozen           DECIMAL(36,18)  NOT NULL DEFAULT 0,
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS funding_mutations (
     mutation_id       BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     transfer_id       VARCHAR(64)     NOT NULL,
     op_type           VARCHAR(32)     NOT NULL,
-    user_id           VARCHAR(64)     NOT NULL,
+    user_id           BIGINT UNSIGNED NOT NULL,
     asset             VARCHAR(16)     NOT NULL,
     amount            DECIMAL(36,18)  NOT NULL,
     peer_biz          VARCHAR(32)     NOT NULL DEFAULT '',

@@ -23,7 +23,7 @@ type Event struct {
 	Symbol  string           // always set; used by Dispatcher to route
 	Order   *orderbook.Order // required for EventOrderPlaced
 	OrderID uint64           // required for EventOrderCancel
-	UserID  string           // required for EventOrderCancel (authorization)
+	UserID  uint64           // required for EventOrderCancel (authorization)
 
 	// Source is Kafka provenance, carried through so the Kafka layer can
 	// commit the offset after the event has been fully processed.
@@ -65,7 +65,7 @@ type Output struct {
 	Symbol   string
 
 	// Identity of the order that produced this emission.
-	UserID  string
+	UserID  uint64
 	OrderID uint64
 	Side    orderbook.Side
 
@@ -74,7 +74,7 @@ type Output struct {
 	Price dec.Decimal
 	// OutputTrade only: qty filled by this trade.
 	Qty              dec.Decimal
-	MakerUserID      string
+	MakerUserID      uint64
 	MakerOrderID     uint64
 	MakerSide        orderbook.Side
 	MakerRemaining   dec.Decimal

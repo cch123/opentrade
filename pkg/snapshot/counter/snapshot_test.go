@@ -35,7 +35,7 @@ func testSaveLoadRoundTrip(t *testing.T, format snapshot.Format) {
 		CounterSeq:  99,
 		TimestampMS: 1,
 		Accounts: []AccountSnapshot{{
-			UserID: "u1",
+			UserID: 1001,
 			Balances: []BalanceSnapshot{
 				{Asset: "USDT", Available: "100", Frozen: "50"},
 			},
@@ -99,9 +99,9 @@ func TestCaptureRestore(t *testing.T) {
 
 	// Seed state through normal Transfer API.
 	for _, req := range []counterstate.TransferRequest{
-		{UserID: "u1", Asset: "USDT", Amount: dec.New("100"), Type: counterstate.TransferDeposit},
-		{UserID: "u1", Asset: "USDT", Amount: dec.New("40"), Type: counterstate.TransferFreeze},
-		{UserID: "u2", Asset: "BTC", Amount: dec.New("0.5"), Type: counterstate.TransferDeposit},
+		{UserID: 1001, Asset: "USDT", Amount: dec.New("100"), Type: counterstate.TransferDeposit},
+		{UserID: 1001, Asset: "USDT", Amount: dec.New("40"), Type: counterstate.TransferFreeze},
+		{UserID: 1002, Asset: "BTC", Amount: dec.New("0.5"), Type: counterstate.TransferDeposit},
 	} {
 		if _, err := state.ApplyTransfer(req); err != nil {
 			t.Fatalf("seed transfer: %v", err)
@@ -109,8 +109,8 @@ func TestCaptureRestore(t *testing.T) {
 	}
 
 	// Prime LastMatchSeq on two symbols for u1 (ADR-0048 backlog item 2).
-	state.Account("u1").AdvanceMatchSeq("BTC-USDT", 101)
-	state.Account("u1").AdvanceMatchSeq("ETH-USDT", 7)
+	state.Account(1001).AdvanceMatchSeq("BTC-USDT", 101)
+	state.Account(1001).AdvanceMatchSeq("ETH-USDT", 7)
 
 	offsets := map[int32]int64{0: 100, 2: 55}
 	snap := CaptureFromState(3, state, 42, offsets, 1234, 0)
@@ -135,10 +135,10 @@ func TestCaptureRestore(t *testing.T) {
 	if loaded.CounterSeq != 42 {
 		t.Fatalf("counter seq = %d, want 42", loaded.CounterSeq)
 	}
-	if bal := state2.Balance("u1", "USDT"); bal.Available.String() != "60" || bal.Frozen.String() != "40" {
+	if bal := state2.Balance(1001, "USDT"); bal.Available.String() != "60" || bal.Frozen.String() != "40" {
 		t.Fatalf("restored u1 USDT = %+v", bal)
 	}
-	if bal := state2.Balance("u2", "BTC"); bal.Available.String() != "0.5" {
+	if bal := state2.Balance(1002, "BTC"); bal.Available.String() != "0.5" {
 		t.Fatalf("restored u2 BTC = %+v", bal)
 	}
 	// Offsets round-trip (ADR-0048).
@@ -151,29 +151,29 @@ func TestCaptureRestore(t *testing.T) {
 		t.Fatalf("journal_offset round-trip = %d, want 1234", loaded.JournalOffset)
 	}
 	// LastMatchSeq round-trip (ADR-0048 backlog item 2).
-	if got := state2.Account("u1").LastMatchSeq("BTC-USDT"); got != 101 {
+	if got := state2.Account(1001).LastMatchSeq("BTC-USDT"); got != 101 {
 		t.Errorf("BTC-USDT match_seq after restore = %d, want 101", got)
 	}
-	if got := state2.Account("u1").LastMatchSeq("ETH-USDT"); got != 7 {
+	if got := state2.Account(1001).LastMatchSeq("ETH-USDT"); got != 7 {
 		t.Errorf("ETH-USDT match_seq after restore = %d, want 7", got)
 	}
-	if got := state2.Account("u2").LastMatchSeq("BTC-USDT"); got != 0 {
+	if got := state2.Account(1002).LastMatchSeq("BTC-USDT"); got != 0 {
 		t.Errorf("u2 BTC-USDT match_seq after restore = %d, want 0", got)
 	}
 	// Double-layer version round-trip (ADR-0048 backlog item 1).
 	// u1 ran two transfers on USDT → account version=2, USDT version=2.
 	// u2 ran one BTC deposit → account version=1, BTC version=1.
-	u1Acc := state2.Account("u1")
+	u1Acc := state2.Account(1001)
 	if got := u1Acc.Version(); got != 2 {
 		t.Errorf("u1 account version after restore = %d, want 2", got)
 	}
 	if got := u1Acc.Balance("USDT").Version; got != 2 {
 		t.Errorf("u1 USDT version after restore = %d, want 2", got)
 	}
-	if got := state2.Account("u2").Version(); got != 1 {
+	if got := state2.Account(1002).Version(); got != 1 {
 		t.Errorf("u2 account version after restore = %d, want 2", got)
 	}
-	if got := state2.Account("u2").Balance("BTC").Version; got != 1 {
+	if got := state2.Account(1002).Balance("BTC").Version; got != 1 {
 		t.Errorf("u2 BTC version after restore = %d, want 1", got)
 	}
 }
@@ -185,11 +185,11 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 
 	// Seed balance and reserve against it.
 	if _, err := state.ApplyTransfer(counterstate.TransferRequest{
-		UserID: "u1", Asset: "USDT", Amount: dec.New("1000"), Type: counterstate.TransferDeposit,
+		UserID: 1001, Asset: "USDT", Amount: dec.New("1000"), Type: counterstate.TransferDeposit,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := state.CreateReservation("u1", "USDT", "trig-42", dec.New("100")); err != nil {
+	if _, _, err := state.CreateReservation(1001, "USDT", "trig-42", dec.New("100")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -208,10 +208,10 @@ func TestCaptureRestore_Reservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := state2.LookupReservation("trig-42")
-	if r == nil || r.Amount.String() != "100" || r.Asset != "USDT" || r.UserID != "u1" {
+	if r == nil || r.Amount.String() != "100" || r.Asset != "USDT" || r.UserID != 1001 {
 		t.Fatalf("reservation round-trip lost: %+v", r)
 	}
-	if bal := state2.Balance("u1", "USDT"); bal.Available.String() != "900" || bal.Frozen.String() != "100" {
+	if bal := state2.Balance(1001, "USDT"); bal.Available.String() != "900" || bal.Frozen.String() != "100" {
 		t.Errorf("balance: %+v", bal)
 	}
 }

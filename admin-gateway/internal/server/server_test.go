@@ -85,7 +85,7 @@ func adminReq(method, url string, body any) *http.Request {
 		b, _ = json.Marshal(body)
 	}
 	r := httptest.NewRequest(method, url, bytes.NewReader(b))
-	ctx := auth.WithUserID(r.Context(), "ops-bot")
+	ctx := auth.WithUserID(r.Context(), 9001)
 	ctx = auth.WithRole(ctx, auth.RoleAdmin)
 	return r.WithContext(ctx)
 }
@@ -109,7 +109,7 @@ func TestPutSymbol_WritesEtcdAndAudit(t *testing.T) {
 		t.Fatalf("audit entries: %+v err=%v", entries, err)
 	}
 	e := entries[0]
-	if e.Op != "admin.symbol.put" || e.Target != "BTC-USDT" || e.AdminID != "ops-bot" || e.Status != adminaudit.StatusOK {
+	if e.Op != "admin.symbol.put" || e.Target != "BTC-USDT" || e.AdminID != "9001" || e.Status != adminaudit.StatusOK {
 		t.Fatalf("entry=%+v", e)
 	}
 }
@@ -561,7 +561,7 @@ func TestCancelOrders_RequiresFilter(t *testing.T) {
 }
 
 func TestCancelOrders_PerUserHitsSingleShard(t *testing.T) {
-	var s0Seen, s1Seen string
+	var s0Seen, s1Seen uint64
 	srv, _, _, recs := newTestServer(t,
 		func(req *counterrpc.AdminCancelOrdersRequest) (*counterrpc.AdminCancelOrdersResponse, error) {
 			s0Seen = req.UserId
@@ -573,7 +573,7 @@ func TestCancelOrders_PerUserHitsSingleShard(t *testing.T) {
 		},
 	)
 	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, adminReq("POST", "/admin/cancel-orders", cancelOrdersBody{UserID: "alice", Reason: "risk"}))
+	srv.Handler().ServeHTTP(rr, adminReq("POST", "/admin/cancel-orders", cancelOrdersBody{UserID: 101, Reason: "risk"}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -581,8 +581,8 @@ func TestCancelOrders_PerUserHitsSingleShard(t *testing.T) {
 	if hits[0]+hits[1] != 1 {
 		t.Fatalf("exactly one shard should be hit, got %+v", hits)
 	}
-	if s0Seen+s1Seen != "alice" {
-		t.Fatalf("user propagated wrong: %q %q", s0Seen, s1Seen)
+	if s0Seen+s1Seen != 101 {
+		t.Fatalf("user propagated wrong: %d %d", s0Seen, s1Seen)
 	}
 }
 

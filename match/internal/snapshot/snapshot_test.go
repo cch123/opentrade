@@ -11,7 +11,7 @@ import (
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
-func newLimitOrder(id uint64, user string, side orderbook.Side, price, qty string) *orderbook.Order {
+func newLimitOrder(id uint64, user uint64, side orderbook.Side, price, qty string) *orderbook.Order {
 	p := dec.Zero
 	if price != "" {
 		p = dec.New(price)
@@ -48,7 +48,7 @@ func testSaveLoadRoundTrip(t *testing.T, format Format) {
 		Offsets:     []KafkaOffset{{Topic: "order-event", Partition: 0, Offset: 1000}},
 		TimestampMS: 1700000000000,
 		Orders: []OrderSnapshot{
-			{ID: 1, UserID: "u1", Side: 1, Type: 1, TIF: 1, Price: "100", Qty: "1", Remaining: "1", CreatedAt: 1},
+			{ID: 1, UserID: 1001, Side: 1, Type: 1, TIF: 1, Price: "100", Qty: "1", Remaining: "1", CreatedAt: 1},
 		},
 	}
 	if err := Save(base, snap, format); err != nil {
@@ -91,10 +91,10 @@ func TestCaptureAndRestoreWorker(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go w.Run(ctx)
 	seeds := []*orderbook.Order{
-		newLimitOrder(1, "u1", orderbook.Bid, "100", "1"),
-		newLimitOrder(2, "u2", orderbook.Bid, "101", "2"),
-		newLimitOrder(3, "u3", orderbook.Ask, "200", "1"),
-		newLimitOrder(4, "u4", orderbook.Bid, "100", "3"),
+		newLimitOrder(1, 1001, orderbook.Bid, "100", "1"),
+		newLimitOrder(2, 1002, orderbook.Bid, "101", "2"),
+		newLimitOrder(3, 1003, orderbook.Ask, "200", "1"),
+		newLimitOrder(4, 1004, orderbook.Bid, "100", "3"),
 	}
 	for _, o := range seeds {
 		w.Submit(&sequencer.Event{Kind: sequencer.EventOrderPlaced, Order: o})
@@ -170,7 +170,7 @@ func TestRestoreRejectsNonEmptyWorker(t *testing.T) {
 	outbox := make(chan *sequencer.Output, 8)
 	w := sequencer.NewSymbolWorker(sequencer.Config{Symbol: "BTC-USDT", Inbox: 4}, outbox, nil)
 	// Pre-populate.
-	if err := w.Book().Insert(newLimitOrder(1, "u1", orderbook.Bid, "100", "1")); err != nil {
+	if err := w.Book().Insert(newLimitOrder(1, 1001, orderbook.Bid, "100", "1")); err != nil {
 		t.Fatal(err)
 	}
 	snap := &SymbolSnapshot{Version: Version, Symbol: "BTC-USDT"}

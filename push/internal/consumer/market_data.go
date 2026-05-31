@@ -176,10 +176,10 @@ func buildOrderBookFrame(symbol string, matchSeq uint64, ob *eventpb.OrderBook) 
 			return "", nil, false
 		}
 		b, err := json.Marshal(struct {
-			Symbol     string                     `json:"symbol"`
-			MatchSeqID uint64                     `json:"match_seq_id"`
-			Bids       []*eventpb.OrderBookLevel  `json:"bids"`
-			Asks       []*eventpb.OrderBookLevel  `json:"asks"`
+			Symbol     string                    `json:"symbol"`
+			MatchSeqID uint64                    `json:"match_seq_id"`
+			Bids       []*eventpb.OrderBookLevel `json:"bids"`
+			Asks       []*eventpb.OrderBookLevel `json:"asks"`
 		}{Symbol: symbol, MatchSeqID: matchSeq, Bids: d.Full.Bids, Asks: d.Full.Asks})
 		if err != nil {
 			return "", nil, false
@@ -190,10 +190,10 @@ func buildOrderBookFrame(symbol string, matchSeq uint64, ob *eventpb.OrderBook) 
 			return "", nil, false
 		}
 		b, err := json.Marshal(struct {
-			Symbol     string                     `json:"symbol"`
-			MatchSeqID uint64                     `json:"match_seq_id"`
-			Bids       []*eventpb.OrderBookLevel  `json:"bids"`
-			Asks       []*eventpb.OrderBookLevel  `json:"asks"`
+			Symbol     string                    `json:"symbol"`
+			MatchSeqID uint64                    `json:"match_seq_id"`
+			Bids       []*eventpb.OrderBookLevel `json:"bids"`
+			Asks       []*eventpb.OrderBookLevel `json:"asks"`
 		}{Symbol: symbol, MatchSeqID: matchSeq, Bids: d.Delta.Bids, Asks: d.Delta.Asks})
 		if err != nil {
 			return "", nil, false

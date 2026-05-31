@@ -19,7 +19,7 @@ const (
 type CandidateRequest struct {
 	Symbol      string `json:"symbol"`
 	AdlPrice    string `json:"adl_price"`
-	ExcludeUser string `json:"exclude_user,omitempty"`
+	ExcludeUser uint64 `json:"exclude_user,omitempty"`
 }
 
 type CandidateResponse struct {
@@ -27,7 +27,7 @@ type CandidateResponse struct {
 }
 
 type ADLCandidateWire struct {
-	UserID          string `json:"user_id"`
+	UserID          uint64 `json:"user_id"`
 	Symbol          string `json:"symbol"`
 	Side            uint8  `json:"side"`
 	Size            string `json:"size"`
@@ -38,7 +38,8 @@ type ADLCandidateWire struct {
 }
 
 type ADLTaskWire struct {
-	UserID          string `json:"user_id"`
+	LotID           string `json:"lot_id"`
+	UserID          uint64 `json:"user_id"`
 	Symbol          string `json:"symbol"`
 	Side            uint8  `json:"side"`
 	Qty             string `json:"qty"`
@@ -49,7 +50,15 @@ type ADLTaskWire struct {
 }
 
 type ADLTaskResponse struct {
-	Applied bool `json:"applied"`
+	Applied     bool   `json:"applied"`
+	FactQty     string `json:"fact_qty,omitempty"`
+	RealizedPnL string `json:"realized_pnl,omitempty"`
+}
+
+type ADLTaskResult struct {
+	Applied     bool
+	FactQty     dec.Decimal
+	RealizedPnL dec.Decimal
 }
 
 type WorkingCapitalRepayRequest struct {
@@ -92,7 +101,7 @@ func CandidateFromWire(w ADLCandidateWire) (ADLCandidate, error) {
 
 func TaskToWire(t ADLTask) ADLTaskWire {
 	return ADLTaskWire{
-		UserID: t.UserID, Symbol: t.Symbol, Side: uint8(t.Side),
+		LotID: t.LotID, UserID: t.UserID, Symbol: t.Symbol, Side: uint8(t.Side),
 		Qty: t.Qty.String(), Price: t.Price.String(),
 		PosSeq: t.PosSeq, PositionVersion: t.PositionVersion, AdlRound: t.AdlRound,
 	}
@@ -108,7 +117,7 @@ func TaskFromWire(w ADLTaskWire) (ADLTask, error) {
 		return ADLTask{}, fmt.Errorf("task price: %w", err)
 	}
 	return ADLTask{
-		UserID: w.UserID, Symbol: w.Symbol, Side: perpstate.Side(w.Side),
+		LotID: w.LotID, UserID: w.UserID, Symbol: w.Symbol, Side: perpstate.Side(w.Side),
 		Qty: qty, Price: price, PosSeq: w.PosSeq,
 		PositionVersion: w.PositionVersion, AdlRound: w.AdlRound,
 	}, nil

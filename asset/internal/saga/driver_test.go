@@ -131,7 +131,7 @@ func (f *fixture) expectUpdate(transferID string, from, to transferledger.State,
 func sampleEntry() transferledger.Entry {
 	return transferledger.Entry{
 		TransferID:  "saga-1",
-		UserID:      "u1",
+		UserID:      101,
 		FromBiz:     "funding",
 		ToBiz:       "spot",
 		Asset:       "USDT",
@@ -433,7 +433,7 @@ func TestRun_StateMismatch_Reconciles(t *testing.T) {
 		return sqlmock.NewRows([]string{
 			"transfer_id", "user_id", "from_biz", "to_biz", "asset", "amount",
 			"state", "reject_reason", "created_at_ms", "updated_at_ms",
-		}).AddRow("saga-1", "u1", "funding", "spot", "USDT", "100",
+		}).AddRow("saga-1", 101, "funding", "spot", "USDT", "100",
 			string(transferledger.StateDebited), "", int64(1_700_000_000_000), int64(1_700_000_000_000))
 	}
 	const selectQ = `SELECT transfer_id, user_id, from_biz, to_biz, asset, amount, state, reject_reason, created_at_ms, updated_at_ms

@@ -2,6 +2,7 @@ package counterstate
 
 import (
 	"errors"
+	"strconv"
 	"sync"
 
 	"github.com/xargin/opentrade/pkg/dec"
@@ -25,14 +26,14 @@ type OrderStore struct {
 	// activeLimits counts active LIMIT orders per (user_id, symbol) for the
 	// ADR-0054 slot cap. Active = Status non-terminal && Type == LIMIT.
 	// Derived index — rebuilt from byID on restore; not persisted.
-	activeLimits map[string]map[string]int // user_id → symbol → count
+	activeLimits map[uint64]map[string]int // user_id → symbol → count
 }
 
 func newOrderStore() *OrderStore {
 	return &OrderStore{
 		byID:         make(map[uint64]*Order),
 		activeByCOID: make(map[string]uint64),
-		activeLimits: make(map[string]map[string]int),
+		activeLimits: make(map[uint64]map[string]int),
 	}
 }
 
@@ -45,7 +46,7 @@ func (s *OrderStore) Get(id uint64) *Order {
 
 // LookupActiveByCOID returns the active order matching (userID, clientOrderID).
 // Returns nil if no active order exists.
-func (s *OrderStore) LookupActiveByCOID(userID, clientOrderID string) *Order {
+func (s *OrderStore) LookupActiveByCOID(userID uint64, clientOrderID string) *Order {
 	if clientOrderID == "" {
 		return nil
 	}
@@ -173,7 +174,7 @@ func (s *OrderStore) RestoreInsert(o *Order) {
 // CountActiveLimits returns the number of active LIMIT orders the user
 // currently holds on symbol (ADR-0054). Used by PlaceOrder to enforce
 // per-(user, symbol) slot caps. O(1); takes RLock.
-func (s *OrderStore) CountActiveLimits(userID, symbol string) int {
+func (s *OrderStore) CountActiveLimits(userID uint64, symbol string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	bySymbol, ok := s.activeLimits[userID]
@@ -228,7 +229,7 @@ func countsAsActiveLimit(o *Order) bool {
 // incActiveLimit / decActiveLimit maintain the per-(user, symbol) counter.
 // Caller must hold s.mu exclusively. decActiveLimit drops empty maps to
 // avoid leaking memory for users that churn through many symbols.
-func (s *OrderStore) incActiveLimit(userID, symbol string) {
+func (s *OrderStore) incActiveLimit(userID uint64, symbol string) {
 	bySymbol, ok := s.activeLimits[userID]
 	if !ok {
 		bySymbol = make(map[string]int)
@@ -237,7 +238,7 @@ func (s *OrderStore) incActiveLimit(userID, symbol string) {
 	bySymbol[symbol]++
 }
 
-func (s *OrderStore) decActiveLimit(userID, symbol string) {
+func (s *OrderStore) decActiveLimit(userID uint64, symbol string) {
 	bySymbol, ok := s.activeLimits[userID]
 	if !ok {
 		return
@@ -251,4 +252,4 @@ func (s *OrderStore) decActiveLimit(userID, symbol string) {
 	}
 }
 
-func coidKey(userID, coid string) string { return userID + "|" + coid }
+func coidKey(userID uint64, coid string) string { return strconv.FormatUint(userID, 10) + "|" + coid }

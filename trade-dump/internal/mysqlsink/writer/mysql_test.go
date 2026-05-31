@@ -25,9 +25,9 @@ func sampleRow(seqID uint64) TradeRow {
 		Symbol:       "BTC-USDT",
 		Price:        "42000",
 		Qty:          "0.5",
-		MakerUserID:  "maker",
+		MakerUserID:  2001,
 		MakerOrderID: 10 + seqID,
-		TakerUserID:  "taker",
+		TakerUserID:  3001,
 		TakerOrderID: 20 + seqID,
 		TakerSide:    1,
 		TS:           int64(1_700_000_000_000 + seqID),
@@ -69,8 +69,8 @@ func TestInsertTrades_SingleChunk(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO trades (trade_id, symbol, price, qty, maker_user_id, maker_order_id, taker_user_id, taker_order_id, taker_side, ts, match_seq_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE trade_id = trade_id").
 		WithArgs(
-			"BTC-USDT:1", "BTC-USDT", "42000", "0.5", "maker", uint64(11), "taker", uint64(21), int8(1), int64(1_700_000_000_001), uint64(1),
-			"BTC-USDT:2", "BTC-USDT", "42000", "0.5", "maker", uint64(12), "taker", uint64(22), int8(1), int64(1_700_000_000_002), uint64(2),
+			"BTC-USDT:1", "BTC-USDT", "42000", "0.5", uint64(2001), uint64(11), uint64(3001), uint64(21), int8(1), int64(1_700_000_000_001), uint64(1),
+			"BTC-USDT:2", "BTC-USDT", "42000", "0.5", uint64(2001), uint64(12), uint64(3001), uint64(22), int8(1), int64(1_700_000_000_002), uint64(2),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()

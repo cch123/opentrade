@@ -12,8 +12,8 @@ import (
 	"go.uber.org/zap"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
-	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	"github.com/xargin/opentrade/pkg/dec"
 )
 
@@ -67,12 +67,12 @@ func newEngineWithReserver(placer OrderPlacer, res Reservations) *Engine {
 // fakeReserver records Reserve / Release calls so tests can inspect the
 // sequence without a live Counter gRPC.
 type fakeReserver struct {
-	mu            sync.Mutex
-	reserves      []*counterrpc.ReserveRequest
-	releases      []*counterrpc.ReleaseReservationRequest
-	reserveErr    error
-	reserveFn     func(*counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error)
-	releaseFn     func(*counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error)
+	mu         sync.Mutex
+	reserves   []*counterrpc.ReserveRequest
+	releases   []*counterrpc.ReleaseReservationRequest
+	reserveErr error
+	reserveFn  func(*counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error)
+	releaseFn  func(*counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error)
 }
 
 func (r *fakeReserver) Reserve(_ context.Context, req *counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error) {
@@ -165,7 +165,7 @@ func TestShouldFire_UnknownTypeIsFalse(t *testing.T) {
 
 func goodReq() *condrpc.PlaceTriggerRequest {
 	return &condrpc.PlaceTriggerRequest{
-		UserId:    "u1",
+		UserId:    101,
 		Symbol:    "BTC-USDT",
 		Side:      eventpb.Side_SIDE_SELL,
 		Type:      condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS,
@@ -214,12 +214,12 @@ func TestPlace_DedupByClientID(t *testing.T) {
 func TestPlace_ValidationErrors(t *testing.T) {
 	e := newEngine(&fakePlacer{})
 	cases := map[string]func(*condrpc.PlaceTriggerRequest){
-		"no user":      func(r *condrpc.PlaceTriggerRequest) { r.UserId = "" },
-		"no symbol":    func(r *condrpc.PlaceTriggerRequest) { r.Symbol = "" },
-		"bad side":     func(r *condrpc.PlaceTriggerRequest) { r.Side = eventpb.Side_SIDE_UNSPECIFIED },
-		"bad type":     func(r *condrpc.PlaceTriggerRequest) { r.Type = condrpc.TriggerType_TRIGGER_TYPE_UNSPECIFIED },
-		"zero stop":    func(r *condrpc.PlaceTriggerRequest) { r.StopPrice = "0" },
-		"no qty":       func(r *condrpc.PlaceTriggerRequest) { r.Qty = "" },
+		"no user":   func(r *condrpc.PlaceTriggerRequest) { r.UserId = 0 },
+		"no symbol": func(r *condrpc.PlaceTriggerRequest) { r.Symbol = "" },
+		"bad side":  func(r *condrpc.PlaceTriggerRequest) { r.Side = eventpb.Side_SIDE_UNSPECIFIED },
+		"bad type":  func(r *condrpc.PlaceTriggerRequest) { r.Type = condrpc.TriggerType_TRIGGER_TYPE_UNSPECIFIED },
+		"zero stop": func(r *condrpc.PlaceTriggerRequest) { r.StopPrice = "0" },
+		"no qty":    func(r *condrpc.PlaceTriggerRequest) { r.Qty = "" },
 		"limit wants limit price": func(r *condrpc.PlaceTriggerRequest) {
 			r.Type = condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT
 			r.LimitPrice = ""
@@ -254,7 +254,7 @@ func TestPlace_ValidationErrors(t *testing.T) {
 func TestCancel_TransitionsPendingToCanceled(t *testing.T) {
 	e := newEngine(&fakePlacer{})
 	id, _, _, _ := e.Place(context.Background(), goodReq())
-	status, ok, err := e.Cancel(context.Background(), "u1", id)
+	status, ok, err := e.Cancel(context.Background(), 101, id)
 	if err != nil || !ok {
 		t.Fatalf("cancel: err=%v ok=%v", err, ok)
 	}
@@ -266,14 +266,14 @@ func TestCancel_TransitionsPendingToCanceled(t *testing.T) {
 func TestCancel_NonOwnerRejected(t *testing.T) {
 	e := newEngine(&fakePlacer{})
 	id, _, _, _ := e.Place(context.Background(), goodReq())
-	if _, _, err := e.Cancel(context.Background(), "someone-else", id); !errors.Is(err, ErrNotOwner) {
+	if _, _, err := e.Cancel(context.Background(), 303, id); !errors.Is(err, ErrNotOwner) {
 		t.Errorf("err = %v, want ErrNotOwner", err)
 	}
 }
 
 func TestCancel_Unknown(t *testing.T) {
 	e := newEngine(&fakePlacer{})
-	if _, _, err := e.Cancel(context.Background(), "u1", 99999); !errors.Is(err, ErrNotFound) {
+	if _, _, err := e.Cancel(context.Background(), 101, 99999); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -281,8 +281,8 @@ func TestCancel_Unknown(t *testing.T) {
 func TestCancel_IdempotentOnTerminal(t *testing.T) {
 	e := newEngine(&fakePlacer{})
 	id, _, _, _ := e.Place(context.Background(), goodReq())
-	_, _, _ = e.Cancel(context.Background(), "u1", id)
-	status, ok, err := e.Cancel(context.Background(), "u1", id)
+	_, _, _ = e.Cancel(context.Background(), 101, id)
+	status, ok, err := e.Cancel(context.Background(), 101, id)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestHandleRecord_SellStopLossFires(t *testing.T) {
 		t.Errorf("client_order_id: %q", calls[0].ClientOrderId)
 	}
 	// State transitioned to TRIGGERED
-	got, err := e.Get("u1", id)
+	got, err := e.Get(101, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestHandleRecord_RejectionCapturedAsStatus(t *testing.T) {
 	e := newEngine(placer)
 	id, _, _, _ := e.Place(context.Background(), goodReq())
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "99"), 0, 1)
-	got, _ := e.Get("u1", id)
+	got, _ := e.Get(101, id)
 	if got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_REJECTED {
 		t.Errorf("status: %v", got.Status)
 	}
@@ -414,13 +414,13 @@ func TestList_DefaultPendingOnly(t *testing.T) {
 	r2 := goodReq()
 	r2.ClientTriggerId = "alt"
 	_, _, _, _ = e.Place(context.Background(), r2)
-	_, _, _ = e.Cancel(context.Background(), "u1", id1)
+	_, _, _ = e.Cancel(context.Background(), 101, id1)
 
-	active := e.List("u1", false)
+	active := e.List(101, false)
 	if len(active) != 1 {
 		t.Fatalf("active len = %d, want 1", len(active))
 	}
-	all := e.List("u1", true)
+	all := e.List(101, true)
 	if len(all) != 2 {
 		t.Fatalf("all len = %d, want 2", len(all))
 	}
@@ -442,7 +442,7 @@ func TestPlace_CallsReserveFirst(t *testing.T) {
 		t.Errorf("reserve count = %d, want 1", reserver.reserveCount())
 	}
 	got := reserver.reserves[0]
-	if got.UserId != "u1" || got.Symbol != "BTC-USDT" {
+	if got.UserId != 101 || got.Symbol != "BTC-USDT" {
 		t.Errorf("reserve req shape: %+v", got)
 	}
 	if got.ReservationId != e.refIDFor(id) {
@@ -458,7 +458,7 @@ func TestPlace_ReserveErrorDoesNotStoreTrigger(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected err")
 	}
-	if got := e.List("u1", true); len(got) != 0 {
+	if got := e.List(101, true); len(got) != 0 {
 		t.Errorf("trigger stored despite reserve error: %+v", got)
 	}
 }
@@ -468,7 +468,7 @@ func TestCancel_ReleasesReservation(t *testing.T) {
 	reserver := &fakeReserver{}
 	e := newEngineWithReserver(placer, reserver)
 	id, _, _, _ := e.Place(context.Background(), goodReq())
-	_, ok, err := e.Cancel(context.Background(), "u1", id)
+	_, ok, err := e.Cancel(context.Background(), 101, id)
 	if err != nil || !ok {
 		t.Fatalf("cancel: err=%v ok=%v", err, ok)
 	}
@@ -545,7 +545,7 @@ func TestPlace_ExpiryInFutureStored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := e.Get("u1", id)
+	got, err := e.Get(101, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,13 +583,13 @@ func TestSweepExpired_FlipsOverdue(t *testing.T) {
 		t.Fatalf("sweep flipped %d, want 1", n)
 	}
 
-	if got, _ := e.Get("u1", soonID); got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED {
+	if got, _ := e.Get(101, soonID); got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED {
 		t.Errorf("soon status = %v", got.Status)
 	}
-	if got, _ := e.Get("u1", lateID); got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_PENDING {
+	if got, _ := e.Get(101, lateID); got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_PENDING {
 		t.Errorf("late should still be pending: %v", got.Status)
 	}
-	if got, _ := e.Get("u1", foreverID); got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_PENDING {
+	if got, _ := e.Get(101, foreverID); got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_PENDING {
 		t.Errorf("forever should still be pending: %v", got.Status)
 	}
 	// Expired reservation was best-effort released.
@@ -612,14 +612,14 @@ func TestSweepExpired_NoopOnEmpty(t *testing.T) {
 
 func ocoLeg(client string, typ condrpc.TriggerType, stop, limit string) *condrpc.PlaceTriggerRequest {
 	return &condrpc.PlaceTriggerRequest{
-		UserId:              "u1",
+		UserId:          101,
 		ClientTriggerId: client,
-		Symbol:              "BTC-USDT",
-		Side:                eventpb.Side_SIDE_SELL,
-		Type:                typ,
-		StopPrice:           stop,
-		LimitPrice:          limit,
-		Qty:                 "0.5",
+		Symbol:          "BTC-USDT",
+		Side:            eventpb.Side_SIDE_SELL,
+		Type:            typ,
+		StopPrice:       stop,
+		LimitPrice:      limit,
+		Qty:             "0.5",
 	}
 }
 
@@ -627,7 +627,7 @@ func TestPlaceOCO_HappyPath(t *testing.T) {
 	placer := &fakePlacer{}
 	reserver := &fakeReserver{}
 	e := newEngineWithReserver(placer, reserver)
-	gid, legs, accepted, err := e.PlaceOCO(context.Background(), "u1", "oco-client-1", []*condrpc.PlaceTriggerRequest{
+	gid, legs, accepted, err := e.PlaceOCO(context.Background(), 101, "oco-client-1", []*condrpc.PlaceTriggerRequest{
 		ocoLeg("leg-tp", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", ""),
 		ocoLeg("leg-sl", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", ""),
 	})
@@ -653,7 +653,7 @@ func TestPlaceOCO_DedupByClientOCOID(t *testing.T) {
 		ocoLeg("a", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", ""),
 		ocoLeg("b", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", ""),
 	}
-	gid1, _, ok1, err := e.PlaceOCO(context.Background(), "u1", "dedup-oco", req)
+	gid1, _, ok1, err := e.PlaceOCO(context.Background(), 101, "dedup-oco", req)
 	if err != nil || !ok1 {
 		t.Fatal(err)
 	}
@@ -663,7 +663,7 @@ func TestPlaceOCO_DedupByClientOCOID(t *testing.T) {
 		ocoLeg("c", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", ""),
 		ocoLeg("d", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", ""),
 	}
-	gid2, _, ok2, err := e.PlaceOCO(context.Background(), "u1", "dedup-oco", req2)
+	gid2, _, ok2, err := e.PlaceOCO(context.Background(), 101, "dedup-oco", req2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +684,7 @@ func TestPlaceOCO_MismatchedSymbolRejected(t *testing.T) {
 	legA := ocoLeg("a", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", "")
 	legB := ocoLeg("b", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", "")
 	legB.Symbol = "ETH-USDT"
-	if _, _, _, err := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceTriggerRequest{legA, legB}); !errors.Is(err, ErrOCOSymbolMismatch) {
+	if _, _, _, err := e.PlaceOCO(context.Background(), 101, "", []*condrpc.PlaceTriggerRequest{legA, legB}); !errors.Is(err, ErrOCOSymbolMismatch) {
 		t.Errorf("err = %v, want ErrOCOSymbolMismatch", err)
 	}
 }
@@ -697,14 +697,14 @@ func TestPlaceOCO_MismatchedSideRejected(t *testing.T) {
 	legB.Type = condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS
 	legB.QuoteQty = "100"
 	legB.Qty = ""
-	if _, _, _, err := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceTriggerRequest{legA, legB}); !errors.Is(err, ErrOCOSideMismatch) {
+	if _, _, _, err := e.PlaceOCO(context.Background(), 101, "", []*condrpc.PlaceTriggerRequest{legA, legB}); !errors.Is(err, ErrOCOSideMismatch) {
 		t.Errorf("err = %v, want ErrOCOSideMismatch", err)
 	}
 }
 
 func TestPlaceOCO_TooFewLegsRejected(t *testing.T) {
 	e := newEngineWithReserver(&fakePlacer{}, nil)
-	if _, _, _, err := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceTriggerRequest{
+	if _, _, _, err := e.PlaceOCO(context.Background(), 101, "", []*condrpc.PlaceTriggerRequest{
 		ocoLeg("only", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", ""),
 	}); !errors.Is(err, ErrOCONeedsTwoLegs) {
 		t.Errorf("err = %v, want ErrOCONeedsTwoLegs", err)
@@ -715,14 +715,14 @@ func TestPlaceOCO_CancelOneCascadesToSibling(t *testing.T) {
 	placer := &fakePlacer{}
 	reserver := &fakeReserver{}
 	e := newEngineWithReserver(placer, reserver)
-	_, legs, _, _ := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceTriggerRequest{
+	_, legs, _, _ := e.PlaceOCO(context.Background(), 101, "", []*condrpc.PlaceTriggerRequest{
 		ocoLeg("a", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", ""),
 		ocoLeg("b", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", ""),
 	})
 	// Cancel leg[0]; leg[1] should cascade to CANCELED.
-	_, _, _ = e.Cancel(context.Background(), "u1", legs[0].ID)
+	_, _, _ = e.Cancel(context.Background(), 101, legs[0].ID)
 
-	sib, err := e.Get("u1", legs[1].ID)
+	sib, err := e.Get(101, legs[1].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,21 +738,21 @@ func TestPlaceOCO_TriggerOneCascadesToSibling(t *testing.T) {
 	placer := &fakePlacer{}
 	reserver := &fakeReserver{}
 	e := newEngineWithReserver(placer, reserver)
-	_, legs, _, _ := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceTriggerRequest{
+	_, legs, _, _ := e.PlaceOCO(context.Background(), 101, "", []*condrpc.PlaceTriggerRequest{
 		ocoLeg("a", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", ""),
 		ocoLeg("b", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", ""),
 	})
 	// Price 85 triggers leg-a (stop_loss @ 90); leg-b should cascade CANCELED.
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "85"), 0, 1)
 
-	fired, err := e.Get("u1", legs[0].ID)
+	fired, err := e.Get(101, legs[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fired.Status != condrpc.TriggerStatus_TRIGGER_STATUS_TRIGGERED {
 		t.Errorf("fired status = %v, want TRIGGERED", fired.Status)
 	}
-	sib, err := e.Get("u1", legs[1].ID)
+	sib, err := e.Get(101, legs[1].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +777,7 @@ func TestPlaceOCO_ExpirationCascadesToSibling(t *testing.T) {
 	expLeg := ocoLeg("exp", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", "")
 	expLeg.ExpiresAtUnixMs = now.Add(time.Minute).UnixMilli()
 	steadyLeg := ocoLeg("steady", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", "")
-	_, legs, _, err := e.PlaceOCO(context.Background(), "u1", "", []*condrpc.PlaceTriggerRequest{expLeg, steadyLeg})
+	_, legs, _, err := e.PlaceOCO(context.Background(), 101, "", []*condrpc.PlaceTriggerRequest{expLeg, steadyLeg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +785,7 @@ func TestPlaceOCO_ExpirationCascadesToSibling(t *testing.T) {
 	if n := e.SweepExpired(context.Background()); n != 1 {
 		t.Fatalf("sweep count = %d, want 1 (only the expired leg)", n)
 	}
-	sib, _ := e.Get("u1", legs[1].ID)
+	sib, _ := e.Get(101, legs[1].ID)
 	if sib.Status != condrpc.TriggerStatus_TRIGGER_STATUS_CANCELED {
 		t.Errorf("sibling status = %v, want CANCELED", sib.Status)
 	}
@@ -797,7 +797,7 @@ func TestPlaceOCO_ExpirationCascadesToSibling(t *testing.T) {
 
 func trailingSellReq(delta int32, activation string) *condrpc.PlaceTriggerRequest {
 	return &condrpc.PlaceTriggerRequest{
-		UserId:           "u1",
+		UserId:           101,
 		Symbol:           "BTC-USDT",
 		Side:             eventpb.Side_SIDE_SELL,
 		Type:             condrpc.TriggerType_TRIGGER_TYPE_TRAILING_STOP_LOSS,
@@ -849,7 +849,7 @@ func TestTrailing_SellWatermarkAndFire(t *testing.T) {
 	if calls := placer.calls(); len(calls) != 0 {
 		t.Fatalf("fired too early: %d calls", len(calls))
 	}
-	got, _ := e.Get("u1", id)
+	got, _ := e.Get(101, id)
 	if !got.TrailingActive {
 		t.Errorf("should be active after first price")
 	}
@@ -863,7 +863,7 @@ func TestTrailing_SellWatermarkAndFire(t *testing.T) {
 	if calls := placer.calls(); len(calls) != 1 {
 		t.Fatalf("fire count = %d, want 1", len(calls))
 	}
-	got, _ = e.Get("u1", id)
+	got, _ = e.Get(101, id)
 	if got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_TRIGGERED {
 		t.Errorf("status = %v", got.Status)
 	}
@@ -893,7 +893,7 @@ func TestTrailing_BuyWatermarkAndFire(t *testing.T) {
 	if len(placer.calls()) != 1 {
 		t.Fatalf("fire count = %d, want 1", len(placer.calls()))
 	}
-	got, _ := e.Get("u1", id)
+	got, _ := e.Get(101, id)
 	if got.Status != condrpc.TriggerStatus_TRIGGER_STATUS_TRIGGERED {
 		t.Errorf("status = %v", got.Status)
 	}
@@ -911,7 +911,7 @@ func TestTrailing_ActivationPriceGatesWatermark(t *testing.T) {
 
 	// Price 115 → not activated; watermark stays 0.
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "115"), 0, 1)
-	got, _ := e.Get("u1", id)
+	got, _ := e.Get(101, id)
 	if got.TrailingActive {
 		t.Errorf("should not be active below activation price")
 	}
@@ -921,7 +921,7 @@ func TestTrailing_ActivationPriceGatesWatermark(t *testing.T) {
 
 	// 130 crosses activation → active + watermark initializes.
 	e.HandleRecord(context.Background(), publicTradeEvent("BTC-USDT", "130"), 0, 2)
-	got, _ = e.Get("u1", id)
+	got, _ = e.Get(101, id)
 	if !got.TrailingActive {
 		t.Errorf("should be active after crossing activation")
 	}
@@ -956,7 +956,7 @@ func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	dst := newEngine(placer)
 	dst.Restore(pending, terminals, offsets)
 
-	got, err := dst.Get("u1", id)
+	got, err := dst.Get(101, id)
 	if err != nil {
 		t.Fatalf("get after restore: %v", err)
 	}

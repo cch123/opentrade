@@ -1,7 +1,6 @@
 package sequencer
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,7 +17,7 @@ func TestFIFOPerUser(t *testing.T) {
 	// All tasks for "u1" submitted sequentially — they must also run sequentially.
 	for i := 0; i < n; i++ {
 		i := i
-		_, err := s.Execute("u1", func(seq uint64) (any, error) {
+		_, err := s.Execute(1001, func(seq uint64) (any, error) {
 			mu.Lock()
 			got = append(got, i)
 			mu.Unlock()
@@ -44,7 +43,7 @@ func TestConcurrentUsersRunInParallel(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(users)
 	for u := 0; u < users; u++ {
-		user := fmt.Sprintf("u%d", u)
+		user := uint64(1000 + u)
 		go func() {
 			defer wg.Done()
 			_, _ = s.Execute(user, func(seq uint64) (any, error) {
@@ -75,7 +74,7 @@ func TestCounterSeqMonotonic(t *testing.T) {
 	var seqs []uint64
 
 	for u := 0; u < 4; u++ {
-		user := fmt.Sprintf("u%d", u)
+		user := uint64(1000 + u)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -106,14 +105,14 @@ func TestCounterSeqMonotonic(t *testing.T) {
 func TestIdleWorkerExits(t *testing.T) {
 	s := New(WithIdleTimeout(30*time.Millisecond), WithQueueCapacity(16))
 
-	_, err := s.Execute("u1", func(seq uint64) (any, error) { return nil, nil })
+	_, err := s.Execute(1001, func(seq uint64) (any, error) { return nil, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Give the worker time to hit its idle timeout.
 	time.Sleep(80 * time.Millisecond)
 	// After idle exit, submitting again must spin up a new worker.
-	_, err = s.Execute("u1", func(seq uint64) (any, error) { return nil, nil })
+	_, err = s.Execute(1001, func(seq uint64) (any, error) { return nil, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +130,7 @@ func TestQueueAcceptsBeyondInitialCapacity(t *testing.T) {
 	block := make(chan struct{})
 	release := make(chan struct{})
 	go func() {
-		_, _ = s.Execute("u1", func(seq uint64) (any, error) {
+		_, _ = s.Execute(1001, func(seq uint64) (any, error) {
 			close(block)
 			<-release
 			return nil, nil
@@ -148,7 +147,7 @@ func TestQueueAcceptsBeyondInitialCapacity(t *testing.T) {
 	for i := 0; i < n; i++ {
 		i := i
 		go func() {
-			_, err := s.Execute("u1", func(seq uint64) (any, error) {
+			_, err := s.Execute(1001, func(seq uint64) (any, error) {
 				mu.Lock()
 				seen = append(seen, i)
 				mu.Unlock()
@@ -163,7 +162,7 @@ func TestQueueAcceptsBeyondInitialCapacity(t *testing.T) {
 
 	// QueueDepth should reflect the pile-up (20 queued; the blocking
 	// task is currently executing so not on the list).
-	if got := s.QueueDepth("u1"); got == 0 {
+	if got := s.QueueDepth(1001); got == 0 {
 		t.Fatalf("QueueDepth=0 while 20 tasks are parked")
 	}
 
@@ -198,7 +197,7 @@ func TestSetCounterSeq(t *testing.T) {
 		t.Fatalf("CounterSeq = %d, want 100", s.CounterSeq())
 	}
 	var seq uint64
-	_, _ = s.Execute("u1", func(s uint64) (any, error) { seq = s; return nil, nil })
+	_, _ = s.Execute(1001, func(s uint64) (any, error) { seq = s; return nil, nil })
 	if seq != 101 {
 		t.Fatalf("next seq = %d, want 101", seq)
 	}

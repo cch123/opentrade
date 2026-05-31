@@ -65,7 +65,7 @@ func NewOrchestrator(cfg OrchestratorConfig, ledger *transferledger.Ledger, driv
 
 // TransferInput is the Transfer RPC shape in internal types.
 type TransferInput struct {
-	UserID     string
+	UserID     uint64
 	TransferID string
 	FromBiz    string
 	ToBiz      string
@@ -247,7 +247,7 @@ func (o *Orchestrator) observeTerminalDuration(initial, final transferledger.Ent
 }
 
 func validateTransfer(in TransferInput) error {
-	if in.UserID == "" {
+	if in.UserID == 0 {
 		return fmt.Errorf("%w: user_id required", ErrInvalidRequest)
 	}
 	if in.TransferID == "" {

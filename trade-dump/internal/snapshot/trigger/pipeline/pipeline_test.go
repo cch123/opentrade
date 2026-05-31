@@ -69,7 +69,7 @@ func updateRecord(t *testing.T, id, seq uint64, status eventpb.TriggerEventStatu
 		Payload: &eventpb.TriggerEvent_Update{
 			Update: &eventpb.TriggerUpdate{
 				Id:           id,
-				UserId:       "u1",
+				UserId:       1001,
 				Symbol:       "BTC-USDT",
 				Status:       status,
 				StopPrice:    "100",
@@ -303,7 +303,7 @@ func TestLoadSnapshot_RestoresExisting(t *testing.T) {
 		TakenAtMs:           42,
 		TriggerEventOffsets: map[int32]int64{0: 555},
 		Pending: []*snapshotpb.TriggerRecord{
-			{Id: 9, UserId: "u1", Symbol: "BTC-USDT"},
+			{Id: 9, UserId: 1001, Symbol: "BTC-USDT"},
 		},
 	}
 	if err := triggersnap.Save(context.Background(), store, DefaultSnapshotKey, seed, snapshotpkg.FormatProto); err != nil {

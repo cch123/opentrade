@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/perprisk"
 )
 
@@ -46,12 +47,20 @@ func (c *Client) Candidates(ctx context.Context, endpoint string, req perprisk.C
 // reported the candidate. A false response is not a transport failure; it means
 // the shard's sequencer rejected the task, usually because one observed
 // position stamp was stale.
-func (c *Client) ExecuteTask(ctx context.Context, endpoint string, task perprisk.ADLTask) (bool, error) {
+func (c *Client) ExecuteTask(ctx context.Context, endpoint string, task perprisk.ADLTask) (perprisk.ADLTaskResult, error) {
 	var resp perprisk.ADLTaskResponse
 	if err := c.post(ctx, endpoint, perprisk.RiskTaskPath, perprisk.TaskToWire(task), &resp); err != nil {
-		return false, err
+		return perprisk.ADLTaskResult{}, err
 	}
-	return resp.Applied, nil
+	factQty, err := dec.Parse(resp.FactQty)
+	if err != nil {
+		return perprisk.ADLTaskResult{}, err
+	}
+	realized, err := dec.Parse(resp.RealizedPnL)
+	if err != nil {
+		return perprisk.ADLTaskResult{}, err
+	}
+	return perprisk.ADLTaskResult{Applied: resp.Applied, FactQty: factQty, RealizedPnL: realized}, nil
 }
 
 func (c *Client) post(ctx context.Context, endpoint, path string, req, resp any) error {

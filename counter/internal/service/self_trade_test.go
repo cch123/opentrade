@@ -17,12 +17,12 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 	svc, state, _, _ := newOrderFixture(t)
 	ctx := context.Background()
 
-	// Give alice enough on both sides to place buy + sell.
-	state.CommitBalance("alice", "USDT", counterstate.Balance{Available: dec.New("1000")})
-	state.CommitBalance("alice", "BTC", counterstate.Balance{Available: dec.New("10")})
+	// Give the same user enough on both sides to place buy + sell.
+	state.CommitBalance(1001, "USDT", counterstate.Balance{Available: dec.New("1000")})
+	state.CommitBalance(1001, "BTC", counterstate.Balance{Available: dec.New("10")})
 
 	buy, err := svc.PlaceOrder(ctx, PlaceOrderRequest{
-		UserID: "alice", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -30,7 +30,7 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 		t.Fatalf("buy: %+v %v", buy, err)
 	}
 	sell, err := svc.PlaceOrder(ctx, PlaceOrderRequest{
-		UserID: "alice", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -40,8 +40,8 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 
 	// Snapshot pre-trade balances after both freezes. With the bug, the second
 	// settlement side was dropped, so frozen funds stayed locked post-trade.
-	preUSDT := state.Balance("alice", "USDT")
-	preBTC := state.Balance("alice", "BTC")
+	preUSDT := state.Balance(1001, "USDT")
+	preBTC := state.Balance(1001, "BTC")
 
 	tradeEvt := &eventpb.TradeEvent{
 		Meta:       &eventpb.EventMeta{},
@@ -51,9 +51,9 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 			Symbol:              "BTC-USDT",
 			Price:               "100",
 			Qty:                 "1",
-			MakerUserId:         "alice",
+			MakerUserId:         1001,
 			MakerOrderId:        sell.OrderID, // maker sells
-			TakerUserId:         "alice",
+			TakerUserId:         1001,
 			TakerOrderId:        buy.OrderID, // taker buys
 			TakerSide:           eventpb.Side_SIDE_BUY,
 			MakerFilledQtyAfter: "1",
@@ -64,8 +64,8 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	postUSDT := state.Balance("alice", "USDT")
-	postBTC := state.Balance("alice", "BTC")
+	postUSDT := state.Balance(1001, "USDT")
+	postBTC := state.Balance(1001, "BTC")
 
 	// Expected: both sides settle against the same account.
 	//   USDT: buyer pays 100 from frozen; seller gains 100 to available → net avail +100, frozen -100
@@ -85,7 +85,7 @@ func TestSelfTradeAppliesBothSides(t *testing.T) {
 	}
 
 	// match_seq guard still advances so replays are idempotent.
-	if got := state.Account("alice").LastMatchSeq("BTC-USDT"); got != 42 {
+	if got := state.Account(1001).LastMatchSeq("BTC-USDT"); got != 42 {
 		t.Errorf("LastMatchSeq = %d, want 42", got)
 	}
 }
@@ -96,16 +96,16 @@ func TestSelfTradeReplayIdempotent(t *testing.T) {
 	svc, state, _, _ := newOrderFixture(t)
 	ctx := context.Background()
 
-	state.CommitBalance("alice", "USDT", counterstate.Balance{Available: dec.New("1000")})
-	state.CommitBalance("alice", "BTC", counterstate.Balance{Available: dec.New("10")})
+	state.CommitBalance(1001, "USDT", counterstate.Balance{Available: dec.New("1000")})
+	state.CommitBalance(1001, "BTC", counterstate.Balance{Available: dec.New("10")})
 
 	buy, _ := svc.PlaceOrder(ctx, PlaceOrderRequest{
-		UserID: "alice", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideBid, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
 	sell, _ := svc.PlaceOrder(ctx, PlaceOrderRequest{
-		UserID: "alice", Symbol: "BTC-USDT",
+		UserID: 1001, Symbol: "BTC-USDT",
 		Side: counterstate.SideAsk, OrderType: counterstate.OrderTypeLimit, TIF: counterstate.TIFGTC,
 		Price: dec.New("100"), Qty: dec.New("1"),
 	})
@@ -116,8 +116,8 @@ func TestSelfTradeReplayIdempotent(t *testing.T) {
 		Payload: &eventpb.TradeEvent_Trade{Trade: &eventpb.Trade{
 			TradeId: "BTC-USDT:1", Symbol: "BTC-USDT",
 			Price: "100", Qty: "1",
-			MakerUserId: "alice", MakerOrderId: sell.OrderID,
-			TakerUserId: "alice", TakerOrderId: buy.OrderID,
+			MakerUserId: 1001, MakerOrderId: sell.OrderID,
+			TakerUserId: 1001, TakerOrderId: buy.OrderID,
 			TakerSide:           eventpb.Side_SIDE_BUY,
 			MakerFilledQtyAfter: "1", TakerFilledQtyAfter: "1",
 		}},
@@ -125,15 +125,15 @@ func TestSelfTradeReplayIdempotent(t *testing.T) {
 	if err := svc.HandleTradeEvent(ctx, tradeEvt); err != nil {
 		t.Fatal(err)
 	}
-	after1USDT := state.Balance("alice", "USDT")
-	after1BTC := state.Balance("alice", "BTC")
+	after1USDT := state.Balance(1001, "USDT")
+	after1BTC := state.Balance(1001, "BTC")
 
 	// Replay: must be a no-op for balances.
 	if err := svc.HandleTradeEvent(ctx, tradeEvt); err != nil {
 		t.Fatal(err)
 	}
-	after2USDT := state.Balance("alice", "USDT")
-	after2BTC := state.Balance("alice", "BTC")
+	after2USDT := state.Balance(1001, "USDT")
+	after2BTC := state.Balance(1001, "BTC")
 	if after1USDT.Available.Cmp(after2USDT.Available) != 0 || after1USDT.Frozen.Cmp(after2USDT.Frozen) != 0 {
 		t.Errorf("USDT moved on replay: %+v → %+v", after1USDT, after2USDT)
 	}

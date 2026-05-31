@@ -5,8 +5,8 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
-	"github.com/xargin/opentrade/trigger/engine"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/trigger/engine"
 )
 
 func TestConvertMapsAllFields(t *testing.T) {
@@ -18,8 +18,8 @@ func TestConvertMapsAllFields(t *testing.T) {
 	wm, _ := dec.Parse("115")
 	c := &engine.Trigger{
 		ID:                1,
-		ClientTriggerID:      "cli-1",
-		UserID:            "u1",
+		ClientTriggerID:   "cli-1",
+		UserID:            101,
 		Symbol:            "BTC-USDT",
 		Side:              eventpb.Side_SIDE_SELL,
 		Type:              condrpc.TriggerType_TRIGGER_TYPE_TRAILING_STOP_LOSS,
@@ -41,7 +41,7 @@ func TestConvertMapsAllFields(t *testing.T) {
 		TrailingActive:    true,
 	}
 	u := ConvertForTest(c, 7, "trigger-inst")
-	if u.Id != 1 || u.ClientTriggerId != "cli-1" || u.UserId != "u1" {
+	if u.Id != 1 || u.ClientTriggerId != "cli-1" || u.UserId != 101 {
 		t.Fatalf("basics wrong: %+v", u)
 	}
 	if u.Side != eventpb.Side_SIDE_SELL {

@@ -49,8 +49,8 @@ type TransferOutcome struct {
 // Engine is the in-memory perp account state.
 type Engine struct {
 	mu        sync.RWMutex
-	wallets   map[string]*Wallet
-	positions map[string]map[string]*perpstate.Position
+	wallets   map[uint64]*Wallet
+	positions map[uint64]map[string]*perpstate.Position
 	marks     map[string]dec.Decimal
 	insurance map[string]dec.Decimal
 	transfers map[string]TransferOutcome // transfer_id → outcome (AssetHolder idempotency, ADR-0057)
@@ -66,8 +66,8 @@ type Engine struct {
 // New returns an empty engine.
 func New() *Engine {
 	return &Engine{
-		wallets:   map[string]*Wallet{},
-		positions: map[string]map[string]*perpstate.Position{},
+		wallets:   map[uint64]*Wallet{},
+		positions: map[uint64]map[string]*perpstate.Position{},
 		marks:     map[string]dec.Decimal{},
 		insurance: map[string]dec.Decimal{},
 		transfers: map[string]TransferOutcome{},
@@ -78,7 +78,7 @@ func New() *Engine {
 // TransferIn credits the futures wallet for a saga leg (funding→futures deposit,
 // ADR-0057), idempotent on transferID. The second return is true when the id
 // was already applied (a DUPLICATED hit returning the original outcome).
-func (e *Engine) TransferIn(user, transferID string, amt dec.Decimal) (TransferOutcome, bool) {
+func (e *Engine) TransferIn(user uint64, transferID string, amt dec.Decimal) (TransferOutcome, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if prev, ok := e.transfers[transferID]; ok {
@@ -94,7 +94,7 @@ func (e *Engine) TransferIn(user, transferID string, amt dec.Decimal) (TransferO
 // TransferOut debits free margin for a saga leg (futures→funding withdraw),
 // idempotent on transferID. An insufficient balance is cached as a REJECTED
 // outcome so the same id never succeeds later (the saga must use a fresh id).
-func (e *Engine) TransferOut(user, transferID string, amt dec.Decimal) (TransferOutcome, bool) {
+func (e *Engine) TransferOut(user uint64, transferID string, amt dec.Decimal) (TransferOutcome, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if prev, ok := e.transfers[transferID]; ok {
@@ -113,7 +113,7 @@ func (e *Engine) TransferOut(user, transferID string, amt dec.Decimal) (Transfer
 	return out, false
 }
 
-func (e *Engine) walletLocked(user string) *Wallet {
+func (e *Engine) walletLocked(user uint64) *Wallet {
 	w := e.wallets[user]
 	if w == nil {
 		w = &Wallet{Available: zero, Reserved: zero}
@@ -122,7 +122,7 @@ func (e *Engine) walletLocked(user string) *Wallet {
 	return w
 }
 
-func (e *Engine) positionLocked(user, symbol string) *perpstate.Position {
+func (e *Engine) positionLocked(user uint64, symbol string) *perpstate.Position {
 	bySym := e.positions[user]
 	if bySym == nil {
 		bySym = map[string]*perpstate.Position{}
@@ -141,7 +141,7 @@ var zero = dec.FromInt(0)
 
 // Deposit credits the futures wallet (asset-service funding→futures
 // TransferIn, ADR-0057). Returns the new available balance.
-func (e *Engine) Deposit(user string, amt dec.Decimal) dec.Decimal {
+func (e *Engine) Deposit(user uint64, amt dec.Decimal) dec.Decimal {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	w := e.walletLocked(user)
@@ -151,7 +151,7 @@ func (e *Engine) Deposit(user string, amt dec.Decimal) dec.Decimal {
 
 // Withdraw debits free margin (futures→funding TransferOut). Returns false
 // when available is insufficient.
-func (e *Engine) Withdraw(user string, amt dec.Decimal) bool {
+func (e *Engine) Withdraw(user uint64, amt dec.Decimal) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	w := e.walletLocked(user)
@@ -165,7 +165,7 @@ func (e *Engine) Withdraw(user string, amt dec.Decimal) bool {
 // Reserve holds initial margin for a new order (Available→Reserved). Returns
 // false when available is insufficient — the perp pre-trade risk gate
 // (ADR-0068 §4; the check spot deliberately skips).
-func (e *Engine) Reserve(user string, im dec.Decimal) bool {
+func (e *Engine) Reserve(user uint64, im dec.Decimal) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	w := e.walletLocked(user)
@@ -179,7 +179,7 @@ func (e *Engine) Reserve(user string, im dec.Decimal) bool {
 
 // Release returns held initial margin to available (Reserved→Available) on
 // cancel / reject. Clamped to what is actually reserved.
-func (e *Engine) Release(user string, im dec.Decimal) {
+func (e *Engine) Release(user uint64, im dec.Decimal) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	w := e.walletLocked(user)
@@ -222,7 +222,7 @@ func (e *Engine) SetLiquidationMMRFunc(mmrOf perpstate.MMRFunc) {
 //   - realized PnL and fee settle in Available.
 //
 // leverage seeds a fresh position. Returns the FillResult for journaling.
-func (e *Engine) ApplyFill(user, symbol string, leverage dec.Decimal, f perpstate.Fill) perpstate.FillResult {
+func (e *Engine) ApplyFill(user uint64, symbol string, leverage dec.Decimal, f perpstate.Fill) perpstate.FillResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p := e.positionLocked(user, symbol)
@@ -242,7 +242,7 @@ func (e *Engine) ApplyFill(user, symbol string, leverage dec.Decimal, f perpstat
 // advances. seq == 0 bypasses the guard (in-process tests / legacy). Guard +
 // apply + advance + cash routing all happen under one lock — no TOCTOU
 // between checking the watermark and mutating the position.
-func (e *Engine) ApplyFillWithSeq(user, symbol string, leverage dec.Decimal, seq uint64, f perpstate.Fill) (perpstate.FillResult, bool) {
+func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, leverage dec.Decimal, seq uint64, f perpstate.Fill) (perpstate.FillResult, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p := e.positionLocked(user, symbol)
@@ -265,7 +265,7 @@ func (e *Engine) ApplyFillWithSeq(user, symbol string, leverage dec.Decimal, seq
 // routeCashLocked moves a fill's cash effects between wallet and position
 // margin. Caller holds e.mu. Flat positions are retained (size 0) so their
 // match_seq watermark + realized history survive; queries filter them out.
-func (e *Engine) routeCashLocked(user string, res perpstate.FillResult) {
+func (e *Engine) routeCashLocked(user uint64, res perpstate.FillResult) {
 	w := e.walletLocked(user)
 	if res.MarginAdded.Sign() > 0 {
 		// The normal path consumes the reservation taken at PlaceOrder. The
@@ -288,7 +288,7 @@ func (e *Engine) routeCashLocked(user string, res perpstate.FillResult) {
 // ApplyFunding settles one funding interval against (user, symbol) at the
 // latest mark (ADR-0068 §7). Returns the signed margin delta (negative =
 // the position paid). No-op (zero) when the position is absent or flat.
-func (e *Engine) ApplyFunding(user, symbol string, rate dec.Decimal) dec.Decimal {
+func (e *Engine) ApplyFunding(user uint64, symbol string, rate dec.Decimal) dec.Decimal {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	bySym := e.positions[user]
@@ -307,7 +307,7 @@ func (e *Engine) ApplyFunding(user, symbol string, rate dec.Decimal) dec.Decimal
 
 // FundingResult is one position's funding settlement outcome.
 type FundingResult struct {
-	UserID   string
+	UserID   uint64
 	Symbol   string
 	Payment  dec.Decimal        // signed margin delta (negative = position paid)
 	Position perpstate.Position // post-settlement copy (for the journal)
@@ -348,16 +348,16 @@ func (e *Engine) SettleFunding(symbol string, roundID int64, rate dec.Decimal) [
 // position in one bulk pass — so a user's funding and fills stay totally
 // ordered (the funding amount depends on size, so it must not interleave with
 // a concurrent fill).
-func (e *Engine) UsersWithPosition(symbol string) []string {
+func (e *Engine) UsersWithPosition(symbol string) []uint64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	var out []string
+	var out []uint64
 	for user, bySym := range e.positions {
 		if p := bySym[symbol]; p != nil && !p.IsFlat() {
 			out = append(out, user)
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 
@@ -366,7 +366,7 @@ func (e *Engine) UsersWithPosition(symbol string) []string {
 // (ADR-0068 invariant #3: roundID <= seen is a replay and is skipped). Returns
 // the result and whether it applied. The caller MUST run this inside the user's
 // sequencer (invariant #1). Guard + apply + advance are one locked step.
-func (e *Engine) SettleFundingUser(user, symbol string, roundID int64, rate dec.Decimal) (FundingResult, bool) {
+func (e *Engine) SettleFundingUser(user uint64, symbol string, roundID int64, rate dec.Decimal) (FundingResult, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	bySym := e.positions[user]
@@ -413,7 +413,7 @@ func (e *Engine) InsuranceFund(symbol string) dec.Decimal {
 // LiquidationCandidate is a position that breached maintenance margin and is
 // up for liquidation (ADR-0068 §8).
 type LiquidationCandidate struct {
-	UserID          string
+	UserID          uint64
 	Symbol          string
 	Side            perpstate.Side
 	Size            dec.Decimal
@@ -474,7 +474,7 @@ func (e *Engine) liquidatablePositionsFullScanLocked(symbol string, mark dec.Dec
 	return out
 }
 
-func (e *Engine) liquidationCandidateLocked(user, symbol string, p *perpstate.Position, mark dec.Decimal, mmrOf perpstate.MMRFunc) (LiquidationCandidate, bool) {
+func (e *Engine) liquidationCandidateLocked(user uint64, symbol string, p *perpstate.Position, mark dec.Decimal, mmrOf perpstate.MMRFunc) (LiquidationCandidate, bool) {
 	if p == nil || p.IsFlat() {
 		return LiquidationCandidate{}, false
 	}
@@ -496,7 +496,7 @@ func (e *Engine) liquidationCandidateLocked(user, symbol string, p *perpstate.Po
 // breaches. The service calls this inside the user's sequencer to re-verify
 // before acting (the scan that found it ran lock-free and the position may have
 // moved since — TOCTOU guard, ADR-0068 invariant #1).
-func (e *Engine) LiquidationCheck(user, symbol string, mmrOf perpstate.MMRFunc) (LiquidationCandidate, bool) {
+func (e *Engine) LiquidationCheck(user uint64, symbol string, mmrOf perpstate.MMRFunc) (LiquidationCandidate, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
@@ -525,7 +525,7 @@ func (e *Engine) LiquidationCheck(user, symbol string, mmrOf perpstate.MMRFunc) 
 // isolated position using a locked snapshot. The service still re-checks the
 // candidate inside the user's sequencer; this helper only centralizes the pure
 // pool math so callers do not bypass the CollateralPool boundary.
-func (e *Engine) ReduceToTarget(user, symbol string, mmrOf perpstate.MMRFunc, buffer dec.Decimal) dec.Decimal {
+func (e *Engine) ReduceToTarget(user uint64, symbol string, mmrOf perpstate.MMRFunc, buffer dec.Decimal) dec.Decimal {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
@@ -550,7 +550,7 @@ func (e *Engine) ReduceToTarget(user, symbol string, mmrOf perpstate.MMRFunc, bu
 // correct — the sum across fills equals the single-shot ForceClose equity.
 // Guarded by the same per-(user, symbol) match_seq watermark as ApplyFillWithSeq
 // (replay → applied=false). Caller runs inside the user's sequencer.
-func (e *Engine) ApplyLiquidationFill(user, symbol string, seq uint64, f perpstate.Fill) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+func (e *Engine) ApplyLiquidationFill(user uint64, symbol string, seq uint64, f perpstate.Fill) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p := e.positionLocked(user, symbol)
@@ -574,7 +574,7 @@ func (e *Engine) ApplyLiquidationFill(user, symbol string, seq uint64, f perpsta
 // user's wallet. That accounting choice is the core ADR-0070 tradeoff: partial
 // liquidation should shrink notional and preserve residual equity for the
 // remaining position; only the configured liquidation fee is moved to insurance.
-func (e *Engine) ApplyPartialLiquidationFill(user, symbol string, seq uint64, f perpstate.Fill, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+func (e *Engine) ApplyPartialLiquidationFill(user uint64, symbol string, seq uint64, f perpstate.Fill, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p := e.positionLocked(user, symbol)
@@ -599,7 +599,7 @@ func (e *Engine) ApplyPartialLiquidationFill(user, symbol string, seq uint64, f 
 // BackstopTakeover closes qty internally at price and records the other side on
 // the configured system account. It is intentionally engine-local: once the
 // service escalates here, Match liquidity is no longer part of correctness.
-func (e *Engine) BackstopTakeover(user, symbol string, qty, price dec.Decimal, backstopUser string, partial bool, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, ok bool) {
+func (e *Engine) BackstopTakeover(user uint64, symbol string, qty, price dec.Decimal, backstopUser uint64, partial bool, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, ok bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	bySym := e.positions[user]
@@ -627,17 +627,18 @@ func (e *Engine) BackstopTakeover(user, symbol string, qty, price dec.Decimal, b
 	p.Version++
 	e.syncLiquidationIndexLocked(user, symbol, p)
 	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
-	if backstopUser != "" && closeQty.Sign() > 0 {
+	if closeQty.Sign() > 0 {
 		e.applyBackstopInventoryLocked(backstopUser, symbol, originalSide, price, closeQty)
 	}
 	return res, insuranceDelta, true
 }
 
-// ADLCandidate is a profitable opposite-side position that can absorb an
-// insurance deficit. The service dispatches the actual close to that user's
-// sequencer so this read-side ranking never mutates another user inline.
+// ADLCandidate is a profitable opposite-side position that can absorb
+// taken-over inventory. SacrificePerQty is retained for deterministic ranking
+// and stale-profitability checks, but ADR-0073 no longer treats it as a direct
+// insurance-fund credit.
 type ADLCandidate struct {
-	UserID          string
+	UserID          uint64
 	Symbol          string
 	Side            perpstate.Side
 	Size            dec.Decimal
@@ -650,8 +651,8 @@ type ADLCandidate struct {
 // SelectAdlCandidates ranks profitable opposite-side positions by the Binance-
 // style score used in ADR-0070: unrealized profit rate times effective leverage.
 // Candidates that would not give up mark-to-ADL-price profit are skipped because
-// they cannot repair the insurance deficit.
-func (e *Engine) SelectAdlCandidates(symbol string, liquidatedSide perpstate.Side, adlPrice dec.Decimal, excludeUser string) []ADLCandidate {
+// they are not valid profitable counterparties for consuming takeover inventory.
+func (e *Engine) SelectAdlCandidates(symbol string, liquidatedSide perpstate.Side, adlPrice dec.Decimal, excludeUser uint64) []ADLCandidate {
 	return e.selectAdlCandidates(symbol, liquidatedSide.Opposite(), adlPrice, excludeUser)
 }
 
@@ -659,12 +660,12 @@ func (e *Engine) SelectAdlCandidates(symbol string, liquidatedSide perpstate.Sid
 // coordinator may not know the liquidated side from older journal records, so
 // the shard reports every profitable position that would surrender value at the
 // requested ADL price. The eventual task is still version-checked before
-// mutation, so a stale candidate report cannot directly move funds.
-func (e *Engine) SelectAnyAdlCandidates(symbol string, adlPrice dec.Decimal, excludeUser string) []ADLCandidate {
+// mutation, so a stale candidate report cannot directly move a user position.
+func (e *Engine) SelectAnyAdlCandidates(symbol string, adlPrice dec.Decimal, excludeUser uint64) []ADLCandidate {
 	return e.selectAdlCandidates(symbol, 0, adlPrice, excludeUser)
 }
 
-func (e *Engine) selectAdlCandidates(symbol string, wantSide perpstate.Side, adlPrice dec.Decimal, excludeUser string) []ADLCandidate {
+func (e *Engine) selectAdlCandidates(symbol string, wantSide perpstate.Side, adlPrice dec.Decimal, excludeUser uint64) []ADLCandidate {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	mark := e.marks[symbol]
@@ -710,10 +711,10 @@ func (e *Engine) selectAdlCandidates(symbol string, wantSide perpstate.Side, adl
 }
 
 // ApplyAdlClose force-closes a profitable counterparty at adlPrice. The user
-// receives normal close cash at that price; the difference between mark and the
-// adverse ADL price is credited to insurance as the profit they gave up. The
-// adlRound guard makes replayed internal tasks idempotent after snapshot/replay.
-func (e *Engine) ApplyAdlClose(user, symbol string, qty, adlPrice dec.Decimal, adlRound uint64) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+// receives normal close cash at that price. The returned factQty is the only
+// quantity a RiskPool coordinator may deduct from a TakenOverLot; ADL itself
+// does not credit the insurance fund (ADR-0073).
+func (e *Engine) ApplyAdlClose(user uint64, symbol string, qty, adlPrice dec.Decimal, adlRound uint64) (res perpstate.FillResult, factQty dec.Decimal, applied bool) {
 	return e.ApplyAdlCloseGuarded(user, symbol, qty, adlPrice, 0, 0, 0, adlRound, false)
 }
 
@@ -722,7 +723,7 @@ func (e *Engine) ApplyAdlClose(user, symbol string, qty, adlPrice dec.Decimal, a
 // coordinator observed. Checking all three is intentional: LastMatchSeq catches
 // fills from Match, while Position.Version also catches local mutations such as
 // funding or an earlier ADL that can leave LastMatchSeq unchanged.
-func (e *Engine) ApplyAdlCloseGuarded(user, symbol string, qty, adlPrice dec.Decimal, expectedSide perpstate.Side, expectedPosSeq, expectedVersion, adlRound uint64, enforceObserved bool) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+func (e *Engine) ApplyAdlCloseGuarded(user uint64, symbol string, qty, adlPrice dec.Decimal, expectedSide perpstate.Side, expectedPosSeq, expectedVersion, adlRound uint64, enforceObserved bool) (res perpstate.FillResult, factQty dec.Decimal, applied bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	bySym := e.positions[user]
@@ -756,10 +757,8 @@ func (e *Engine) ApplyAdlCloseGuarded(user, symbol string, qty, adlPrice dec.Dec
 	}
 	p.Version++
 	e.routeCashLocked(user, res)
-	insuranceDelta = sacrificePerQty.Mul(closeQty)
-	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
 	e.syncLiquidationIndexLocked(user, symbol, p)
-	return res, insuranceDelta, true
+	return res, closeQty, true
 }
 
 func reducePositionKeepingEquity(p *perpstate.Position, price, closeQty, liqFeeRate dec.Decimal) perpstate.FillResult {
@@ -797,7 +796,7 @@ func adlSacrificePerQty(side perpstate.Side, mark, adlPrice dec.Decimal) dec.Dec
 	}
 }
 
-func (e *Engine) applyBackstopInventoryLocked(user, symbol string, side perpstate.Side, price, qty dec.Decimal) {
+func (e *Engine) applyBackstopInventoryLocked(user uint64, symbol string, side perpstate.Side, price, qty dec.Decimal) {
 	p := e.positionLocked(user, symbol)
 	// Backstop inventory is a system-risk ledger, not user margin. We therefore
 	// mutate size/entry directly instead of routing IM through a wallet reserve.
@@ -846,7 +845,7 @@ func (e *Engine) applyBackstopInventoryLocked(user, symbol string, side perpstat
 // The order cancellation + Match dispatch of the bankruptcy order happen in
 // the service layer; this is the settlement once the liquidation fill is
 // known.
-func (e *Engine) ForceClose(user, symbol string, fillPrice dec.Decimal) (insuranceDelta dec.Decimal, ok bool) {
+func (e *Engine) ForceClose(user uint64, symbol string, fillPrice dec.Decimal) (insuranceDelta dec.Decimal, ok bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	bySym := e.positions[user]
@@ -875,7 +874,7 @@ func (e *Engine) ForceClose(user, symbol string, fillPrice dec.Decimal) (insuran
 	return equity, true
 }
 
-func (e *Engine) syncLiquidationIndexLocked(user, symbol string, p *perpstate.Position) {
+func (e *Engine) syncLiquidationIndexLocked(user uint64, symbol string, p *perpstate.Position) {
 	if e.liqIndex == nil {
 		e.liqIndex = newLiqIndex()
 	}
@@ -890,7 +889,7 @@ func (e *Engine) rebuildLiquidationIndexLocked() {
 }
 
 // WalletOf returns a copy of the user's wallet.
-func (e *Engine) WalletOf(user string) Wallet {
+func (e *Engine) WalletOf(user uint64) Wallet {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	w := e.wallets[user]
@@ -902,7 +901,7 @@ func (e *Engine) WalletOf(user string) Wallet {
 
 // PositionOf returns a copy of (user, symbol)'s position and whether it
 // exists (and is non-flat).
-func (e *Engine) PositionOf(user, symbol string) (perpstate.Position, bool) {
+func (e *Engine) PositionOf(user uint64, symbol string) (perpstate.Position, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
@@ -919,7 +918,7 @@ func (e *Engine) PositionOf(user, symbol string) (perpstate.Position, bool) {
 // PositionRaw returns a copy of the stored position, including a flat one
 // (size 0, retained for its match_seq watermark). ok=false only when the
 // position was never created. Used to build post-change journal snapshots.
-func (e *Engine) PositionRaw(user, symbol string) (perpstate.Position, bool) {
+func (e *Engine) PositionRaw(user uint64, symbol string) (perpstate.Position, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
@@ -935,7 +934,7 @@ func (e *Engine) PositionRaw(user, symbol string) (perpstate.Position, bool) {
 
 // PositionsOf returns copies of all of a user's non-flat positions, sorted
 // by symbol for stable output.
-func (e *Engine) PositionsOf(user string) []perpstate.Position {
+func (e *Engine) PositionsOf(user uint64) []perpstate.Position {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]

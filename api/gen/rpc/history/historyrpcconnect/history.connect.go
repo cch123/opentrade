@@ -53,6 +53,9 @@ const (
 	// HistoryServiceListPerpLiquidationsProcedure is the fully-qualified name of the HistoryService's
 	// ListPerpLiquidations RPC.
 	HistoryServiceListPerpLiquidationsProcedure = "/opentrade.rpc.history.HistoryService/ListPerpLiquidations"
+	// HistoryServiceListPerpADLProcedure is the fully-qualified name of the HistoryService's
+	// ListPerpADL RPC.
+	HistoryServiceListPerpADLProcedure = "/opentrade.rpc.history.HistoryService/ListPerpADL"
 	// HistoryServiceGetTriggerProcedure is the fully-qualified name of the HistoryService's GetTrigger
 	// RPC.
 	HistoryServiceGetTriggerProcedure = "/opentrade.rpc.history.HistoryService/GetTrigger"
@@ -81,6 +84,8 @@ type HistoryServiceClient interface {
 	ListPerpFunding(context.Context, *connect.Request[history.ListPerpFundingRequest]) (*connect.Response[history.ListPerpFundingResponse], error)
 	// ListPerpLiquidations pages a user's liquidation events, newest first by ts.
 	ListPerpLiquidations(context.Context, *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error)
+	// ListPerpADL pages a user's ADL forced-close events, newest first by ts.
+	ListPerpADL(context.Context, *connect.Request[history.ListPerpADLRequest]) (*connect.Response[history.ListPerpADLResponse], error)
 	// GetTrigger returns one trigger by id from the long-term
 	// projection (ADR-0047). Use this for looking up a trigger after
 	// it has aged out of the trigger service's in-memory terminal
@@ -146,6 +151,12 @@ func NewHistoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(historyServiceMethods.ByName("ListPerpLiquidations")),
 			connect.WithClientOptions(opts...),
 		),
+		listPerpADL: connect.NewClient[history.ListPerpADLRequest, history.ListPerpADLResponse](
+			httpClient,
+			baseURL+HistoryServiceListPerpADLProcedure,
+			connect.WithSchema(historyServiceMethods.ByName("ListPerpADL")),
+			connect.WithClientOptions(opts...),
+		),
 		getTrigger: connect.NewClient[history.GetTriggerRequest, history.GetTriggerResponse](
 			httpClient,
 			baseURL+HistoryServiceGetTriggerProcedure,
@@ -170,6 +181,7 @@ type historyServiceClient struct {
 	listPerpPositions    *connect.Client[history.ListPerpPositionsRequest, history.ListPerpPositionsResponse]
 	listPerpFunding      *connect.Client[history.ListPerpFundingRequest, history.ListPerpFundingResponse]
 	listPerpLiquidations *connect.Client[history.ListPerpLiquidationsRequest, history.ListPerpLiquidationsResponse]
+	listPerpADL          *connect.Client[history.ListPerpADLRequest, history.ListPerpADLResponse]
 	getTrigger           *connect.Client[history.GetTriggerRequest, history.GetTriggerResponse]
 	listTriggers         *connect.Client[history.ListTriggersRequest, history.ListTriggersResponse]
 }
@@ -209,6 +221,11 @@ func (c *historyServiceClient) ListPerpLiquidations(ctx context.Context, req *co
 	return c.listPerpLiquidations.CallUnary(ctx, req)
 }
 
+// ListPerpADL calls opentrade.rpc.history.HistoryService.ListPerpADL.
+func (c *historyServiceClient) ListPerpADL(ctx context.Context, req *connect.Request[history.ListPerpADLRequest]) (*connect.Response[history.ListPerpADLResponse], error) {
+	return c.listPerpADL.CallUnary(ctx, req)
+}
+
 // GetTrigger calls opentrade.rpc.history.HistoryService.GetTrigger.
 func (c *historyServiceClient) GetTrigger(ctx context.Context, req *connect.Request[history.GetTriggerRequest]) (*connect.Response[history.GetTriggerResponse], error) {
 	return c.getTrigger.CallUnary(ctx, req)
@@ -239,6 +256,8 @@ type HistoryServiceHandler interface {
 	ListPerpFunding(context.Context, *connect.Request[history.ListPerpFundingRequest]) (*connect.Response[history.ListPerpFundingResponse], error)
 	// ListPerpLiquidations pages a user's liquidation events, newest first by ts.
 	ListPerpLiquidations(context.Context, *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error)
+	// ListPerpADL pages a user's ADL forced-close events, newest first by ts.
+	ListPerpADL(context.Context, *connect.Request[history.ListPerpADLRequest]) (*connect.Response[history.ListPerpADLResponse], error)
 	// GetTrigger returns one trigger by id from the long-term
 	// projection (ADR-0047). Use this for looking up a trigger after
 	// it has aged out of the trigger service's in-memory terminal
@@ -300,6 +319,12 @@ func NewHistoryServiceHandler(svc HistoryServiceHandler, opts ...connect.Handler
 		connect.WithSchema(historyServiceMethods.ByName("ListPerpLiquidations")),
 		connect.WithHandlerOptions(opts...),
 	)
+	historyServiceListPerpADLHandler := connect.NewUnaryHandler(
+		HistoryServiceListPerpADLProcedure,
+		svc.ListPerpADL,
+		connect.WithSchema(historyServiceMethods.ByName("ListPerpADL")),
+		connect.WithHandlerOptions(opts...),
+	)
 	historyServiceGetTriggerHandler := connect.NewUnaryHandler(
 		HistoryServiceGetTriggerProcedure,
 		svc.GetTrigger,
@@ -328,6 +353,8 @@ func NewHistoryServiceHandler(svc HistoryServiceHandler, opts ...connect.Handler
 			historyServiceListPerpFundingHandler.ServeHTTP(w, r)
 		case HistoryServiceListPerpLiquidationsProcedure:
 			historyServiceListPerpLiquidationsHandler.ServeHTTP(w, r)
+		case HistoryServiceListPerpADLProcedure:
+			historyServiceListPerpADLHandler.ServeHTTP(w, r)
 		case HistoryServiceGetTriggerProcedure:
 			historyServiceGetTriggerHandler.ServeHTTP(w, r)
 		case HistoryServiceListTriggersProcedure:
@@ -367,6 +394,10 @@ func (UnimplementedHistoryServiceHandler) ListPerpFunding(context.Context, *conn
 
 func (UnimplementedHistoryServiceHandler) ListPerpLiquidations(context.Context, *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListPerpLiquidations is not implemented"))
+}
+
+func (UnimplementedHistoryServiceHandler) ListPerpADL(context.Context, *connect.Request[history.ListPerpADLRequest]) (*connect.Response[history.ListPerpADLResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListPerpADL is not implemented"))
 }
 
 func (UnimplementedHistoryServiceHandler) GetTrigger(context.Context, *connect.Request[history.GetTriggerRequest]) (*connect.Response[history.GetTriggerResponse], error) {

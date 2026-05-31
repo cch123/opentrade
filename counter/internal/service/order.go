@@ -8,8 +8,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/journal"
+	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 )
@@ -23,7 +23,7 @@ var (
 
 // PlaceOrderRequest is the internal input for Service.PlaceOrder.
 type PlaceOrderRequest struct {
-	UserID        string
+	UserID        uint64
 	ClientOrderID string // optional
 	Symbol        string
 	Side          counterstate.Side
@@ -58,7 +58,7 @@ type PlaceOrderResult struct {
 
 // CancelOrderRequest is the input for Service.CancelOrder.
 type CancelOrderRequest struct {
-	UserID  string
+	UserID  uint64
 	OrderID uint64
 }
 
@@ -76,7 +76,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 	if s.txn == nil || s.idgen == nil {
 		return nil, ErrOrderDepsNotConfigured
 	}
-	if req.UserID == "" {
+	if req.UserID == 0 {
 		return nil, ErrMissingUserID
 	}
 	if !s.OwnsUser(req.UserID) {
@@ -266,7 +266,7 @@ func (s *Service) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Can
 	if s.txn == nil {
 		return nil, ErrOrderDepsNotConfigured
 	}
-	if req.UserID == "" {
+	if req.UserID == 0 {
 		return nil, ErrMissingUserID
 	}
 	if !s.OwnsUser(req.UserID) {

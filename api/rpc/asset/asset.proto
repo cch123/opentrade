@@ -54,7 +54,7 @@ service AssetService {
 // -----------------------------------------------------------------------------
 
 message TransferRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   // Client-generated idempotency key. Same ADR-0015 contract as
   // client_order_id / Counter.TransferRequest.transfer_id: unique per
   // saga, stable across retries.
@@ -102,7 +102,7 @@ message TransferResponse {
 // -----------------------------------------------------------------------------
 
 message QueryFundingBalanceRequest {
-  string user_id = 1;
+  uint64 user_id = 1;
   string asset = 2; // empty = return all assets
 }
 
@@ -128,12 +128,12 @@ message QueryTransferRequest {
   // Optional. When set, the server returns NOT_FOUND for rows that belong
   // to a different user. BFF must pass the authenticated user_id;
   // internal callers (reconciler / saga driver) may leave empty.
-  string user_id = 2;
+  uint64 user_id = 2;
 }
 
 message QueryTransferResponse {
   string transfer_id = 1;
-  string user_id = 2;
+  uint64 user_id = 2;
   string from_biz = 3;
   string to_biz = 4;
   string asset = 5;
@@ -161,7 +161,7 @@ enum TransferScope {
 
 message ListTransfersRequest {
   // Required. Server scopes results to this user_id.
-  string user_id = 1;
+  uint64 user_id = 1;
   // Filter by the "from" biz_line ("funding" / "spot" / ...). "" = any.
   string from_biz = 2;
   // Filter by the "to" biz_line. "" = any.
@@ -191,7 +191,7 @@ message ListTransfersResponse {
 // alphabet the saga driver writes.
 message Transfer {
   string transfer_id = 1;
-  string user_id = 2;
+  uint64 user_id = 2;
   string from_biz = 3;
   string to_biz = 4;
   string asset = 5;

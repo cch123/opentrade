@@ -97,16 +97,16 @@ func TestShardedCounter_RoutesByUserID(t *testing.T) {
 		t.Errorf("Shards(): %d", sc.Shards())
 	}
 
-	users := []string{"alice", "bob", "carol", "dave", "eve"}
+	users := []uint64{1001, 1002, 1003, 1004, 1005}
 	for _, u := range users {
 		expected := shard.Index(u, total)
 		before := shards[expected].placeHits
 		if _, err := sc.PlaceOrder(context.Background(),
 			connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: u})); err != nil {
-			t.Fatalf("PlaceOrder(%s): %v", u, err)
+			t.Fatalf("PlaceOrder(%d): %v", u, err)
 		}
 		if shards[expected].placeHits != before+1 {
-			t.Errorf("user %q: expected shard %d to get the hit (was %d, now %d)",
+			t.Errorf("user %d: expected shard %d to get the hit (was %d, now %d)",
 				u, expected, before, shards[expected].placeHits)
 		}
 	}
@@ -116,7 +116,7 @@ func TestShardedCounter_AllMethodsDispatch(t *testing.T) {
 	shards := []Counter{&fakeCounter{}, &fakeCounter{}}
 	sc, _ := NewSharded(shards)
 	ctx := context.Background()
-	userID := "someone"
+	userID := uint64(1001)
 	expected := shard.Index(userID, 2)
 	owner := shards[expected].(*fakeCounter)
 
@@ -138,7 +138,7 @@ func TestShardedCounter_EmptyUserIDPanics(t *testing.T) {
 			t.Error("expected panic on empty user id")
 		}
 	}()
-	_, _ = sc.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: ""}))
+	_, _ = sc.PlaceOrder(context.Background(), connect.NewRequest(&counterrpc.PlaceOrderRequest{UserId: 0}))
 }
 
 // Ensure ShardedCounter satisfies the Counter interface.
@@ -150,7 +150,7 @@ var _ = errors.New
 func TestShardedCounter_AdminCancelByUserRoutesToOneShard(t *testing.T) {
 	shards := []Counter{&fakeCounter{id: 0}, &fakeCounter{id: 1}}
 	sc, _ := NewSharded(shards)
-	userID := "ada"
+	userID := uint64(1001)
 	expected := shard.Index(userID, 2)
 	_, err := sc.AdminCancelOrders(context.Background(), connect.NewRequest(&counterrpc.AdminCancelOrdersRequest{UserId: userID, Symbol: "BTC-USDT"}))
 	if err != nil {

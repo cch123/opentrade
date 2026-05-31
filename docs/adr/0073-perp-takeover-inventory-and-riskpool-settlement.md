@@ -1,6 +1,6 @@
 # ADR-0073: perp 强平托管仓位 —— TakenOverLot 生命周期 + RiskPool 结算 + ADL 消耗库存
 
-- 状态: **Proposed**（2026-05-31 起草；从 ADR-0070/0071 中"backstop 接管 + ADL 修保险池 deficit"的语义问题拆出）
+- 状态: **Accepted / MVP Implemented**（2026-05-31 起草；从 ADR-0070/0071 中"backstop 接管 + ADL 修保险池 deficit"的语义问题拆出）
 - 日期: 2026-05-31
 - 决策者: xargin, Codex
 - 相关 ADR: 0068（USDT 线性 perp，强平/保险基金/ADL 初版）、0070（强平进阶：部分强平/backstop/ADL）、0071（全局保险基金 + 跨 shard ADL）、0072（强平扫描索引）、0048（snapshot 绑 offset）、0057（asset-service + futures 资金入口）

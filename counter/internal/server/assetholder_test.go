@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -28,10 +29,11 @@ func newHolderPair(t *testing.T) (*AssetHolderServer, *fakePub) {
 }
 
 // seedDeposit pre-funds a user so subsequent TransferOut has balance.
-func seedDeposit(t *testing.T, h *AssetHolderServer, userID, asset, amount string) {
+func seedDeposit(t *testing.T, h *AssetHolderServer, userID uint64, asset, amount string) {
 	t.Helper()
+	userLabel := strconv.FormatUint(userID, 10)
 	resp, err := h.TransferIn(context.Background(), connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId: userID, TransferId: "seed-" + userID + "-" + asset + "-" + amount,
+		UserId: userID, TransferId: "seed-" + userLabel + "-" + asset + "-" + amount,
 		Asset: asset, Amount: amount, PeerBiz: "funding",
 	}))
 	if err != nil {
@@ -50,7 +52,7 @@ func TestTransferIn_Confirmed(t *testing.T) {
 	h, pub := newHolderPair(t)
 
 	resp, err := h.TransferIn(context.Background(), connect.NewRequest(&assetholderrpc.TransferInRequest{
-		UserId:     "u1",
+		UserId:     1001,
 		TransferId: "saga-1",
 		Asset:      "USDT",
 		Amount:     "100",
@@ -93,7 +95,7 @@ func TestTransferIn_Idempotent(t *testing.T) {
 
 	build := func() *connect.Request[assetholderrpc.TransferInRequest] {
 		return connect.NewRequest(&assetholderrpc.TransferInRequest{
-			UserId: "u1", TransferId: "saga-1", Asset: "USDT",
+			UserId: 1001, TransferId: "saga-1", Asset: "USDT",
 			Amount: "100", PeerBiz: "funding",
 		})
 	}
@@ -128,10 +130,10 @@ func TestTransferIn_Idempotent(t *testing.T) {
 
 func TestTransferOut_Confirmed(t *testing.T) {
 	h, pub := newHolderPair(t)
-	seedDeposit(t, h, "u1", "USDT", "500")
+	seedDeposit(t, h, 1001, "USDT", "500")
 
 	resp, err := h.TransferOut(context.Background(), connect.NewRequest(&assetholderrpc.TransferOutRequest{
-		UserId: "u1", TransferId: "saga-out-1", Asset: "USDT",
+		UserId: 1001, TransferId: "saga-out-1", Asset: "USDT",
 		Amount: "150", PeerBiz: "funding",
 	}))
 	if err != nil {
@@ -161,10 +163,10 @@ func TestTransferOut_Confirmed(t *testing.T) {
 
 func TestTransferOut_InsufficientBalance(t *testing.T) {
 	h, _ := newHolderPair(t)
-	seedDeposit(t, h, "u1", "USDT", "10")
+	seedDeposit(t, h, 1001, "USDT", "10")
 
 	resp, err := h.TransferOut(context.Background(), connect.NewRequest(&assetholderrpc.TransferOutRequest{
-		UserId: "u1", TransferId: "saga-out-bad", Asset: "USDT",
+		UserId: 1001, TransferId: "saga-out-bad", Asset: "USDT",
 		Amount: "100", PeerBiz: "funding",
 	}))
 	if err != nil {
@@ -186,7 +188,7 @@ func TestCompensate_CreditsAndTags(t *testing.T) {
 	h, pub := newHolderPair(t)
 
 	resp, err := h.CompensateTransferOut(context.Background(), connect.NewRequest(&assetholderrpc.CompensateTransferOutRequest{
-		UserId:          "u1",
+		UserId:          1001,
 		TransferId:      "saga-compensate-1",
 		Asset:           "USDT",
 		Amount:          "100",
@@ -259,7 +261,7 @@ func TestHolder_InvalidAmount(t *testing.T) {
 	cases := []string{"", "not-a-number", "0", "-1"}
 	for _, amt := range cases {
 		_, err := h.TransferIn(context.Background(), connect.NewRequest(&assetholderrpc.TransferInRequest{
-			UserId: "u1", TransferId: "saga-" + amt, Asset: "USDT",
+			UserId: 1001, TransferId: "saga-" + amt, Asset: "USDT",
 			Amount: amt, PeerBiz: "funding",
 		}))
 		if connect.CodeOf(err) != connect.CodeInvalidArgument {
@@ -272,8 +274,8 @@ func TestHolder_MissingFields(t *testing.T) {
 	h, _ := newHolderPair(t)
 	cases := []*assetholderrpc.TransferInRequest{
 		{TransferId: "saga-1", Asset: "USDT", Amount: "10"}, // missing user_id
-		{UserId: "u1", Asset: "USDT", Amount: "10"},          // missing transfer_id
-		{UserId: "u1", TransferId: "saga-1", Amount: "10"},   // missing asset
+		{UserId: 1001, Asset: "USDT", Amount: "10"},         // missing transfer_id
+		{UserId: 1001, TransferId: "saga-1", Amount: "10"},  // missing asset
 	}
 	for i, req := range cases {
 		_, err := h.TransferIn(context.Background(), connect.NewRequest(req))
@@ -297,14 +299,14 @@ func TestHolder_WrongShard(t *testing.T) {
 	// Find a user_id that does NOT belong to shard 0. Trial a short list;
 	// 2 shards means hash parity, so at least one of these will be owned
 	// by shard 1.
-	var foreignUser string
-	for _, u := range []string{"u0", "u1", "u2", "u3", "u4", "u5"} {
+	var foreignUser uint64
+	for _, u := range []uint64{1000, 1001, 1002, 1003, 1004, 1005} {
 		if !svc.OwnsUser(u) {
 			foreignUser = u
 			break
 		}
 	}
-	if foreignUser == "" {
+	if foreignUser == 0 {
 		t.Fatal("could not find a user outside shard 0 in the trial set")
 	}
 

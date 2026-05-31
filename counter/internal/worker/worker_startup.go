@@ -9,13 +9,13 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/xargin/opentrade/pkg/counterstate"
 	"github.com/xargin/opentrade/counter/internal/dedup"
 	"github.com/xargin/opentrade/counter/internal/journal"
 	"github.com/xargin/opentrade/counter/internal/metrics"
 	"github.com/xargin/opentrade/counter/internal/sequencer"
 	"github.com/xargin/opentrade/counter/internal/snapshot"
 	"github.com/xargin/opentrade/counter/internal/tradedumpclient"
+	"github.com/xargin/opentrade/pkg/counterstate"
 )
 
 // loadOnDemand executes the ADR-0064 §3 Phase 1 on-demand recovery
