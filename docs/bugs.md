@@ -13,7 +13,42 @@
 
 ## Open
 
-_(none)_
+### 2026-05-31 架构 review
+
+- **[P0] Match trade-event 发布失败会丢撮合输出** — `match/internal/journal/producer.go` 的 `Pump.flush` 在 `PublishBatch` 失败后只打日志，然后清空 batch；此时 `match/internal/sequencer.SymbolWorker` 已经修改 orderbook 并推进输入 offset。结果是 Match 状态前进了，但 Counter / Quote / trade-dump 可能永远收不到对应 `trade-event` / cancel result，形成不可恢复的跨服务状态分叉。
+  - 状态：open
+  - 代码点：`match/internal/journal/producer.go` `flush` / `PublishBatch`；`match/internal/sequencer/worker.go` `handle` offset advance
+  - 修复方向：trade-event publish 失败必须 fail-stop 或保留 batch 重试；不能在没有 durable output 的情况下丢弃输出并继续消费 input。后续可补 ARCH guard：state+offset capture / input offset advance 必须受 output durability 约束。
+
+- **[P0] Counter settlement 没有实现文档承诺的 EOS / offset-state 原子性** — `docs/architecture.md` 描述 trade-event 消费应在 Kafka EOS 事务中 `produce SettlementEvent + sendOffsetsToTransaction + commit` 后再更新内存；实际 `counter/internal/service/trade.go` 先 `ApplyPartySettlement` 改内存，再 best-effort `publisher.Publish`，失败只打日志；异步 handler 还会在 fn error 后推进 pendingList。结果是 Counter 内存、counter-journal、trade-dump shadow snapshot 可能分叉。
+  - 状态：open
+  - 代码点：`counter/internal/service/trade.go` `buildPartyFn` / `buildSelfTradeFn`；`counter/internal/worker/async_handler.go` error callback；`counter/internal/worker/worker.go` `emitCheckpoint`
+  - 修复方向：settlement、unfreeze、status 和 trade-event checkpoint 必须形成同一条可恢复的原子链路；至少 publish 失败应阻断 checkpoint 推进并触发 vshard failover，不能吞掉错误后继续推进 watermark。
+
+- **[P0] Asset transfer saga 缺少“远端结果未知”的状态** — `asset/internal/saga/driver.go` 在 `TransferOut` RPC 超时后直接把 saga 标记为 `FAILED`，在 `TransferIn` RPC 超时后直接进入 compensation。但 holder RPC 可能已经在远端提交成功，只是响应丢失；这会造成“源账户已扣但 ledger 失败”或“目标账户已入账且源账户又被补偿”的错账路径。
+  - 状态：open
+  - 代码点：`asset/internal/saga/driver.go` `doDebit` / `doCredit`
+  - 修复方向：引入 `UNKNOWN` / `CONFIRMING` 类中间态，或给 AssetHolder 增加按 `transfer_id` 查询结果的确认接口；transport timeout 不能直接转成业务失败 / compensation。
+
+- **[P1] Trigger reservation 参与资金冻结但不进 counter-journal** — `Reserve` / `ReleaseReservation` 只改 Counter 内存和 snapshot 副表，明确不 emit counter-journal；但 trigger 在保存 pending trigger 前先 Reserve。非 graceful crash、trade-dump shadow snapshot、on-demand recovery 的边界上，可能出现 reservation 丢失、隐藏冻结、或 trigger 仍 pending 但后续无法 consume reservation。
+  - 状态：open
+  - 代码点：`counter/internal/service/reservation.go` `Reserve` / `ReleaseReservation`；`pkg/counterstate/reservations.go` `CreateReservation`；`trigger/engine/engine.go` `Place`
+  - 修复方向：reservation create / release / consume 应 journal 化，或明确把 reservation 从资金冻结语义中移出；只靠 snapshot 不足以支撑跨服务恢复。
+
+- **[P1] 生产环境仍可默认信任 `X-User-Id`** — BFF 默认 `--auth-mode=header`，`env=prod` 只校验 push trusted header，不禁止 header auth；`pkg/auth.Middleware` 直接信任 `X-User-Id`。如果生产误配置，即可伪造任意用户身份。
+  - 状态：open
+  - 代码点：`bff/cmd/bff/main.go` `parseFlags` / `validate`；`pkg/auth/middleware.go` `Middleware` / `NewMiddleware`
+  - 修复方向：`env=prod` 下禁止 `auth-mode=header` 和 mixed 中的 header fallback，除非显式 dev-only escape hatch；补 ARCH-008 的实现测试。
+
+- **[P1] trade-dump snapshot shadow 遇到 journal apply 错误会跳过记录** — shadow engine 在 apply 前先推进 `nextJournalOffset = kafkaOffset + 1`，pipeline 对 apply error 只打日志后继续消费。坏 journal 记录一旦被跳过，后续 snapshot 会永久缺失该状态，Counter recovery 又信任这个 snapshot。
+  - 状态：open
+  - 代码点：`trade-dump/internal/snapshot/counter/shadow/engine.go` `Apply`；`trade-dump/internal/snapshot/counter/pipeline/pipeline.go` `handleRecord`
+  - 修复方向：apply error 应 fail-stop / 隔离分区并报警，不能推进 snapshot cursor；如果要跳过，必须有 quarantine ledger 和人工确认机制。
+
+- **[P2] 性能目标和当前 Kafka 事务粒度不匹配** — 架构目标写着单实例下单 20w TPS / 单 symbol 撮合 4w TPS，但 Counter 当前每条 `Publish` 都是一个 Kafka transaction，并且同一 `TxnProducer` 用 mutex 串行 Begin / Flush / Commit。这个实现更像 correctness-first MVP，和目标吞吐存在结构性差距。
+  - 状态：open
+  - 代码点：`counter/internal/journal/txn_producer.go` `Publish` / `runTxn`；`docs/architecture.md` 性能目标
+  - 修复方向：先用 ADR-0082 benchmark 量化瓶颈；如果目标仍成立，需要批量事务、流水线化、或重新定义 counter-journal / order-event 的写入粒度。
 
 ## Backlog
 
