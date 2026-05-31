@@ -122,6 +122,7 @@ go build ./...
 - [非目标](docs/non-goals.md) - 明确不做的方向及原因
 - [ADR 索引](docs/adr/README.md) - 架构决策记录
 - [Counter Runbook](docs/runbook-counter.md) - Counter vshard、HA、迁移与运维流程
+- [行业先进系统差距分析](docs/research/industry-gap-analysis-2026-05-31.md) - 对照 Binance / Bybit / OKX / Deribit / Nasdaq / CME 的公开能力基线
 
 ## 贡献约定
 

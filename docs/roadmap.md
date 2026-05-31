@@ -42,6 +42,7 @@
 
 ### 待办
 
+- **【行业先进系统差距总览】把 OpenTrade 当前能力与 Binance / Bybit / OKX / Deribit / Nasdaq / CME 的公开能力基线对齐** — 2026-05-31 调研见 [docs/research/industry-gap-analysis-2026-05-31.md](./research/industry-gap-analysis-2026-05-31.md)。总体判断：OpenTrade 的核心撮合、账户一致性、事件恢复、trigger 与 perp 风险骨架已经超过普通 demo 交易所，但离成熟生产系统还缺六类能力：生产安全 hardening、性能基线证明、机构级 STP/SMP、perp 产品化与统一保证金、订单控制 / 做市商保护、协议与市场数据产品化。新增建议分流项：Production Security Hardening、Institutional STP/SMP、Kill Switch / DCP、Pre-Check / Dry-Run Order、Market Maker Protection、Protocol and Recovery Contract、Market Data Productization、Compliance / Real-Funds Envelope。
 - **【Perp 合约产品化缺口】对齐成熟合约系统的功能面** — 2026-05-31 对比 `/Users/xargin/bybit-leaked` 后整理。当前 perp 已有 USDT 线性永续、逐仓仓位、保证金预占、mark/funding、强平、部分强平/backstop/ADL/perp-risk 等核心骨架，但离成熟合约产品还缺以下面向生产/产品的能力：
   1. **合约 SymbolConfig 产品化**：把 perp 的合约类型、合约状态、base/quote/settle coin、symbol alias、min/max price、max order qty、risk tiers、funding 参数、liq fee、maker/taker fee 等纳入 per-symbol 动态配置，而不是主要靠 `perp-counter` 启动参数。设计见 [ADR-0075](./adr/0075-perp-symbol-config-productization.md)。
   2. **合约品类扩展**：USDT linear perp 之外，先补 linear dated futures、交割/预期结算价、settle 流程；inverse 币本位 perp / futures 先不支持，仅预留接口。设计见 [ADR-0076](./adr/0076-perp-contract-product-expansion.md)。
