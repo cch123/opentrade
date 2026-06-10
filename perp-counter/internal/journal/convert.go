@@ -31,6 +31,13 @@ func orderEventTopicFor(prefix, symbol string) string {
 // journalPartitionKey extracts the user_id a perp-journal record is keyed by
 // (perp_journal.proto: partition key is user_id). System-level risk-pool
 // settlement events have no user and return "" (default partitioner).
+//
+// Every user-attributed payload MUST have a case here — a missing case falls
+// through to "" and silently breaks per-user total ordering for downstream
+// consumers (push private stream, per-user replay).
+// TestJournalPartitionKey_OneofExhaustive enforces this by reflection over the
+// payload oneof, so adding a payload type without extending this switch fails
+// the build's tests.
 func journalPartitionKey(evt *eventpb.PerpJournalEvent) string {
 	switch p := evt.GetPayload().(type) {
 	case *eventpb.PerpJournalEvent_OrderStatus:
@@ -47,6 +54,14 @@ func journalPartitionKey(evt *eventpb.PerpJournalEvent) string {
 		return journalUserKey(p.Takeover.GetUserId())
 	case *eventpb.PerpJournalEvent_Adl:
 		return journalUserKey(p.Adl.GetUserId())
+	case *eventpb.PerpJournalEvent_PositionConfig:
+		return journalUserKey(p.PositionConfig.GetUserId())
+	case *eventpb.PerpJournalEvent_MarginAdjustment:
+		return journalUserKey(p.MarginAdjustment.GetUserId())
+	case *eventpb.PerpJournalEvent_CustomerRiskLimit:
+		return journalUserKey(p.CustomerRiskLimit.GetUserId())
+	case *eventpb.PerpJournalEvent_InvariantBreach:
+		return journalUserKey(p.InvariantBreach.GetUserId())
 	case *eventpb.PerpJournalEvent_CustomerFee:
 		return journalUserKey(p.CustomerFee.GetUserId())
 	case *eventpb.PerpJournalEvent_RiskPoolSettlement:
