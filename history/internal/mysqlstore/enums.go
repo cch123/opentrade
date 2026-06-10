@@ -255,6 +255,18 @@ func rejectReasonToString(n int8) string {
 		return "duplicate_order_id"
 	case eventpb.RejectReason_REJECT_REASON_FOK_NOT_FILLED:
 		return "fok_not_filled"
+	// ADR-0075 config_version handshake + symbol status machine outcomes.
+	// Strings mirror match/internal/orderbook RejectReason.String().
+	case eventpb.RejectReason_REJECT_REASON_CONFIG_VERSION_TOO_NEW:
+		return "config_version_too_new"
+	case eventpb.RejectReason_REJECT_REASON_STALE_ORDER_CONFIG:
+		return "stale_order_config"
+	case eventpb.RejectReason_REJECT_REASON_UNKNOWN_SYMBOL_CONFIG:
+		return "unknown_symbol_config"
+	case eventpb.RejectReason_REJECT_REASON_SYMBOL_STATUS_FORBIDS:
+		return "symbol_status_forbids"
+	case eventpb.RejectReason_REJECT_REASON_PRICE_OUT_OF_RANGE:
+		return "price_out_of_range"
 	case eventpb.RejectReason_REJECT_REASON_NO_BOOK_REFERENCE:
 		return "no_book_reference"
 	case eventpb.RejectReason_REJECT_REASON_INTERNAL:
