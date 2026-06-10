@@ -25,6 +25,7 @@ import (
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 	"github.com/xargin/opentrade/pkg/shard"
 )
 
@@ -56,6 +57,7 @@ func (m memoryShim) Delete(ctx context.Context, symbol string) (bool, int64, err
 type Server struct {
 	shardedCounter *counterclient.Sharded
 	etcd           EtcdSource
+	perp           perpcfg.Store
 	audit          adminaudit.Logger
 	logger         *zap.Logger
 	requestTimeout time.Duration
@@ -65,6 +67,7 @@ type Server struct {
 type Config struct {
 	Counter        *counterclient.Sharded // required for /admin/cancel-orders
 	Etcd           EtcdSource             // optional; nil → /admin/symbols 503
+	PerpCatalog    perpcfg.Store          // optional; nil → /admin/perp/* 503 (ADR-0075)
 	Audit          adminaudit.Logger      // required; NopLogger accepted
 	Logger         *zap.Logger
 	RequestTimeout time.Duration // default 5s
@@ -88,6 +91,7 @@ func New(cfg Config) (*Server, error) {
 	return &Server{
 		shardedCounter: cfg.Counter,
 		etcd:           cfg.Etcd,
+		perp:           cfg.PerpCatalog,
 		audit:          cfg.Audit,
 		logger:         cfg.Logger,
 		requestTimeout: cfg.RequestTimeout,
@@ -115,6 +119,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /admin/symbols/{symbol}/precision", s.handleSchedulePrecision)
 	mux.HandleFunc("DELETE /admin/symbols/{symbol}/precision", s.handleCancelSchedulePrecision)
 	mux.HandleFunc("POST /admin/cancel-orders", s.handleCancelOrders)
+	// ADR-0075 perp symbol catalog.
+	s.perpRoutes(mux)
 	return mux
 }
 

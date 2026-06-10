@@ -15,6 +15,7 @@ import (
 	"github.com/xargin/opentrade/bff/internal/marketcache"
 	"github.com/xargin/opentrade/bff/internal/ratelimit"
 	"github.com/xargin/opentrade/pkg/auth"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 )
 
 // Config bundles runtime knobs.
@@ -42,6 +43,10 @@ type Server struct {
 	perp    client.Perp
 	market  *marketcache.Cache
 	logger  *zap.Logger
+
+	// perpCatalog backs the ADR-0075 /v1/perp/instruments product metadata
+	// (display only; admission authority is the version handshake).
+	perpCatalog *perpcfg.Cache
 
 	userLimiter *ratelimit.SlidingWindow
 	ipLimiter   *ratelimit.SlidingWindow
@@ -86,6 +91,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/perp/account-config", s.handlePerpAccountConfig)
 	mux.HandleFunc("GET /v1/perp/margin-adjustments", s.handlePerpMarginAdjustments)
 	mux.HandleFunc("GET /v1/perp/config-logs", s.handlePerpConfigLogs)
+	mux.HandleFunc("GET /v1/perp/instruments", s.handlePerpInstruments)
+	mux.HandleFunc("GET /v1/perp/instruments/{symbol}", s.handlePerpInstrument)
 	mux.HandleFunc("POST /v1/order", s.handlePlaceOrder)
 	mux.HandleFunc("DELETE /v1/order/{order_id}", s.handleCancelOrder)
 	mux.HandleFunc("DELETE /v1/orders", s.handleCancelMyOrders)

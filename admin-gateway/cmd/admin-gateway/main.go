@@ -27,6 +27,7 @@ import (
 	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 )
 
 // Config bundles runtime knobs.
@@ -50,6 +51,10 @@ type Config struct {
 	// deploys should always set this; absence is a dev-only mode.
 	EtcdEndpoints []string
 	EtcdPrefix    string
+
+	// ADR-0075 perp symbol catalog — optional; empty disables
+	// /admin/perp/* (503).
+	PerpCatalogDSN string
 
 	// ADR-0053 M4: precision rollout executor. Active only when etcd is
 	// configured. Zero disables (dev only); must be >= 1s otherwise.
@@ -173,9 +178,22 @@ func main() {
 		logger.Info("precision rollout disabled (--rollout-scan-interval=0)")
 	}
 
+	// Optional ADR-0075 perp catalog store for /admin/perp/*.
+	var perpStore perpcfg.Store
+	if cfg.PerpCatalogDSN != "" {
+		ps, err := perpcfg.OpenMySQLStore(perpcfg.MySQLConfig{DSN: cfg.PerpCatalogDSN})
+		if err != nil {
+			logger.Fatal("perp catalog store", zap.Error(err))
+		}
+		defer func() { _ = ps.Close() }()
+		perpStore = ps
+		logger.Info("perp catalog configured (ADR-0075)")
+	}
+
 	adminSrv, err := server.New(server.Config{
 		Counter:        sharded,
 		Etcd:           etcdShim,
+		PerpCatalog:    perpStore,
 		Audit:          audit,
 		Logger:         logger,
 		RequestTimeout: cfg.RequestTimeout,
@@ -278,6 +296,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.AuditLogPath, "audit-log", "", "JSONL audit log file (required)")
 	flag.StringVar(&etcdCSV, "etcd", "", "comma-separated etcd endpoints for /admin/symbols CRUD (empty disables symbol endpoints)")
 	flag.StringVar(&cfg.EtcdPrefix, "etcd-prefix", "", "etcd key prefix for symbol configs (default /cex/match/symbols/)")
+	flag.StringVar(&cfg.PerpCatalogDSN, "perp-catalog-dsn", "", "MySQL DSN of the ADR-0075 perp symbol catalog; empty disables /admin/perp/*")
 	flag.DurationVar(&cfg.RolloutScanInterval, "rollout-scan-interval", cfg.RolloutScanInterval,
 		"ADR-0053 M4 precision rollout scan tick (0 disables; min 1s otherwise)")
 	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", cfg.RequestTimeout, "per-admin-request timeout")

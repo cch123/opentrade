@@ -32,6 +32,7 @@ import (
 	bffws "github.com/xargin/opentrade/bff/internal/ws"
 	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/logx"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 )
 
 type Config struct {
@@ -64,6 +65,10 @@ type Config struct {
 	// Trigger service endpoint (ADR-0040). Empty disables the
 	// /v1/trigger endpoints with 503.
 	TriggerAddr string
+
+	// ADR-0075 perp symbol catalog. Empty disables /v1/perp/instruments
+	// with 503.
+	PerpCatalogDSN string
 
 	// History service endpoint (ADR-0046). Empty disables the
 	// /v1/orders, /v1/trades, /v1/account-logs endpoints with 503.
@@ -180,6 +185,24 @@ func main() {
 	}, counter, assetClient, mdCache, condClient, histClient, logger)
 	if perpClient != nil {
 		srv.SetPerp(perpClient)
+	}
+	// ADR-0075: instruments metadata from the perp symbol catalog.
+	if cfg.PerpCatalogDSN != "" {
+		store, err := perpcfg.OpenMySQLStore(perpcfg.MySQLConfig{DSN: cfg.PerpCatalogDSN})
+		if err != nil {
+			logger.Fatal("perp catalog store", zap.Error(err))
+		}
+		defer func() { _ = store.Close() }()
+		catalog := perpcfg.NewCache(perpcfg.CacheConfig{Store: store, Logger: logger})
+		loadCtx, cancelLoad := context.WithTimeout(rootCtx, 10*time.Second)
+		err = catalog.Load(loadCtx)
+		cancelLoad()
+		if err != nil {
+			logger.Fatal("perp catalog initial load", zap.Error(err))
+		}
+		go catalog.Run(rootCtx)
+		srv.SetPerpCatalog(catalog)
+		logger.Info("perp instruments enabled (ADR-0075)", zap.Strings("symbols", catalog.Symbols()))
 	}
 
 	outer := http.NewServeMux()
@@ -507,6 +530,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.HistoryAddr, "history", "", "History service gRPC endpoint (empty disables /v1/orders,/v1/trades,/v1/account-logs; ADR-0046)")
 	flag.StringVar(&cfg.AssetAddr, "asset", "", "Asset service gRPC endpoint (empty disables /v1/transfer,/v1/funding-balance; ADR-0057)")
 	flag.StringVar(&cfg.PerpAddr, "perp", "", "perp-counter gRPC endpoint (empty disables /v1/perp/*; ADR-0068 M7)")
+	flag.StringVar(&cfg.PerpCatalogDSN, "perp-catalog-dsn", "", "MySQL DSN of the ADR-0075 perp symbol catalog (empty disables /v1/perp/instruments)")
 	flag.StringVar(&cfg.ClusteringMode, "clustering-mode", cfg.ClusteringMode, "counter routing mode: disabled (use --counter-shards) | enabled (watch etcd for ADR-0058 vshard routing)")
 	flag.StringVar(&etcdCSV, "etcd", "", "comma-separated etcd endpoints (required when --clustering-mode=enabled)")
 	flag.IntVar(&cfg.VShardCount, "vshard-count", cfg.VShardCount, "ADR-0058 vshard count (must match counter --vshard-count)")
