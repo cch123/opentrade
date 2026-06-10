@@ -45,6 +45,9 @@ type OrderSnap struct {
 	Status     int32  `json:"status"`
 	CreatedMs  int64  `json:"created_ms"`
 	UpdatedMs  int64  `json:"updated_ms"`
+
+	// ADR-0075: admission config version (re-stamped on recovery dispatches).
+	ConfigVersion uint64 `json:"config_version,omitempty"`
 }
 
 // LiqSnap is one in-flight liquidation (bankruptcy order placed, not yet
@@ -60,6 +63,10 @@ type LiqSnap struct {
 	LiqFeeRate string `json:"liq_fee_rate"`
 	RiskTier   int32  `json:"risk_tier"`
 	Ticks      int    `json:"ticks"`
+
+	// ADR-0075 §3 provenance (mirrors the liquidation registry fields).
+	ConfigVersion uint64 `json:"config_version,omitempty"`
+	PolicyID      string `json:"policy_id,omitempty"`
 }
 
 // Capture takes the barrier, flushes the producer (so every emitted journal /
@@ -100,6 +107,7 @@ func (s *Service) snapshotLocked() Snapshot {
 			Mode:       uint8(o.Mode),
 			ReduceOnly: o.ReduceOnly, ReservedIM: o.ReservedIM.String(), FilledQty: o.FilledQty.String(),
 			Status: int32(o.Status), CreatedMs: o.CreatedMs, UpdatedMs: o.UpdatedMs,
+			ConfigVersion: o.ConfigVersion,
 		})
 	}
 	for _, liq := range s.liqByOrder {
@@ -108,6 +116,7 @@ func (s *Service) snapshotLocked() Snapshot {
 			Mode: uint8(liq.mode), Side: uint8(liq.side), OrderPrice: liq.orderPrice.String(),
 			Bankruptcy: liq.bankruptcy.String(), LiqFeeRate: liq.liqFeeRate.String(),
 			RiskTier: liq.tier, Ticks: liq.ticks,
+			ConfigVersion: liq.configVersion, PolicyID: liq.policyID,
 		})
 	}
 	return snap
@@ -137,6 +146,7 @@ func (s *Service) Restore(snap Snapshot) {
 			Mode:       perpstate.MarginMode(os.Mode),
 			ReduceOnly: os.ReduceOnly, ReservedIM: dec.New(os.ReservedIM), FilledQty: dec.New(os.FilledQty),
 			Status: eventpb.InternalOrderStatus(os.Status), CreatedMs: os.CreatedMs, UpdatedMs: os.UpdatedMs,
+			ConfigVersion: os.ConfigVersion,
 		}
 	}
 	s.liqByKey = make(map[string]*liquidation, len(snap.Liquidations))
@@ -147,6 +157,7 @@ func (s *Service) Restore(snap Snapshot) {
 			mode: liquidationMode(ls.Mode), side: perpstate.Side(ls.Side),
 			orderPrice: snapDecimal(ls.OrderPrice), bankruptcy: dec.New(ls.Bankruptcy),
 			liqFeeRate: snapDecimal(ls.LiqFeeRate), tier: ls.RiskTier, ticks: ls.Ticks,
+			configVersion: ls.ConfigVersion, policyID: ls.PolicyID,
 		}
 		if liq.mode == 0 {
 			liq.mode = liquidationFull

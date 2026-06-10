@@ -133,6 +133,9 @@ func (s *Service) placedOrderEvent(o *Order) *eventpb.OrderEvent {
 			UserId: o.UserID, OrderId: o.OrderID, ClientOrderId: o.ClientID,
 			Symbol: o.Symbol, Side: toEventSide(o.Side), OrderType: o.Type, Tif: o.TIF,
 			Price: o.Price.String(), Qty: o.Qty.String(),
+			// ADR-0075 handshake stamp: Match must hold the SAME catalog
+			// version or reject. 0 = catalog disabled, Match skips the check.
+			SymbolConfigVersion: o.ConfigVersion,
 		}},
 	}
 }
@@ -174,6 +177,8 @@ func (s *Service) emitSettlement(o *Order, t *eventpb.Trade, side perpstate.Side
 			RealizedPnl: res.Realized.String(), Fee: res.Fee.String(),
 			MarginAdded: res.MarginAdded.String(), MarginReleased: res.MarginReleased.String(),
 			PositionAfter: s.positionSnap(o.UserID, o.Symbol),
+			// ADR-0075: settle-time version, the row audit reads params from.
+			SymbolConfigVersion: s.activeConfigVersion(o.Symbol),
 		}},
 	})
 }

@@ -23,7 +23,7 @@ import (
 // position in the ticked symbol. The read-side health check is lock-free
 // w.r.t. the sequencer; the executor re-checks inside it (TOCTOU guard).
 func (s *Service) scanCrossLiquidations(symbol string) {
-	if !s.risk.HasMMR() {
+	if !s.liquidationEnabled(symbol) {
 		return
 	}
 	for _, user := range s.eng.CrossUsersWith(symbol) {
@@ -64,12 +64,13 @@ func (s *Service) executeCrossLiquidation(user uint64, triggerSymbol string) {
 				continue // no mark to value the close; try the next symbol
 			}
 			notional := mark.Mul(entry.Size)
-			feeRate := s.risk.EffectiveLiqFeeRate(notional, entry.RiskID)
+			model, cfgVersion := s.riskModelForPosition(user, entry.Symbol)
+			feeRate := model.EffectiveLiqFeeRate(notional, entry.RiskID)
 			res, fee, okC := s.eng.CrossForceClose(user, entry.Symbol, mark, s.cfg.BackstopAccount, feeRate)
 			if !okC {
 				continue
 			}
-			s.emitCrossTakeover(user, entry, mark, res, fee)
+			s.emitCrossTakeover(user, entry, mark, res, fee, model, cfgVersion)
 		}
 		if covered, settled := s.eng.CrossSettleDeficit(user, triggerSymbol); settled {
 			s.emitCrossDeficit(user, triggerSymbol, covered)
@@ -106,7 +107,7 @@ func (s *Service) cancelCrossOrdersFor(user uint64) {
 // The user keeps the realized PnL in their free balance (cross equity is
 // account-level — only the liquidation fee moves to insurance here; a final
 // negative balance is settled separately as a deficit event).
-func (s *Service) emitCrossTakeover(user uint64, entry engine.CrossCloseEntry, mark dec.Decimal, res perpstate.FillResult, fee dec.Decimal) {
+func (s *Service) emitCrossTakeover(user uint64, entry engine.CrossCloseEntry, mark dec.Decimal, res perpstate.FillResult, fee dec.Decimal, model perpstate.RiskModel, cfgVersion uint64) {
 	snap := s.positionSnap(user, entry.Symbol)
 	lotID := s.takeoverLotID(entry.Symbol, 0) + ":cross:" + userIDString(user) + ":" + strconv.FormatUint(snap.GetVersion(), 10)
 	s.journal.Emit(&eventpb.PerpJournalEvent{

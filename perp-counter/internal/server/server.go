@@ -229,7 +229,7 @@ func (s *Server) positionView(p *perpstate.Position) *perprpc.Position {
 		if mark.Sign() > 0 {
 			v.MarginRatio = p.MarginRatio(mark).String()
 		}
-		if mmrOf, ok := s.eng.MMRFuncFor(p.RiskID); ok {
+		if mmrOf, ok := s.eng.MMRFuncForView(*p); ok {
 			v.LiqPrice = p.LiqPrice(mmrOf).String()
 		} else if s.defaultMMR.Sign() > 0 {
 			v.LiqPrice = p.LiqPrice(perpstate.ConstantMMR(s.defaultMMR)).String()

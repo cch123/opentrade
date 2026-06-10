@@ -105,6 +105,13 @@ type Position struct {
 
 	Realized dec.Decimal // cumulative realized PnL (incl. funding), USDT, reporting
 
+	// RiskConfigVersion pins which SymbolConfig version's risk tiers govern
+	// this position (ADR-0075 §3 staged application): stamped on open /
+	// increase, so a later STAGED tightening only affects new exposure while
+	// this position keeps evaluating at its pinned version. 0 = no pin (use
+	// the symbol's active version — pre-catalog positions and legacy mode).
+	RiskConfigVersion uint64
+
 	// Recovery / idempotency water marks (persisted in snapshot, ADR-0068
 	// §3.2 + invariant #3). The service advances these; the algebra here
 	// does not touch them.

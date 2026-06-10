@@ -51,8 +51,21 @@ type PoolRiskModel interface {
 // the effective tier is max(auto-by-notional, position.RiskID) — per
 // position, so a multi-symbol cross pool sums per-symbol tier requirements
 // rather than resolving one scalar MMR from the pool total (ADR-0074 §3).
+//
+// ModelFor (optional) resolves the risk model per position — the ADR-0075
+// seam: a multi-symbol pool draws each position's tiers from its own
+// symbol's SymbolConfig version (including the position's pinned staged
+// version). nil keeps the single fixed Model.
 type StandardRisk struct {
-	Model RiskModel
+	Model    RiskModel
+	ModelFor func(p *Position) RiskModel
+}
+
+func (s StandardRisk) modelFor(p *Position) RiskModel {
+	if s.ModelFor != nil {
+		return s.ModelFor(p)
+	}
+	return s.Model
 }
 
 // Eval computes pool health under standard margin rules. marks maps
@@ -71,7 +84,7 @@ func (s StandardRisk) Eval(cp CollateralPool, marks map[string]dec.Decimal) Pool
 		h.Equity = h.Equity.Add(p.Margin).Add(p.UnrealizedPnL(mark))
 		n := p.Notional(mark)
 		h.Notional = h.Notional.Add(n)
-		h.MaintenanceRequirement = h.MaintenanceRequirement.Add(n.Mul(s.Model.EffectiveMMR(n, p.RiskID)))
+		h.MaintenanceRequirement = h.MaintenanceRequirement.Add(n.Mul(s.modelFor(p).EffectiveMMR(n, p.RiskID)))
 		h.InitialRequirement = h.InitialRequirement.Add(s.initialRequirement(p, n))
 	}
 	if h.Notional.Sign() > 0 {
@@ -97,7 +110,7 @@ func (s StandardRisk) PositionInitialRequirement(p *Position, marks map[string]d
 // notional), the conservative floor.
 func (s StandardRisk) initialRequirement(p *Position, n dec.Decimal) dec.Decimal {
 	lev := p.Leverage
-	if levCap := s.Model.EffectiveMaxLeverage(n, p.RiskID); levCap.Sign() > 0 && (lev.Sign() <= 0 || lev.Cmp(levCap) > 0) {
+	if levCap := s.modelFor(p).EffectiveMaxLeverage(n, p.RiskID); levCap.Sign() > 0 && (lev.Sign() <= 0 || lev.Cmp(levCap) > 0) {
 		lev = levCap
 	}
 	if lev.Sign() <= 0 {

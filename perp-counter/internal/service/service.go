@@ -17,6 +17,7 @@ import (
 	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
@@ -60,6 +61,11 @@ type Order struct {
 	Status     eventpb.InternalOrderStatus
 	CreatedMs  int64
 	UpdatedMs  int64
+
+	// ConfigVersion is the SymbolConfig version this order was admitted
+	// under (ADR-0075); stamped into the OrderEvent for Match's handshake.
+	// 0 = catalog disabled.
+	ConfigVersion uint64
 }
 
 // Config tunes the service.
@@ -91,6 +97,13 @@ type Config struct {
 	AutoAddTargetBuffer  dec.Decimal
 	AutoAddMaxPerEvent   dec.Decimal
 
+	// Catalog is the ADR-0075 SymbolConfig cache. When set it is the
+	// admission authority (status machine, precision, order limits, per-
+	// symbol risk tiers) and every order/journal record carries its
+	// config_version; the legacy risk flags only back symbols it does not
+	// cover. nil = flag-driven legacy mode (dev), versions stamp 0.
+	Catalog *perpcfg.Cache
+
 	Clock func() time.Time // nil → time.Now
 }
 
@@ -101,6 +114,8 @@ type Service struct {
 	journal  Journal
 	cfg      Config
 	risk     perpstate.RiskModel
+	catalog  *perpcfg.Cache
+	riskMemo riskMemo
 	nextID   func() uint64
 	seq      *userSeq
 
@@ -147,8 +162,10 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	}
 	svc := &Service{
 		eng: eng, dispatch: dispatch, journal: journal, cfg: cfg,
-		risk:   perpstate.NewRiskModel(cfg.RiskTiers, cfg.MMR, cfg.MaxLeverage, cfg.LiquidationFeeRate),
-		nextID: nextID, seq: newUserSeq(), orders: map[uint64]*Order{},
+		risk:     perpstate.NewRiskModel(cfg.RiskTiers, cfg.MMR, cfg.MaxLeverage, cfg.LiquidationFeeRate),
+		catalog:  cfg.Catalog,
+		riskMemo: riskMemo{m: map[string]perpstate.RiskModel{}},
+		nextID:   nextID, seq: newUserSeq(), orders: map[uint64]*Order{},
 		offsets:    map[int32]int64{},
 		liqByKey:   map[string]*liquidation{},
 		liqByOrder: map[uint64]*liquidation{},
@@ -158,6 +175,11 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	// installs the whole risk model once after construction (and again only
 	// if config is explicitly reloaded in a future admin path).
 	eng.SetRiskModel(svc.risk)
+	// ADR-0075: the catalog resolver takes precedence per symbol; the flag
+	// model above stays as the fallback for symbols it does not cover.
+	if svc.catalog != nil {
+		eng.SetRiskResolver(svc.resolveRisk)
+	}
 	return svc
 }
 
@@ -199,6 +221,16 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 	resp := &perprpc.PlaceOrderResponse{ReceivedTsUnixMs: s.now()}
 	s.seq.do(req.GetUserId(), func() {
 		user, symbol := req.GetUserId(), req.GetSymbol()
+		// ADR-0075 admission gates: status machine + precision + order
+		// limits against ONE captured catalog view; its config_version is
+		// stamped into the OrderEvent for Match's handshake. Fail-closed on
+		// unknown symbol or a stale cache.
+		postOnly := req.GetTif() == eventpb.TimeInForce_TIME_IN_FORCE_POST_ONLY
+		cfgVersion, cfgReject := s.admitAgainstCatalog(symbol, price, qty, isMarket, postOnly, req.GetReduceOnly())
+		if cfgReject != "" {
+			resp = s.reject(req, cfgReject)
+			return
+		}
 		// reduce_only must close, never increase: requires an existing
 		// position on the side opposite this order. This is intentionally only
 		// the admission gate; the settlement side still needs its own clamp once
@@ -234,8 +266,8 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 				return
 			}
 			// ADR-0074 §9: position + resting orders + this order must fit the
-			// selected risk tier's notional cap.
-			if tierCap := s.risk.MaxNotionalFor(riskID); tierCap.Sign() > 0 {
+			// selected risk tier's notional cap (per-symbol tiers, ADR-0075).
+			if tierCap := s.riskModelForOrder(symbol).MaxNotionalFor(riskID); tierCap.Sign() > 0 {
 				total := s.positionMarkNotional(user, symbol).
 					Add(s.activeOrderNotional(user, symbol)).
 					Add(imPrice.Mul(qty))
@@ -270,6 +302,7 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			ReservedIM: reservedIM, FilledQty: zero,
 			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			CreatedMs: s.now(), UpdatedMs: s.now(),
+			ConfigVersion: cfgVersion,
 		}
 		s.putOrder(o)
 
@@ -311,6 +344,10 @@ func (s *Service) CancelOrder(req *perprpc.CancelOrderRequest) (*perprpc.CancelO
 		// A bankruptcy reduce_only order is system-owned — the user cannot
 		// cancel it to dodge liquidation (ADR-0068 §8).
 		if s.liquidationFor(o.OrderID) != nil {
+			return
+		}
+		// ADR-0075 §2: SETTLING and later states accept system ops only.
+		if !s.cancelAllowed(o.Symbol) {
 			return
 		}
 		if err := s.dispatch.DispatchCancel(o.Symbol, s.cancelOrderEvent(o)); err != nil {

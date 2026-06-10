@@ -136,8 +136,8 @@ func (e *Engine) marginHealthSafeLocked(p *perpstate.Position, newMargin, buffer
 	}
 	equity := newMargin.Add(p.UnrealizedPnL(mark))
 	mmr := zero
-	if e.riskSet {
-		mmr = e.risk.EffectiveMMR(notional, p.RiskID)
+	if m, ok := e.riskModelForPositionLocked(p); ok {
+		mmr = m.EffectiveMMR(notional, p.RiskID)
 	}
 	if equity.Cmp(mmr.Add(buffer).Mul(notional)) <= 0 {
 		return "unsafe_after_removal", false
@@ -221,13 +221,14 @@ func (e *Engine) SetRiskID(user uint64, symbol, opID string, riskID uint32, extr
 	}
 	w := e.walletLocked(user)
 	p := e.positionLocked(user, symbol)
+	activeModel, hasModel := e.riskModelForLocked(symbol)
 	if riskID != 0 {
-		if !e.riskSet || int(riskID) > e.risk.TierCount() {
+		if !hasModel || int(riskID) > activeModel.TierCount() {
 			return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "invalid_risk_id", zero))
 		}
 	}
-	if e.riskSet {
-		if maxN := e.risk.MaxNotionalFor(riskID); maxN.Sign() > 0 {
+	if hasModel {
+		if maxN := activeModel.MaxNotionalFor(riskID); maxN.Sign() > 0 {
 			total := e.notionalForCapLocked(p).Add(extraNotional)
 			if total.Cmp(maxN) > 0 {
 				return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "notional_exceeds_tier_cap", zero))
@@ -244,9 +245,9 @@ func (e *Engine) SetRiskID(user uint64, symbol, opID string, riskID uint32, extr
 			if h.Liquidatable() {
 				return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "unsafe_risk_id", zero))
 			}
-		} else if e.riskSet && e.risk.HasMMR() {
+		} else if hasModel && activeModel.HasMMR() {
 			marks := map[string]dec.Decimal{symbol: e.marks[symbol]}
-			if perpstate.Isolated(&cand).Liquidatable(marks, e.risk.EffectiveMMRFunc(riskID)) {
+			if perpstate.Isolated(&cand).Liquidatable(marks, activeModel.EffectiveMMRFunc(riskID)) {
 				return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "unsafe_risk_id", zero))
 			}
 		}
@@ -312,7 +313,11 @@ func (e *Engine) AutoAddMargin(user uint64, symbol string, triggerBuffer, target
 		return OpOutcome{}, false
 	}
 	mark := e.marks[symbol]
-	if mark.Sign() <= 0 || !e.riskSet {
+	if mark.Sign() <= 0 {
+		return OpOutcome{}, false
+	}
+	model, hasModel := e.riskModelForPositionLocked(p)
+	if !hasModel {
 		return OpOutcome{}, false
 	}
 	notional := p.Notional(mark)
@@ -323,7 +328,7 @@ func (e *Engine) AutoAddMargin(user uint64, symbol string, triggerBuffer, target
 	if equity.Sign() <= 0 {
 		return OpOutcome{}, false // bankrupt: liquidation, not top-up
 	}
-	mmr := e.risk.EffectiveMMR(notional, p.RiskID)
+	mmr := model.EffectiveMMR(notional, p.RiskID)
 	if equity.Div(notional).Cmp(mmr.Add(triggerBuffer)) > 0 {
 		return OpOutcome{}, false // healthy
 	}
@@ -436,8 +441,8 @@ func (e *Engine) customerMaxLeverageLocked(user uint64, symbol string) dec.Decim
 // with the customer cap. Zero = uncapped. Caller holds e.mu (any).
 func (e *Engine) effectiveMaxLeverageLocked(user uint64, symbol string, notional dec.Decimal, riskID uint32) dec.Decimal {
 	tierCap := zero
-	if e.riskSet {
-		tierCap = e.risk.EffectiveMaxLeverage(notional, riskID)
+	if m, ok := e.riskModelForLocked(symbol); ok {
+		tierCap = m.EffectiveMaxLeverage(notional, riskID)
 	}
 	custCap := e.customerMaxLeverageLocked(user, symbol)
 	switch {
@@ -508,8 +513,8 @@ func (e *Engine) PositionConfigsOf(user uint64, symbol string) []PositionConfigV
 			EffectiveMaxLeverage: e.effectiveMaxLeverageLocked(user, p.Symbol, e.notionalForCapLocked(p), p.RiskID),
 			MaxNotional:          zero,
 		}
-		if e.riskSet {
-			v.MaxNotional = e.risk.MaxNotionalFor(p.RiskID)
+		if m, ok := e.riskModelForLocked(p.Symbol); ok {
+			v.MaxNotional = m.MaxNotionalFor(p.RiskID)
 		}
 		out = append(out, v)
 	}

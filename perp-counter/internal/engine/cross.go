@@ -35,7 +35,7 @@ func (e *Engine) crossPositionsLocked(user uint64) []*perpstate.Position {
 // (drawable = free balance + cross-order reservations). Caller holds e.mu.
 func (e *Engine) crossHealthLocked(w *Wallet, positions []*perpstate.Position) perpstate.PoolHealth {
 	drawable := w.Available.Add(w.CrossReserved)
-	return perpstate.StandardRisk{Model: e.risk}.Eval(perpstate.Cross(drawable, positions), e.marks)
+	return e.poolRiskLocked().Eval(perpstate.Cross(drawable, positions), e.marks)
 }
 
 // crossCandidateHealthLocked evaluates the user's cross pool with cand
@@ -49,7 +49,7 @@ func (e *Engine) crossCandidateHealthLocked(user uint64, cand *perpstate.Positio
 		}
 		positions = append(positions, p)
 	}
-	return perpstate.StandardRisk{Model: e.risk}.Eval(perpstate.Cross(drawable, positions), e.marks)
+	return e.poolRiskLocked().Eval(perpstate.Cross(drawable, positions), e.marks)
 }
 
 // CrossUsersWith returns the users holding a live cross position in symbol,
@@ -71,7 +71,7 @@ func (e *Engine) CrossUsersWith(symbol string) []uint64 {
 func (e *Engine) CrossPoolHealth(user uint64) (perpstate.PoolHealth, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if !e.riskSet {
+	if !e.riskConfiguredLocked() {
 		return perpstate.PoolHealth{}, false
 	}
 	positions := e.crossPositionsLocked(user)
@@ -100,7 +100,7 @@ func (e *Engine) CrossPoolHealth(user uint64) (perpstate.PoolHealth, bool) {
 func (e *Engine) CrossOrderCheck(user uint64, symbol string, side perpstate.Side, price, qty, leverage, im, buffer dec.Decimal) (string, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if !e.riskSet {
+	if !e.hasRiskLocked(symbol) {
 		return "cross_unavailable", false
 	}
 	w := e.wallets[user]
@@ -159,7 +159,7 @@ func (e *Engine) SwitchToCross(user uint64, symbol, opID string, imBuffer dec.De
 		e.syncIndexesLocked(user, symbol, p)
 		return e.cacheOpLocked(opID, e.opStateLocked(p, w, true, "", moved))
 	}
-	if !e.riskSet {
+	if !e.hasRiskLocked(symbol) {
 		return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "cross_unavailable", zero))
 	}
 	cand := *p
@@ -211,7 +211,7 @@ func (e *Engine) SwitchToIsolated(user uint64, symbol, opID string, requestedMar
 	if mark.Sign() <= 0 {
 		return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "no_mark", zero))
 	}
-	std := perpstate.StandardRisk{Model: e.risk}
+	std := e.poolRiskLocked()
 	imReq := std.PositionInitialRequirement(p, e.marks)
 	target := dec.Max(requestedMargin, imReq.Add(imBuffer))
 	if w.Available.Cmp(target) < 0 {
@@ -236,7 +236,7 @@ func (e *Engine) SwitchToIsolated(user uint64, symbol, opID string, requestedMar
 		remaining = append(remaining, cp)
 	}
 	if len(remaining) > 0 {
-		h := perpstate.StandardRisk{Model: e.risk}.Eval(
+		h := e.poolRiskLocked().Eval(
 			perpstate.Cross(w.Available.Sub(target), remaining), e.marks)
 		if h.Liquidatable() {
 			return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "cross_pool_unsafe_after_exit", zero))

@@ -98,7 +98,22 @@ type Engine struct {
 	liqIndex *liqIndex
 	risk     perpstate.RiskModel
 	riskSet  bool
+
+	// riskResolver is the ADR-0075 per-symbol risk source: it resolves the
+	// SymbolConfig-versioned risk model governing exposure in a symbol,
+	// honoring a position's pinned staged version. When set it takes
+	// precedence over the legacy scalar/global model for symbols it covers;
+	// symbols it does not cover fall back to the legacy model so existing
+	// exposure never silently loses risk evaluation.
+	riskResolver RiskResolver
 }
+
+// RiskResolver resolves the risk model for symbol at a position's pinned
+// config version (ADR-0075 §3; pinnedVersion 0 = the symbol's active
+// version). Returns the model, the resolved config version, and whether the
+// symbol is catalog-managed. Implementations are called under e.mu and must
+// not call back into the Engine.
+type RiskResolver func(symbol string, pinnedVersion uint64) (perpstate.RiskModel, uint64, bool)
 
 // New returns an empty engine.
 func New() *Engine {
@@ -297,12 +312,13 @@ func (e *Engine) MarkOf(symbol string) dec.Decimal {
 	return e.marks[symbol]
 }
 
-// SetRiskModel installs the per-symbol-config risk model and rebuilds the
+// SetRiskModel installs the legacy global risk model and rebuilds the
 // derived liq-price index (ADR-0072). The model is held by Engine after
 // service startup so every position mutation can resolve its effective MMR
 // (tier table + the position's RiskID, ADR-0074 §9) without widening all
 // mutation method signatures. Callers that change risk tiers must call this
-// again to rebuild.
+// again to rebuild. With an ADR-0075 catalog this is the fallback for
+// symbols the resolver does not cover.
 func (e *Engine) SetRiskModel(m perpstate.RiskModel) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -311,24 +327,103 @@ func (e *Engine) SetRiskModel(m perpstate.RiskModel) {
 	e.rebuildLiquidationIndexLocked()
 }
 
-// mmrForLocked resolves a position's effective MMR function. nil when no
-// risk model with a usable MMR is installed (liquidation disabled).
-func (e *Engine) mmrForLocked(p *perpstate.Position) perpstate.MMRFunc {
-	if !e.riskSet || !e.risk.HasMMR() {
-		return nil
-	}
-	return e.risk.EffectiveMMRFunc(p.RiskID)
+// SetRiskResolver installs the ADR-0075 catalog-backed risk resolver and
+// rebuilds the liq-price index against it.
+func (e *Engine) SetRiskResolver(r RiskResolver) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.riskResolver = r
+	e.rebuildLiquidationIndexLocked()
 }
 
-// MMRFuncFor exposes the effective MMR resolver for a riskID — query views
-// (liq price display) resolve through the same tier math as liquidation.
-func (e *Engine) MMRFuncFor(riskID uint32) (perpstate.MMRFunc, bool) {
+// RebuildRiskIndex recomputes the liq-price index. The catalog refresh loop
+// calls this whenever any symbol's effective risk version changes (a publish
+// landing or an effective_from_ms boundary passing) — the resolver output
+// changed, so every precomputed liq price derived from it must be redone.
+func (e *Engine) RebuildRiskIndex() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.rebuildLiquidationIndexLocked()
+}
+
+// riskModelForLocked resolves the model governing NEW exposure in symbol
+// (admission paths — always the active config version). Caller holds e.mu.
+func (e *Engine) riskModelForLocked(symbol string) (perpstate.RiskModel, bool) {
+	if e.riskResolver != nil {
+		if m, _, ok := e.riskResolver(symbol, 0); ok {
+			return m, true
+		}
+	}
+	if e.riskSet {
+		return e.risk, true
+	}
+	return perpstate.RiskModel{}, false
+}
+
+// riskModelForPositionLocked resolves the model judging an EXISTING
+// position: the resolver honors the position's pinned staged version
+// (ADR-0075 §3). Caller holds e.mu.
+func (e *Engine) riskModelForPositionLocked(p *perpstate.Position) (perpstate.RiskModel, bool) {
+	if e.riskResolver != nil {
+		if m, _, ok := e.riskResolver(p.Symbol, p.RiskConfigVersion); ok {
+			return m, true
+		}
+	}
+	if e.riskSet {
+		return e.risk, true
+	}
+	return perpstate.RiskModel{}, false
+}
+
+// hasRiskLocked reports whether ANY risk model governs symbol (catalog or
+// legacy). Caller holds e.mu.
+func (e *Engine) hasRiskLocked(symbol string) bool {
+	_, ok := e.riskModelForLocked(symbol)
+	return ok
+}
+
+// riskConfiguredLocked reports whether any risk source exists at all —
+// legacy global model or catalog resolver. Caller holds e.mu.
+func (e *Engine) riskConfiguredLocked() bool {
+	return e.riskSet || e.riskResolver != nil
+}
+
+// crossModelForLocked adapts the per-position resolution into the
+// perpstate.StandardRisk seam. A position whose symbol has no model anywhere
+// contributes requirements under the zero model (IM = full notional via the
+// 1x floor; MMR = 0) — reachable only when nothing is configured at all,
+// which is the pre-existing legacy-dev behavior. Caller holds e.mu.
+func (e *Engine) crossModelForLocked(p *perpstate.Position) perpstate.RiskModel {
+	m, _ := e.riskModelForPositionLocked(p)
+	return m
+}
+
+// poolRiskLocked builds the pool risk model with ADR-0075 per-symbol
+// resolution. Caller holds e.mu.
+func (e *Engine) poolRiskLocked() perpstate.StandardRisk {
+	return perpstate.StandardRisk{Model: e.risk, ModelFor: e.crossModelForLocked}
+}
+
+// mmrForLocked resolves a position's effective MMR function. nil when no
+// risk model with a usable MMR governs the position (liquidation disabled).
+func (e *Engine) mmrForLocked(p *perpstate.Position) perpstate.MMRFunc {
+	m, ok := e.riskModelForPositionLocked(p)
+	if !ok || !m.HasMMR() {
+		return nil
+	}
+	return m.EffectiveMMRFunc(p.RiskID)
+}
+
+// MMRFuncForView exposes the effective MMR resolver for a position copy —
+// query views (liq price display) resolve through the same per-symbol tier
+// math as liquidation.
+func (e *Engine) MMRFuncForView(p perpstate.Position) (perpstate.MMRFunc, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if !e.riskSet || !e.risk.HasMMR() {
-		return nil, false
+	if f := e.mmrForLocked(&p); f != nil {
+		return f, true
 	}
-	return e.risk.EffectiveMMRFunc(riskID), true
+	return nil, false
 }
 
 // ApplyFill applies a trade fill to (user, symbol)'s position and routes the
@@ -568,7 +663,9 @@ func (e *Engine) LiquidatablePositions(symbol string) []LiquidationCandidate {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	mark := e.marks[symbol]
-	if mark.Sign() <= 0 || !e.riskSet || !e.risk.HasMMR() {
+	// Per-position MMR resolution below handles catalog vs legacy; this is
+	// only the cheap short-circuit for a fully unconfigured engine.
+	if mark.Sign() <= 0 || !e.riskConfiguredLocked() {
 		return nil
 	}
 	var out []LiquidationCandidate

@@ -39,6 +39,13 @@ type liquidation struct {
 	liqFeeRate dec.Decimal
 	tier       int32
 	ticks      int
+
+	// ADR-0075 §3 provenance: the SymbolConfig version whose risk tiers
+	// judged this liquidation (the position's pinned/effective version) and
+	// the reprice policy that forced it, if any. Stamped into the journal so
+	// every historical liquidation is explainable.
+	configVersion uint64
+	policyID      string
 }
 
 func liqKey(user uint64, symbol string) string { return userIDString(user) + "|" + symbol }
@@ -47,8 +54,8 @@ func liqKey(user uint64, symbol string) string { return userIDString(user) + "|"
 // liq-price threshold query, while the later sequencer step still performs the
 // authoritative LiquidationCheck before any forced order is sent.
 func (s *Service) scanLiquidations(symbol string) {
-	if !s.risk.HasMMR() {
-		return // no MMR configured → liquidation disabled
+	if !s.liquidationEnabled(symbol) {
+		return // no MMR governs this symbol → liquidation disabled
 	}
 	for _, cand := range s.eng.LiquidatablePositions(symbol) {
 		if cand.UserID == s.cfg.BackstopAccount {
@@ -101,14 +108,26 @@ func (s *Service) beginLiquidation(cand engine.LiquidationCandidate) {
 			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			CreatedMs: s.now(), UpdatedMs: s.now(),
 		}
-		s.putOrder(o)
 		notional := c.Mark.Mul(c.Size)
+		model, cfgVersion := s.riskModelForPosition(c.UserID, c.Symbol)
+		o.ConfigVersion = s.activeConfigVersion(c.Symbol)
 		liq := &liquidation{
 			userID: c.UserID, symbol: c.Symbol, orderID: o.OrderID, mode: mode, side: c.Side,
 			orderPrice: price, bankruptcy: c.BankruptcyPrice,
-			liqFeeRate: s.risk.LiqFeeRate(notional), tier: s.risk.TierIndex(notional),
+			liqFeeRate: model.LiqFeeRate(notional), tier: model.TierIndex(notional),
+			configVersion: cfgVersion, policyID: s.riskPolicyID(c.Symbol, cfgVersion),
 		}
+		s.putOrder(o)
 		s.registerLiquidation(key, o.OrderID, liq)
+
+		// ADR-0075 §2: when the status machine has closed the book to new
+		// orders (CANCEL_ONLY etc.), a Match round-trip is doomed — close
+		// against the internal backstop directly so liquidation keeps its
+		// finite-step closure property in every status.
+		if !s.bookAccepts(c.Symbol) {
+			s.backstopRemaining(o, liq)
+			return
+		}
 
 		if err := s.dispatch.DispatchOrder(o.Symbol, s.placedOrderEvent(o)); err != nil {
 			s.delOrder(o.OrderID)
@@ -163,25 +182,33 @@ func (s *Service) advanceLiquidation(liq *liquidation) {
 			return
 		}
 		_ = s.dispatch.DispatchCancel(o.Symbol, s.cancelOrderEvent(o))
-		res, insDelta, ok := s.eng.BackstopTakeover(o.UserID, o.Symbol, remaining, cur.bankruptcy,
-			s.cfg.BackstopAccount, cur.mode == liquidationPartial, cur.liqFeeRate)
-		if !ok {
-			s.finishLiquidation(cur)
-			s.delOrder(o.OrderID)
-			return
-		}
-		o.FilledQty = o.Qty
-		old := o.Status
-		o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED
-		o.UpdatedMs = s.now()
-		s.emitTakeover(o, cur, remaining, res, insDelta)
-		if s.shouldRunLocalADL(o.Symbol) {
-			s.runADL(o.UserID, o.Symbol, cur.side, cur.bankruptcy)
-		}
-		s.emitOrderStatus(o, old, o.Status)
-		s.finishLiquidation(cur)
-		s.delOrder(o.OrderID)
+		s.backstopRemaining(o, cur)
 	})
+}
+
+// backstopRemaining closes the order's unfilled remainder against the
+// internal backstop and finishes the liquidation. Caller holds the user's
+// seq lock and has registered liq.
+func (s *Service) backstopRemaining(o *Order, liq *liquidation) {
+	remaining := o.Qty.Sub(o.FilledQty)
+	res, insDelta, ok := s.eng.BackstopTakeover(o.UserID, o.Symbol, remaining, liq.bankruptcy,
+		s.cfg.BackstopAccount, liq.mode == liquidationPartial, liq.liqFeeRate)
+	if !ok {
+		s.finishLiquidation(liq)
+		s.delOrder(o.OrderID)
+		return
+	}
+	o.FilledQty = o.Qty
+	old := o.Status
+	o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED
+	o.UpdatedMs = s.now()
+	s.emitTakeover(o, liq, remaining, res, insDelta)
+	if s.shouldRunLocalADL(o.Symbol) {
+		s.runADL(o.UserID, o.Symbol, liq.side, liq.bankruptcy)
+	}
+	s.emitOrderStatus(o, old, o.Status)
+	s.finishLiquidation(liq)
+	s.delOrder(o.OrderID)
 }
 
 // settleLiquidationFill applies one fill of the bankruptcy order: it reduces the
@@ -241,12 +268,14 @@ func (s *Service) emitLiquidation(o *Order, liq *liquidation, t *eventpb.Trade, 
 			UserId: o.UserID, Symbol: o.Symbol, LiqOrderId: o.OrderID,
 			BankruptcyPrice: liq.bankruptcy.String(), MarkPrice: s.eng.MarkOf(o.Symbol).String(),
 			ClosedQty: t.GetQty(), RealizedPnl: res.Realized.String(),
-			InsuranceDelta: insDelta.String(),
-			AdlQueued:      s.adlQueued(o.Symbol),
-			Partial:        liq.mode == liquidationPartial,
-			Backstop:       false,
-			RiskTier:       liq.tier,
-			PositionAfter:  s.positionSnap(o.UserID, o.Symbol),
+			InsuranceDelta:      insDelta.String(),
+			AdlQueued:           s.adlQueued(o.Symbol),
+			Partial:             liq.mode == liquidationPartial,
+			Backstop:            false,
+			RiskTier:            liq.tier,
+			PositionAfter:       s.positionSnap(o.UserID, o.Symbol),
+			SymbolConfigVersion: liq.configVersion,
+			RiskPolicyId:        liq.policyID,
 		}},
 	})
 }

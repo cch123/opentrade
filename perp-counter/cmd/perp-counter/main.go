@@ -46,6 +46,7 @@ import (
 	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/idgen"
 	"github.com/xargin/opentrade/pkg/logx"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
@@ -78,6 +79,13 @@ type Config struct {
 	TransactionalID       string
 	MarkPriceTopic        string
 	MarkPriceGroup        string
+
+	// ADR-0075 SymbolConfig catalog. Empty DSN = legacy flag-driven config
+	// (dev); set, the catalog is the admission authority and perp-counter
+	// fails startup if the initial load fails (fail-closed).
+	CatalogDSN          string
+	CatalogPollInterval time.Duration
+	CatalogMaxStaleness time.Duration
 
 	// Snapshot persistence (ADR-0048 / ADR-0068 §5 invariant #5).
 	SnapshotPath     string
@@ -242,6 +250,37 @@ func runElectionLoop(rootCtx context.Context, cfg Config, d deps, etcd []string,
 func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 	eng := engine.New()
 
+	// ADR-0075: load the symbol catalog before anything serves. A failed
+	// initial load aborts startup — running with an empty cache would
+	// fail-closed every admission while hiding the store outage.
+	var catalog *perpcfg.Cache
+	if cfg.CatalogDSN != "" {
+		store, err := perpcfg.OpenMySQLStore(perpcfg.MySQLConfig{DSN: cfg.CatalogDSN})
+		if err != nil {
+			logger.Error("perp catalog store", zap.Error(err))
+			return
+		}
+		defer func() { _ = store.Close() }()
+		catalog = perpcfg.NewCache(perpcfg.CacheConfig{
+			Store:        store,
+			PollInterval: cfg.CatalogPollInterval,
+			MaxStaleness: cfg.CatalogMaxStaleness,
+			Logger:       logger,
+		})
+		loadCtx, cancelLoad := context.WithTimeout(ctx, 10*time.Second)
+		err = catalog.Load(loadCtx)
+		cancelLoad()
+		if err != nil {
+			logger.Error("perp catalog initial load", zap.Error(err))
+			return
+		}
+		go catalog.Run(ctx)
+		logger.Info("perp catalog loaded (ADR-0075)",
+			zap.Strings("symbols", catalog.Symbols()),
+			zap.Duration("poll", cfg.CatalogPollInterval),
+			zap.Duration("max_staleness", cfg.CatalogMaxStaleness))
+	}
+
 	// Restore engine state; the service order store + bound offsets are
 	// restored after the service is built (ADR-0048).
 	var restored *snapshot.PerpSnapshot
@@ -291,7 +330,13 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		RiskCoordinatorEnabled: cfg.RiskCoordinator,
 		AutoAddTriggerBuffer:   d.autoAddTrigger, AutoAddTargetBuffer: d.autoAddTarget,
 		AutoAddMaxPerEvent: d.autoAddMax,
+		Catalog:            catalog,
 	})
+	if catalog != nil {
+		// Rebuild the precomputed liq-price index whenever any symbol's
+		// active config version changes (publish or effective boundary).
+		go svc.RunCatalogRefresh(ctx, cfg.CatalogPollInterval)
+	}
 	if restored != nil {
 		svc.Restore(restored.Service)
 		logger.Info("restored service state",
@@ -484,6 +529,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.TransactionalID, "transactional-id", "", "stable Kafka transactional id for producer fencing (ADR-0032); empty = idempotent (dev). Set per shard in HA mode.")
 	flag.StringVar(&cfg.MarkPriceTopic, "perp-price-topic", "perp-price", "perp-price topic consumed from perp-pricing (ADR-0068 §5)")
 	flag.StringVar(&cfg.MarkPriceGroup, "perp-price-group", "perp-counter-mark", "Kafka consumer group for the perp-price stream")
+	flag.StringVar(&cfg.CatalogDSN, "catalog-dsn", "", "MySQL DSN of the ADR-0075 perp symbol catalog; empty = legacy flag-driven config (dev)")
+	flag.DurationVar(&cfg.CatalogPollInterval, "catalog-poll-interval", time.Second, "catalog anchor poll cadence")
+	flag.DurationVar(&cfg.CatalogMaxStaleness, "catalog-max-staleness", 30*time.Second, "reject new orders when the catalog cache has not synced for this long (fail-closed)")
 	flag.StringVar(&cfg.SnapshotPath, "snapshot-path", "./data/perp-counter/snapshot.json", "snapshot file path (state + bound offsets, ADR-0048); empty disables")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", 60*time.Second, "how often to snapshot state + offsets")
 

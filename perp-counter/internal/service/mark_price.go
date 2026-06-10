@@ -50,7 +50,7 @@ func (s *Service) HandlePerpPriceEvent(evt *eventpb.PerpPriceEvent) {
 		if !ok {
 			return // can't guard idempotency without a round id — skip
 		}
-		s.settleFunding(symbol, f.GetFundingRoundId(), roundID, rate)
+		s.settleFunding(symbol, f.GetFundingRoundId(), roundID, rate, f.GetConfigVersion())
 	}
 }
 
@@ -58,29 +58,31 @@ func (s *Service) HandlePerpPriceEvent(evt *eventpb.PerpPriceEvent) {
 // symbol, each under its own sequencer (invariant #1). The per-position
 // funding_round_seen watermark (in SettleFundingUser) makes a redelivered tick
 // a no-op.
-func (s *Service) settleFunding(symbol, roundIDStr string, roundID int64, rate dec.Decimal) {
+func (s *Service) settleFunding(symbol, roundIDStr string, roundID int64, rate dec.Decimal, cfgVersion uint64) {
 	for _, user := range s.eng.UsersWithPosition(symbol) {
 		s.seq.do(user, func() {
 			res, ok := s.eng.SettleFundingUser(user, symbol, roundID, rate)
 			if !ok {
 				return
 			}
-			s.emitFunding(symbol, roundIDStr, rate, res)
+			s.emitFunding(symbol, roundIDStr, rate, cfgVersion, res)
 		})
 	}
 }
 
 // emitFunding writes a PerpFundingEvent for one position's funding settlement.
 // Caller holds the user's seq lock, so the position snapshot read here reflects
-// the just-applied state.
-func (s *Service) emitFunding(symbol, roundIDStr string, rate dec.Decimal, res engine.FundingResult) {
+// the just-applied state. cfgVersion is the FundingTick's stamp — the version
+// whose funding params produced this round's rate (ADR-0075).
+func (s *Service) emitFunding(symbol, roundIDStr string, rate dec.Decimal, cfgVersion uint64, res engine.FundingResult) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_Funding{Funding: &eventpb.PerpFundingEvent{
 			UserId: res.UserID, Symbol: symbol, FundingRoundId: roundIDStr,
 			FundingRate: rate.String(), MarkPrice: s.eng.MarkOf(symbol).String(),
-			Payment:       res.Payment.String(),
-			PositionAfter: s.positionSnap(res.UserID, symbol),
+			Payment:             res.Payment.String(),
+			PositionAfter:       s.positionSnap(res.UserID, symbol),
+			SymbolConfigVersion: cfgVersion,
 		}},
 	})
 }
