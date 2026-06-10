@@ -36,13 +36,17 @@ type FillResult struct {
 // all four cases: open, increase (same side), reduce/close (opposite side,
 // qty <= size), and flip (opposite side, qty > size). Linear USDT math.
 //
-// Initial margin for the opened/increased portion is notional/leverage.
+// Initial margin for the opened/increased portion is notional/leverage — for
+// isolated positions only. A cross position holds no margin cash bucket
+// (ADR-0074 §4 rule #2): MarginAdded / MarginReleased stay zero, Margin stays
+// zero, and the caller settles realized PnL / fee against the account's free
+// balance while the order reservation is released separately.
 func (p *Position) ApplyFill(f Fill) FillResult {
 	res := FillResult{MarginAdded: zero, MarginReleased: zero, Realized: zero, Fee: f.Fee}
+	isolated := p.Mode != MarginCross
 
 	// Open or increase: flat, or same direction as the existing position.
 	if p.IsFlat() || f.Side == p.Side {
-		im := initMargin(f.Price, f.Qty, p.Leverage)
 		newSize := p.Size.Add(f.Qty)
 		// Increasing a linear perp position does not realize PnL; it only moves
 		// the average entry. Realization is reserved for opposite-side fills so
@@ -50,8 +54,11 @@ func (p *Position) ApplyFill(f Fill) FillResult {
 		p.Entry = p.Entry.Mul(p.Size).Add(f.Price.Mul(f.Qty)).Div(newSize)
 		p.Size = newSize
 		p.Side = f.Side
-		p.Margin = p.Margin.Add(im)
-		res.MarginAdded = im
+		if isolated {
+			im := initMargin(f.Price, f.Qty, p.Leverage)
+			p.Margin = p.Margin.Add(im)
+			res.MarginAdded = im
+		}
 		return res
 	}
 
@@ -63,13 +70,15 @@ func (p *Position) ApplyFill(f Fill) FillResult {
 	} else { // closing a short by buying
 		realized = p.Entry.Sub(f.Price).Mul(closeQty)
 	}
-	// Release margin proportional to the closed fraction.
-	released := p.Margin.Mul(closeQty).Div(p.Size)
-	p.Margin = p.Margin.Sub(released)
+	if isolated {
+		// Release margin proportional to the closed fraction.
+		released := p.Margin.Mul(closeQty).Div(p.Size)
+		p.Margin = p.Margin.Sub(released)
+		res.MarginReleased = released
+	}
 	p.Size = p.Size.Sub(closeQty)
 	p.Realized = p.Realized.Add(realized)
 	res.Realized = realized
-	res.MarginReleased = released
 
 	if p.Size.Sign() == 0 {
 		// Fully closed. Reset entry; if the fill overshoots, flip into a new
@@ -79,12 +88,14 @@ func (p *Position) ApplyFill(f Fill) FillResult {
 		p.Entry = zero
 		remaining := f.Qty.Sub(closeQty)
 		if remaining.Sign() > 0 {
-			im := initMargin(f.Price, remaining, p.Leverage)
 			p.Size = remaining
 			p.Entry = f.Price
 			p.Side = f.Side
-			p.Margin = p.Margin.Add(im)
-			res.MarginAdded = im
+			if isolated {
+				im := initMargin(f.Price, remaining, p.Leverage)
+				p.Margin = p.Margin.Add(im)
+				res.MarginAdded = im
+			}
 		} else {
 			p.Side = 0 // flat
 		}
@@ -94,9 +105,13 @@ func (p *Position) ApplyFill(f Fill) FillResult {
 
 // ApplyFunding books one funding interval against the position (ADR-0068
 // §7). rate > 0 ⇒ longs pay shorts; rate < 0 ⇒ reverse. Funding is computed
-// on the mark notional and lands in the position margin (and accumulates
-// into Realized for reporting). Returns the signed margin delta (negative =
-// the position paid). Idempotency (funding_round_seen) is the caller's job.
+// on the mark notional. For an isolated position the payment lands in the
+// position margin; for a cross position it must settle in the account's free
+// balance instead (ADR-0074 open-question decision), so Margin is untouched
+// and the caller routes the returned delta to the wallet. Both modes
+// accumulate into Realized for reporting. Returns the signed delta
+// (negative = the position paid). Idempotency (funding_round_seen) is the
+// caller's job.
 func (p *Position) ApplyFunding(mark, rate dec.Decimal) dec.Decimal {
 	if p.IsFlat() {
 		return zero
@@ -108,7 +123,9 @@ func (p *Position) ApplyFunding(mark, rate dec.Decimal) dec.Decimal {
 	} else {
 		delta = payment // short receives
 	}
-	p.Margin = p.Margin.Add(delta)
+	if p.Mode != MarginCross {
+		p.Margin = p.Margin.Add(delta)
+	}
 	p.Realized = p.Realized.Add(delta)
 	return delta
 }

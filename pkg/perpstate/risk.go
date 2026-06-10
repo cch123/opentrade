@@ -109,6 +109,86 @@ func (m RiskModel) TierIndex(notional dec.Decimal) int32 {
 	return 0
 }
 
+// TierCount reports how many tiers are configured (0 = scalar fallback only).
+func (m RiskModel) TierCount() int { return len(m.tiers) }
+
+// TierAt returns the 1-based tier. ok=false when idx is out of range.
+func (m RiskModel) TierAt(idx uint32) (RiskTier, bool) {
+	if idx == 0 || int(idx) > len(m.tiers) {
+		return RiskTier{}, false
+	}
+	return m.tiers[idx-1], true
+}
+
+// EffectiveTierIndex resolves ADR-0074 §9's conservative tier rule:
+// effective_tier = max(auto tier by notional, user-selected riskID). A riskID
+// beyond the table clamps to the last tier; riskID 0 means auto. Zero return
+// means no tier matched (scalar fallback).
+func (m RiskModel) EffectiveTierIndex(notional dec.Decimal, riskID uint32) int32 {
+	idx := m.TierIndex(notional)
+	if riskID == 0 || len(m.tiers) == 0 {
+		return idx
+	}
+	sel := int32(riskID)
+	if int(sel) > len(m.tiers) {
+		sel = int32(len(m.tiers))
+	}
+	if sel > idx {
+		return sel
+	}
+	return idx
+}
+
+// EffectiveMMR resolves the maintenance margin rate at the effective tier
+// (ADR-0074 §9: selecting a higher riskID buys more allowed notional at the
+// cost of a more conservative MMR).
+func (m RiskModel) EffectiveMMR(notional dec.Decimal, riskID uint32) dec.Decimal {
+	if t, ok := m.TierAt(uint32(m.EffectiveTierIndex(notional, riskID))); ok && t.MaintMarginRatio.Sign() > 0 {
+		return t.MaintMarginRatio
+	}
+	return m.defaultMMR
+}
+
+// EffectiveMMRFunc adapts EffectiveMMR for one position's riskID into the
+// CollateralPool / LiqPrice resolver shape.
+func (m RiskModel) EffectiveMMRFunc(riskID uint32) MMRFunc {
+	return func(notional dec.Decimal) dec.Decimal { return m.EffectiveMMR(notional, riskID) }
+}
+
+// EffectiveMaxLeverage resolves the leverage cap at the effective tier. Zero
+// means uncapped (legacy behavior).
+func (m RiskModel) EffectiveMaxLeverage(notional dec.Decimal, riskID uint32) dec.Decimal {
+	if t, ok := m.TierAt(uint32(m.EffectiveTierIndex(notional, riskID))); ok && t.MaxLeverage.Sign() > 0 {
+		return t.MaxLeverage
+	}
+	return m.defaultMaxLev
+}
+
+// EffectiveLiqFeeRate resolves the liquidation fee rate at the effective tier.
+func (m RiskModel) EffectiveLiqFeeRate(notional dec.Decimal, riskID uint32) dec.Decimal {
+	if t, ok := m.TierAt(uint32(m.EffectiveTierIndex(notional, riskID))); ok && t.LiqFeeRate.Sign() > 0 {
+		return t.LiqFeeRate
+	}
+	return m.defaultLiqFeeRate
+}
+
+// MaxNotionalFor is the admission cap implied by a riskID selection
+// (ADR-0074 §9: orders may not push notional past the selected tier's cap).
+// riskID 0 (auto) caps at the last tier's bound. Zero means uncapped — no
+// tiers configured, or the governing tier is open-ended.
+func (m RiskModel) MaxNotionalFor(riskID uint32) dec.Decimal {
+	if len(m.tiers) == 0 {
+		return zero
+	}
+	if riskID == 0 {
+		return m.tiers[len(m.tiers)-1].TierMaxNotional
+	}
+	if int(riskID) > len(m.tiers) {
+		riskID = uint32(len(m.tiers))
+	}
+	return m.tiers[riskID-1].TierMaxNotional
+}
+
 func (m RiskModel) tier(notional dec.Decimal) (RiskTier, bool) {
 	for _, t := range m.tiers {
 		if inTier(notional, t) {

@@ -6,9 +6,10 @@ import "github.com/xargin/opentrade/pkg/dec"
 // trigger are computed (ADR-0068 §3.1) — the seam that keeps isolated→cross
 // additive.
 //
-//	isolated (MVP) : one pool per position; Drawable = 0, Positions = {p}.
-//	cross (future) : one pool per account; Drawable = wallet available,
-//	                 Positions = all the account's cross positions.
+//	isolated : one pool per position; Drawable = 0, Positions = {p}.
+//	cross    : one pool per (account, settle asset); Drawable = the wallet's
+//	           free balance (order reservations excluded — conservative),
+//	           Positions = all the account's cross positions (ADR-0074 §4).
 //
 // ADR-0068 invariant #6: equity / margin_ratio / the liquidation decision
 // MUST go through this type. No caller may inline a per-position
@@ -19,9 +20,17 @@ type CollateralPool struct {
 	Positions []*Position
 }
 
-// Isolated builds the degenerate one-position pool used by the MVP.
+// Isolated builds the degenerate one-position pool.
 func Isolated(p *Position) CollateralPool {
 	return CollateralPool{Drawable: zero, Positions: []*Position{p}}
+}
+
+// Cross builds the account-level pool over the user's cross positions
+// (ADR-0074 §4 rule #1: one pool per user per settle asset). drawable is the
+// wallet's free balance; isolated positions and their margin must not be in
+// positions (rule #3).
+func Cross(drawable dec.Decimal, positions []*Position) CollateralPool {
+	return CollateralPool{Drawable: drawable, Positions: positions}
 }
 
 // Health is the evaluated state of a pool at a set of mark prices.

@@ -50,15 +50,17 @@ func (s Side) Opposite() Side {
 	}
 }
 
-// MarginMode selects how a position draws margin (ADR-0068 §3.1). MVP only
-// implements Isolated; Cross is reserved so the field exists from day 1 and
-// the collateral-pool seam (pool.go) stays the single place the two modes
-// diverge.
+// MarginMode selects how a position draws margin (ADR-0068 §3.1, ADR-0074).
+// Isolated positions hold a dedicated Margin bucket; cross positions hold no
+// cash bucket (Margin stays 0) — their margin requirement is a derived risk
+// value against the account-level cross pool (ADR-0074 §4 rule #2). The
+// collateral-pool seam (pool.go / poolrisk.go) is the single place the two
+// modes diverge.
 type MarginMode uint8
 
 const (
 	MarginIsolated MarginMode = 1
-	MarginCross    MarginMode = 2 // reserved (future); not implemented
+	MarginCross    MarginMode = 2
 )
 
 func (m MarginMode) String() string {
@@ -85,9 +87,21 @@ type Position struct {
 	Side     Side
 	Size     dec.Decimal // base units, >= 0
 	Entry    dec.Decimal // weighted-average entry price (USDT)
-	Margin   dec.Decimal // USDT held against this position (isolated pool)
-	Leverage dec.Decimal // > 0
+	Margin   dec.Decimal // USDT held against this position (isolated only; cross keeps 0)
+	Leverage dec.Decimal // > 0; ADR-0074 §8: persistent position config, not a per-order field
 	Mode     MarginMode
+
+	// ADR-0074 position config. RiskID is the user-selected risk-limit tier
+	// (1-based into the symbol's tier table; 0 = auto-select the lowest tier
+	// covering current notional). Risk math always uses the MORE conservative
+	// of (auto tier, RiskID) — see RiskModel.EffectiveTierIndex.
+	RiskID uint32
+	// AutoAddMargin (isolated only): on a mark tick, before the liquidation
+	// check, top the position margin up from the wallet's free balance when
+	// health drops below the configured trigger (ADR-0074 §7). AutoAddMax
+	// caps the transfer per event (0 = uncapped).
+	AutoAddMargin bool
+	AutoAddMax    dec.Decimal
 
 	Realized dec.Decimal // cumulative realized PnL (incl. funding), USDT, reporting
 
