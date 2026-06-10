@@ -143,3 +143,51 @@ func TestHandleTradeEvent_NilSafe(t *testing.T) {
 	svc, _, _, _ := newSvc()
 	svc.HandleTradeEvent(nil, 0, 0) // must not panic
 }
+
+// ADR-0083: a protected market order's unfilled remainder comes back as
+// OrderExpired (IOC semantics) — the IM still held against it must release,
+// including the slippage-adjusted portion of the reservation.
+func TestHandleExpired_ProtectedMarketBuyReleasesRemainingIM(t *testing.T) {
+	svc, eng, _, _ := newSvc()
+	eng.Deposit(user1, dec.New("1000"))
+	eng.Deposit(user2, dec.New("1000"))
+	eng.SetMark(perpSym, dec.New("100"))
+	// Maker sell 2 @100 so the taker's partial fill has a counterparty.
+	rM, _ := svc.PlaceOrder(placeReq(user2, perpSym, eventpb.Side_SIDE_SELL, "100", "2", "10", false))
+	// Protected market buy 2, lev 10, 100 bps → IM at 101: reserved 20.2.
+	rT, err := svc.PlaceOrder(&perprpc.PlaceOrderRequest{
+		UserId: user1, Symbol: perpSym, Side: eventpb.Side_SIDE_BUY,
+		OrderType: eventpb.OrderType_ORDER_TYPE_MARKET, Tif: eventpb.TimeInForce_TIME_IN_FORCE_GTC,
+		Qty: "2", Leverage: "10", SlippageBps: 100,
+	})
+	if err != nil || !rT.Accepted {
+		t.Fatalf("place: err=%v resp=%+v", err, rT)
+	}
+	eqd(t, eng.WalletOf(user1).Reserved, "20.2", "protected buy IM at adjusted mark")
+
+	// Partial fill 1 of 2 @100: 10 converts to position margin.
+	svc.HandleTrade(&eventpb.Trade{
+		TradeId: "t1", Symbol: perpSym, Price: "100", Qty: "1",
+		MakerUserId: user2s, MakerOrderId: rM.OrderId, TakerUserId: user1s, TakerOrderId: rT.OrderId,
+		TakerSide:           eventpb.Side_SIDE_BUY,
+		MakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED,
+		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED,
+		MakerFilledQtyAfter: "1", TakerFilledQtyAfter: "1",
+	}, 1)
+	eqd(t, eng.WalletOf(user1).Reserved, "10.2", "reserved after partial fill")
+
+	// The collar expires the remainder: every held unit must come back.
+	svc.HandleTradeEvent(&eventpb.TradeEvent{
+		MatchSeqId: 2,
+		Payload: &eventpb.TradeEvent_Expired{Expired: &eventpb.OrderExpired{
+			UserId: user1s, OrderId: rT.OrderId, Symbol: perpSym, FilledQty: "1",
+			ProtectLimit: "101", ProtectRef: "100",
+		}},
+	}, 0, 30)
+	w := eng.WalletOf(user1)
+	eqd(t, w.Reserved, "0", "remaining IM released on expire")
+	eqd(t, w.Available, "990", "available = 1000 - 10 position margin")
+	if svc.OrderCount() != 1 { // maker's resting order remains
+		t.Fatalf("expired taker should be evicted, have %d orders", svc.OrderCount())
+	}
+}
