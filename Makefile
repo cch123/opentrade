@@ -3,7 +3,9 @@
 GO ?= go
 BUF ?= buf
 
-MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset perp-counter perp-risk perp-pricing
+# Must cover every go.work member (including tools/*) so CI's build/vet/test
+# sweep catches compile breakage anywhere in the workspace.
+MODULES := api pkg counter match bff push quote trade-dump trigger history admin-gateway asset perp-counter perp-risk perp-pricing tools/tui tools/web tools/precision-cli
 
 # Concurrency-heavy modules worth running under the race detector. README
 # §贡献约定 names counter/match/push/trigger; pkg is added because it houses

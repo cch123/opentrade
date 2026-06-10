@@ -32,7 +32,7 @@ const (
 )
 
 const (
-	logRingLines = 400             // recent log lines kept in memory per service
+	logRingLines = 400                     // recent log lines kept in memory per service
 	aliveSettle  = 1500 * time.Millisecond // healthAlive: up-this-long ⇒ ready
 )
 

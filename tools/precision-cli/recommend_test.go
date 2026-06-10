@@ -21,9 +21,9 @@ func TestRecommend_RejectsNonPositivePrice(t *testing.T) {
 // "typical" order at that price.
 func TestRecommend_KnownSymbols(t *testing.T) {
 	cases := []struct {
-		name    string
-		price   string
-		typQty  string // a qty the recommender should accept at `price`
+		name   string
+		price  string
+		typQty string // a qty the recommender should accept at `price`
 	}{
 		{"BTC-USDT", "50000", "0.01"},
 		{"ETH-USDT", "3000", "0.1"},

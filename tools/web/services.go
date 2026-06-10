@@ -33,12 +33,12 @@ const vshardCount = 16
 // Shared dev infra endpoints (match deploy/docker/docker-compose.yml and
 // deploy/scripts/dev-env.sh).
 const (
-	kafkaBrokers   = "localhost:9092"
-	etcdEndpoints  = "localhost:2379"
-	mysqlDSN       = "opentrade:opentrade@tcp(localhost:3306)/opentrade?parseTime=true&multiStatements=true"
-	mysqlAssetDSN  = "opentrade:opentrade@tcp(localhost:3306)/opentrade_asset?parseTime=true&multiStatements=true"
-	composeFile    = "deploy/docker/docker-compose.yml"
-	defaultSymbol  = "BTC-USDT"
+	kafkaBrokers  = "localhost:9092"
+	etcdEndpoints = "localhost:2379"
+	mysqlDSN      = "opentrade:opentrade@tcp(localhost:3306)/opentrade?parseTime=true&multiStatements=true"
+	mysqlAssetDSN = "opentrade:opentrade@tcp(localhost:3306)/opentrade_asset?parseTime=true&multiStatements=true"
+	composeFile   = "deploy/docker/docker-compose.yml"
+	defaultSymbol = "BTC-USDT"
 )
 
 // healthKind selects how the supervisor decides a process is ready to serve.

@@ -891,7 +891,7 @@ func (m *model) renderOrderbook(width int) string {
 	if last == "" {
 		last = "—"
 	}
-	midLine := styleDim.Render(strings.Repeat("─", 4) + " last ") + styleOK.Render(last) + styleDim.Render(" "+strings.Repeat("─", 4))
+	midLine := styleDim.Render(strings.Repeat("─", 4)+" last ") + styleOK.Render(last) + styleDim.Render(" "+strings.Repeat("─", 4))
 	rows = append(rows, midLine)
 
 	// bids: highest → lowest (top-down)
