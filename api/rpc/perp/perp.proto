@@ -37,6 +37,13 @@ service PerpService {
   // ADR-0074 §10 admin plane (internal; not routed by the public BFF).
   rpc SetCustomerLeverageLimit(SetCustomerLeverageLimitRequest) returns (SetCustomerLeverageLimitResponse);
   rpc ListCustomerLeverageLimits(ListCustomerLeverageLimitsRequest) returns (ListCustomerLeverageLimitsResponse);
+
+  // ADR-0075 §3 risk_reprice_policy dry-run: evaluate every position in
+  // symbol under a CANDIDATE risk tier table and report how many accounts
+  // would see a higher maintenance requirement / would breach maintenance
+  // outright. admin-gateway fans this out across perp shards before letting
+  // an IMMEDIATE tightening publish through.
+  rpc ProjectRiskConfig(ProjectRiskConfigRequest) returns (ProjectRiskConfigResponse);
 }
 
 // MarginMode mirrors perpstate.MarginMode (ADR-0068 §3.1 / ADR-0074).
@@ -288,4 +295,29 @@ message ListCustomerLeverageLimitsRequest {
 
 message ListCustomerLeverageLimitsResponse {
   repeated CustomerLeverageLimit limits = 1;
+}
+
+// ADR-0075 §3 dry-run projection.
+message RiskTierParam {
+  uint32 risk_id = 1;
+  string max_notional = 2;             // decimal; "0" = open-ended final tier
+  string maintenance_margin_ratio = 3; // decimal
+  string max_leverage = 4;             // decimal
+  string liq_fee_rate = 5;             // decimal
+}
+
+message ProjectRiskConfigRequest {
+  string symbol = 1;
+  repeated RiskTierParam risk_tiers = 2; // the CANDIDATE table
+}
+
+message ProjectRiskConfigResponse {
+  // Accounts holding a position in symbol whose maintenance requirement
+  // would INCREASE under the candidate table.
+  uint64 affected_accounts = 1;
+  // Accounts whose position / cross pool would breach maintenance outright
+  // at current marks — the would-be batch liquidation set.
+  uint64 liquidatable_accounts = 2;
+  // Accounts holding any position in symbol (context for the two counts).
+  uint64 positions_scanned = 3;
 }

@@ -196,6 +196,7 @@ func (s *Service) positionSnap(user uint64, symbol string) *eventpb.PerpPosition
 		Size: p.Size.String(), EntryPrice: p.Entry.String(), Margin: p.Margin.String(),
 		Leverage: p.Leverage.String(), RealizedPnl: p.Realized.String(), Version: p.Version,
 		MarginMode: toWireMarginMode(p.Mode), RiskId: p.RiskID,
+		RiskConfigVersion: p.RiskConfigVersion,
 	}
 }
 

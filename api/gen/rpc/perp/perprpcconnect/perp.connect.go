@@ -70,6 +70,9 @@ const (
 	// PerpServiceListCustomerLeverageLimitsProcedure is the fully-qualified name of the PerpService's
 	// ListCustomerLeverageLimits RPC.
 	PerpServiceListCustomerLeverageLimitsProcedure = "/opentrade.rpc.perp.PerpService/ListCustomerLeverageLimits"
+	// PerpServiceProjectRiskConfigProcedure is the fully-qualified name of the PerpService's
+	// ProjectRiskConfig RPC.
+	PerpServiceProjectRiskConfigProcedure = "/opentrade.rpc.perp.PerpService/ProjectRiskConfig"
 )
 
 // PerpServiceClient is a client for the opentrade.rpc.perp.PerpService service.
@@ -92,6 +95,12 @@ type PerpServiceClient interface {
 	// ADR-0074 §10 admin plane (internal; not routed by the public BFF).
 	SetCustomerLeverageLimit(context.Context, *connect.Request[perp.SetCustomerLeverageLimitRequest]) (*connect.Response[perp.SetCustomerLeverageLimitResponse], error)
 	ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error)
+	// ADR-0075 §3 risk_reprice_policy dry-run: evaluate every position in
+	// symbol under a CANDIDATE risk tier table and report how many accounts
+	// would see a higher maintenance requirement / would breach maintenance
+	// outright. admin-gateway fans this out across perp shards before letting
+	// an IMMEDIATE tightening publish through.
+	ProjectRiskConfig(context.Context, *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error)
 }
 
 // NewPerpServiceClient constructs a client for the opentrade.rpc.perp.PerpService service. By
@@ -189,6 +198,12 @@ func NewPerpServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(perpServiceMethods.ByName("ListCustomerLeverageLimits")),
 			connect.WithClientOptions(opts...),
 		),
+		projectRiskConfig: connect.NewClient[perp.ProjectRiskConfigRequest, perp.ProjectRiskConfigResponse](
+			httpClient,
+			baseURL+PerpServiceProjectRiskConfigProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("ProjectRiskConfig")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -208,6 +223,7 @@ type perpServiceClient struct {
 	queryAccountConfig         *connect.Client[perp.QueryAccountConfigRequest, perp.QueryAccountConfigResponse]
 	setCustomerLeverageLimit   *connect.Client[perp.SetCustomerLeverageLimitRequest, perp.SetCustomerLeverageLimitResponse]
 	listCustomerLeverageLimits *connect.Client[perp.ListCustomerLeverageLimitsRequest, perp.ListCustomerLeverageLimitsResponse]
+	projectRiskConfig          *connect.Client[perp.ProjectRiskConfigRequest, perp.ProjectRiskConfigResponse]
 }
 
 // PlaceOrder calls opentrade.rpc.perp.PerpService.PlaceOrder.
@@ -280,6 +296,11 @@ func (c *perpServiceClient) ListCustomerLeverageLimits(ctx context.Context, req 
 	return c.listCustomerLeverageLimits.CallUnary(ctx, req)
 }
 
+// ProjectRiskConfig calls opentrade.rpc.perp.PerpService.ProjectRiskConfig.
+func (c *perpServiceClient) ProjectRiskConfig(ctx context.Context, req *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error) {
+	return c.projectRiskConfig.CallUnary(ctx, req)
+}
+
 // PerpServiceHandler is an implementation of the opentrade.rpc.perp.PerpService service.
 type PerpServiceHandler interface {
 	PlaceOrder(context.Context, *connect.Request[perp.PlaceOrderRequest]) (*connect.Response[perp.PlaceOrderResponse], error)
@@ -300,6 +321,12 @@ type PerpServiceHandler interface {
 	// ADR-0074 §10 admin plane (internal; not routed by the public BFF).
 	SetCustomerLeverageLimit(context.Context, *connect.Request[perp.SetCustomerLeverageLimitRequest]) (*connect.Response[perp.SetCustomerLeverageLimitResponse], error)
 	ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error)
+	// ADR-0075 §3 risk_reprice_policy dry-run: evaluate every position in
+	// symbol under a CANDIDATE risk tier table and report how many accounts
+	// would see a higher maintenance requirement / would breach maintenance
+	// outright. admin-gateway fans this out across perp shards before letting
+	// an IMMEDIATE tightening publish through.
+	ProjectRiskConfig(context.Context, *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error)
 }
 
 // NewPerpServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -393,6 +420,12 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(perpServiceMethods.ByName("ListCustomerLeverageLimits")),
 		connect.WithHandlerOptions(opts...),
 	)
+	perpServiceProjectRiskConfigHandler := connect.NewUnaryHandler(
+		PerpServiceProjectRiskConfigProcedure,
+		svc.ProjectRiskConfig,
+		connect.WithSchema(perpServiceMethods.ByName("ProjectRiskConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/opentrade.rpc.perp.PerpService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PerpServicePlaceOrderProcedure:
@@ -423,6 +456,8 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 			perpServiceSetCustomerLeverageLimitHandler.ServeHTTP(w, r)
 		case PerpServiceListCustomerLeverageLimitsProcedure:
 			perpServiceListCustomerLeverageLimitsHandler.ServeHTTP(w, r)
+		case PerpServiceProjectRiskConfigProcedure:
+			perpServiceProjectRiskConfigHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -486,4 +521,8 @@ func (UnimplementedPerpServiceHandler) SetCustomerLeverageLimit(context.Context,
 
 func (UnimplementedPerpServiceHandler) ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) ProjectRiskConfig(context.Context, *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.ProjectRiskConfig is not implemented"))
 }

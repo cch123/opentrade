@@ -139,8 +139,14 @@ const (
 // tightening: it pins who approved repricing existing positions, the dry-run
 // budget, and whether a resulting batch liquidation is acceptable.
 type RiskRepricePolicy struct {
-	PolicyID             string `json:"policy_id"`
-	MaxAffectedAccounts  int64  `json:"max_affected_accounts"` // dry-run projection must stay <= this; 0 = no accounts may become liquidatable
+	PolicyID string `json:"policy_id"`
+	// MaxAffectedAccounts is the declared budget: the dry-run's count of
+	// accounts whose maintenance requirement would increase must stay <=
+	// this, or the publish fails (0 = the projection must report zero
+	// affected accounts).
+	MaxAffectedAccounts int64 `json:"max_affected_accounts"`
+	// AllowMassLiquidation must be true for the publish to proceed when the
+	// dry-run reports any account that would breach maintenance outright.
 	AllowMassLiquidation bool   `json:"allow_mass_liquidation"`
 	Reason               string `json:"reason,omitempty"`
 }

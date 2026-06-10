@@ -192,20 +192,23 @@ func (PerpMarginAdjustmentEvent_Kind) EnumDescriptor() ([]byte, []int) {
 // reports margin "0" — its equity lives in the account cross pool
 // (ADR-0074 §4 rule #2).
 type PerpPositionSnapshot struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	Side          Side                   `protobuf:"varint,3,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
-	Size          string                 `protobuf:"bytes,4,opt,name=size,proto3" json:"size,omitempty"`                                  // decimal
-	EntryPrice    string                 `protobuf:"bytes,5,opt,name=entry_price,json=entryPrice,proto3" json:"entry_price,omitempty"`    // decimal
-	Margin        string                 `protobuf:"bytes,6,opt,name=margin,proto3" json:"margin,omitempty"`                              // decimal USDT (isolated only; "0" for cross)
-	Leverage      string                 `protobuf:"bytes,7,opt,name=leverage,proto3" json:"leverage,omitempty"`                          // decimal
-	RealizedPnl   string                 `protobuf:"bytes,8,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"` // cumulative, decimal
-	Version       uint64                 `protobuf:"varint,9,opt,name=version,proto3" json:"version,omitempty"`
-	MarginMode    PerpMarginMode         `protobuf:"varint,10,opt,name=margin_mode,json=marginMode,proto3,enum=opentrade.event.PerpMarginMode" json:"margin_mode,omitempty"`
-	RiskId        uint32                 `protobuf:"varint,11,opt,name=risk_id,json=riskId,proto3" json:"risk_id,omitempty"` // user-selected risk tier (0 = auto)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	UserId      uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol      string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	Side        Side                   `protobuf:"varint,3,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
+	Size        string                 `protobuf:"bytes,4,opt,name=size,proto3" json:"size,omitempty"`                                  // decimal
+	EntryPrice  string                 `protobuf:"bytes,5,opt,name=entry_price,json=entryPrice,proto3" json:"entry_price,omitempty"`    // decimal
+	Margin      string                 `protobuf:"bytes,6,opt,name=margin,proto3" json:"margin,omitempty"`                              // decimal USDT (isolated only; "0" for cross)
+	Leverage    string                 `protobuf:"bytes,7,opt,name=leverage,proto3" json:"leverage,omitempty"`                          // decimal
+	RealizedPnl string                 `protobuf:"bytes,8,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"` // cumulative, decimal
+	Version     uint64                 `protobuf:"varint,9,opt,name=version,proto3" json:"version,omitempty"`
+	MarginMode  PerpMarginMode         `protobuf:"varint,10,opt,name=margin_mode,json=marginMode,proto3,enum=opentrade.event.PerpMarginMode" json:"margin_mode,omitempty"`
+	RiskId      uint32                 `protobuf:"varint,11,opt,name=risk_id,json=riskId,proto3" json:"risk_id,omitempty"` // user-selected risk tier (0 = auto)
+	// ADR-0075 §3 staged pin: the SymbolConfig version whose risk tiers govern
+	// this position (stamped on open/increase). 0 = active version / legacy.
+	RiskConfigVersion uint64 `protobuf:"varint,12,opt,name=risk_config_version,json=riskConfigVersion,proto3" json:"risk_config_version,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *PerpPositionSnapshot) Reset() {
@@ -311,6 +314,13 @@ func (x *PerpPositionSnapshot) GetMarginMode() PerpMarginMode {
 func (x *PerpPositionSnapshot) GetRiskId() uint32 {
 	if x != nil {
 		return x.RiskId
+	}
+	return 0
+}
+
+func (x *PerpPositionSnapshot) GetRiskConfigVersion() uint64 {
+	if x != nil {
+		return x.RiskConfigVersion
 	}
 	return 0
 }
@@ -1957,7 +1967,7 @@ var File_event_perp_journal_proto protoreflect.FileDescriptor
 
 const file_event_perp_journal_proto_rawDesc = "" +
 	"\n" +
-	"\x18event/perp_journal.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xf3\x02\n" +
+	"\x18event/perp_journal.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xa3\x03\n" +
 	"\x14PerpPositionSnapshot\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12)\n" +
@@ -1972,7 +1982,8 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\vmargin_mode\x18\n" +
 	" \x01(\x0e2\x1f.opentrade.event.PerpMarginModeR\n" +
 	"marginMode\x12\x17\n" +
-	"\arisk_id\x18\v \x01(\rR\x06riskId\"\xa9\a\n" +
+	"\arisk_id\x18\v \x01(\rR\x06riskId\x12.\n" +
+	"\x13risk_config_version\x18\f \x01(\x04R\x11riskConfigVersion\"\xa9\a\n" +
 	"\x10PerpJournalEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x1e\n" +
 	"\vperp_seq_id\x18\x02 \x01(\x04R\tperpSeqId\x12J\n" +

@@ -2273,6 +2273,200 @@ func (x *ListCustomerLeverageLimitsResponse) GetLimits() []*CustomerLeverageLimi
 	return nil
 }
 
+// ADR-0075 §3 dry-run projection.
+type RiskTierParam struct {
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	RiskId                 uint32                 `protobuf:"varint,1,opt,name=risk_id,json=riskId,proto3" json:"risk_id,omitempty"`
+	MaxNotional            string                 `protobuf:"bytes,2,opt,name=max_notional,json=maxNotional,proto3" json:"max_notional,omitempty"`                                    // decimal; "0" = open-ended final tier
+	MaintenanceMarginRatio string                 `protobuf:"bytes,3,opt,name=maintenance_margin_ratio,json=maintenanceMarginRatio,proto3" json:"maintenance_margin_ratio,omitempty"` // decimal
+	MaxLeverage            string                 `protobuf:"bytes,4,opt,name=max_leverage,json=maxLeverage,proto3" json:"max_leverage,omitempty"`                                    // decimal
+	LiqFeeRate             string                 `protobuf:"bytes,5,opt,name=liq_fee_rate,json=liqFeeRate,proto3" json:"liq_fee_rate,omitempty"`                                     // decimal
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *RiskTierParam) Reset() {
+	*x = RiskTierParam{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RiskTierParam) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RiskTierParam) ProtoMessage() {}
+
+func (x *RiskTierParam) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RiskTierParam.ProtoReflect.Descriptor instead.
+func (*RiskTierParam) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *RiskTierParam) GetRiskId() uint32 {
+	if x != nil {
+		return x.RiskId
+	}
+	return 0
+}
+
+func (x *RiskTierParam) GetMaxNotional() string {
+	if x != nil {
+		return x.MaxNotional
+	}
+	return ""
+}
+
+func (x *RiskTierParam) GetMaintenanceMarginRatio() string {
+	if x != nil {
+		return x.MaintenanceMarginRatio
+	}
+	return ""
+}
+
+func (x *RiskTierParam) GetMaxLeverage() string {
+	if x != nil {
+		return x.MaxLeverage
+	}
+	return ""
+}
+
+func (x *RiskTierParam) GetLiqFeeRate() string {
+	if x != nil {
+		return x.LiqFeeRate
+	}
+	return ""
+}
+
+type ProjectRiskConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Symbol        string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	RiskTiers     []*RiskTierParam       `protobuf:"bytes,2,rep,name=risk_tiers,json=riskTiers,proto3" json:"risk_tiers,omitempty"` // the CANDIDATE table
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProjectRiskConfigRequest) Reset() {
+	*x = ProjectRiskConfigRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProjectRiskConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProjectRiskConfigRequest) ProtoMessage() {}
+
+func (x *ProjectRiskConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProjectRiskConfigRequest.ProtoReflect.Descriptor instead.
+func (*ProjectRiskConfigRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *ProjectRiskConfigRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *ProjectRiskConfigRequest) GetRiskTiers() []*RiskTierParam {
+	if x != nil {
+		return x.RiskTiers
+	}
+	return nil
+}
+
+type ProjectRiskConfigResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Accounts holding a position in symbol whose maintenance requirement
+	// would INCREASE under the candidate table.
+	AffectedAccounts uint64 `protobuf:"varint,1,opt,name=affected_accounts,json=affectedAccounts,proto3" json:"affected_accounts,omitempty"`
+	// Accounts whose position / cross pool would breach maintenance outright
+	// at current marks — the would-be batch liquidation set.
+	LiquidatableAccounts uint64 `protobuf:"varint,2,opt,name=liquidatable_accounts,json=liquidatableAccounts,proto3" json:"liquidatable_accounts,omitempty"`
+	// Accounts holding any position in symbol (context for the two counts).
+	PositionsScanned uint64 `protobuf:"varint,3,opt,name=positions_scanned,json=positionsScanned,proto3" json:"positions_scanned,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ProjectRiskConfigResponse) Reset() {
+	*x = ProjectRiskConfigResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProjectRiskConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProjectRiskConfigResponse) ProtoMessage() {}
+
+func (x *ProjectRiskConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProjectRiskConfigResponse.ProtoReflect.Descriptor instead.
+func (*ProjectRiskConfigResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *ProjectRiskConfigResponse) GetAffectedAccounts() uint64 {
+	if x != nil {
+		return x.AffectedAccounts
+	}
+	return 0
+}
+
+func (x *ProjectRiskConfigResponse) GetLiquidatableAccounts() uint64 {
+	if x != nil {
+		return x.LiquidatableAccounts
+	}
+	return 0
+}
+
+func (x *ProjectRiskConfigResponse) GetPositionsScanned() uint64 {
+	if x != nil {
+		return x.PositionsScanned
+	}
+	return 0
+}
+
 var File_rpc_perp_perp_proto protoreflect.FileDescriptor
 
 const file_rpc_perp_perp_proto_rawDesc = "" +
@@ -2467,12 +2661,27 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"!ListCustomerLeverageLimitsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\"g\n" +
 	"\"ListCustomerLeverageLimitsResponse\x12A\n" +
-	"\x06limits\x18\x01 \x03(\v2).opentrade.rpc.perp.CustomerLeverageLimitR\x06limits*Z\n" +
+	"\x06limits\x18\x01 \x03(\v2).opentrade.rpc.perp.CustomerLeverageLimitR\x06limits\"\xca\x01\n" +
+	"\rRiskTierParam\x12\x17\n" +
+	"\arisk_id\x18\x01 \x01(\rR\x06riskId\x12!\n" +
+	"\fmax_notional\x18\x02 \x01(\tR\vmaxNotional\x128\n" +
+	"\x18maintenance_margin_ratio\x18\x03 \x01(\tR\x16maintenanceMarginRatio\x12!\n" +
+	"\fmax_leverage\x18\x04 \x01(\tR\vmaxLeverage\x12 \n" +
+	"\fliq_fee_rate\x18\x05 \x01(\tR\n" +
+	"liqFeeRate\"t\n" +
+	"\x18ProjectRiskConfigRequest\x12\x16\n" +
+	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12@\n" +
+	"\n" +
+	"risk_tiers\x18\x02 \x03(\v2!.opentrade.rpc.perp.RiskTierParamR\triskTiers\"\xaa\x01\n" +
+	"\x19ProjectRiskConfigResponse\x12+\n" +
+	"\x11affected_accounts\x18\x01 \x01(\x04R\x10affectedAccounts\x123\n" +
+	"\x15liquidatable_accounts\x18\x02 \x01(\x04R\x14liquidatableAccounts\x12+\n" +
+	"\x11positions_scanned\x18\x03 \x01(\x04R\x10positionsScanned*Z\n" +
 	"\n" +
 	"MarginMode\x12\x1b\n" +
 	"\x17MARGIN_MODE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MARGIN_MODE_ISOLATED\x10\x01\x12\x15\n" +
-	"\x11MARGIN_MODE_CROSS\x10\x022\x95\f\n" +
+	"\x11MARGIN_MODE_CROSS\x10\x022\x87\r\n" +
 	"\vPerpService\x12[\n" +
 	"\n" +
 	"PlaceOrder\x12%.opentrade.rpc.perp.PlaceOrderRequest\x1a&.opentrade.rpc.perp.PlaceOrderResponse\x12^\n" +
@@ -2489,7 +2698,8 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\x13QueryPositionConfig\x12..opentrade.rpc.perp.QueryPositionConfigRequest\x1a/.opentrade.rpc.perp.QueryPositionConfigResponse\x12s\n" +
 	"\x12QueryAccountConfig\x12-.opentrade.rpc.perp.QueryAccountConfigRequest\x1a..opentrade.rpc.perp.QueryAccountConfigResponse\x12\x85\x01\n" +
 	"\x18SetCustomerLeverageLimit\x123.opentrade.rpc.perp.SetCustomerLeverageLimitRequest\x1a4.opentrade.rpc.perp.SetCustomerLeverageLimitResponse\x12\x8b\x01\n" +
-	"\x1aListCustomerLeverageLimits\x125.opentrade.rpc.perp.ListCustomerLeverageLimitsRequest\x1a6.opentrade.rpc.perp.ListCustomerLeverageLimitsResponseB6Z4github.com/xargin/opentrade/api/gen/rpc/perp;perprpcb\x06proto3"
+	"\x1aListCustomerLeverageLimits\x125.opentrade.rpc.perp.ListCustomerLeverageLimitsRequest\x1a6.opentrade.rpc.perp.ListCustomerLeverageLimitsResponse\x12p\n" +
+	"\x11ProjectRiskConfig\x12,.opentrade.rpc.perp.ProjectRiskConfigRequest\x1a-.opentrade.rpc.perp.ProjectRiskConfigResponseB6Z4github.com/xargin/opentrade/api/gen/rpc/perp;perprpcb\x06proto3"
 
 var (
 	file_rpc_perp_perp_proto_rawDescOnce sync.Once
@@ -2504,7 +2714,7 @@ func file_rpc_perp_perp_proto_rawDescGZIP() []byte {
 }
 
 var file_rpc_perp_perp_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_rpc_perp_perp_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_rpc_perp_perp_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_rpc_perp_perp_proto_goTypes = []any{
 	(MarginMode)(0),                            // 0: opentrade.rpc.perp.MarginMode
 	(*PlaceOrderRequest)(nil),                  // 1: opentrade.rpc.perp.PlaceOrderRequest
@@ -2538,22 +2748,25 @@ var file_rpc_perp_perp_proto_goTypes = []any{
 	(*SetCustomerLeverageLimitResponse)(nil),   // 29: opentrade.rpc.perp.SetCustomerLeverageLimitResponse
 	(*ListCustomerLeverageLimitsRequest)(nil),  // 30: opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
 	(*ListCustomerLeverageLimitsResponse)(nil), // 31: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
-	(event.Side)(0),                            // 32: opentrade.event.Side
-	(event.OrderType)(0),                       // 33: opentrade.event.OrderType
-	(event.TimeInForce)(0),                     // 34: opentrade.event.TimeInForce
-	(event.InternalOrderStatus)(0),             // 35: opentrade.event.InternalOrderStatus
+	(*RiskTierParam)(nil),                      // 32: opentrade.rpc.perp.RiskTierParam
+	(*ProjectRiskConfigRequest)(nil),           // 33: opentrade.rpc.perp.ProjectRiskConfigRequest
+	(*ProjectRiskConfigResponse)(nil),          // 34: opentrade.rpc.perp.ProjectRiskConfigResponse
+	(event.Side)(0),                            // 35: opentrade.event.Side
+	(event.OrderType)(0),                       // 36: opentrade.event.OrderType
+	(event.TimeInForce)(0),                     // 37: opentrade.event.TimeInForce
+	(event.InternalOrderStatus)(0),             // 38: opentrade.event.InternalOrderStatus
 }
 var file_rpc_perp_perp_proto_depIdxs = []int32{
-	32, // 0: opentrade.rpc.perp.PlaceOrderRequest.side:type_name -> opentrade.event.Side
-	33, // 1: opentrade.rpc.perp.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
-	34, // 2: opentrade.rpc.perp.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
+	35, // 0: opentrade.rpc.perp.PlaceOrderRequest.side:type_name -> opentrade.event.Side
+	36, // 1: opentrade.rpc.perp.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
+	37, // 2: opentrade.rpc.perp.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
 	0,  // 3: opentrade.rpc.perp.PlaceOrderRequest.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	32, // 4: opentrade.rpc.perp.QueryOrderResponse.side:type_name -> opentrade.event.Side
-	33, // 5: opentrade.rpc.perp.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
-	34, // 6: opentrade.rpc.perp.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
-	35, // 7: opentrade.rpc.perp.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
+	35, // 4: opentrade.rpc.perp.QueryOrderResponse.side:type_name -> opentrade.event.Side
+	36, // 5: opentrade.rpc.perp.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
+	37, // 6: opentrade.rpc.perp.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
+	38, // 7: opentrade.rpc.perp.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
 	9,  // 8: opentrade.rpc.perp.QueryPositionsResponse.positions:type_name -> opentrade.rpc.perp.Position
-	32, // 9: opentrade.rpc.perp.Position.side:type_name -> opentrade.event.Side
+	35, // 9: opentrade.rpc.perp.Position.side:type_name -> opentrade.event.Side
 	0,  // 10: opentrade.rpc.perp.Position.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
 	0,  // 11: opentrade.rpc.perp.SetMarginModeRequest.target_mode:type_name -> opentrade.rpc.perp.MarginMode
 	0,  // 12: opentrade.rpc.perp.SetMarginModeResponse.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
@@ -2561,39 +2774,42 @@ var file_rpc_perp_perp_proto_depIdxs = []int32{
 	23, // 14: opentrade.rpc.perp.QueryPositionConfigResponse.configs:type_name -> opentrade.rpc.perp.PositionConfig
 	27, // 15: opentrade.rpc.perp.QueryAccountConfigResponse.leverage_limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
 	27, // 16: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse.limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
-	1,  // 17: opentrade.rpc.perp.PerpService.PlaceOrder:input_type -> opentrade.rpc.perp.PlaceOrderRequest
-	3,  // 18: opentrade.rpc.perp.PerpService.CancelOrder:input_type -> opentrade.rpc.perp.CancelOrderRequest
-	5,  // 19: opentrade.rpc.perp.PerpService.QueryOrder:input_type -> opentrade.rpc.perp.QueryOrderRequest
-	7,  // 20: opentrade.rpc.perp.PerpService.QueryPositions:input_type -> opentrade.rpc.perp.QueryPositionsRequest
-	10, // 21: opentrade.rpc.perp.PerpService.QueryMargin:input_type -> opentrade.rpc.perp.QueryMarginRequest
-	12, // 22: opentrade.rpc.perp.PerpService.SetMarginMode:input_type -> opentrade.rpc.perp.SetMarginModeRequest
-	14, // 23: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:input_type -> opentrade.rpc.perp.AdjustIsolatedMarginRequest
-	16, // 24: opentrade.rpc.perp.PerpService.SetAutoAddMargin:input_type -> opentrade.rpc.perp.SetAutoAddMarginRequest
-	18, // 25: opentrade.rpc.perp.PerpService.SetPositionLeverage:input_type -> opentrade.rpc.perp.SetPositionLeverageRequest
-	20, // 26: opentrade.rpc.perp.PerpService.SetRiskId:input_type -> opentrade.rpc.perp.SetRiskIdRequest
-	22, // 27: opentrade.rpc.perp.PerpService.QueryPositionConfig:input_type -> opentrade.rpc.perp.QueryPositionConfigRequest
-	25, // 28: opentrade.rpc.perp.PerpService.QueryAccountConfig:input_type -> opentrade.rpc.perp.QueryAccountConfigRequest
-	28, // 29: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:input_type -> opentrade.rpc.perp.SetCustomerLeverageLimitRequest
-	30, // 30: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:input_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
-	2,  // 31: opentrade.rpc.perp.PerpService.PlaceOrder:output_type -> opentrade.rpc.perp.PlaceOrderResponse
-	4,  // 32: opentrade.rpc.perp.PerpService.CancelOrder:output_type -> opentrade.rpc.perp.CancelOrderResponse
-	6,  // 33: opentrade.rpc.perp.PerpService.QueryOrder:output_type -> opentrade.rpc.perp.QueryOrderResponse
-	8,  // 34: opentrade.rpc.perp.PerpService.QueryPositions:output_type -> opentrade.rpc.perp.QueryPositionsResponse
-	11, // 35: opentrade.rpc.perp.PerpService.QueryMargin:output_type -> opentrade.rpc.perp.QueryMarginResponse
-	13, // 36: opentrade.rpc.perp.PerpService.SetMarginMode:output_type -> opentrade.rpc.perp.SetMarginModeResponse
-	15, // 37: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:output_type -> opentrade.rpc.perp.AdjustIsolatedMarginResponse
-	17, // 38: opentrade.rpc.perp.PerpService.SetAutoAddMargin:output_type -> opentrade.rpc.perp.SetAutoAddMarginResponse
-	19, // 39: opentrade.rpc.perp.PerpService.SetPositionLeverage:output_type -> opentrade.rpc.perp.SetPositionLeverageResponse
-	21, // 40: opentrade.rpc.perp.PerpService.SetRiskId:output_type -> opentrade.rpc.perp.SetRiskIdResponse
-	24, // 41: opentrade.rpc.perp.PerpService.QueryPositionConfig:output_type -> opentrade.rpc.perp.QueryPositionConfigResponse
-	26, // 42: opentrade.rpc.perp.PerpService.QueryAccountConfig:output_type -> opentrade.rpc.perp.QueryAccountConfigResponse
-	29, // 43: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:output_type -> opentrade.rpc.perp.SetCustomerLeverageLimitResponse
-	31, // 44: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:output_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
-	31, // [31:45] is the sub-list for method output_type
-	17, // [17:31] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	32, // 17: opentrade.rpc.perp.ProjectRiskConfigRequest.risk_tiers:type_name -> opentrade.rpc.perp.RiskTierParam
+	1,  // 18: opentrade.rpc.perp.PerpService.PlaceOrder:input_type -> opentrade.rpc.perp.PlaceOrderRequest
+	3,  // 19: opentrade.rpc.perp.PerpService.CancelOrder:input_type -> opentrade.rpc.perp.CancelOrderRequest
+	5,  // 20: opentrade.rpc.perp.PerpService.QueryOrder:input_type -> opentrade.rpc.perp.QueryOrderRequest
+	7,  // 21: opentrade.rpc.perp.PerpService.QueryPositions:input_type -> opentrade.rpc.perp.QueryPositionsRequest
+	10, // 22: opentrade.rpc.perp.PerpService.QueryMargin:input_type -> opentrade.rpc.perp.QueryMarginRequest
+	12, // 23: opentrade.rpc.perp.PerpService.SetMarginMode:input_type -> opentrade.rpc.perp.SetMarginModeRequest
+	14, // 24: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:input_type -> opentrade.rpc.perp.AdjustIsolatedMarginRequest
+	16, // 25: opentrade.rpc.perp.PerpService.SetAutoAddMargin:input_type -> opentrade.rpc.perp.SetAutoAddMarginRequest
+	18, // 26: opentrade.rpc.perp.PerpService.SetPositionLeverage:input_type -> opentrade.rpc.perp.SetPositionLeverageRequest
+	20, // 27: opentrade.rpc.perp.PerpService.SetRiskId:input_type -> opentrade.rpc.perp.SetRiskIdRequest
+	22, // 28: opentrade.rpc.perp.PerpService.QueryPositionConfig:input_type -> opentrade.rpc.perp.QueryPositionConfigRequest
+	25, // 29: opentrade.rpc.perp.PerpService.QueryAccountConfig:input_type -> opentrade.rpc.perp.QueryAccountConfigRequest
+	28, // 30: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:input_type -> opentrade.rpc.perp.SetCustomerLeverageLimitRequest
+	30, // 31: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:input_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
+	33, // 32: opentrade.rpc.perp.PerpService.ProjectRiskConfig:input_type -> opentrade.rpc.perp.ProjectRiskConfigRequest
+	2,  // 33: opentrade.rpc.perp.PerpService.PlaceOrder:output_type -> opentrade.rpc.perp.PlaceOrderResponse
+	4,  // 34: opentrade.rpc.perp.PerpService.CancelOrder:output_type -> opentrade.rpc.perp.CancelOrderResponse
+	6,  // 35: opentrade.rpc.perp.PerpService.QueryOrder:output_type -> opentrade.rpc.perp.QueryOrderResponse
+	8,  // 36: opentrade.rpc.perp.PerpService.QueryPositions:output_type -> opentrade.rpc.perp.QueryPositionsResponse
+	11, // 37: opentrade.rpc.perp.PerpService.QueryMargin:output_type -> opentrade.rpc.perp.QueryMarginResponse
+	13, // 38: opentrade.rpc.perp.PerpService.SetMarginMode:output_type -> opentrade.rpc.perp.SetMarginModeResponse
+	15, // 39: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:output_type -> opentrade.rpc.perp.AdjustIsolatedMarginResponse
+	17, // 40: opentrade.rpc.perp.PerpService.SetAutoAddMargin:output_type -> opentrade.rpc.perp.SetAutoAddMarginResponse
+	19, // 41: opentrade.rpc.perp.PerpService.SetPositionLeverage:output_type -> opentrade.rpc.perp.SetPositionLeverageResponse
+	21, // 42: opentrade.rpc.perp.PerpService.SetRiskId:output_type -> opentrade.rpc.perp.SetRiskIdResponse
+	24, // 43: opentrade.rpc.perp.PerpService.QueryPositionConfig:output_type -> opentrade.rpc.perp.QueryPositionConfigResponse
+	26, // 44: opentrade.rpc.perp.PerpService.QueryAccountConfig:output_type -> opentrade.rpc.perp.QueryAccountConfigResponse
+	29, // 45: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:output_type -> opentrade.rpc.perp.SetCustomerLeverageLimitResponse
+	31, // 46: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:output_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
+	34, // 47: opentrade.rpc.perp.PerpService.ProjectRiskConfig:output_type -> opentrade.rpc.perp.ProjectRiskConfigResponse
+	33, // [33:48] is the sub-list for method output_type
+	18, // [18:33] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_rpc_perp_perp_proto_init() }
@@ -2607,7 +2823,7 @@ func file_rpc_perp_perp_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_perp_perp_proto_rawDesc), len(file_rpc_perp_perp_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   31,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

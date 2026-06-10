@@ -18,10 +18,20 @@ import (
 	"strconv"
 	"time"
 
+	"connectrpc.com/connect"
+
+	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/auth"
 	"github.com/xargin/opentrade/pkg/perpcfg"
 )
+
+// PerpProjector is the slice of the perp-counter RPC surface the admin plane
+// needs for the ADR-0075 §3 reprice dry-run. The generated
+// perprpcconnect.PerpServiceClient satisfies it.
+type PerpProjector interface {
+	ProjectRiskConfig(ctx context.Context, req *connect.Request[perprpc.ProjectRiskConfigRequest]) (*connect.Response[perprpc.ProjectRiskConfigResponse], error)
+}
 
 // perpRoutes mounts the catalog endpoints. Nil store → 503 (mirrors the etcd
 // nil handling for spot symbols).
@@ -382,11 +392,20 @@ func (s *Server) handleRollbackPerpConfig(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// publishPerpConfig runs the shared publish + audit + respond tail. extra is
-// merged into the audit params after the standard fields.
+// publishPerpConfig runs the shared dry-run + publish + audit + respond
+// tail. extra is merged into the audit params after the standard fields.
 func (s *Server) publishPerpConfig(w http.ResponseWriter, r *http.Request, ctx context.Context,
 	op string, prev *perpcfg.PerpSymbolConfig, next perpcfg.PerpSymbolConfig, extra map[string]any) {
-	newVersion, pubErr := s.perp.PublishConfig(ctx, next)
+	dryRun, pubErr := s.repriceDryRun(ctx, prev, &next)
+	var newVersion uint64
+	if pubErr == nil {
+		newVersion, pubErr = s.perp.PublishConfig(ctx, next)
+	}
+	if dryRun != nil {
+		extra["dry_run_affected"] = dryRun.affected
+		extra["dry_run_liquidatable"] = dryRun.liquidatable
+		extra["dry_run_scanned"] = dryRun.scanned
+	}
 	params := map[string]any{
 		"prev_version": prev.ConfigVersion,
 		"new_version":  newVersion,
@@ -420,6 +439,62 @@ func (s *Server) publishPerpConfig(w http.ResponseWriter, r *http.Request, ctx c
 		"symbol": next.Symbol, "config_version": newVersion,
 		"changed": configDiff(prev, &next), "status": string(next.Status),
 	})
+}
+
+type dryRunResult struct {
+	affected     uint64
+	liquidatable uint64
+	scanned      uint64
+}
+
+// repriceDryRun is the ADR-0075 §3 guardrail in front of an IMMEDIATE
+// tightening publish: fan the candidate tier table out to every perp-counter
+// shard's ProjectRiskConfig and refuse the publish when the projection
+// exceeds the policy's budget. Fail-closed throughout — a shard error, or a
+// reprice policy submitted with no shards configured, blocks the publish.
+// Returns (nil, nil) when no dry-run is required (staged publishes, or
+// IMMEDIATE without tightening).
+func (s *Server) repriceDryRun(ctx context.Context, prev, next *perpcfg.PerpSymbolConfig) (*dryRunResult, error) {
+	if next.RiskApply != perpcfg.RiskApplyImmediate || next.RepricePolicy == nil {
+		return nil, nil
+	}
+	if !perpcfg.TightensRisk(prev.RiskTiers, next.RiskTiers) {
+		return nil, nil
+	}
+	if len(s.perpCounters) == 0 {
+		return nil, fmt.Errorf("reprice policy %s requires a dry-run projection but no perp-counter shards are configured (--perp-counter-shards)",
+			next.RepricePolicy.PolicyID)
+	}
+	req := &perprpc.ProjectRiskConfigRequest{Symbol: next.Symbol}
+	for _, t := range next.RiskTiers {
+		req.RiskTiers = append(req.RiskTiers, &perprpc.RiskTierParam{
+			RiskId:                 t.RiskID,
+			MaxNotional:            t.MaxNotional.String(),
+			MaintenanceMarginRatio: t.MaintMarginRatio.String(),
+			MaxLeverage:            t.MaxLeverage.String(),
+			LiqFeeRate:             t.LiqFeeRate.String(),
+		})
+	}
+	out := &dryRunResult{}
+	for i, c := range s.perpCounters {
+		resp, err := c.ProjectRiskConfig(ctx, connect.NewRequest(req))
+		if err != nil {
+			return out, fmt.Errorf("dry-run projection failed on perp shard %d: %w", i, err)
+		}
+		out.affected += resp.Msg.GetAffectedAccounts()
+		out.liquidatable += resp.Msg.GetLiquidatableAccounts()
+		out.scanned += resp.Msg.GetPositionsScanned()
+	}
+	pol := next.RepricePolicy
+	if out.liquidatable > 0 && !pol.AllowMassLiquidation {
+		return out, fmt.Errorf("dry-run: %d accounts would breach maintenance but policy %s does not allow mass liquidation",
+			out.liquidatable, pol.PolicyID)
+	}
+	if out.affected > uint64(pol.MaxAffectedAccounts) {
+		return out, fmt.Errorf("dry-run: %d accounts affected exceeds policy %s budget of %d",
+			out.affected, pol.PolicyID, pol.MaxAffectedAccounts)
+	}
+	return out, nil
 }
 
 // configDiff lists the parameter groups that differ between two versions —

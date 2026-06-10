@@ -23,8 +23,10 @@ import (
 	"github.com/xargin/opentrade/admin-gateway/internal/rollout"
 	"github.com/xargin/opentrade/admin-gateway/internal/server"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	"github.com/xargin/opentrade/api/gen/rpc/perp/perprpcconnect"
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/auth"
+	"github.com/xargin/opentrade/pkg/connectx"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
 	"github.com/xargin/opentrade/pkg/perpcfg"
@@ -53,8 +55,10 @@ type Config struct {
 	EtcdPrefix    string
 
 	// ADR-0075 perp symbol catalog — optional; empty disables
-	// /admin/perp/* (503).
-	PerpCatalogDSN string
+	// /admin/perp/* (503). PerpCounterShards is required to publish a
+	// reprice policy (the §3 dry-run fans out to every perp shard).
+	PerpCatalogDSN    string
+	PerpCounterShards []string
 
 	// ADR-0053 M4: precision rollout executor. Active only when etcd is
 	// configured. Zero disables (dev only); must be >= 1s otherwise.
@@ -190,10 +194,23 @@ func main() {
 		logger.Info("perp catalog configured (ADR-0075)")
 	}
 
+	// Optional perp-counter shard clients for the §3 reprice dry-run.
+	var perpProjectors []server.PerpProjector
+	if len(cfg.PerpCounterShards) > 0 {
+		for _, ep := range cfg.PerpCounterShards {
+			hc := connectx.NewH2CClient()
+			cli := perprpcconnect.NewPerpServiceClient(hc, connectx.BaseURL(ep), connect.WithGRPC())
+			perpProjectors = append(perpProjectors, cli)
+		}
+		logger.Info("perp-counter shards configured for reprice dry-run",
+			zap.Strings("shards", cfg.PerpCounterShards))
+	}
+
 	adminSrv, err := server.New(server.Config{
 		Counter:        sharded,
 		Etcd:           etcdShim,
 		PerpCatalog:    perpStore,
+		PerpCounters:   perpProjectors,
 		Audit:          audit,
 		Logger:         logger,
 		RequestTimeout: cfg.RequestTimeout,
@@ -288,7 +305,7 @@ func parseFlags() Config {
 		Env:                 "dev",
 		LogLevel:            "info",
 	}
-	var shardsCSV, etcdCSV string
+	var shardsCSV, etcdCSV, perpShardsStr string
 	flag.StringVar(&cfg.HTTPAddr, "http-addr", cfg.HTTPAddr, "HTTP listen address (default :8090 — distinct from BFF :8080)")
 	flag.StringVar(&shardsCSV, "counter-shards", "",
 		"comma-separated Counter gRPC shard endpoints in shard-id order (required)")
@@ -297,6 +314,7 @@ func parseFlags() Config {
 	flag.StringVar(&etcdCSV, "etcd", "", "comma-separated etcd endpoints for /admin/symbols CRUD (empty disables symbol endpoints)")
 	flag.StringVar(&cfg.EtcdPrefix, "etcd-prefix", "", "etcd key prefix for symbol configs (default /cex/match/symbols/)")
 	flag.StringVar(&cfg.PerpCatalogDSN, "perp-catalog-dsn", "", "MySQL DSN of the ADR-0075 perp symbol catalog; empty disables /admin/perp/*")
+	flag.StringVar(&perpShardsStr, "perp-counter-shards", "", "comma-separated perp-counter gRPC endpoints for the ADR-0075 §3 reprice dry-run; empty refuses reprice-policy publishes")
 	flag.DurationVar(&cfg.RolloutScanInterval, "rollout-scan-interval", cfg.RolloutScanInterval,
 		"ADR-0053 M4 precision rollout scan tick (0 disables; min 1s otherwise)")
 	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", cfg.RequestTimeout, "per-admin-request timeout")
@@ -307,6 +325,7 @@ func parseFlags() Config {
 
 	cfg.CounterShards = splitCSV(shardsCSV)
 	cfg.EtcdEndpoints = splitCSV(etcdCSV)
+	cfg.PerpCounterShards = splitCSV(perpShardsStr)
 	return cfg
 }
 

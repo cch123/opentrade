@@ -441,7 +441,9 @@ func (e *Engine) ApplyFill(user uint64, symbol string, leverage dec.Decimal, f p
 	if p.Leverage.Sign() == 0 {
 		p.Leverage = leverage
 	}
+	sizeBefore, sideBefore := p.Size, p.Side
 	res := p.ApplyFill(f)
+	e.stampRiskVersionLocked(p, sizeBefore, sideBefore)
 	p.Version++
 	e.routeCashLocked(user, res)
 	e.syncIndexesLocked(user, symbol, p)
@@ -464,7 +466,9 @@ func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, leverage dec.Decim
 	if p.Leverage.Sign() == 0 {
 		p.Leverage = leverage
 	}
+	sizeBefore, sideBefore := p.Size, p.Side
 	res := p.ApplyFill(f)
+	e.stampRiskVersionLocked(p, sizeBefore, sideBefore)
 	if seq != 0 {
 		p.LastMatchSeq = seq
 	}
@@ -472,6 +476,25 @@ func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, leverage dec.Decim
 	e.routeCashLocked(user, res)
 	e.syncIndexesLocked(user, symbol, p)
 	return res, true
+}
+
+// stampRiskVersionLocked pins the position to the symbol's CURRENT effective
+// risk version when the fill created new exposure — open, size increase, or
+// flip (ADR-0075 §3: staged tightenings apply to new exposure only; the pin
+// is what existing exposure keeps evaluating under). Reduces and closes keep
+// the pin. Caller holds e.mu and must call this BEFORE syncIndexesLocked so
+// the liq-price index is computed under the new pin.
+func (e *Engine) stampRiskVersionLocked(p *perpstate.Position, sizeBefore dec.Decimal, sideBefore perpstate.Side) {
+	if e.riskResolver == nil {
+		return
+	}
+	increased := p.Size.Cmp(sizeBefore) > 0 || (p.Side != sideBefore && !p.IsFlat())
+	if !increased {
+		return
+	}
+	if _, ver, ok := e.riskResolver(p.Symbol, 0); ok {
+		p.RiskConfigVersion = ver
+	}
 }
 
 // routeCashLocked moves a fill's cash effects between wallet and position

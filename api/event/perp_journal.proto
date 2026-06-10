@@ -44,6 +44,9 @@ message PerpPositionSnapshot {
   uint64 version = 9;
   PerpMarginMode margin_mode = 10;
   uint32 risk_id = 11;      // user-selected risk tier (0 = auto)
+  // ADR-0075 §3 staged pin: the SymbolConfig version whose risk tiers govern
+  // this position (stamped on open/increase). 0 = active version / legacy.
+  uint64 risk_config_version = 12;
 }
 
 message PerpJournalEvent {

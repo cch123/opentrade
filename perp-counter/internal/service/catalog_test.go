@@ -348,3 +348,139 @@ func TestCatalogLiquidationUsesSymbolTiers(t *testing.T) {
 func cancelReqFor(user, orderID uint64) *perprpc.CancelOrderRequest {
 	return &perprpc.CancelOrderRequest{UserId: user, OrderId: orderID}
 }
+
+// TestStagedRiskPinning pins the ADR-0075 §3 staged semantics end to end:
+// a STAGED tightening leaves existing positions judged at their pinned
+// version; new exposure adopts the new version.
+func TestStagedRiskPinning(t *testing.T) {
+	svc, eng, disp, _, fix := newCatalogSvc(t, perpcfg.StatusTrading)
+	eng.Deposit(user1, dec.New("100000"))
+	eng.SetMark(catSym, dec.New("100"))
+
+	fill := func(orderIdx int, price string) {
+		t.Helper()
+		resp, _ := svc.PlaceOrder(placeReq(user1, catSym, eventpb.Side_SIDE_BUY, price, "1", "10", false))
+		if !resp.Accepted {
+			t.Fatalf("place @%s: %s", price, resp.RejectReason)
+		}
+		oid := disp.orders[orderIdx].GetPlaced().GetOrderId()
+		svc.HandleTrade(&eventpb.Trade{
+			TradeId: "t" + price, Symbol: catSym, Price: price, Qty: "1",
+			TakerUserId: user1, TakerOrderId: oid, TakerSide: eventpb.Side_SIDE_BUY,
+			TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
+			TakerFilledQtyAfter: "1",
+		}, uint64(orderIdx+1))
+	}
+
+	// Open 1 @100 lev 10 (margin 10) at v1 → position pinned to v1.
+	fill(0, "100")
+	p, _ := eng.PositionRaw(user1, catSym)
+	if p.RiskConfigVersion != 1 {
+		t.Fatalf("open pin = v%d, want v1", p.RiskConfigVersion)
+	}
+
+	// v2: STAGED tightening — MMR 0.005 → 0.05 (max leverage drops to 16 so
+	// MMR×lev stays < 1).
+	fix.publish(t, func(c *perpcfg.PerpSymbolConfig) {
+		c.RiskTiers[0].MaintMarginRatio = dec.New("0.05")
+		c.RiskTiers[0].MaxLeverage = dec.New("16")
+		c.RiskTiers[1].MaintMarginRatio = dec.New("0.05")
+		c.RiskTiers[1].MaxLeverage = dec.New("16")
+		c.RiskApply = perpcfg.RiskApplyStaged
+	})
+	eng.RebuildRiskIndex()
+
+	// Mark 93: equity 3 sits between v1 maintenance (0.465) and v2
+	// maintenance (4.65). Pinned at v1, the position must NOT be a
+	// liquidation candidate — that's the staged shield.
+	eng.SetMark(catSym, dec.New("93"))
+	if cands := eng.LiquidatablePositions(catSym); len(cands) != 0 {
+		t.Fatalf("staged tightening leaked onto the pinned position: %+v", cands)
+	}
+
+	// Size increase (1 @93, configured lev 10 ≤ new cap 16) → the position
+	// adopts v2.
+	fill(1, "93")
+	p, _ = eng.PositionRaw(user1, catSym)
+	if p.RiskConfigVersion != 2 {
+		t.Fatalf("post-increase pin = v%d, want v2", p.RiskConfigVersion)
+	}
+	// Mark 91: equity 19.3 + (91-96.5)×2 = 8.3 < v2 maintenance 9.1 but
+	// well above v1 maintenance 0.91 — only the v2 pin makes this a
+	// candidate.
+	eng.SetMark(catSym, dec.New("91"))
+	if cands := eng.LiquidatablePositions(catSym); len(cands) != 1 {
+		t.Fatalf("increased position must be judged at v2: %+v", cands)
+	}
+}
+
+func TestImmediateRiskOverridesPin(t *testing.T) {
+	svc, eng, disp, _, fix := newCatalogSvc(t, perpcfg.StatusTrading)
+	eng.Deposit(user1, dec.New("100000"))
+	eng.SetMark(catSym, dec.New("100"))
+	resp, _ := svc.PlaceOrder(placeReq(user1, catSym, eventpb.Side_SIDE_BUY, "100", "1", "10", false))
+	if !resp.Accepted {
+		t.Fatalf("place: %s", resp.RejectReason)
+	}
+	oid := disp.orders[0].GetPlaced().GetOrderId()
+	svc.HandleTrade(&eventpb.Trade{
+		TradeId: "t1", Symbol: catSym, Price: "100", Qty: "1",
+		TakerUserId: user1, TakerOrderId: oid, TakerSide: eventpb.Side_SIDE_BUY,
+		TakerStatusAfter: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
+		TakerFilledQtyAfter: "1",
+	}, 1)
+
+	// v2: IMMEDIATE tightening with a reprice policy — the pin at v1 no
+	// longer shields the position.
+	fix.publish(t, func(c *perpcfg.PerpSymbolConfig) {
+		c.RiskTiers[0].MaintMarginRatio = dec.New("0.12")
+		c.RiskTiers[1].MaintMarginRatio = dec.New("0.12")
+		c.RiskTiers[0].MaxLeverage = dec.New("8")
+		c.RiskTiers[1].MaxLeverage = dec.New("8")
+		c.RiskApply = perpcfg.RiskApplyImmediate
+		c.RepricePolicy = &perpcfg.RiskRepricePolicy{
+			PolicyID: "POL-9", MaxAffectedAccounts: 1000, AllowMassLiquidation: true,
+		}
+	})
+	eng.RebuildRiskIndex()
+	cands := eng.LiquidatablePositions(catSym)
+	if len(cands) != 1 {
+		t.Fatalf("IMMEDIATE must re-judge pinned positions: %+v", cands)
+	}
+}
+
+// TestProjectRiskTiers pins the §3 dry-run math: affected = requirement
+// increased, liquidatable = breaches maintenance under the candidate.
+func TestProjectRiskTiers(t *testing.T) {
+	svc, eng, disp, _, _ := newCatalogSvc(t, perpcfg.StatusTrading)
+	eng.Deposit(user1, dec.New("100000"))
+	eng.Deposit(user2, dec.New("100000"))
+	eng.SetMark(catSym, dec.New("100"))
+	open := func(user uint64, orderIdx int, lev string) {
+		t.Helper()
+		resp, _ := svc.PlaceOrder(placeReq(user, catSym, eventpb.Side_SIDE_BUY, "100", "1", lev, false))
+		if !resp.Accepted {
+			t.Fatalf("place u%d: %s", user, resp.RejectReason)
+		}
+		oid := disp.orders[orderIdx].GetPlaced().GetOrderId()
+		svc.HandleTrade(&eventpb.Trade{
+			TradeId: "t" + lev, Symbol: catSym, Price: "100", Qty: "1",
+			TakerUserId: user, TakerOrderId: oid, TakerSide: eventpb.Side_SIDE_BUY,
+			TakerStatusAfter: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
+			TakerFilledQtyAfter: "1",
+		}, 1)
+	}
+	open(user1, 0, "10") // margin 10 on 100 notional
+	open(user2, 1, "50") // margin 2 on 100 notional
+
+	// Candidate: MMR 0.05. Both requirements increase (0.005 → 0.05);
+	// user2 (margin 2 < 5) breaches, user1 (margin 10 > 5) does not.
+	candidate := (&perpcfg.PerpSymbolConfig{RiskTiers: []perpcfg.RiskTier{
+		{RiskID: 1, MaxNotional: dec.FromInt(0), MaintMarginRatio: dec.New("0.05"),
+			MaxLeverage: dec.New("20"), LiqFeeRate: dec.New("0.001")},
+	}}).RiskModel()
+	proj := eng.ProjectRiskTiers(catSym, candidate)
+	if proj.Scanned != 2 || proj.Affected != 2 || proj.Liquidatable != 1 {
+		t.Fatalf("projection = %+v, want scanned 2 affected 2 liquidatable 1", proj)
+	}
+}

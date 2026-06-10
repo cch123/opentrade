@@ -58,6 +58,7 @@ type Server struct {
 	shardedCounter *counterclient.Sharded
 	etcd           EtcdSource
 	perp           perpcfg.Store
+	perpCounters   []PerpProjector
 	audit          adminaudit.Logger
 	logger         *zap.Logger
 	requestTimeout time.Duration
@@ -68,6 +69,7 @@ type Config struct {
 	Counter        *counterclient.Sharded // required for /admin/cancel-orders
 	Etcd           EtcdSource             // optional; nil → /admin/symbols 503
 	PerpCatalog    perpcfg.Store          // optional; nil → /admin/perp/* 503 (ADR-0075)
+	PerpCounters   []PerpProjector        // optional; required to publish reprice policies (§3 dry-run)
 	Audit          adminaudit.Logger      // required; NopLogger accepted
 	Logger         *zap.Logger
 	RequestTimeout time.Duration // default 5s
@@ -92,6 +94,7 @@ func New(cfg Config) (*Server, error) {
 		shardedCounter: cfg.Counter,
 		etcd:           cfg.Etcd,
 		perp:           cfg.PerpCatalog,
+		perpCounters:   cfg.PerpCounters,
 		audit:          cfg.Audit,
 		logger:         cfg.Logger,
 		requestTimeout: cfg.RequestTimeout,

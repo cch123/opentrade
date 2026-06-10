@@ -68,22 +68,23 @@ type WalletSnap struct {
 
 // PositionSnap is one (user, symbol) position with its recovery watermarks.
 type PositionSnap struct {
-	UserID           uint64 `json:"user_id"`
-	Symbol           string `json:"symbol"`
-	Side             uint8  `json:"side"`
-	Size             string `json:"size"`
-	Entry            string `json:"entry"`
-	Margin           string `json:"margin"`
-	Leverage         string `json:"leverage"`
-	Realized         string `json:"realized"`
-	Mode             uint8  `json:"mode"`
-	RiskID           uint32 `json:"risk_id,omitempty"`
-	AutoAddMargin    bool   `json:"auto_add_margin,omitempty"`
-	AutoAddMax       string `json:"auto_add_max,omitempty"`
-	LastMatchSeq     uint64 `json:"last_match_seq"`
-	LastAdlRound     uint64 `json:"last_adl_round"`
-	FundingRoundSeen int64  `json:"funding_round_seen"`
-	Version          uint64 `json:"version"`
+	UserID            uint64 `json:"user_id"`
+	Symbol            string `json:"symbol"`
+	Side              uint8  `json:"side"`
+	Size              string `json:"size"`
+	Entry             string `json:"entry"`
+	Margin            string `json:"margin"`
+	Leverage          string `json:"leverage"`
+	Realized          string `json:"realized"`
+	Mode              uint8  `json:"mode"`
+	RiskID            uint32 `json:"risk_id,omitempty"`
+	RiskConfigVersion uint64 `json:"risk_config_version,omitempty"` // ADR-0075 §3 staged pin
+	AutoAddMargin     bool   `json:"auto_add_margin,omitempty"`
+	AutoAddMax        string `json:"auto_add_max,omitempty"`
+	LastMatchSeq      uint64 `json:"last_match_seq"`
+	LastAdlRound      uint64 `json:"last_adl_round"`
+	FundingRoundSeen  int64  `json:"funding_round_seen"`
+	Version           uint64 `json:"version"`
 }
 
 // Snapshot captures current state. Output is deterministic (sorted) so
@@ -125,7 +126,8 @@ func (e *Engine) Snapshot() Snapshot {
 				UserID: p.UserID, Symbol: p.Symbol, Side: uint8(p.Side),
 				Size: p.Size.String(), Entry: p.Entry.String(), Margin: p.Margin.String(),
 				Leverage: p.Leverage.String(), Realized: p.Realized.String(), Mode: uint8(p.Mode),
-				RiskID: p.RiskID, AutoAddMargin: p.AutoAddMargin, AutoAddMax: p.AutoAddMax.String(),
+				RiskID: p.RiskID, RiskConfigVersion: p.RiskConfigVersion,
+				AutoAddMargin: p.AutoAddMargin, AutoAddMax: p.AutoAddMax.String(),
 				LastMatchSeq: p.LastMatchSeq, LastAdlRound: p.LastAdlRound,
 				FundingRoundSeen: p.FundingRoundSeen, Version: p.Version,
 			})
@@ -201,7 +203,8 @@ func (e *Engine) Restore(s Snapshot) {
 			Size: dec.New(ps.Size), Entry: dec.New(ps.Entry), Margin: dec.New(ps.Margin),
 			Leverage: dec.New(ps.Leverage), Realized: dec.New(ps.Realized),
 			Mode:   perpstate.MarginMode(ps.Mode),
-			RiskID: ps.RiskID, AutoAddMargin: ps.AutoAddMargin, AutoAddMax: snapDec(ps.AutoAddMax),
+			RiskID: ps.RiskID, RiskConfigVersion: ps.RiskConfigVersion,
+			AutoAddMargin: ps.AutoAddMargin, AutoAddMax: snapDec(ps.AutoAddMax),
 			LastMatchSeq: ps.LastMatchSeq,
 			LastAdlRound: ps.LastAdlRound, FundingRoundSeen: ps.FundingRoundSeen, Version: ps.Version,
 		}

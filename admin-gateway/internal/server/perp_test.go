@@ -8,20 +8,43 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	"go.uber.org/zap"
 
 	"github.com/xargin/opentrade/admin-gateway/internal/counterclient"
+	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
 	"github.com/xargin/opentrade/pkg/adminaudit"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/perpcfg"
 )
 
-func newPerpTestServer(t *testing.T) (*Server, *perpcfg.MemoryStore, string) {
+// fakeProjector is a perp-counter shard stub for the §3 dry-run.
+type fakeProjector struct {
+	resp *perprpc.ProjectRiskConfigResponse
+	err  error
+	hits int
+}
+
+func (f *fakeProjector) ProjectRiskConfig(_ context.Context, _ *connect.Request[perprpc.ProjectRiskConfigRequest]) (*connect.Response[perprpc.ProjectRiskConfigResponse], error) {
+	f.hits++
+	if f.err != nil {
+		return nil, f.err
+	}
+	resp := f.resp
+	if resp == nil {
+		resp = &perprpc.ProjectRiskConfigResponse{}
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func newPerpTestServer(t *testing.T, projectors ...PerpProjector) (*Server, *perpcfg.MemoryStore, string) {
 	t.Helper()
 	rec := &recordingCounter{}
 	sc, err := counterclient.NewSharded([]counterclient.Counter{rec})
@@ -35,7 +58,8 @@ func newPerpTestServer(t *testing.T) (*Server, *perpcfg.MemoryStore, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = audit.Close() })
-	srv, err := New(Config{Counter: sc, PerpCatalog: store, Audit: audit, Logger: zap.NewNop()})
+	srv, err := New(Config{Counter: sc, PerpCatalog: store, PerpCounters: projectors,
+		Audit: audit, Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,27 +289,90 @@ func TestPerpRoutes503WithoutStore(t *testing.T) {
 }
 
 // TestPerpImmediateTighteningRequiresPolicy pins the §3 guardrail end to
-// end through the admin surface.
+// end through the admin surface, including the dry-run fan-out.
 func TestPerpImmediateTighteningRequiresPolicy(t *testing.T) {
-	srv, _, _ := newPerpTestServer(t)
-	mustCreatePerp(t, srv)
 	tighter := []map[string]any{
 		{"risk_id": 1, "max_notional": "50000", "maintenance_margin_ratio": "0.005",
 			"max_leverage": "75", "liq_fee_rate": "0.001"},
 		{"risk_id": 2, "max_notional": "0", "maintenance_margin_ratio": "0.01",
 			"max_leverage": "50", "liq_fee_rate": "0.002"},
 	}
+	withPolicy := func(maxAffected int, allowMass bool) map[string]any {
+		return map[string]any{
+			"risk_tiers": tighter, "risk_apply": "IMMEDIATE",
+			"reprice_policy": map[string]any{"policy_id": "POL-1",
+				"max_affected_accounts": maxAffected, "allow_mass_liquidation": allowMass,
+				"reason": "delever"},
+		}
+	}
+
+	// No policy at all → refused by validation.
+	srv, _, _ := newPerpTestServer(t, &fakeProjector{})
+	mustCreatePerp(t, srv)
 	rr := do(t, srv, "PUT", "/admin/perp/symbols/BTC-USDT-PERP/config", map[string]any{
 		"risk_tiers": tighter, "risk_apply": "IMMEDIATE",
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("IMMEDIATE tightening without policy: %d %s", rr.Code, rr.Body.String())
 	}
-	rr = do(t, srv, "PUT", "/admin/perp/symbols/BTC-USDT-PERP/config", map[string]any{
-		"risk_tiers": tighter, "risk_apply": "IMMEDIATE",
-		"reprice_policy": map[string]any{"policy_id": "POL-1", "max_affected_accounts": 100, "reason": "delever"},
-	})
+
+	// Policy but NO perp shards configured → fail-closed (cannot dry-run).
+	srvNoShards, _, _ := newPerpTestServer(t)
+	mustCreatePerp(t, srvNoShards)
+	rr = do(t, srvNoShards, "PUT", "/admin/perp/symbols/BTC-USDT-PERP/config", withPolicy(100, false))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "dry-run") {
+		t.Fatalf("policy without shards: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Clean projection → publish passes, audit carries dry-run counts.
+	proj := &fakeProjector{resp: &perprpc.ProjectRiskConfigResponse{
+		AffectedAccounts: 7, PositionsScanned: 40,
+	}}
+	srvOK, _, auditPath := newPerpTestServer(t, proj)
+	mustCreatePerp(t, srvOK)
+	rr = do(t, srvOK, "PUT", "/admin/perp/symbols/BTC-USDT-PERP/config", withPolicy(100, false))
 	if rr.Code != http.StatusOK {
-		t.Fatalf("IMMEDIATE tightening with policy: %d %s", rr.Code, rr.Body.String())
+		t.Fatalf("clean projection: %d %s", rr.Code, rr.Body.String())
+	}
+	if proj.hits != 1 {
+		t.Fatalf("projector hits = %d", proj.hits)
+	}
+	entries, _ := adminaudit.ReadAll(auditPath)
+	last := entries[len(entries)-1]
+	if last.Params["dry_run_affected"].(float64) != 7 {
+		t.Fatalf("audit dry-run params: %+v", last.Params)
+	}
+
+	// Budget exceeded → refused.
+	srvOver, _, _ := newPerpTestServer(t, &fakeProjector{resp: &perprpc.ProjectRiskConfigResponse{
+		AffectedAccounts: 101,
+	}})
+	mustCreatePerp(t, srvOver)
+	rr = do(t, srvOver, "PUT", "/admin/perp/symbols/BTC-USDT-PERP/config", withPolicy(100, false))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "exceeds") {
+		t.Fatalf("budget exceeded: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Would-be liquidations need allow_mass_liquidation.
+	liq := &fakeProjector{resp: &perprpc.ProjectRiskConfigResponse{
+		AffectedAccounts: 5, LiquidatableAccounts: 2,
+	}}
+	srvLiq, _, _ := newPerpTestServer(t, liq)
+	mustCreatePerp(t, srvLiq)
+	rr = do(t, srvLiq, "PUT", "/admin/perp/symbols/BTC-USDT-PERP/config", withPolicy(100, false))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "mass liquidation") {
+		t.Fatalf("mass liquidation refused: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = do(t, srvLiq, "PUT", "/admin/perp/symbols/BTC-USDT-PERP/config", withPolicy(100, true))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mass liquidation allowed by policy: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// A shard error fails closed.
+	srvErr, _, _ := newPerpTestServer(t, &fakeProjector{err: errors.New("shard down")})
+	mustCreatePerp(t, srvErr)
+	rr = do(t, srvErr, "PUT", "/admin/perp/symbols/BTC-USDT-PERP/config", withPolicy(100, true))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "shard") {
+		t.Fatalf("shard error: %d %s", rr.Code, rr.Body.String())
 	}
 }
