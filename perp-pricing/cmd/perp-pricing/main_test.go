@@ -23,12 +23,12 @@ type fakeMarkPublisher struct {
 	fundings []publishedFunding
 }
 
-func (f *fakeMarkPublisher) PublishMarkTick(_ context.Context, symbol string, _, _, _ dec.Decimal, _ int64, _, _ bool) error {
+func (f *fakeMarkPublisher) PublishMarkTick(_ context.Context, symbol string, _, _, _ dec.Decimal, _ int64, _, _ bool, _ uint64) error {
 	f.marks = append(f.marks, symbol)
 	return nil
 }
 
-func (f *fakeMarkPublisher) PublishFundingTick(_ context.Context, symbol string, roundID int64, rate, _ dec.Decimal, _ int64) error {
+func (f *fakeMarkPublisher) PublishFundingTick(_ context.Context, symbol string, roundID int64, rate, _ dec.Decimal, _ int64, _ uint64) error {
 	f.fundings = append(f.fundings, publishedFunding{symbol: symbol, roundID: roundID, rate: rate})
 	return nil
 }
@@ -44,6 +44,7 @@ func testConfig() Config {
 		PremiumBand:        "0.0005",
 		IndexQuorum:        2,
 		IndexDeviationBand: "0.05",
+		ImpactNotional:     "20000",
 	}
 }
 
@@ -94,7 +95,7 @@ func TestRunSymbolTick_IndependentFundingBoundaries(t *testing.T) {
 	pub := &fakeMarkPublisher{}
 
 	for _, rt := range rts {
-		runSymbolTick(context.Background(), now, dec.New("20000"), book, indexBook, rt, pub, zap.NewNop())
+		runSymbolTick(context.Background(), now, book, indexBook, rt, pub, zap.NewNop())
 	}
 	if len(pub.fundings) != 1 {
 		t.Fatalf("funding ticks = %+v, want exactly ETH 4h boundary", pub.fundings)

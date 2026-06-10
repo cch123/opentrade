@@ -58,7 +58,7 @@ func NewMarkProducer(cfg MarkProducerConfig, logger *zap.Logger) (*MarkProducer,
 // PublishMarkTick emits a high-frequency mark/index/funding-estimate tick.
 // The stale/degraded bits are part of ADR-0069's safety contract: consumers
 // may keep displaying the frozen mark when stale, but must not liquidate.
-func (p *MarkProducer) PublishMarkTick(ctx context.Context, symbol string, mark, index, fundingEst dec.Decimal, tsMs int64, indexStale, indexDegraded bool) error {
+func (p *MarkProducer) PublishMarkTick(ctx context.Context, symbol string, mark, index, fundingEst dec.Decimal, tsMs int64, indexStale, indexDegraded bool, cfgVersion uint64) error {
 	return p.publish(ctx, symbol, &eventpb.PerpPriceEvent{
 		Meta:   &eventpb.EventMeta{TsUnixMs: tsMs, ProducerId: p.cfg.ProducerID},
 		Symbol: symbol,
@@ -66,6 +66,7 @@ func (p *MarkProducer) PublishMarkTick(ctx context.Context, symbol string, mark,
 			MarkPrice: mark.String(), IndexPrice: index.String(),
 			FundingRate: fundingEst.String(), TsUnixMs: tsMs,
 			IndexStale: indexStale, IndexDegraded: indexDegraded,
+			ConfigVersion: cfgVersion,
 		}},
 	})
 }
@@ -73,13 +74,14 @@ func (p *MarkProducer) PublishMarkTick(ctx context.Context, symbol string, mark,
 // PublishFundingTick emits a settled funding round at an interval boundary
 // (ADR-0068 §7). roundID is the boundary's unix seconds; funding_round_id is the
 // idempotency key perp-counter settles on.
-func (p *MarkProducer) PublishFundingTick(ctx context.Context, symbol string, roundID int64, rate, mark dec.Decimal, tsMs int64) error {
+func (p *MarkProducer) PublishFundingTick(ctx context.Context, symbol string, roundID int64, rate, mark dec.Decimal, tsMs int64, cfgVersion uint64) error {
 	return p.publish(ctx, symbol, &eventpb.PerpPriceEvent{
 		Meta:   &eventpb.EventMeta{TsUnixMs: tsMs, ProducerId: p.cfg.ProducerID},
 		Symbol: symbol,
 		Payload: &eventpb.PerpPriceEvent_Funding{Funding: &eventpb.FundingTick{
 			FundingRoundId: FundingRoundID(symbol, roundID),
 			FundingRate:    rate.String(), MarkPrice: mark.String(), TsUnixMs: tsMs,
+			ConfigVersion: cfgVersion,
 		}},
 	})
 }

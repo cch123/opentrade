@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/xargin/opentrade/perp-pricing/internal/journal"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/logx"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 )
 
 // Config holds the markprice CLI flags.
@@ -52,6 +54,8 @@ type Config struct {
 	IndexSourceMaxAge   string
 	IndexQuorum         int
 	IndexDeviationBand  string
+	CatalogDSN          string
+	CatalogPollInterval string
 	Env                 string
 	LogLevel            string
 }
@@ -80,6 +84,8 @@ func main() {
 	flag.StringVar(&cfg.IndexSourceMaxAge, "index-source-max-age", "5s", "max age before an index source is stale")
 	flag.IntVar(&cfg.IndexQuorum, "index-quorum", 2, "minimum live index sources required for a fresh index; self-only dev mode caps this to 1")
 	flag.StringVar(&cfg.IndexDeviationBand, "index-deviation-band", "0.05", "median deviation band for outlier rejection; 0 disables")
+	flag.StringVar(&cfg.CatalogDSN, "catalog-dsn", "", "MySQL DSN of the ADR-0075 perp symbol catalog; set, the catalog drives the symbol set + per-symbol funding/pricing params and stamps config_version onto every tick (flags become the dev fallback)")
+	flag.StringVar(&cfg.CatalogPollInterval, "catalog-poll-interval", "1s", "catalog anchor poll cadence")
 	flag.StringVar(&cfg.Env, "env", "dev", "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "log level")
 	flag.Parse()
@@ -109,10 +115,53 @@ func main() {
 
 	impactNotional := dec.New(cfg.ImpactNotional)
 	book := journal.NewBook()
-	runtimes, err := buildSymbolRuntimes(cfg, fundingInterval, indexMaxAge, time.Now())
-	if err != nil {
-		logger.Fatal("symbol runtime config", zap.Error(err))
+
+	// ADR-0075: with a catalog the symbol set + per-symbol funding/pricing
+	// params come from MySQL and every tick is stamped with its
+	// config_version; flags remain the dev fallback.
+	var (
+		catalog  *perpcfg.Cache
+		runtimes []*symbolRuntime
+	)
+	if cfg.CatalogDSN != "" {
+		pollInterval, err := time.ParseDuration(cfg.CatalogPollInterval)
+		if err != nil || pollInterval <= 0 {
+			logger.Fatal("invalid --catalog-poll-interval", zap.String("v", cfg.CatalogPollInterval), zap.Error(err))
+		}
+		store, err := perpcfg.OpenMySQLStore(perpcfg.MySQLConfig{DSN: cfg.CatalogDSN})
+		if err != nil {
+			logger.Fatal("perp catalog store", zap.Error(err))
+		}
+		defer func() { _ = store.Close() }()
+		catalog = perpcfg.NewCache(perpcfg.CacheConfig{
+			Store: store, PollInterval: pollInterval, Logger: logger,
+		})
+		loadCtx, cancelLoad := context.WithTimeout(context.Background(), 10*time.Second)
+		err = catalog.Load(loadCtx)
+		cancelLoad()
+		if err != nil {
+			logger.Fatal("perp catalog initial load", zap.Error(err))
+		}
+		now := time.Now()
+		for _, sym := range catalog.Symbols() {
+			view, ok := catalog.Active(sym)
+			if !ok {
+				continue // listed but not yet effective — sync() picks it up later
+			}
+			rt, err := catalogRuntime(view, impactNotional, now)
+			if err != nil {
+				logger.Fatal("catalog runtime", zap.String("symbol", sym), zap.Error(err))
+			}
+			runtimes = append(runtimes, rt)
+		}
+	} else {
+		var err error
+		runtimes, err = buildSymbolRuntimes(cfg, fundingInterval, indexMaxAge, time.Now())
+		if err != nil {
+			logger.Fatal("symbol runtime config", zap.Error(err))
+		}
 	}
+	mgr := newRuntimeManager(runtimes, catalog, impactNotional, logger)
 	indexBook := indexprice.NewSourceBook()
 
 	consumer, err := journal.NewMarketDataConsumer(journal.MarketDataConsumerConfig{
@@ -138,6 +187,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if catalog != nil {
+		go catalog.Run(ctx)
+	}
 	indexprice.RunExternalSources(ctx, indexBook, collectIndexSources(runtimes), logger)
 
 	logger.Info("markprice starting (ADR-0068 §5)",
@@ -153,15 +205,15 @@ func main() {
 		}
 	}()
 
-	runTickLoop(ctx, tickInterval, impactNotional, book, indexBook, runtimes, producer, logger)
+	runTickLoop(ctx, tickInterval, book, indexBook, mgr, producer, logger)
 
 	logger.Info("markprice shutting down")
 	_ = logger.Sync()
 }
 
 type markPublisher interface {
-	PublishMarkTick(ctx context.Context, symbol string, mark, index, fundingEst dec.Decimal, tsMs int64, indexStale, indexDegraded bool) error
-	PublishFundingTick(ctx context.Context, symbol string, roundID int64, rate, mark dec.Decimal, tsMs int64) error
+	PublishMarkTick(ctx context.Context, symbol string, mark, index, fundingEst dec.Decimal, tsMs int64, indexStale, indexDegraded bool, cfgVersion uint64) error
+	PublishFundingTick(ctx context.Context, symbol string, roundID int64, rate, mark dec.Decimal, tsMs int64, cfgVersion uint64) error
 }
 
 // symbolRuntime is the per-symbol state ADR-0068 requires for funding: the
@@ -176,6 +228,8 @@ type symbolRuntime struct {
 	IndexCfg        indexprice.Config
 	IndexEval       *indexprice.Evaluator
 	SelfSourceName  string
+	ImpactNotional  dec.Decimal
+	ConfigVersion   uint64 // ADR-0075: stamped onto every tick; 0 = flag-driven
 
 	LastBoundary         time.Time
 	LastMark             dec.Decimal
@@ -188,9 +242,11 @@ type symbolRuntime struct {
 // runTickLoop owns all per-symbol Calc instances (single goroutine). Each tick
 // walks every configured symbol and advances its own mark/funding state; this
 // keeps symbols with different funding intervals deterministic without adding
-// cross-goroutine ordering questions.
-func runTickLoop(ctx context.Context, tick time.Duration, impactNotional dec.Decimal,
-	book *journal.Book, indexBook *indexprice.SourceBook, runtimes []*symbolRuntime,
+// cross-goroutine ordering questions. With an ADR-0075 catalog the loop also
+// reconciles the runtime set against the catalog before each tick — runtimes
+// are single-owner state, so config swaps happen in this goroutine only.
+func runTickLoop(ctx context.Context, tick time.Duration,
+	book *journal.Book, indexBook *indexprice.SourceBook, mgr *runtimeManager,
 	producer markPublisher, logger *zap.Logger) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
@@ -201,14 +257,188 @@ func runTickLoop(ctx context.Context, tick time.Duration, impactNotional dec.Dec
 			return
 		case <-ticker.C:
 			now := time.Now()
-			for _, rt := range runtimes {
-				runSymbolTick(ctx, now, impactNotional, book, indexBook, rt, producer, logger)
+			mgr.sync(now)
+			for _, rt := range mgr.ordered() {
+				runSymbolTick(ctx, now, book, indexBook, rt, producer, logger)
 			}
 		}
 	}
 }
 
-func runSymbolTick(ctx context.Context, now time.Time, impactNotional dec.Decimal,
+// runtimeManager owns the symbol → runtime set. In legacy (flag) mode the set
+// is fixed at startup; in catalog mode sync() reconciles it with the active
+// catalog configs every tick.
+type runtimeManager struct {
+	bySym          map[string]*symbolRuntime
+	catalog        *perpcfg.Cache
+	impactFallback dec.Decimal // flag default when a config carries 0
+	startedSources map[string]struct{}
+	logger         *zap.Logger
+}
+
+func newRuntimeManager(runtimes []*symbolRuntime, catalog *perpcfg.Cache, impactFallback dec.Decimal, logger *zap.Logger) *runtimeManager {
+	m := &runtimeManager{
+		bySym:          map[string]*symbolRuntime{},
+		catalog:        catalog,
+		impactFallback: impactFallback,
+		startedSources: map[string]struct{}{},
+		logger:         logger,
+	}
+	for _, rt := range runtimes {
+		m.bySym[rt.PerpSymbol] = rt
+		for _, srcCfg := range rt.IndexCfg.Sources {
+			m.startedSources[srcCfg.Name] = struct{}{}
+		}
+	}
+	return m
+}
+
+func (m *runtimeManager) ordered() []*symbolRuntime {
+	syms := make([]string, 0, len(m.bySym))
+	for s := range m.bySym {
+		syms = append(syms, s)
+	}
+	sort.Strings(syms)
+	out := make([]*symbolRuntime, 0, len(syms))
+	for _, s := range syms {
+		out = append(out, m.bySym[s])
+	}
+	return out
+}
+
+// sync reconciles runtimes with the catalog: new symbols get a runtime
+// (hot listing), a changed active version rebuilds the runtime (the premium
+// accumulator restarts and the in-progress funding round re-anchors at the
+// new interval — one round is deliberately skipped rather than settled from
+// mixed-parameter samples), and symbols with no effective config are
+// dropped. Index-source ADDITIONS need a process restart for their fetchers;
+// weight/quorum/staleness changes apply live through the rebuilt evaluator.
+func (m *runtimeManager) sync(now time.Time) {
+	if m.catalog == nil {
+		return
+	}
+	seen := map[string]struct{}{}
+	for _, sym := range m.catalog.Symbols() {
+		view, ok := m.catalog.Active(sym)
+		if !ok {
+			continue
+		}
+		seen[sym] = struct{}{}
+		cur := m.bySym[sym]
+		if cur != nil && cur.ConfigVersion == view.Cfg.ConfigVersion {
+			continue
+		}
+		rt, err := catalogRuntime(view, m.impactFallback, now)
+		if err != nil {
+			m.logger.Warn("perp pricing runtime build failed",
+				zap.String("symbol", sym), zap.Error(err))
+			continue
+		}
+		for _, srcCfg := range rt.IndexCfg.Sources {
+			if _, started := m.startedSources[srcCfg.Name]; !started && !srcCfg.Self {
+				m.logger.Warn("new external index source requires a perp-pricing restart to start its fetcher",
+					zap.String("symbol", sym), zap.String("source", srcCfg.Name))
+			}
+		}
+		if cur != nil {
+			m.logger.Info("perp pricing runtime rebuilt",
+				zap.String("symbol", sym),
+				zap.Uint64("old_version", cur.ConfigVersion),
+				zap.Uint64("new_version", rt.ConfigVersion))
+		} else {
+			m.logger.Info("perp pricing runtime added",
+				zap.String("symbol", sym), zap.Uint64("version", rt.ConfigVersion))
+		}
+		m.bySym[sym] = rt
+	}
+	for sym := range m.bySym {
+		if _, ok := seen[sym]; !ok {
+			m.logger.Warn("perp pricing runtime dropped (no effective catalog config)",
+				zap.String("symbol", sym))
+			delete(m.bySym, sym)
+		}
+	}
+}
+
+// catalogRuntime builds a fresh runtime from one catalog view (ADR-0075).
+func catalogRuntime(view perpcfg.View, impactFallback dec.Decimal, now time.Time) (*symbolRuntime, error) {
+	cfg := view.Cfg
+	spot := cfg.Pricing.SpotSymbol
+	if spot == "" {
+		spot = view.Spec.BaseAsset + "-" + view.Spec.QuoteAsset
+	}
+	interval := time.Duration(cfg.Funding.IntervalSeconds) * time.Second
+	idxCfg, selfName := indexConfigFromCatalog(cfg.Pricing, spot)
+	if err := idxCfg.Validate(); err != nil {
+		return nil, err
+	}
+	eval, err := indexprice.NewEvaluator(idxCfg)
+	if err != nil {
+		return nil, err
+	}
+	impact := cfg.Pricing.ImpactNotional
+	if impact.Sign() <= 0 {
+		impact = impactFallback
+	}
+	c := calc.New(calc.Config{
+		Alpha:         cfg.Pricing.MarkEmaAlpha,
+		BasisCap:      cfg.Pricing.MarkBasisCap,
+		InterestDaily: cfg.Funding.InterestRate,
+		IntervalMin:   int64(interval / time.Minute),
+		PremiumBand:   cfg.Funding.Clamp,
+		FundingCap:    cfg.Funding.Cap,
+		FundingFloor:  cfg.Funding.Floor,
+	})
+	return &symbolRuntime{
+		PerpSymbol:      view.Spec.Symbol,
+		SpotSymbol:      spot,
+		FundingInterval: interval,
+		Calc:            c,
+		IndexCfg:        idxCfg,
+		IndexEval:       eval,
+		SelfSourceName:  selfName,
+		ImpactNotional:  impact,
+		ConfigVersion:   cfg.ConfigVersion,
+		LastBoundary:    now.UTC().Truncate(interval),
+	}, nil
+}
+
+// indexConfigFromCatalog maps PricingParams onto the ADR-0069 evaluator
+// config. No sources = self-only dev mode (quorum 1, degraded-but-fresh).
+func indexConfigFromCatalog(p perpcfg.PricingParams, spotSymbol string) (indexprice.Config, string) {
+	selfName := "self:" + spotSymbol
+	out := indexprice.Config{
+		Quorum:        p.IndexQuorum,
+		SourceMaxAge:  time.Duration(p.IndexMaxAgeMs) * time.Millisecond,
+		DeviationBand: p.IndexDeviationBand,
+	}
+	if out.SourceMaxAge <= 0 {
+		out.SourceMaxAge = 5 * time.Second
+	}
+	if len(p.IndexSources) == 0 {
+		out.Sources = []indexprice.SourceConfig{{Name: selfName, Weight: dec.FromInt(1), Self: true}}
+		out.Quorum = 1
+		return out, selfName
+	}
+	for _, src := range p.IndexSources {
+		self := strings.HasPrefix(src.Name, "self:")
+		if self {
+			selfName = src.Name
+		}
+		out.Sources = append(out.Sources, indexprice.SourceConfig{
+			Name: src.Name, Weight: src.Weight, Self: self,
+		})
+	}
+	if out.Quorum <= 0 {
+		out.Quorum = 2
+		if out.Quorum > len(out.Sources) {
+			out.Quorum = len(out.Sources)
+		}
+	}
+	return out, selfName
+}
+
+func runSymbolTick(ctx context.Context, now time.Time,
 	book *journal.Book, indexBook *indexprice.SourceBook, rt *symbolRuntime,
 	producer markPublisher, logger *zap.Logger) {
 	if spotMid, tsMs, ok := book.MidAt(rt.SpotSymbol); ok {
@@ -241,13 +471,13 @@ func runSymbolTick(ctx context.Context, now time.Time, impactNotional dec.Decima
 	// when the perp book is one-sided / absent). ADR-0069 also skips samples
 	// while stale so a frozen index cannot contaminate that symbol's accumulator.
 	if !idx.Stale {
-		if impactBid, impactAsk, okImp := book.ImpactPrices(rt.PerpSymbol, impactNotional); okImp {
+		if impactBid, impactAsk, okImp := book.ImpactPrices(rt.PerpSymbol, rt.ImpactNotional); okImp {
 			rt.Calc.SamplePremium(impactBid, impactAsk, indexPx)
 		}
 	}
 	fundingEst := rt.Calc.ForecastFundingRate()
 	rt.LastMark = mark
-	if err := producer.PublishMarkTick(ctx, rt.PerpSymbol, mark, indexPx, fundingEst, now.UnixMilli(), idx.Stale, idx.Degraded); err != nil && ctx.Err() == nil {
+	if err := producer.PublishMarkTick(ctx, rt.PerpSymbol, mark, indexPx, fundingEst, now.UnixMilli(), idx.Stale, idx.Degraded, rt.ConfigVersion); err != nil && ctx.Err() == nil {
 		logger.Warn("publish mark tick", zap.String("symbol", rt.PerpSymbol), zap.Error(err))
 	}
 
@@ -263,7 +493,7 @@ func runSymbolTick(ctx context.Context, now time.Time, impactNotional dec.Decima
 		}
 		rate := rt.Calc.SettleFundingRate()
 		roundID := curBoundary.Unix()
-		if err := producer.PublishFundingTick(ctx, rt.PerpSymbol, roundID, rate, rt.LastMark, now.UnixMilli()); err != nil && ctx.Err() == nil {
+		if err := producer.PublishFundingTick(ctx, rt.PerpSymbol, roundID, rate, rt.LastMark, now.UnixMilli(), rt.ConfigVersion); err != nil && ctx.Err() == nil {
 			logger.Warn("publish funding tick", zap.String("symbol", rt.PerpSymbol), zap.Error(err))
 		} else {
 			logger.Info("funding round settled",
@@ -317,6 +547,9 @@ func buildSymbolRuntimes(cfg Config, defaultFundingInterval, indexMaxAge time.Du
 		}
 	}
 
+	// Tolerant parse: tests construct Config directly with the zero value;
+	// the production flag default is 20000.
+	legacyImpact, _ := dec.Parse(cfg.ImpactNotional)
 	out := make([]*symbolRuntime, 0, len(symbols))
 	for _, perpSymbol := range symbols {
 		spotSymbol := spotSymbolFor(perpSymbol, cfg.SpotSymbol, spotOverrides, len(symbols) == 1)
@@ -350,6 +583,7 @@ func buildSymbolRuntimes(cfg Config, defaultFundingInterval, indexMaxAge time.Du
 			IndexCfg:        indexCfg,
 			IndexEval:       indexEval,
 			SelfSourceName:  selfSourceName,
+			ImpactNotional:  legacyImpact,
 			LastBoundary:    now.UTC().Truncate(fundingInterval),
 		})
 	}

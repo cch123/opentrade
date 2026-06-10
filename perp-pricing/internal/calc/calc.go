@@ -40,7 +40,11 @@ type Config struct {
 	InterestDaily dec.Decimal // daily interest-rate component (e.g. 0.0003 = 0.03%/day)
 	IntervalMin   int64       // funding interval in minutes (for interest-per-interval); 0 disables the interest term
 	PremiumBand   dec.Decimal // ± band on (interest - avg_premium); Binance uses 0.0005 (±0.05%); 0 = no band clamp
-	FundingCap    dec.Decimal // clamp on |funding_rate|; 0 = no clamp
+	FundingCap    dec.Decimal // upper clamp on the settled funding rate; 0 = no clamp
+	// FundingFloor is the lower clamp (<= 0). Zero mirrors -FundingCap (the
+	// legacy symmetric behavior); an ADR-0075 catalog can set an asymmetric
+	// floor per symbol.
+	FundingFloor dec.Decimal
 }
 
 // Calc holds the running mark-basis EMA and the funding-interval premium-index
@@ -114,11 +118,29 @@ func (c *Calc) avgPremium() dec.Decimal {
 	return c.premiumSum.Div(dec.FromInt(c.premiumCount))
 }
 
-// fundingFromAvg applies the Binance interest-band + cap to an average premium:
-// funding = avg + clamp(interest - avg, ±band), then clamp(±funding_cap).
+// fundingFromAvg applies the Binance interest-band + cap/floor to an average
+// premium: funding = avg + clamp(interest - avg, ±band), then clamped into
+// [floor (or -cap), cap].
 func (c *Calc) fundingFromAvg(avg dec.Decimal) dec.Decimal {
 	f := avg.Add(clampBand(c.interestPerInterval().Sub(avg), c.cfg.PremiumBand))
-	return clampAbs(f, c.cfg.FundingCap)
+	return clampRange(f, c.cfg.FundingFloor, c.cfg.FundingCap)
+}
+
+// clampRange limits v to [floor, cap]. cap <= 0 disables the upper clamp;
+// floor 0 mirrors -cap (legacy symmetric clamp); floor > 0 never appears
+// (rejected at config validation).
+func clampRange(v, floor, cap dec.Decimal) dec.Decimal {
+	if cap.Sign() > 0 && v.Cmp(cap) > 0 {
+		return cap
+	}
+	lower := floor
+	if lower.Sign() == 0 && cap.Sign() > 0 {
+		lower = cap.Neg()
+	}
+	if lower.Sign() < 0 && v.Cmp(lower) < 0 {
+		return lower
+	}
+	return v
 }
 
 // interestPerInterval = daily_interest × interval_min / 1440 (the interval's
