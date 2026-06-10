@@ -59,6 +59,26 @@ enum RejectReason {
   REJECT_REASON_INTERNAL = 99;
 }
 
+// Perp symbol trading status (ADR-0075 §2). This is THE shared status set:
+// the catalog (pkg/perpcfg), perp-counter admission, Match admission, and the
+// ADR-0076 delivery flow must all reference this enum so no service invents
+// its own state semantics. Delivery states (PRE_DELIVERY / SETTLING /
+// SETTLING_HALTED / DELIVERED) are defined now but only exercised once
+// ADR-0076 lands; for perpetuals the operational states are PREOPEN /
+// TRADING / POST_ONLY / CANCEL_ONLY / DELISTED.
+enum PerpSymbolStatus {
+  PERP_SYMBOL_STATUS_UNSPECIFIED = 0;
+  PERP_SYMBOL_STATUS_PREOPEN = 1;          // query/subscribe only, no trading
+  PERP_SYMBOL_STATUS_TRADING = 2;          // place, cancel, match
+  PERP_SYMBOL_STATUS_POST_ONLY = 3;        // post-only new orders + cancels
+  PERP_SYMBOL_STATUS_CANCEL_ONLY = 4;      // cancels only
+  PERP_SYMBOL_STATUS_PRE_DELIVERY = 5;     // reduce-only / cancel / system ops (ADR-0076)
+  PERP_SYMBOL_STATUS_SETTLING = 6;         // system ops only (ADR-0076)
+  PERP_SYMBOL_STATUS_SETTLING_HALTED = 7;  // settlement dependency unavailable; frozen for admin (ADR-0076)
+  PERP_SYMBOL_STATUS_DELIVERED = 8;        // settled; funds/position results only (ADR-0076)
+  PERP_SYMBOL_STATUS_DELISTED = 9;         // history queries only
+}
+
 // Envelope metadata carried by every event. The producer-specific monotonic
 // sequence is NOT carried here — each event type embeds its own typed field
 // (counter_seq_id / match_seq_id / quote_seq_id / trigger_seq_id) so the

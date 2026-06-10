@@ -319,6 +319,83 @@ func (RejectReason) EnumDescriptor() ([]byte, []int) {
 	return file_event_common_proto_rawDescGZIP(), []int{4}
 }
 
+// Perp symbol trading status (ADR-0075 §2). This is THE shared status set:
+// the catalog (pkg/perpcfg), perp-counter admission, Match admission, and the
+// ADR-0076 delivery flow must all reference this enum so no service invents
+// its own state semantics. Delivery states (PRE_DELIVERY / SETTLING /
+// SETTLING_HALTED / DELIVERED) are defined now but only exercised once
+// ADR-0076 lands; for perpetuals the operational states are PREOPEN /
+// TRADING / POST_ONLY / CANCEL_ONLY / DELISTED.
+type PerpSymbolStatus int32
+
+const (
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_UNSPECIFIED     PerpSymbolStatus = 0
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_PREOPEN         PerpSymbolStatus = 1 // query/subscribe only, no trading
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_TRADING         PerpSymbolStatus = 2 // place, cancel, match
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_POST_ONLY       PerpSymbolStatus = 3 // post-only new orders + cancels
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_CANCEL_ONLY     PerpSymbolStatus = 4 // cancels only
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_PRE_DELIVERY    PerpSymbolStatus = 5 // reduce-only / cancel / system ops (ADR-0076)
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_SETTLING        PerpSymbolStatus = 6 // system ops only (ADR-0076)
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_SETTLING_HALTED PerpSymbolStatus = 7 // settlement dependency unavailable; frozen for admin (ADR-0076)
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_DELIVERED       PerpSymbolStatus = 8 // settled; funds/position results only (ADR-0076)
+	PerpSymbolStatus_PERP_SYMBOL_STATUS_DELISTED        PerpSymbolStatus = 9 // history queries only
+)
+
+// Enum value maps for PerpSymbolStatus.
+var (
+	PerpSymbolStatus_name = map[int32]string{
+		0: "PERP_SYMBOL_STATUS_UNSPECIFIED",
+		1: "PERP_SYMBOL_STATUS_PREOPEN",
+		2: "PERP_SYMBOL_STATUS_TRADING",
+		3: "PERP_SYMBOL_STATUS_POST_ONLY",
+		4: "PERP_SYMBOL_STATUS_CANCEL_ONLY",
+		5: "PERP_SYMBOL_STATUS_PRE_DELIVERY",
+		6: "PERP_SYMBOL_STATUS_SETTLING",
+		7: "PERP_SYMBOL_STATUS_SETTLING_HALTED",
+		8: "PERP_SYMBOL_STATUS_DELIVERED",
+		9: "PERP_SYMBOL_STATUS_DELISTED",
+	}
+	PerpSymbolStatus_value = map[string]int32{
+		"PERP_SYMBOL_STATUS_UNSPECIFIED":     0,
+		"PERP_SYMBOL_STATUS_PREOPEN":         1,
+		"PERP_SYMBOL_STATUS_TRADING":         2,
+		"PERP_SYMBOL_STATUS_POST_ONLY":       3,
+		"PERP_SYMBOL_STATUS_CANCEL_ONLY":     4,
+		"PERP_SYMBOL_STATUS_PRE_DELIVERY":    5,
+		"PERP_SYMBOL_STATUS_SETTLING":        6,
+		"PERP_SYMBOL_STATUS_SETTLING_HALTED": 7,
+		"PERP_SYMBOL_STATUS_DELIVERED":       8,
+		"PERP_SYMBOL_STATUS_DELISTED":        9,
+	}
+)
+
+func (x PerpSymbolStatus) Enum() *PerpSymbolStatus {
+	p := new(PerpSymbolStatus)
+	*p = x
+	return p
+}
+
+func (x PerpSymbolStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PerpSymbolStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_event_common_proto_enumTypes[5].Descriptor()
+}
+
+func (PerpSymbolStatus) Type() protoreflect.EnumType {
+	return &file_event_common_proto_enumTypes[5]
+}
+
+func (x PerpSymbolStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PerpSymbolStatus.Descriptor instead.
+func (PerpSymbolStatus) EnumDescriptor() ([]byte, []int) {
+	return file_event_common_proto_rawDescGZIP(), []int{5}
+}
+
 // Envelope metadata carried by every event. The producer-specific monotonic
 // sequence is NOT carried here — each event type embeds its own typed field
 // (counter_seq_id / match_seq_id / quote_seq_id / trigger_seq_id) so the
@@ -430,7 +507,18 @@ const file_event_common_proto_rawDesc = "" +
 	" REJECT_REASON_SYMBOL_NOT_TRADING\x10\x05\x12$\n" +
 	" REJECT_REASON_DUPLICATE_ORDER_ID\x10\x06\x12 \n" +
 	"\x1cREJECT_REASON_FOK_NOT_FILLED\x10\a\x12\x1a\n" +
-	"\x16REJECT_REASON_INTERNAL\x10cB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
+	"\x16REJECT_REASON_INTERNAL\x10c*\xed\x02\n" +
+	"\x10PerpSymbolStatus\x12\"\n" +
+	"\x1ePERP_SYMBOL_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aPERP_SYMBOL_STATUS_PREOPEN\x10\x01\x12\x1e\n" +
+	"\x1aPERP_SYMBOL_STATUS_TRADING\x10\x02\x12 \n" +
+	"\x1cPERP_SYMBOL_STATUS_POST_ONLY\x10\x03\x12\"\n" +
+	"\x1ePERP_SYMBOL_STATUS_CANCEL_ONLY\x10\x04\x12#\n" +
+	"\x1fPERP_SYMBOL_STATUS_PRE_DELIVERY\x10\x05\x12\x1f\n" +
+	"\x1bPERP_SYMBOL_STATUS_SETTLING\x10\x06\x12&\n" +
+	"\"PERP_SYMBOL_STATUS_SETTLING_HALTED\x10\a\x12 \n" +
+	"\x1cPERP_SYMBOL_STATUS_DELIVERED\x10\b\x12\x1f\n" +
+	"\x1bPERP_SYMBOL_STATUS_DELISTED\x10\tB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
 var (
 	file_event_common_proto_rawDescOnce sync.Once
@@ -444,7 +532,7 @@ func file_event_common_proto_rawDescGZIP() []byte {
 	return file_event_common_proto_rawDescData
 }
 
-var file_event_common_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_event_common_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
 var file_event_common_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_event_common_proto_goTypes = []any{
 	(Side)(0),                // 0: opentrade.event.Side
@@ -452,7 +540,8 @@ var file_event_common_proto_goTypes = []any{
 	(TimeInForce)(0),         // 2: opentrade.event.TimeInForce
 	(InternalOrderStatus)(0), // 3: opentrade.event.InternalOrderStatus
 	(RejectReason)(0),        // 4: opentrade.event.RejectReason
-	(*EventMeta)(nil),        // 5: opentrade.event.EventMeta
+	(PerpSymbolStatus)(0),    // 5: opentrade.event.PerpSymbolStatus
+	(*EventMeta)(nil),        // 6: opentrade.event.EventMeta
 }
 var file_event_common_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -472,7 +561,7 @@ func file_event_common_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_common_proto_rawDesc), len(file_event_common_proto_rawDesc)),
-			NumEnums:      5,
+			NumEnums:      6,
 			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,
