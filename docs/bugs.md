@@ -58,6 +58,12 @@ _(none)_
 
 ### 2026-06-10
 
+- **perp-journal 四类用户事件分区键缺失，多分区下打破 per-user 全序** — `perp-counter/internal/journal/convert.go` `journalPartitionKey` 的 switch 漏掉 ADR-0074/0077/0079/0081 新增的 `PositionConfig` / `MarginAdjustment` / `CustomerRiskLimit` / `InvariantBreach` 四类 payload，落入 default 返回 ""（默认 partitioner），同一用户的这些事件与其按 user_id 正确哈希的 OrderStatus/Settlement 等事件可落在不同分区，违反 `perp_journal.proto` 头部声明的 "Partition key: user_id"。消费方影响排查：push 私有流（`push/internal/consumer/perp_private.go` 按 user 路由 WS）在多分区部署下可见保证金调整相对结算乱序；trade-dump 投影四张表均为 `INSERT IGNORE` + `perp_seq_id` 主键，幂等且对到达序不敏感；perp-risk coordinator 不消费这四类 payload；perp-counter 自身恢复走 engine/service snapshot，不回放 perp-journal——均无状态损坏。
+  - 状态：fixed
+  - commit: [`7438df9`](../../commit/7438df9)
+  - 根因：给 payload oneof 新增事件类型时只接了事件构造与下游投影，没有同步 partition-key switch；缺少强制穷举 oneof 的回归测试，遗漏静默退化为默认分区。
+  - 修法：补四个 case 按 user_id 取键；表测试扩到全部 13 类 payload（含 risk_pool_settlement 与 user_id=0 的 "" 路径）；新增 `TestJournalPartitionKey_OneofExhaustive` 用 protobuf 反射遍历 payload oneof——任何带 user_id 字段的 payload 若未被 switch 处理即测试失败，机制性防止再漏（已用临时删 case 验证该测试确实报错）。
+
 - **tools/web 编译失败：faucet 仍把 string user 传给 uint64 的 `TransferInRequest.user_id`** — `cd tools/web && go build ./...` 报 `./faucet.go:65:15: cannot use user (variable of type string) as uint64 value in struct literal`。user id 全栈 string→uint64 迁移遗漏了 tools/web；前端默认用户 `"alice"` / `"bob"` 属同一遗留——`pkg/auth.parseUserID` 只接受非零数字 `X-User-Id`，旧默认值会被 BFF 在所有 REST/WS 调用上拒绝。
   - 状态：fixed
   - commit: [`6cc8ca2`](../../commit/6cc8ca2)
