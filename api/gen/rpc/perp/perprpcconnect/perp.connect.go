@@ -73,6 +73,12 @@ const (
 	// PerpServiceListCustomerLeverageLimitsProcedure is the fully-qualified name of the PerpService's
 	// ListCustomerLeverageLimits RPC.
 	PerpServiceListCustomerLeverageLimitsProcedure = "/opentrade.rpc.perp.PerpService/ListCustomerLeverageLimits"
+	// PerpServiceSetCustomerFeeRateProcedure is the fully-qualified name of the PerpService's
+	// SetCustomerFeeRate RPC.
+	PerpServiceSetCustomerFeeRateProcedure = "/opentrade.rpc.perp.PerpService/SetCustomerFeeRate"
+	// PerpServiceListCustomerFeeRatesProcedure is the fully-qualified name of the PerpService's
+	// ListCustomerFeeRates RPC.
+	PerpServiceListCustomerFeeRatesProcedure = "/opentrade.rpc.perp.PerpService/ListCustomerFeeRates"
 	// PerpServiceProjectRiskConfigProcedure is the fully-qualified name of the PerpService's
 	// ProjectRiskConfig RPC.
 	PerpServiceProjectRiskConfigProcedure = "/opentrade.rpc.perp.PerpService/ProjectRiskConfig"
@@ -101,6 +107,12 @@ type PerpServiceClient interface {
 	// ADR-0074 §10 admin plane (internal; not routed by the public BFF).
 	SetCustomerLeverageLimit(context.Context, *connect.Request[perp.SetCustomerLeverageLimitRequest]) (*connect.Response[perp.SetCustomerLeverageLimitResponse], error)
 	ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error)
+	// ADR-0079 §1 admin plane: per-user fee override (user+symbol row overrides
+	// the user-global row, which overrides SymbolConfig.FeeParams). Applies to
+	// orders admitted AFTER the change — in-flight orders keep their pinned
+	// rates (replay determinism).
+	SetCustomerFeeRate(context.Context, *connect.Request[perp.SetCustomerFeeRateRequest]) (*connect.Response[perp.SetCustomerFeeRateResponse], error)
+	ListCustomerFeeRates(context.Context, *connect.Request[perp.ListCustomerFeeRatesRequest]) (*connect.Response[perp.ListCustomerFeeRatesResponse], error)
 	// ADR-0075 §3 risk_reprice_policy dry-run: evaluate every position in
 	// symbol under a CANDIDATE risk tier table and report how many accounts
 	// would see a higher maintenance requirement / would breach maintenance
@@ -210,6 +222,18 @@ func NewPerpServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(perpServiceMethods.ByName("ListCustomerLeverageLimits")),
 			connect.WithClientOptions(opts...),
 		),
+		setCustomerFeeRate: connect.NewClient[perp.SetCustomerFeeRateRequest, perp.SetCustomerFeeRateResponse](
+			httpClient,
+			baseURL+PerpServiceSetCustomerFeeRateProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("SetCustomerFeeRate")),
+			connect.WithClientOptions(opts...),
+		),
+		listCustomerFeeRates: connect.NewClient[perp.ListCustomerFeeRatesRequest, perp.ListCustomerFeeRatesResponse](
+			httpClient,
+			baseURL+PerpServiceListCustomerFeeRatesProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("ListCustomerFeeRates")),
+			connect.WithClientOptions(opts...),
+		),
 		projectRiskConfig: connect.NewClient[perp.ProjectRiskConfigRequest, perp.ProjectRiskConfigResponse](
 			httpClient,
 			baseURL+PerpServiceProjectRiskConfigProcedure,
@@ -236,6 +260,8 @@ type perpServiceClient struct {
 	queryAccountConfig         *connect.Client[perp.QueryAccountConfigRequest, perp.QueryAccountConfigResponse]
 	setCustomerLeverageLimit   *connect.Client[perp.SetCustomerLeverageLimitRequest, perp.SetCustomerLeverageLimitResponse]
 	listCustomerLeverageLimits *connect.Client[perp.ListCustomerLeverageLimitsRequest, perp.ListCustomerLeverageLimitsResponse]
+	setCustomerFeeRate         *connect.Client[perp.SetCustomerFeeRateRequest, perp.SetCustomerFeeRateResponse]
+	listCustomerFeeRates       *connect.Client[perp.ListCustomerFeeRatesRequest, perp.ListCustomerFeeRatesResponse]
 	projectRiskConfig          *connect.Client[perp.ProjectRiskConfigRequest, perp.ProjectRiskConfigResponse]
 }
 
@@ -314,6 +340,16 @@ func (c *perpServiceClient) ListCustomerLeverageLimits(ctx context.Context, req 
 	return c.listCustomerLeverageLimits.CallUnary(ctx, req)
 }
 
+// SetCustomerFeeRate calls opentrade.rpc.perp.PerpService.SetCustomerFeeRate.
+func (c *perpServiceClient) SetCustomerFeeRate(ctx context.Context, req *connect.Request[perp.SetCustomerFeeRateRequest]) (*connect.Response[perp.SetCustomerFeeRateResponse], error) {
+	return c.setCustomerFeeRate.CallUnary(ctx, req)
+}
+
+// ListCustomerFeeRates calls opentrade.rpc.perp.PerpService.ListCustomerFeeRates.
+func (c *perpServiceClient) ListCustomerFeeRates(ctx context.Context, req *connect.Request[perp.ListCustomerFeeRatesRequest]) (*connect.Response[perp.ListCustomerFeeRatesResponse], error) {
+	return c.listCustomerFeeRates.CallUnary(ctx, req)
+}
+
 // ProjectRiskConfig calls opentrade.rpc.perp.PerpService.ProjectRiskConfig.
 func (c *perpServiceClient) ProjectRiskConfig(ctx context.Context, req *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error) {
 	return c.projectRiskConfig.CallUnary(ctx, req)
@@ -342,6 +378,12 @@ type PerpServiceHandler interface {
 	// ADR-0074 §10 admin plane (internal; not routed by the public BFF).
 	SetCustomerLeverageLimit(context.Context, *connect.Request[perp.SetCustomerLeverageLimitRequest]) (*connect.Response[perp.SetCustomerLeverageLimitResponse], error)
 	ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error)
+	// ADR-0079 §1 admin plane: per-user fee override (user+symbol row overrides
+	// the user-global row, which overrides SymbolConfig.FeeParams). Applies to
+	// orders admitted AFTER the change — in-flight orders keep their pinned
+	// rates (replay determinism).
+	SetCustomerFeeRate(context.Context, *connect.Request[perp.SetCustomerFeeRateRequest]) (*connect.Response[perp.SetCustomerFeeRateResponse], error)
+	ListCustomerFeeRates(context.Context, *connect.Request[perp.ListCustomerFeeRatesRequest]) (*connect.Response[perp.ListCustomerFeeRatesResponse], error)
 	// ADR-0075 §3 risk_reprice_policy dry-run: evaluate every position in
 	// symbol under a CANDIDATE risk tier table and report how many accounts
 	// would see a higher maintenance requirement / would breach maintenance
@@ -447,6 +489,18 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(perpServiceMethods.ByName("ListCustomerLeverageLimits")),
 		connect.WithHandlerOptions(opts...),
 	)
+	perpServiceSetCustomerFeeRateHandler := connect.NewUnaryHandler(
+		PerpServiceSetCustomerFeeRateProcedure,
+		svc.SetCustomerFeeRate,
+		connect.WithSchema(perpServiceMethods.ByName("SetCustomerFeeRate")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceListCustomerFeeRatesHandler := connect.NewUnaryHandler(
+		PerpServiceListCustomerFeeRatesProcedure,
+		svc.ListCustomerFeeRates,
+		connect.WithSchema(perpServiceMethods.ByName("ListCustomerFeeRates")),
+		connect.WithHandlerOptions(opts...),
+	)
 	perpServiceProjectRiskConfigHandler := connect.NewUnaryHandler(
 		PerpServiceProjectRiskConfigProcedure,
 		svc.ProjectRiskConfig,
@@ -485,6 +539,10 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 			perpServiceSetCustomerLeverageLimitHandler.ServeHTTP(w, r)
 		case PerpServiceListCustomerLeverageLimitsProcedure:
 			perpServiceListCustomerLeverageLimitsHandler.ServeHTTP(w, r)
+		case PerpServiceSetCustomerFeeRateProcedure:
+			perpServiceSetCustomerFeeRateHandler.ServeHTTP(w, r)
+		case PerpServiceListCustomerFeeRatesProcedure:
+			perpServiceListCustomerFeeRatesHandler.ServeHTTP(w, r)
 		case PerpServiceProjectRiskConfigProcedure:
 			perpServiceProjectRiskConfigHandler.ServeHTTP(w, r)
 		default:
@@ -554,6 +612,14 @@ func (UnimplementedPerpServiceHandler) SetCustomerLeverageLimit(context.Context,
 
 func (UnimplementedPerpServiceHandler) ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) SetCustomerFeeRate(context.Context, *connect.Request[perp.SetCustomerFeeRateRequest]) (*connect.Response[perp.SetCustomerFeeRateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.SetCustomerFeeRate is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) ListCustomerFeeRates(context.Context, *connect.Request[perp.ListCustomerFeeRatesRequest]) (*connect.Response[perp.ListCustomerFeeRatesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.ListCustomerFeeRates is not implemented"))
 }
 
 func (UnimplementedPerpServiceHandler) ProjectRiskConfig(context.Context, *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error) {

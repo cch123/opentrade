@@ -41,6 +41,13 @@ service PerpService {
   rpc SetCustomerLeverageLimit(SetCustomerLeverageLimitRequest) returns (SetCustomerLeverageLimitResponse);
   rpc ListCustomerLeverageLimits(ListCustomerLeverageLimitsRequest) returns (ListCustomerLeverageLimitsResponse);
 
+  // ADR-0079 §1 admin plane: per-user fee override (user+symbol row overrides
+  // the user-global row, which overrides SymbolConfig.FeeParams). Applies to
+  // orders admitted AFTER the change — in-flight orders keep their pinned
+  // rates (replay determinism).
+  rpc SetCustomerFeeRate(SetCustomerFeeRateRequest) returns (SetCustomerFeeRateResponse);
+  rpc ListCustomerFeeRates(ListCustomerFeeRatesRequest) returns (ListCustomerFeeRatesResponse);
+
   // ADR-0075 §3 risk_reprice_policy dry-run: evaluate every position in
   // symbol under a CANDIDATE risk tier table and report how many accounts
   // would see a higher maintenance requirement / would breach maintenance
@@ -339,6 +346,42 @@ message ListCustomerLeverageLimitsRequest {
 
 message ListCustomerLeverageLimitsResponse {
   repeated CustomerLeverageLimit limits = 1;
+}
+
+// --- ADR-0079 §1 admin plane: per-user fee overrides ----------------------
+
+message CustomerFeeRate {
+  uint64 user_id = 1;
+  string symbol = 2;          // empty = all symbols
+  string fee_rule_id = 3;
+  string maker_fee_rate = 4;  // signed decimal; < 0 = rebate
+  string taker_fee_rate = 5;  // decimal, >= 0
+  string reason = 6;
+  string updated_by = 7;
+  int64 updated_at_unix_ms = 8;
+}
+
+message SetCustomerFeeRateRequest {
+  uint64 user_id = 1;
+  string symbol = 2;          // empty = user-global override
+  string fee_rule_id = 3;     // empty = remove the override row
+  string maker_fee_rate = 4;  // signed decimal; <= taker_fee_rate
+  string taker_fee_rate = 5;  // decimal in [0, 1)
+  string reason = 6;
+  string updated_by = 7;
+}
+
+message SetCustomerFeeRateResponse {
+  bool accepted = 1;
+  string reject_reason = 2;
+}
+
+message ListCustomerFeeRatesRequest {
+  uint64 user_id = 1;         // 0 = all users
+}
+
+message ListCustomerFeeRatesResponse {
+  repeated CustomerFeeRate fee_rates = 1;
 }
 
 // ADR-0075 §3 dry-run projection.

@@ -73,6 +73,16 @@ service HistoryService {
   // first by ts.
   rpc ListPerpConfigLogs(ListPerpConfigLogsRequest) returns (ListPerpConfigLogsResponse);
 
+  // ListPerpSettlements pages a user's fills with fee attribution
+  // (ADR-0079: the perp_settlements row is also the fee ledger), newest
+  // first by ts.
+  rpc ListPerpSettlements(ListPerpSettlementsRequest) returns (ListPerpSettlementsResponse);
+
+  // ListPerpDailyStats pages a user's per-(symbol, UTC day) aggregates —
+  // trading fee / rebate / funding / realized PnL (ADR-0079 §6), newest
+  // first by stat_date.
+  rpc ListPerpDailyStats(ListPerpDailyStatsRequest) returns (ListPerpDailyStatsResponse);
+
   // GetTrigger returns one trigger by id from the long-term
   // projection (ADR-0047). Use this for looking up a trigger after
   // it has aged out of the trigger service's in-memory terminal
@@ -372,6 +382,71 @@ message PerpFunding {
   string payment = 6; // signed; negative = the position paid
   int64 ts_unix_ms = 7;
   uint32 position_idx = 8; // ADR-0077 per-leg funding
+}
+
+message ListPerpSettlementsRequest {
+  uint64 user_id = 1;
+  string symbol = 2; // "" = any
+  int64 since_ms = 3;
+  int64 until_ms = 4;
+  string cursor = 5;
+  int32 limit = 6;
+}
+
+message ListPerpSettlementsResponse {
+  repeated PerpSettlement settlements = 1;
+  string next_cursor = 2;
+}
+
+// PerpSettlement mirrors the `perp_settlements` projection row — one fill
+// with its ADR-0079 fee attribution.
+message PerpSettlement {
+  uint64 perp_seq_id = 1;
+  uint64 order_id = 2;
+  string trade_id = 3;
+  string symbol = 4;
+  uint32 position_idx = 5;
+  int32 fill_side = 6;
+  string price = 7;
+  string qty = 8;
+  string realized_pnl = 9;     // pre-fee
+  string fee = 10;             // signed: > 0 paid, < 0 rebate received
+  string margin_added = 11;
+  string margin_released = 12;
+  int32 liquidity_role = 13;   // 1 maker / 2 taker
+  string fee_rule_id = 14;
+  string fee_rate = 15;
+  string fee_asset = 16;
+  string fee_deficit = 17;
+  bool rebate_suppressed = 18;
+  int64 ts_unix_ms = 19;
+}
+
+message ListPerpDailyStatsRequest {
+  uint64 user_id = 1;
+  string symbol = 2;  // "" = any
+  int64 since_ms = 3; // filters stat_date (UTC day start), 0 = unbounded
+  int64 until_ms = 4;
+  string cursor = 5;
+  int32 limit = 6;
+}
+
+message ListPerpDailyStatsResponse {
+  repeated PerpDailyStat stats = 1;
+  string next_cursor = 2;
+}
+
+// PerpDailyStat joins the three ADR-0079 §6 daily tables on
+// (user_id, symbol, stat_date); absent rows contribute zeros.
+message PerpDailyStat {
+  string symbol = 1;
+  string stat_date = 2;        // "YYYY-MM-DD" (UTC day)
+  string trading_fee = 3;      // Σ positive fees charged
+  string rebate = 4;           // Σ rebates received (positive number)
+  string fee_deficit = 5;      // Σ uncollectable fee
+  string funding_paid = 6;     // Σ |negative funding payments|
+  string funding_received = 7; // Σ positive funding payments
+  string realized_pnl = 8;     // Σ trade-close realized (settle + liq + ADL; funding excluded)
 }
 
 message ListPerpMarginAdjustmentsRequest {

@@ -141,20 +141,22 @@ func (s *Service) handleExpired(e *eventpb.OrderExpired) {
 	})
 }
 
-// releaseRemainingIM returns an order's still-held initial margin to the
-// wallet's available balance, from the bucket matching the order's margin
-// mode (ADR-0074). afterFill has already drained the part converted to
-// position margin (isolated) or released per filled proportion (cross), so
-// this releases only the unfilled remainder's hold. Caller holds the user's
-// seq lock.
+// releaseRemainingIM returns an order's still-held order cost — initial
+// margin plus the ADR-0079 fee buffer — to the wallet's available balance,
+// from the bucket matching the order's margin mode (ADR-0074). afterFill has
+// already drained the IM converted to position margin (isolated) / released
+// per filled proportion (cross) and the fee buffer consumed by actual fees,
+// so this releases only the remainder (the fee 多退 settles here). Caller
+// holds the user's seq lock.
 func (s *Service) releaseRemainingIM(o *Order) {
-	if o.ReservedIM.Sign() > 0 {
+	if hold := o.ReservedIM.Add(o.ReservedFee); hold.Sign() > 0 {
 		if o.Mode == perpstate.MarginCross {
-			s.eng.ReleaseCross(o.UserID, o.ReservedIM)
+			s.eng.ReleaseCross(o.UserID, hold)
 		} else {
-			s.eng.Release(o.UserID, o.ReservedIM)
+			s.eng.Release(o.UserID, hold)
 		}
 		o.ReservedIM = zero
+		o.ReservedFee = zero
 	}
 }
 

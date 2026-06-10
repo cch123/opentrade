@@ -193,6 +193,19 @@ func (c *Cache) At(symbol string, version uint64) (*PerpSymbolConfig, bool) {
 	return cs.At(version)
 }
 
+// SpecOf returns symbol's stable contract spec (version-independent: spec
+// fields never change after listing). ADR-0079 fee pinning reads the settle
+// asset from here.
+func (c *Cache) SpecOf(symbol string) (PerpSymbol, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	cs := c.symbols[symbol]
+	if cs == nil {
+		return PerpSymbol{}, false
+	}
+	return cs.Spec, true
+}
+
 // EffectiveRiskVersion resolves which version's risk tiers govern a position
 // pinned at `pinned` (ADR-0075 §3 staged semantics): the highest
 // RiskApply=IMMEDIATE version that is effective now overrides the pin;

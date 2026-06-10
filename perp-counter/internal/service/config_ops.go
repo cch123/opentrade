@@ -380,6 +380,70 @@ func (s *Service) ListCustomerLeverageLimits(req *perprpc.ListCustomerLeverageLi
 	return &perprpc.ListCustomerLeverageLimitsResponse{Limits: rows}, nil
 }
 
+// SetCustomerFeeRate is the ADR-0079 §1 admin op: install or remove a
+// per-user fee override. Like the leverage cap it is admission-time advisory
+// state — it never enters a user sequencer and never touches positions or
+// in-flight orders (those keep their pinned rates).
+func (s *Service) SetCustomerFeeRate(req *perprpc.SetCustomerFeeRateRequest) (*perprpc.SetCustomerFeeRateResponse, error) {
+	if req.GetUserId() == 0 {
+		return nil, errInvalid("user_id required")
+	}
+	ov := engine.FeeOverride{
+		RuleID: req.GetFeeRuleId(), Reason: req.GetReason(),
+		UpdatedBy: req.GetUpdatedBy(), UpdatedMs: s.now(),
+	}
+	if ov.RuleID != "" { // empty rule id = remove; rates are ignored then
+		maker, err := dec.Parse(req.GetMakerFeeRate())
+		if err != nil {
+			return nil, errInvalid("invalid maker_fee_rate")
+		}
+		taker, err := dec.Parse(req.GetTakerFeeRate())
+		if err != nil {
+			return nil, errInvalid("invalid taker_fee_rate")
+		}
+		one := dec.FromInt(1)
+		switch {
+		case taker.Sign() < 0 || taker.Cmp(one) >= 0:
+			return &perprpc.SetCustomerFeeRateResponse{RejectReason: "taker_fee_rate_out_of_range"}, nil
+		case maker.Abs().Cmp(one) >= 0:
+			return &perprpc.SetCustomerFeeRateResponse{RejectReason: "maker_fee_rate_out_of_range"}, nil
+		case maker.Cmp(taker) > 0:
+			// The taker rate is the fee-buffer upper bound (ADR-0079 §1).
+			return &perprpc.SetCustomerFeeRateResponse{RejectReason: "maker_fee_rate_above_taker"}, nil
+		case maker.Sign() < 0 && !s.cfg.AllowNegativeMakerFee:
+			// Catalog-sourced negative rates degrade at pin time (perp-counter
+			// cannot reject an already-published config); an admin override is
+			// rejected here instead so the operator gets explicit feedback.
+			return &perprpc.SetCustomerFeeRateResponse{RejectReason: "negative_maker_fee_disabled"}, nil
+		}
+		ov.MakerRate, ov.TakerRate = maker, taker
+	}
+	s.eng.SetCustomerFeeOverride(req.GetUserId(), req.GetSymbol(), ov)
+	s.journal.Emit(&eventpb.PerpJournalEvent{
+		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
+		Payload: &eventpb.PerpJournalEvent_CustomerFee{CustomerFee: &eventpb.PerpCustomerFeeEvent{
+			UserId: req.GetUserId(), Symbol: req.GetSymbol(),
+			FeeRuleId: ov.RuleID, MakerFeeRate: ov.MakerRate.String(), TakerFeeRate: ov.TakerRate.String(),
+			Reason: ov.Reason, UpdatedBy: ov.UpdatedBy,
+		}},
+	})
+	return &perprpc.SetCustomerFeeRateResponse{Accepted: true}, nil
+}
+
+// ListCustomerFeeRates is the ADR-0079 §1 admin list/audit query.
+func (s *Service) ListCustomerFeeRates(req *perprpc.ListCustomerFeeRatesRequest) (*perprpc.ListCustomerFeeRatesResponse, error) {
+	rows := s.eng.CustomerFeeOverrides(req.GetUserId())
+	out := make([]*perprpc.CustomerFeeRate, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &perprpc.CustomerFeeRate{
+			UserId: r.UserID, Symbol: r.Symbol, FeeRuleId: r.RuleID,
+			MakerFeeRate: r.MakerRate.String(), TakerFeeRate: r.TakerRate.String(),
+			Reason: r.Reason, UpdatedBy: r.UpdatedBy, UpdatedAtUnixMs: r.UpdatedMs,
+		})
+	}
+	return &perprpc.ListCustomerFeeRatesResponse{FeeRates: out}, nil
+}
+
 // runAutoAdd is the §7 mark-tick pass: for every auto-add-enabled position
 // leg in symbol, attempt the top-up inside the owning user's sequencer BEFORE
 // the liquidation scan runs (the scan's sequencer re-check then sees the

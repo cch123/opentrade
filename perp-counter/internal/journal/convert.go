@@ -47,6 +47,8 @@ func journalPartitionKey(evt *eventpb.PerpJournalEvent) string {
 		return journalUserKey(p.Takeover.GetUserId())
 	case *eventpb.PerpJournalEvent_Adl:
 		return journalUserKey(p.Adl.GetUserId())
+	case *eventpb.PerpJournalEvent_CustomerFee:
+		return journalUserKey(p.CustomerFee.GetUserId())
 	case *eventpb.PerpJournalEvent_RiskPoolSettlement:
 		return ""
 	default:

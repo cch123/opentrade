@@ -71,6 +71,15 @@ func (m *MySQL) ApplyPerpBatch(ctx context.Context, batch PerpBatch) error {
 	if err := m.insertPerpBreaches(ctx, tx, batch.Breaches); err != nil {
 		return err
 	}
+	if err := m.insertPerpCustomerFees(ctx, tx, batch.CustomerFees); err != nil {
+		return err
+	}
+	// ADR-0079 §6: refresh the daily aggregates for every (user, symbol, day)
+	// key this batch touched — recompute-from-base in the SAME transaction,
+	// so redelivery converges instead of double-counting.
+	if err := m.recomputePerpDailyStats(ctx, tx, batch); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit perp tx: %w", err)
 	}
@@ -162,17 +171,38 @@ func upsertPerpOrder(ctx context.Context, tx *sql.Tx, r PerpOrderRow) error {
 func (m *MySQL) insertPerpSettlements(ctx context.Context, tx *sql.Tx, rows []PerpSettlementRow) error {
 	return chunk(rows, m.chunkSize, func(rs []PerpSettlementRow) error {
 		ph := make([]string, len(rs))
-		args := make([]any, 0, len(rs)*14)
+		args := make([]any, 0, len(rs)*21)
 		for i, r := range rs {
-			ph[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+			ph[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 			args = append(args, r.PerpSeqID, r.UserID, r.OrderID, r.TradeID, r.Symbol, r.PositionIdx, r.FillSide,
 				zeroIfEmpty(r.Price), zeroIfEmpty(r.Qty), zeroIfEmpty(r.RealizedPnl), zeroIfEmpty(r.Fee),
-				zeroIfEmpty(r.MarginAdded), zeroIfEmpty(r.MarginReleased), r.TsUnixMs)
+				zeroIfEmpty(r.MarginAdded), zeroIfEmpty(r.MarginReleased),
+				r.LiquidityRole, r.FeeRuleID, zeroIfEmpty(r.FeeRate), r.FeeAsset,
+				zeroIfEmpty(r.FeeDeficit), r.RebateSuppressed, zeroIfEmpty(r.WalletAfter),
+				r.TsUnixMs)
 		}
-		q := "INSERT INTO perp_settlements (perp_seq_id, user_id, order_id, trade_id, symbol, position_idx, fill_side, price, qty, realized_pnl, fee, margin_added, margin_released, ts_unix_ms) VALUES " +
+		q := "INSERT INTO perp_settlements (perp_seq_id, user_id, order_id, trade_id, symbol, position_idx, fill_side, price, qty, realized_pnl, fee, margin_added, margin_released, liquidity_role, fee_rule_id, fee_rate, fee_asset, fee_deficit, rebate_suppressed, wallet_after, ts_unix_ms) VALUES " +
 			strings.Join(ph, ", ") + " ON DUPLICATE KEY UPDATE perp_seq_id = perp_seq_id"
 		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("perp_settlements insert: %w", err)
+		}
+		return nil
+	})
+}
+
+func (m *MySQL) insertPerpCustomerFees(ctx context.Context, tx *sql.Tx, rows []PerpCustomerFeeRow) error {
+	return chunk(rows, m.chunkSize, func(rs []PerpCustomerFeeRow) error {
+		ph := make([]string, len(rs))
+		args := make([]any, 0, len(rs)*9)
+		for i, r := range rs {
+			ph[i] = "(?, ?, ?, ?, ?, ?, ?, ?, ?)"
+			args = append(args, r.PerpSeqID, r.UserID, r.Symbol, r.FeeRuleID,
+				zeroIfEmpty(r.MakerFeeRate), zeroIfEmpty(r.TakerFeeRate), r.Reason, r.UpdatedBy, r.TsUnixMs)
+		}
+		q := "INSERT IGNORE INTO perp_customer_fee_rules (perp_seq_id, user_id, symbol, fee_rule_id, maker_fee_rate, taker_fee_rate, reason, updated_by, ts_unix_ms) VALUES " +
+			strings.Join(ph, ", ")
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("perp_customer_fee_rules insert: %w", err)
 		}
 		return nil
 	})

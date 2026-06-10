@@ -75,6 +75,12 @@ func (f *fakePerp) SetCustomerLeverageLimit(_ context.Context, _ *connect.Reques
 func (f *fakePerp) ListCustomerLeverageLimits(_ context.Context, _ *connect.Request[perprpc.ListCustomerLeverageLimitsRequest]) (*connect.Response[perprpc.ListCustomerLeverageLimitsResponse], error) {
 	return connect.NewResponse(&perprpc.ListCustomerLeverageLimitsResponse{}), nil
 }
+func (f *fakePerp) SetCustomerFeeRate(_ context.Context, _ *connect.Request[perprpc.SetCustomerFeeRateRequest]) (*connect.Response[perprpc.SetCustomerFeeRateResponse], error) {
+	return connect.NewResponse(&perprpc.SetCustomerFeeRateResponse{Accepted: true}), nil
+}
+func (f *fakePerp) ListCustomerFeeRates(_ context.Context, _ *connect.Request[perprpc.ListCustomerFeeRatesRequest]) (*connect.Response[perprpc.ListCustomerFeeRatesResponse], error) {
+	return connect.NewResponse(&perprpc.ListCustomerFeeRatesResponse{}), nil
+}
 func (f *fakePerp) ProjectRiskConfig(_ context.Context, _ *connect.Request[perprpc.ProjectRiskConfigRequest]) (*connect.Response[perprpc.ProjectRiskConfigResponse], error) {
 	return connect.NewResponse(&perprpc.ProjectRiskConfigResponse{}), nil
 }

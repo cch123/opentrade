@@ -43,6 +43,7 @@ type OrderSnap struct {
 	ReduceOnly  bool   `json:"reduce_only"`
 	SlippageBps uint32 `json:"slippage_bps,omitempty"` // ADR-0083 protected market order
 	ReservedIM  string `json:"reserved_im"`
+	ReservedFee string `json:"reserved_fee,omitempty"` // ADR-0079 fee buffer remainder
 	FilledQty   string `json:"filled_qty"`
 	Status      int32  `json:"status"`
 	CreatedMs   int64  `json:"created_ms"`
@@ -50,6 +51,14 @@ type OrderSnap struct {
 
 	// ADR-0075: admission config version (re-stamped on recovery dispatches).
 	ConfigVersion uint64 `json:"config_version,omitempty"`
+
+	// ADR-0079 §1 fee pin — must survive restart or replayed fills would
+	// re-resolve fees against post-crash state.
+	FeeRuleID          string `json:"fee_rule_id,omitempty"`
+	FeeMakerRate       string `json:"fee_maker_rate,omitempty"`
+	FeeTakerRate       string `json:"fee_taker_rate,omitempty"`
+	FeeAsset           string `json:"fee_asset,omitempty"`
+	FeeMakerSuppressed bool   `json:"fee_maker_suppressed,omitempty"`
 }
 
 // LiqSnap is one in-flight liquidation (bankruptcy order placed, not yet
@@ -110,9 +119,12 @@ func (s *Service) snapshotLocked() Snapshot {
 			Mode:        uint8(o.Mode),
 			PositionIdx: o.PositionIdx,
 			SlippageBps: o.SlippageBps,
-			ReduceOnly:  o.ReduceOnly, ReservedIM: o.ReservedIM.String(), FilledQty: o.FilledQty.String(),
-			Status: int32(o.Status), CreatedMs: o.CreatedMs, UpdatedMs: o.UpdatedMs,
+			ReduceOnly:  o.ReduceOnly, ReservedIM: o.ReservedIM.String(), ReservedFee: o.ReservedFee.String(),
+			FilledQty: o.FilledQty.String(),
+			Status:    int32(o.Status), CreatedMs: o.CreatedMs, UpdatedMs: o.UpdatedMs,
 			ConfigVersion: o.ConfigVersion,
+			FeeRuleID:     o.FeeRuleID, FeeMakerRate: o.FeeMakerRate.String(), FeeTakerRate: o.FeeTakerRate.String(),
+			FeeAsset: o.FeeAsset, FeeMakerSuppressed: o.FeeMakerSuppressed,
 		})
 	}
 	for _, liq := range s.liqByOrder {
@@ -151,9 +163,12 @@ func (s *Service) Restore(snap Snapshot) {
 			Mode:        perpstate.MarginMode(os.Mode),
 			PositionIdx: os.PositionIdx,
 			SlippageBps: os.SlippageBps,
-			ReduceOnly:  os.ReduceOnly, ReservedIM: dec.New(os.ReservedIM), FilledQty: dec.New(os.FilledQty),
-			Status: eventpb.InternalOrderStatus(os.Status), CreatedMs: os.CreatedMs, UpdatedMs: os.UpdatedMs,
+			ReduceOnly:  os.ReduceOnly, ReservedIM: dec.New(os.ReservedIM), ReservedFee: snapDecimal(os.ReservedFee),
+			FilledQty: dec.New(os.FilledQty),
+			Status:    eventpb.InternalOrderStatus(os.Status), CreatedMs: os.CreatedMs, UpdatedMs: os.UpdatedMs,
 			ConfigVersion: os.ConfigVersion,
+			FeeRuleID:     os.FeeRuleID, FeeMakerRate: snapDecimal(os.FeeMakerRate), FeeTakerRate: snapDecimal(os.FeeTakerRate),
+			FeeAsset: os.FeeAsset, FeeMakerSuppressed: os.FeeMakerSuppressed,
 		}
 	}
 	s.liqByKey = make(map[string]*liquidation, len(snap.Liquidations))

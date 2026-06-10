@@ -113,6 +113,12 @@ type Engine struct {
 	crossUsers map[string]map[uint64]struct{}
 	autoAdd    map[string]map[uint64]struct{} // symbol → users with a live auto-add-enabled isolated position
 
+	// ADR-0079 fee state: per-user fee overrides (admin plane) and the
+	// platform fee account's net balance per settle asset (system-side
+	// counter-account; same local-cache pattern as insurance).
+	feeOverrides map[uint64]map[string]FeeOverride
+	platformFee  map[string]dec.Decimal
+
 	// liqIndex is ADR-0072 derived state: it is rebuilt from positions after
 	// restore and updated in the same write critical section as every position
 	// mutation. Cross positions are excluded — their liquidation trigger is
@@ -148,11 +154,13 @@ func New() *Engine {
 		marks:      map[string]dec.Decimal{},
 		insurance:  map[string]dec.Decimal{},
 		transfers:  map[string]TransferOutcome{},
-		levLimits:  map[uint64]map[string]CustomerLimit{},
-		ops:        map[string]OpOutcome{},
-		crossUsers: map[string]map[uint64]struct{}{},
-		autoAdd:    map[string]map[uint64]struct{}{},
-		liqIndex:   newLiqIndex(),
+		levLimits:    map[uint64]map[string]CustomerLimit{},
+		ops:          map[string]OpOutcome{},
+		crossUsers:   map[string]map[uint64]struct{}{},
+		autoAdd:      map[string]map[uint64]struct{}{},
+		feeOverrides: map[uint64]map[string]FeeOverride{},
+		platformFee:  map[string]dec.Decimal{},
+		liqIndex:     newLiqIndex(),
 	}
 }
 
@@ -566,11 +574,21 @@ func (e *Engine) ApplyFill(user uint64, symbol string, idx uint8, leverage dec.D
 // happen under one lock — no TOCTOU between checking the watermark and
 // mutating the position. excess: see ApplyFill.
 func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, idx uint8, leverage dec.Decimal, seq uint64, f perpstate.Fill) (perpstate.FillResult, dec.Decimal, bool) {
+	res, excess, _, applied := e.ApplyFillWithFee(user, symbol, idx, leverage, seq, f, FeeCharge{})
+	return res, excess, applied
+}
+
+// ApplyFillWithFee is ApplyFillWithSeq plus the ADR-0079 trade-fee step: the
+// position mutation, cash routing, AND the fee movement (wallet / order fee
+// reservation / platform account) commit in one critical section, so a
+// snapshot or a concurrent reader can never observe a settled fill whose fee
+// has not been charged. A replayed seq skips the fee too (applied=false).
+func (e *Engine) ApplyFillWithFee(user uint64, symbol string, idx uint8, leverage dec.Decimal, seq uint64, f perpstate.Fill, fee FeeCharge) (perpstate.FillResult, dec.Decimal, FeeOutcome, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p := e.legLocked(user, symbol, idx)
 	if seq != 0 && seq <= p.LastMatchSeq {
-		return perpstate.FillResult{}, zero, false
+		return perpstate.FillResult{}, zero, FeeOutcome{}, false
 	}
 	if p.Leverage.Sign() == 0 {
 		p.Leverage = leverage
@@ -583,8 +601,9 @@ func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, idx uint8, leverag
 	}
 	p.Version++
 	e.routeCashLocked(user, res)
+	feeOut := e.applyFeeLocked(user, fee)
 	e.syncIndexesLocked(user, symbol, p)
-	return res, excess, true
+	return res, excess, feeOut, true
 }
 
 // stampRiskVersionLocked pins the position to the symbol's CURRENT effective

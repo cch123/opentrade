@@ -125,6 +125,57 @@ func (PerpPositionMode) EnumDescriptor() ([]byte, []int) {
 	return file_event_perp_journal_proto_rawDescGZIP(), []int{1}
 }
 
+// LiquidityRole is the leg's role in the trade (ADR-0079): maker rested on
+// the book, taker crossed it. Fee rate selection keys off this.
+type LiquidityRole int32
+
+const (
+	LiquidityRole_LIQUIDITY_ROLE_UNSPECIFIED LiquidityRole = 0
+	LiquidityRole_LIQUIDITY_ROLE_MAKER       LiquidityRole = 1
+	LiquidityRole_LIQUIDITY_ROLE_TAKER       LiquidityRole = 2
+)
+
+// Enum value maps for LiquidityRole.
+var (
+	LiquidityRole_name = map[int32]string{
+		0: "LIQUIDITY_ROLE_UNSPECIFIED",
+		1: "LIQUIDITY_ROLE_MAKER",
+		2: "LIQUIDITY_ROLE_TAKER",
+	}
+	LiquidityRole_value = map[string]int32{
+		"LIQUIDITY_ROLE_UNSPECIFIED": 0,
+		"LIQUIDITY_ROLE_MAKER":       1,
+		"LIQUIDITY_ROLE_TAKER":       2,
+	}
+)
+
+func (x LiquidityRole) Enum() *LiquidityRole {
+	p := new(LiquidityRole)
+	*p = x
+	return p
+}
+
+func (x LiquidityRole) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LiquidityRole) Descriptor() protoreflect.EnumDescriptor {
+	return file_event_perp_journal_proto_enumTypes[2].Descriptor()
+}
+
+func (LiquidityRole) Type() protoreflect.EnumType {
+	return &file_event_perp_journal_proto_enumTypes[2]
+}
+
+func (x LiquidityRole) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LiquidityRole.Descriptor instead.
+func (LiquidityRole) EnumDescriptor() ([]byte, []int) {
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{2}
+}
+
 type PerpMarginEvent_Kind int32
 
 const (
@@ -164,11 +215,11 @@ func (x PerpMarginEvent_Kind) String() string {
 }
 
 func (PerpMarginEvent_Kind) Descriptor() protoreflect.EnumDescriptor {
-	return file_event_perp_journal_proto_enumTypes[2].Descriptor()
+	return file_event_perp_journal_proto_enumTypes[3].Descriptor()
 }
 
 func (PerpMarginEvent_Kind) Type() protoreflect.EnumType {
-	return &file_event_perp_journal_proto_enumTypes[2]
+	return &file_event_perp_journal_proto_enumTypes[3]
 }
 
 func (x PerpMarginEvent_Kind) Number() protoreflect.EnumNumber {
@@ -222,11 +273,11 @@ func (x PerpMarginAdjustmentEvent_Kind) String() string {
 }
 
 func (PerpMarginAdjustmentEvent_Kind) Descriptor() protoreflect.EnumDescriptor {
-	return file_event_perp_journal_proto_enumTypes[3].Descriptor()
+	return file_event_perp_journal_proto_enumTypes[4].Descriptor()
 }
 
 func (PerpMarginAdjustmentEvent_Kind) Type() protoreflect.EnumType {
-	return &file_event_perp_journal_proto_enumTypes[3]
+	return &file_event_perp_journal_proto_enumTypes[4]
 }
 
 func (x PerpMarginAdjustmentEvent_Kind) Number() protoreflect.EnumNumber {
@@ -406,6 +457,7 @@ type PerpJournalEvent struct {
 	//	*PerpJournalEvent_MarginAdjustment
 	//	*PerpJournalEvent_CustomerRiskLimit
 	//	*PerpJournalEvent_InvariantBreach
+	//	*PerpJournalEvent_CustomerFee
 	Payload       isPerpJournalEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -570,6 +622,15 @@ func (x *PerpJournalEvent) GetInvariantBreach() *PerpInvariantBreachEvent {
 	return nil
 }
 
+func (x *PerpJournalEvent) GetCustomerFee() *PerpCustomerFeeEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*PerpJournalEvent_CustomerFee); ok {
+			return x.CustomerFee
+		}
+	}
+	return nil
+}
+
 type isPerpJournalEvent_Payload interface {
 	isPerpJournalEvent_Payload()
 }
@@ -622,6 +683,10 @@ type PerpJournalEvent_InvariantBreach struct {
 	InvariantBreach *PerpInvariantBreachEvent `protobuf:"bytes,21,opt,name=invariant_breach,json=invariantBreach,proto3,oneof"` // ADR-0077 §2 / ADR-0081 §2
 }
 
+type PerpJournalEvent_CustomerFee struct {
+	CustomerFee *PerpCustomerFeeEvent `protobuf:"bytes,22,opt,name=customer_fee,json=customerFee,proto3,oneof"` // ADR-0079 user fee override audit
+}
+
 func (*PerpJournalEvent_OrderStatus) isPerpJournalEvent_Payload() {}
 
 func (*PerpJournalEvent_Settlement) isPerpJournalEvent_Payload() {}
@@ -645,6 +710,8 @@ func (*PerpJournalEvent_MarginAdjustment) isPerpJournalEvent_Payload() {}
 func (*PerpJournalEvent_CustomerRiskLimit) isPerpJournalEvent_Payload() {}
 
 func (*PerpJournalEvent_InvariantBreach) isPerpJournalEvent_Payload() {}
+
+func (*PerpJournalEvent_CustomerFee) isPerpJournalEvent_Payload() {}
 
 // Order lifecycle transition (analogous to counter OrderStatusEvent).
 // position_idx is carried explicitly (no embedded snapshot here): together
@@ -865,26 +932,48 @@ func (x *PerpInvariantBreachEvent) GetFillPrice() string {
 }
 
 // A fill applied to a position (open / increase / reduce / close / flip).
-// Cash effects mirror perpstate.FillResult.
+// Cash effects mirror perpstate.FillResult. Fee fields are ADR-0079: one
+// fill = one settlement event = one fee ledger row; the fee detail is
+// embedded here (not a separate event) so settlement and fee attribution
+// are atomic by construction.
 type PerpSettlementEvent struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	UserId         uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	OrderId        uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
-	TradeId        string                 `protobuf:"bytes,3,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
-	Symbol         string                 `protobuf:"bytes,4,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	FillSide       Side                   `protobuf:"varint,5,opt,name=fill_side,json=fillSide,proto3,enum=opentrade.event.Side" json:"fill_side,omitempty"`
-	Price          string                 `protobuf:"bytes,10,opt,name=price,proto3" json:"price,omitempty"` // execution price
-	Qty            string                 `protobuf:"bytes,11,opt,name=qty,proto3" json:"qty,omitempty"`
-	RealizedPnl    string                 `protobuf:"bytes,12,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"` // booked by this fill (pre-fee)
-	Fee            string                 `protobuf:"bytes,13,opt,name=fee,proto3" json:"fee,omitempty"`
-	MarginAdded    string                 `protobuf:"bytes,14,opt,name=margin_added,json=marginAdded,proto3" json:"margin_added,omitempty"`          // IM committed (open/increase)
-	MarginReleased string                 `protobuf:"bytes,15,opt,name=margin_released,json=marginReleased,proto3" json:"margin_released,omitempty"` // margin returned to wallet (reduce/close)
-	PositionAfter  *PerpPositionSnapshot  `protobuf:"bytes,20,opt,name=position_after,json=positionAfter,proto3" json:"position_after,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	UserId      uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrderId     uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	TradeId     string                 `protobuf:"bytes,3,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
+	Symbol      string                 `protobuf:"bytes,4,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	FillSide    Side                   `protobuf:"varint,5,opt,name=fill_side,json=fillSide,proto3,enum=opentrade.event.Side" json:"fill_side,omitempty"`
+	Price       string                 `protobuf:"bytes,10,opt,name=price,proto3" json:"price,omitempty"` // execution price
+	Qty         string                 `protobuf:"bytes,11,opt,name=qty,proto3" json:"qty,omitempty"`
+	RealizedPnl string                 `protobuf:"bytes,12,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"` // booked by this fill (pre-fee)
+	// Signed fee the user owes for this fill (ADR-0079): > 0 user pays,
+	// < 0 user receives a maker rebate. The wallet impact of a positive fee
+	// is fee - fee_deficit; a rebate is always paid in full.
+	Fee            string                `protobuf:"bytes,13,opt,name=fee,proto3" json:"fee,omitempty"`
+	MarginAdded    string                `protobuf:"bytes,14,opt,name=margin_added,json=marginAdded,proto3" json:"margin_added,omitempty"`          // IM committed (open/increase)
+	MarginReleased string                `protobuf:"bytes,15,opt,name=margin_released,json=marginReleased,proto3" json:"margin_released,omitempty"` // margin returned to wallet (reduce/close)
+	PositionAfter  *PerpPositionSnapshot `protobuf:"bytes,20,opt,name=position_after,json=positionAfter,proto3" json:"position_after,omitempty"`
 	// ADR-0075: the SymbolConfig version active when this fill settled — the
 	// version replay/audit must read fee / precision params from.
 	SymbolConfigVersion uint64 `protobuf:"varint,21,opt,name=symbol_config_version,json=symbolConfigVersion,proto3" json:"symbol_config_version,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// ADR-0079 fee attribution. Rates/rule are the values PINNED at order
+	// admission (replay-deterministic), not a settle-time lookup.
+	LiquidityRole LiquidityRole `protobuf:"varint,22,opt,name=liquidity_role,json=liquidityRole,proto3,enum=opentrade.event.LiquidityRole" json:"liquidity_role,omitempty"`
+	FeeRuleId     string        `protobuf:"bytes,23,opt,name=fee_rule_id,json=feeRuleId,proto3" json:"fee_rule_id,omitempty"`
+	FeeRate       string        `protobuf:"bytes,24,opt,name=fee_rate,json=feeRate,proto3" json:"fee_rate,omitempty"`    // signed rate actually applied to this leg
+	FeeAsset      string        `protobuf:"bytes,25,opt,name=fee_asset,json=feeAsset,proto3" json:"fee_asset,omitempty"` // settle asset (USDT for linear contracts)
+	// Portion of a positive fee that could not be collected (isolated wallet
+	// clamped at zero — gap scenarios only). "0" normally. Platform revenue
+	// audit: SUM(fee - fee_deficit) grouped by fee_asset == platform_fee.
+	FeeDeficit string `protobuf:"bytes,26,opt,name=fee_deficit,json=feeDeficit,proto3" json:"fee_deficit,omitempty"`
+	// A maker rebate was deterministically suppressed to zero (self-trade, or
+	// negative maker rates disabled at admission time).
+	RebateSuppressed bool `protobuf:"varint,27,opt,name=rebate_suppressed,json=rebateSuppressed,proto3" json:"rebate_suppressed,omitempty"`
+	// Wallet Available after this settlement including the fee movement
+	// (per-user value: deterministic under per-user serialization).
+	WalletAfter   string `protobuf:"bytes,28,opt,name=wallet_after,json=walletAfter,proto3" json:"wallet_after,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PerpSettlementEvent) Reset() {
@@ -1006,6 +1095,55 @@ func (x *PerpSettlementEvent) GetSymbolConfigVersion() uint64 {
 		return x.SymbolConfigVersion
 	}
 	return 0
+}
+
+func (x *PerpSettlementEvent) GetLiquidityRole() LiquidityRole {
+	if x != nil {
+		return x.LiquidityRole
+	}
+	return LiquidityRole_LIQUIDITY_ROLE_UNSPECIFIED
+}
+
+func (x *PerpSettlementEvent) GetFeeRuleId() string {
+	if x != nil {
+		return x.FeeRuleId
+	}
+	return ""
+}
+
+func (x *PerpSettlementEvent) GetFeeRate() string {
+	if x != nil {
+		return x.FeeRate
+	}
+	return ""
+}
+
+func (x *PerpSettlementEvent) GetFeeAsset() string {
+	if x != nil {
+		return x.FeeAsset
+	}
+	return ""
+}
+
+func (x *PerpSettlementEvent) GetFeeDeficit() string {
+	if x != nil {
+		return x.FeeDeficit
+	}
+	return ""
+}
+
+func (x *PerpSettlementEvent) GetRebateSuppressed() bool {
+	if x != nil {
+		return x.RebateSuppressed
+	}
+	return false
+}
+
+func (x *PerpSettlementEvent) GetWalletAfter() string {
+	if x != nil {
+		return x.WalletAfter
+	}
+	return ""
 }
 
 // Futures-wallet margin balance change.
@@ -2060,6 +2198,101 @@ func (x *PerpCustomerRiskLimitEvent) GetUpdatedBy() string {
 	return ""
 }
 
+// Customer fee override change (ADR-0079 §1, admin plane; mirrors
+// PerpCustomerRiskLimitEvent). A symbol-scoped row overrides the user-global
+// row; an empty fee_rule_id records the removal of the override.
+type PerpCustomerFeeEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`                                   // empty = applies to all symbols
+	FeeRuleId     string                 `protobuf:"bytes,3,opt,name=fee_rule_id,json=feeRuleId,proto3" json:"fee_rule_id,omitempty"`          // empty = override removed
+	MakerFeeRate  string                 `protobuf:"bytes,4,opt,name=maker_fee_rate,json=makerFeeRate,proto3" json:"maker_fee_rate,omitempty"` // signed decimal; < 0 = rebate
+	TakerFeeRate  string                 `protobuf:"bytes,5,opt,name=taker_fee_rate,json=takerFeeRate,proto3" json:"taker_fee_rate,omitempty"` // decimal, >= 0
+	Reason        string                 `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
+	UpdatedBy     string                 `protobuf:"bytes,7,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PerpCustomerFeeEvent) Reset() {
+	*x = PerpCustomerFeeEvent{}
+	mi := &file_event_perp_journal_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PerpCustomerFeeEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PerpCustomerFeeEvent) ProtoMessage() {}
+
+func (x *PerpCustomerFeeEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_event_perp_journal_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PerpCustomerFeeEvent.ProtoReflect.Descriptor instead.
+func (*PerpCustomerFeeEvent) Descriptor() ([]byte, []int) {
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *PerpCustomerFeeEvent) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *PerpCustomerFeeEvent) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *PerpCustomerFeeEvent) GetFeeRuleId() string {
+	if x != nil {
+		return x.FeeRuleId
+	}
+	return ""
+}
+
+func (x *PerpCustomerFeeEvent) GetMakerFeeRate() string {
+	if x != nil {
+		return x.MakerFeeRate
+	}
+	return ""
+}
+
+func (x *PerpCustomerFeeEvent) GetTakerFeeRate() string {
+	if x != nil {
+		return x.TakerFeeRate
+	}
+	return ""
+}
+
+func (x *PerpCustomerFeeEvent) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *PerpCustomerFeeEvent) GetUpdatedBy() string {
+	if x != nil {
+		return x.UpdatedBy
+	}
+	return ""
+}
+
 // RiskPool settlement is the only authoritative fund movement for a completed
 // TakenOverLot (ADR-0073). final_pool_delta > 0 credits the fund; < 0 consumes
 // it. The event is idempotent by lot_id.
@@ -2082,7 +2315,7 @@ type RiskPoolSettlementEvent struct {
 
 func (x *RiskPoolSettlementEvent) Reset() {
 	*x = RiskPoolSettlementEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[13]
+	mi := &file_event_perp_journal_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2094,7 +2327,7 @@ func (x *RiskPoolSettlementEvent) String() string {
 func (*RiskPoolSettlementEvent) ProtoMessage() {}
 
 func (x *RiskPoolSettlementEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[13]
+	mi := &file_event_perp_journal_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2107,7 +2340,7 @@ func (x *RiskPoolSettlementEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RiskPoolSettlementEvent.ProtoReflect.Descriptor instead.
 func (*RiskPoolSettlementEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{13}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RiskPoolSettlementEvent) GetLotId() string {
@@ -2208,7 +2441,7 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"marginMode\x12\x17\n" +
 	"\arisk_id\x18\v \x01(\rR\x06riskId\x12.\n" +
 	"\x13risk_config_version\x18\f \x01(\x04R\x11riskConfigVersion\x12!\n" +
-	"\fposition_idx\x18\r \x01(\rR\vpositionIdx\"\x81\b\n" +
+	"\fposition_idx\x18\r \x01(\rR\vpositionIdx\"\xcd\b\n" +
 	"\x10PerpJournalEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x1e\n" +
 	"\vperp_seq_id\x18\x02 \x01(\x04R\tperpSeqId\x12J\n" +
@@ -2226,7 +2459,8 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x0fposition_config\x18\x12 \x01(\v2(.opentrade.event.PerpPositionConfigEventH\x00R\x0epositionConfig\x12Y\n" +
 	"\x11margin_adjustment\x18\x13 \x01(\v2*.opentrade.event.PerpMarginAdjustmentEventH\x00R\x10marginAdjustment\x12]\n" +
 	"\x13customer_risk_limit\x18\x14 \x01(\v2+.opentrade.event.PerpCustomerRiskLimitEventH\x00R\x11customerRiskLimit\x12V\n" +
-	"\x10invariant_breach\x18\x15 \x01(\v2).opentrade.event.PerpInvariantBreachEventH\x00R\x0finvariantBreachB\t\n" +
+	"\x10invariant_breach\x18\x15 \x01(\v2).opentrade.event.PerpInvariantBreachEventH\x00R\x0finvariantBreach\x12J\n" +
+	"\fcustomer_fee\x18\x16 \x01(\v2%.opentrade.event.PerpCustomerFeeEventH\x00R\vcustomerFeeB\t\n" +
 	"\apayload\"\x93\x03\n" +
 	"\x14PerpOrderStatusEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
@@ -2252,7 +2486,7 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\n" +
 	"excess_qty\x18\a \x01(\tR\texcessQty\x12\x1d\n" +
 	"\n" +
-	"fill_price\x18\b \x01(\tR\tfillPrice\"\xdb\x03\n" +
+	"fill_price\x18\b \x01(\tR\tfillPrice\"\xeb\x05\n" +
 	"\x13PerpSettlementEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x19\n" +
@@ -2267,7 +2501,15 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\fmargin_added\x18\x0e \x01(\tR\vmarginAdded\x12'\n" +
 	"\x0fmargin_released\x18\x0f \x01(\tR\x0emarginReleased\x12L\n" +
 	"\x0eposition_after\x18\x14 \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\x122\n" +
-	"\x15symbol_config_version\x18\x15 \x01(\x04R\x13symbolConfigVersion\"\xe9\x02\n" +
+	"\x15symbol_config_version\x18\x15 \x01(\x04R\x13symbolConfigVersion\x12E\n" +
+	"\x0eliquidity_role\x18\x16 \x01(\x0e2\x1e.opentrade.event.LiquidityRoleR\rliquidityRole\x12\x1e\n" +
+	"\vfee_rule_id\x18\x17 \x01(\tR\tfeeRuleId\x12\x19\n" +
+	"\bfee_rate\x18\x18 \x01(\tR\afeeRate\x12\x1b\n" +
+	"\tfee_asset\x18\x19 \x01(\tR\bfeeAsset\x12\x1f\n" +
+	"\vfee_deficit\x18\x1a \x01(\tR\n" +
+	"feeDeficit\x12+\n" +
+	"\x11rebate_suppressed\x18\x1b \x01(\bR\x10rebateSuppressed\x12!\n" +
+	"\fwallet_after\x18\x1c \x01(\tR\vwalletAfter\"\xe9\x02\n" +
 	"\x0fPerpMarginEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x129\n" +
 	"\x04kind\x18\x02 \x01(\x0e2%.opentrade.event.PerpMarginEvent.KindR\x04kind\x12\x14\n" +
@@ -2401,7 +2643,16 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\fmax_leverage\x18\x03 \x01(\tR\vmaxLeverage\x12\x16\n" +
 	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x1d\n" +
 	"\n" +
-	"updated_by\x18\x05 \x01(\tR\tupdatedBy\"\xa5\x03\n" +
+	"updated_by\x18\x05 \x01(\tR\tupdatedBy\"\xea\x01\n" +
+	"\x14PerpCustomerFeeEvent\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x1e\n" +
+	"\vfee_rule_id\x18\x03 \x01(\tR\tfeeRuleId\x12$\n" +
+	"\x0emaker_fee_rate\x18\x04 \x01(\tR\fmakerFeeRate\x12$\n" +
+	"\x0etaker_fee_rate\x18\x05 \x01(\tR\ftakerFeeRate\x12\x16\n" +
+	"\x06reason\x18\x06 \x01(\tR\x06reason\x12\x1d\n" +
+	"\n" +
+	"updated_by\x18\a \x01(\tR\tupdatedBy\"\xa5\x03\n" +
 	"\x17RiskPoolSettlementEvent\x12\x15\n" +
 	"\x06lot_id\x18\x01 \x01(\tR\x05lotId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x12\n" +
@@ -2422,7 +2673,11 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x10PerpPositionMode\x12\"\n" +
 	"\x1ePERP_POSITION_MODE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aPERP_POSITION_MODE_ONE_WAY\x10\x01\x12\x1c\n" +
-	"\x18PERP_POSITION_MODE_HEDGE\x10\x02B1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
+	"\x18PERP_POSITION_MODE_HEDGE\x10\x02*c\n" +
+	"\rLiquidityRole\x12\x1e\n" +
+	"\x1aLIQUIDITY_ROLE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14LIQUIDITY_ROLE_MAKER\x10\x01\x12\x18\n" +
+	"\x14LIQUIDITY_ROLE_TAKER\x10\x02B1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
 var (
 	file_event_perp_journal_proto_rawDescOnce sync.Once
@@ -2436,67 +2691,71 @@ func file_event_perp_journal_proto_rawDescGZIP() []byte {
 	return file_event_perp_journal_proto_rawDescData
 }
 
-var file_event_perp_journal_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_event_perp_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_event_perp_journal_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_event_perp_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_event_perp_journal_proto_goTypes = []any{
 	(PerpMarginMode)(0),                 // 0: opentrade.event.PerpMarginMode
 	(PerpPositionMode)(0),               // 1: opentrade.event.PerpPositionMode
-	(PerpMarginEvent_Kind)(0),           // 2: opentrade.event.PerpMarginEvent.Kind
-	(PerpMarginAdjustmentEvent_Kind)(0), // 3: opentrade.event.PerpMarginAdjustmentEvent.Kind
-	(*PerpPositionSnapshot)(nil),        // 4: opentrade.event.PerpPositionSnapshot
-	(*PerpJournalEvent)(nil),            // 5: opentrade.event.PerpJournalEvent
-	(*PerpOrderStatusEvent)(nil),        // 6: opentrade.event.PerpOrderStatusEvent
-	(*PerpInvariantBreachEvent)(nil),    // 7: opentrade.event.PerpInvariantBreachEvent
-	(*PerpSettlementEvent)(nil),         // 8: opentrade.event.PerpSettlementEvent
-	(*PerpMarginEvent)(nil),             // 9: opentrade.event.PerpMarginEvent
-	(*PerpFundingEvent)(nil),            // 10: opentrade.event.PerpFundingEvent
-	(*PerpLiquidationEvent)(nil),        // 11: opentrade.event.PerpLiquidationEvent
-	(*PerpTakeoverEvent)(nil),           // 12: opentrade.event.PerpTakeoverEvent
-	(*PerpAdlEvent)(nil),                // 13: opentrade.event.PerpAdlEvent
-	(*PerpPositionConfigEvent)(nil),     // 14: opentrade.event.PerpPositionConfigEvent
-	(*PerpMarginAdjustmentEvent)(nil),   // 15: opentrade.event.PerpMarginAdjustmentEvent
-	(*PerpCustomerRiskLimitEvent)(nil),  // 16: opentrade.event.PerpCustomerRiskLimitEvent
-	(*RiskPoolSettlementEvent)(nil),     // 17: opentrade.event.RiskPoolSettlementEvent
-	(Side)(0),                           // 18: opentrade.event.Side
-	(*EventMeta)(nil),                   // 19: opentrade.event.EventMeta
-	(InternalOrderStatus)(0),            // 20: opentrade.event.InternalOrderStatus
-	(RejectReason)(0),                   // 21: opentrade.event.RejectReason
+	(LiquidityRole)(0),                  // 2: opentrade.event.LiquidityRole
+	(PerpMarginEvent_Kind)(0),           // 3: opentrade.event.PerpMarginEvent.Kind
+	(PerpMarginAdjustmentEvent_Kind)(0), // 4: opentrade.event.PerpMarginAdjustmentEvent.Kind
+	(*PerpPositionSnapshot)(nil),        // 5: opentrade.event.PerpPositionSnapshot
+	(*PerpJournalEvent)(nil),            // 6: opentrade.event.PerpJournalEvent
+	(*PerpOrderStatusEvent)(nil),        // 7: opentrade.event.PerpOrderStatusEvent
+	(*PerpInvariantBreachEvent)(nil),    // 8: opentrade.event.PerpInvariantBreachEvent
+	(*PerpSettlementEvent)(nil),         // 9: opentrade.event.PerpSettlementEvent
+	(*PerpMarginEvent)(nil),             // 10: opentrade.event.PerpMarginEvent
+	(*PerpFundingEvent)(nil),            // 11: opentrade.event.PerpFundingEvent
+	(*PerpLiquidationEvent)(nil),        // 12: opentrade.event.PerpLiquidationEvent
+	(*PerpTakeoverEvent)(nil),           // 13: opentrade.event.PerpTakeoverEvent
+	(*PerpAdlEvent)(nil),                // 14: opentrade.event.PerpAdlEvent
+	(*PerpPositionConfigEvent)(nil),     // 15: opentrade.event.PerpPositionConfigEvent
+	(*PerpMarginAdjustmentEvent)(nil),   // 16: opentrade.event.PerpMarginAdjustmentEvent
+	(*PerpCustomerRiskLimitEvent)(nil),  // 17: opentrade.event.PerpCustomerRiskLimitEvent
+	(*PerpCustomerFeeEvent)(nil),        // 18: opentrade.event.PerpCustomerFeeEvent
+	(*RiskPoolSettlementEvent)(nil),     // 19: opentrade.event.RiskPoolSettlementEvent
+	(Side)(0),                           // 20: opentrade.event.Side
+	(*EventMeta)(nil),                   // 21: opentrade.event.EventMeta
+	(InternalOrderStatus)(0),            // 22: opentrade.event.InternalOrderStatus
+	(RejectReason)(0),                   // 23: opentrade.event.RejectReason
 }
 var file_event_perp_journal_proto_depIdxs = []int32{
-	18, // 0: opentrade.event.PerpPositionSnapshot.side:type_name -> opentrade.event.Side
+	20, // 0: opentrade.event.PerpPositionSnapshot.side:type_name -> opentrade.event.Side
 	0,  // 1: opentrade.event.PerpPositionSnapshot.margin_mode:type_name -> opentrade.event.PerpMarginMode
-	19, // 2: opentrade.event.PerpJournalEvent.meta:type_name -> opentrade.event.EventMeta
-	6,  // 3: opentrade.event.PerpJournalEvent.order_status:type_name -> opentrade.event.PerpOrderStatusEvent
-	8,  // 4: opentrade.event.PerpJournalEvent.settlement:type_name -> opentrade.event.PerpSettlementEvent
-	9,  // 5: opentrade.event.PerpJournalEvent.margin:type_name -> opentrade.event.PerpMarginEvent
-	10, // 6: opentrade.event.PerpJournalEvent.funding:type_name -> opentrade.event.PerpFundingEvent
-	11, // 7: opentrade.event.PerpJournalEvent.liquidation:type_name -> opentrade.event.PerpLiquidationEvent
-	13, // 8: opentrade.event.PerpJournalEvent.adl:type_name -> opentrade.event.PerpAdlEvent
-	12, // 9: opentrade.event.PerpJournalEvent.takeover:type_name -> opentrade.event.PerpTakeoverEvent
-	17, // 10: opentrade.event.PerpJournalEvent.risk_pool_settlement:type_name -> opentrade.event.RiskPoolSettlementEvent
-	14, // 11: opentrade.event.PerpJournalEvent.position_config:type_name -> opentrade.event.PerpPositionConfigEvent
-	15, // 12: opentrade.event.PerpJournalEvent.margin_adjustment:type_name -> opentrade.event.PerpMarginAdjustmentEvent
-	16, // 13: opentrade.event.PerpJournalEvent.customer_risk_limit:type_name -> opentrade.event.PerpCustomerRiskLimitEvent
-	7,  // 14: opentrade.event.PerpJournalEvent.invariant_breach:type_name -> opentrade.event.PerpInvariantBreachEvent
-	20, // 15: opentrade.event.PerpOrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
-	20, // 16: opentrade.event.PerpOrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
-	21, // 17: opentrade.event.PerpOrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
-	18, // 18: opentrade.event.PerpSettlementEvent.fill_side:type_name -> opentrade.event.Side
-	4,  // 19: opentrade.event.PerpSettlementEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	2,  // 20: opentrade.event.PerpMarginEvent.kind:type_name -> opentrade.event.PerpMarginEvent.Kind
-	4,  // 21: opentrade.event.PerpFundingEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	4,  // 22: opentrade.event.PerpLiquidationEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	18, // 23: opentrade.event.PerpTakeoverEvent.inventory_side:type_name -> opentrade.event.Side
-	4,  // 24: opentrade.event.PerpTakeoverEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	4,  // 25: opentrade.event.PerpAdlEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	0,  // 26: opentrade.event.PerpPositionConfigEvent.margin_mode:type_name -> opentrade.event.PerpMarginMode
-	1,  // 27: opentrade.event.PerpPositionConfigEvent.position_mode:type_name -> opentrade.event.PerpPositionMode
-	3,  // 28: opentrade.event.PerpMarginAdjustmentEvent.kind:type_name -> opentrade.event.PerpMarginAdjustmentEvent.Kind
-	29, // [29:29] is the sub-list for method output_type
-	29, // [29:29] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	21, // 2: opentrade.event.PerpJournalEvent.meta:type_name -> opentrade.event.EventMeta
+	7,  // 3: opentrade.event.PerpJournalEvent.order_status:type_name -> opentrade.event.PerpOrderStatusEvent
+	9,  // 4: opentrade.event.PerpJournalEvent.settlement:type_name -> opentrade.event.PerpSettlementEvent
+	10, // 5: opentrade.event.PerpJournalEvent.margin:type_name -> opentrade.event.PerpMarginEvent
+	11, // 6: opentrade.event.PerpJournalEvent.funding:type_name -> opentrade.event.PerpFundingEvent
+	12, // 7: opentrade.event.PerpJournalEvent.liquidation:type_name -> opentrade.event.PerpLiquidationEvent
+	14, // 8: opentrade.event.PerpJournalEvent.adl:type_name -> opentrade.event.PerpAdlEvent
+	13, // 9: opentrade.event.PerpJournalEvent.takeover:type_name -> opentrade.event.PerpTakeoverEvent
+	19, // 10: opentrade.event.PerpJournalEvent.risk_pool_settlement:type_name -> opentrade.event.RiskPoolSettlementEvent
+	15, // 11: opentrade.event.PerpJournalEvent.position_config:type_name -> opentrade.event.PerpPositionConfigEvent
+	16, // 12: opentrade.event.PerpJournalEvent.margin_adjustment:type_name -> opentrade.event.PerpMarginAdjustmentEvent
+	17, // 13: opentrade.event.PerpJournalEvent.customer_risk_limit:type_name -> opentrade.event.PerpCustomerRiskLimitEvent
+	8,  // 14: opentrade.event.PerpJournalEvent.invariant_breach:type_name -> opentrade.event.PerpInvariantBreachEvent
+	18, // 15: opentrade.event.PerpJournalEvent.customer_fee:type_name -> opentrade.event.PerpCustomerFeeEvent
+	22, // 16: opentrade.event.PerpOrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
+	22, // 17: opentrade.event.PerpOrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
+	23, // 18: opentrade.event.PerpOrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
+	20, // 19: opentrade.event.PerpSettlementEvent.fill_side:type_name -> opentrade.event.Side
+	5,  // 20: opentrade.event.PerpSettlementEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	2,  // 21: opentrade.event.PerpSettlementEvent.liquidity_role:type_name -> opentrade.event.LiquidityRole
+	3,  // 22: opentrade.event.PerpMarginEvent.kind:type_name -> opentrade.event.PerpMarginEvent.Kind
+	5,  // 23: opentrade.event.PerpFundingEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	5,  // 24: opentrade.event.PerpLiquidationEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	20, // 25: opentrade.event.PerpTakeoverEvent.inventory_side:type_name -> opentrade.event.Side
+	5,  // 26: opentrade.event.PerpTakeoverEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	5,  // 27: opentrade.event.PerpAdlEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	0,  // 28: opentrade.event.PerpPositionConfigEvent.margin_mode:type_name -> opentrade.event.PerpMarginMode
+	1,  // 29: opentrade.event.PerpPositionConfigEvent.position_mode:type_name -> opentrade.event.PerpPositionMode
+	4,  // 30: opentrade.event.PerpMarginAdjustmentEvent.kind:type_name -> opentrade.event.PerpMarginAdjustmentEvent.Kind
+	31, // [31:31] is the sub-list for method output_type
+	31, // [31:31] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_event_perp_journal_proto_init() }
@@ -2518,14 +2777,15 @@ func file_event_perp_journal_proto_init() {
 		(*PerpJournalEvent_MarginAdjustment)(nil),
 		(*PerpJournalEvent_CustomerRiskLimit)(nil),
 		(*PerpJournalEvent_InvariantBreach)(nil),
+		(*PerpJournalEvent_CustomerFee)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_perp_journal_proto_rawDesc), len(file_event_perp_journal_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   14,
+			NumEnums:      5,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

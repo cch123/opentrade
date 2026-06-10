@@ -177,17 +177,27 @@ func (s *Service) emitOrderStatusReason(o *Order, oldSt, newSt eventpb.InternalO
 	})
 }
 
-func (s *Service) emitSettlement(o *Order, t *eventpb.Trade, side perpstate.Side, res perpstate.FillResult) {
+func (s *Service) emitSettlement(o *Order, t *eventpb.Trade, side perpstate.Side, res perpstate.FillResult, fee settleFee) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_Settlement{Settlement: &eventpb.PerpSettlementEvent{
 			UserId: o.UserID, OrderId: o.OrderID, TradeId: t.GetTradeId(), Symbol: o.Symbol,
 			FillSide: toEventSide(side), Price: t.GetPrice(), Qty: t.GetQty(),
-			RealizedPnl: res.Realized.String(), Fee: res.Fee.String(),
+			RealizedPnl: res.Realized.String(),
 			MarginAdded: res.MarginAdded.String(), MarginReleased: res.MarginReleased.String(),
 			PositionAfter: s.positionSnap(o.UserID, o.Symbol, o.PositionIdx),
 			// ADR-0075: settle-time version, the row audit reads params from.
 			SymbolConfigVersion: s.activeConfigVersion(o.Symbol),
+			// ADR-0079 fee attribution: the signed requested amount plus how
+			// it routed. The rates/rule are the order's admission pins.
+			Fee:              fee.Amount.String(),
+			LiquidityRole:    fee.Role,
+			FeeRuleId:        o.FeeRuleID,
+			FeeRate:          fee.Rate.String(),
+			FeeAsset:         o.FeeAsset,
+			FeeDeficit:       fee.Outcome.Deficit.String(),
+			RebateSuppressed: fee.Suppressed,
+			WalletAfter:      fee.Outcome.WalletAfter.String(),
 		}},
 	})
 }

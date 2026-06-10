@@ -566,3 +566,55 @@ func (s *Server) handlePerpConfigLogs(w http.ResponseWriter, r *http.Request) {
 		"logs": resp.Msg.Logs, "next_cursor": resp.Msg.NextCursor,
 	})
 }
+
+// handlePerpFills pages the user's fills with their ADR-0079 fee attribution
+// (the perp_settlements ledger).
+func (s *Server) handlePerpFills(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeError(w, http.StatusServiceUnavailable, "history service not configured")
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	resp, err := s.history.ListPerpSettlements(r.Context(), connect.NewRequest(&historypb.ListPerpSettlementsRequest{
+		UserId: userID, Symbol: q.Get("symbol"),
+		SinceMs: parseInt64Query(q.Get("since_ms")), UntilMs: parseInt64Query(q.Get("until_ms")),
+		Cursor: q.Get("cursor"), Limit: parseInt32Query(q.Get("limit")),
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"fills": resp.Msg.Settlements, "next_cursor": resp.Msg.NextCursor,
+	})
+}
+
+// handlePerpDailyStats pages the user's per-(symbol, UTC day) fee / funding /
+// realized-PnL aggregates (ADR-0079 §6).
+func (s *Server) handlePerpDailyStats(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeError(w, http.StatusServiceUnavailable, "history service not configured")
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	resp, err := s.history.ListPerpDailyStats(r.Context(), connect.NewRequest(&historypb.ListPerpDailyStatsRequest{
+		UserId: userID, Symbol: q.Get("symbol"),
+		SinceMs: parseInt64Query(q.Get("since_ms")), UntilMs: parseInt64Query(q.Get("until_ms")),
+		Cursor: q.Get("cursor"), Limit: parseInt32Query(q.Get("limit")),
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stats": resp.Msg.Stats, "next_cursor": resp.Msg.NextCursor,
+	})
+}

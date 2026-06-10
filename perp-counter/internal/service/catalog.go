@@ -173,6 +173,61 @@ func (s *Service) bookAccepts(symbol string) bool {
 	return false
 }
 
+// feePin is the ADR-0079 §1 fee quadruple resolved at order admission and
+// carried by the order (and its snapshot) for deterministic settlement.
+type feePin struct {
+	RuleID string
+	Maker  dec.Decimal // signed; < 0 only when negative maker fees are enabled
+	Taker  dec.Decimal // >= 0; also the fee-buffer rate
+	Asset  string      // settle asset (spec, version-independent)
+	// MakerSuppressed records that a negative maker rate was degraded to
+	// zero here (AllowNegativeMakerFee off) — settlement journals it as
+	// rebate_suppressed on maker fills.
+	MakerSuppressed bool
+}
+
+// feePinFor resolves the fee pin for (user, symbol) against the SAME catalog
+// view admission gated on: content is fetched by the admitted version
+// (immutable rows), never via a second Active() read — no TOCTOU window
+// between the gates and the pin. Precedence: user+symbol override >
+// user-global override > SymbolConfig.FeeParams. Catalog disabled (version
+// 0) keeps fees at zero — the legacy-mode behavior.
+func (s *Service) feePinFor(user uint64, symbol string, cfgVersion uint64) (feePin, string) {
+	if s.catalog == nil || cfgVersion == 0 {
+		return feePin{}, ""
+	}
+	cfg, ok := s.catalog.At(symbol, cfgVersion)
+	if !ok {
+		return feePin{}, "unknown_symbol_config"
+	}
+	spec, ok := s.catalog.SpecOf(symbol)
+	if !ok {
+		return feePin{}, "unknown_symbol_config"
+	}
+	pin := feePin{
+		RuleID: cfg.Fees.FeeRuleID,
+		Maker:  cfg.Fees.MakerFeeRate,
+		Taker:  cfg.Fees.TakerFeeRate,
+		Asset:  spec.SettleAsset,
+	}
+	if pin.RuleID == "" {
+		pin.RuleID = "sym:" + symbol + "@v" + strconv.FormatUint(cfgVersion, 10)
+	}
+	if ov, ok := s.eng.CustomerFeeOverride(user, symbol); ok {
+		pin.RuleID, pin.Maker, pin.Taker = ov.RuleID, ov.MakerRate, ov.TakerRate
+	}
+	// System accounts trade fee-exempt (the backstop's disposal flow must not
+	// pay the platform its own money).
+	if s.cfg.BackstopAccount != 0 && user == s.cfg.BackstopAccount {
+		return feePin{RuleID: "system-exempt", Maker: zero, Taker: zero, Asset: pin.Asset}, ""
+	}
+	if pin.Maker.Sign() < 0 && !s.cfg.AllowNegativeMakerFee {
+		pin.Maker = zero
+		pin.MakerSuppressed = true
+	}
+	return pin, ""
+}
+
 // activeConfigVersion is the settle-time stamp for journal records (0 in
 // legacy mode or when the symbol has no effective config).
 func (s *Service) activeConfigVersion(symbol string) uint64 {

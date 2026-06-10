@@ -79,6 +79,7 @@ message PerpJournalEvent {
     PerpMarginAdjustmentEvent margin_adjustment = 19; // ADR-0074
     PerpCustomerRiskLimitEvent customer_risk_limit = 20; // ADR-0074
     PerpInvariantBreachEvent invariant_breach = 21; // ADR-0077 §2 / ADR-0081 §2
+    PerpCustomerFeeEvent customer_fee = 22; // ADR-0079 user fee override audit
   }
 }
 
@@ -115,8 +116,19 @@ message PerpInvariantBreachEvent {
   string fill_price = 8; // decimal
 }
 
+// LiquidityRole is the leg's role in the trade (ADR-0079): maker rested on
+// the book, taker crossed it. Fee rate selection keys off this.
+enum LiquidityRole {
+  LIQUIDITY_ROLE_UNSPECIFIED = 0;
+  LIQUIDITY_ROLE_MAKER = 1;
+  LIQUIDITY_ROLE_TAKER = 2;
+}
+
 // A fill applied to a position (open / increase / reduce / close / flip).
-// Cash effects mirror perpstate.FillResult.
+// Cash effects mirror perpstate.FillResult. Fee fields are ADR-0079: one
+// fill = one settlement event = one fee ledger row; the fee detail is
+// embedded here (not a separate event) so settlement and fee attribution
+// are atomic by construction.
 message PerpSettlementEvent {
   uint64 user_id = 1;
   uint64 order_id = 2;
@@ -126,6 +138,9 @@ message PerpSettlementEvent {
   string price = 10;            // execution price
   string qty = 11;
   string realized_pnl = 12;     // booked by this fill (pre-fee)
+  // Signed fee the user owes for this fill (ADR-0079): > 0 user pays,
+  // < 0 user receives a maker rebate. The wallet impact of a positive fee
+  // is fee - fee_deficit; a rebate is always paid in full.
   string fee = 13;
   string margin_added = 14;     // IM committed (open/increase)
   string margin_released = 15;  // margin returned to wallet (reduce/close)
@@ -133,6 +148,23 @@ message PerpSettlementEvent {
   // ADR-0075: the SymbolConfig version active when this fill settled — the
   // version replay/audit must read fee / precision params from.
   uint64 symbol_config_version = 21;
+
+  // ADR-0079 fee attribution. Rates/rule are the values PINNED at order
+  // admission (replay-deterministic), not a settle-time lookup.
+  LiquidityRole liquidity_role = 22;
+  string fee_rule_id = 23;
+  string fee_rate = 24;          // signed rate actually applied to this leg
+  string fee_asset = 25;         // settle asset (USDT for linear contracts)
+  // Portion of a positive fee that could not be collected (isolated wallet
+  // clamped at zero — gap scenarios only). "0" normally. Platform revenue
+  // audit: SUM(fee - fee_deficit) grouped by fee_asset == platform_fee.
+  string fee_deficit = 26;
+  // A maker rebate was deterministically suppressed to zero (self-trade, or
+  // negative maker rates disabled at admission time).
+  bool rebate_suppressed = 27;
+  // Wallet Available after this settlement including the fee movement
+  // (per-user value: deterministic under per-user serialization).
+  string wallet_after = 28;
 }
 
 // Futures-wallet margin balance change.
@@ -299,6 +331,19 @@ message PerpCustomerRiskLimitEvent {
   string max_leverage = 3;     // decimal; "0" = cap removed
   string reason = 4;
   string updated_by = 5;
+}
+
+// Customer fee override change (ADR-0079 §1, admin plane; mirrors
+// PerpCustomerRiskLimitEvent). A symbol-scoped row overrides the user-global
+// row; an empty fee_rule_id records the removal of the override.
+message PerpCustomerFeeEvent {
+  uint64 user_id = 1;
+  string symbol = 2;           // empty = applies to all symbols
+  string fee_rule_id = 3;      // empty = override removed
+  string maker_fee_rate = 4;   // signed decimal; < 0 = rebate
+  string taker_fee_rate = 5;   // decimal, >= 0
+  string reason = 6;
+  string updated_by = 7;
 }
 
 // RiskPool settlement is the only authoritative fund movement for a completed

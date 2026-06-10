@@ -125,6 +125,14 @@ func TestValidateConfig(t *testing.T) {
 			}
 		}, "duplicate"},
 		{"taker fee negative", func(c *PerpSymbolConfig) { c.Fees.TakerFeeRate = dec.New("-0.001") }, "taker_fee_rate"},
+		{"maker above taker", func(c *PerpSymbolConfig) {
+			c.Fees.MakerFeeRate = dec.New("0.001")
+		}, "maker_fee_rate must be <="},
+		{"taker fee above tier mmr", func(c *PerpSymbolConfig) {
+			// ADR-0079 §4: closing a healthy position must release enough
+			// equity (≥ MM) to pay its closing fee.
+			c.Fees.TakerFeeRate = dec.New("0.006")
+		}, "below fees.taker_fee_rate"},
 		{"bad reference source", func(c *PerpSymbolConfig) { c.PriceProtection.ReferencePriceSource = "oracle" }, "reference_price_source"},
 		{"bad risk apply", func(c *PerpSymbolConfig) { c.RiskApply = "LAZY" }, "risk_apply"},
 		{"policy without immediate", func(c *PerpSymbolConfig) {

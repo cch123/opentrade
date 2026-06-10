@@ -63,7 +63,8 @@ type PerpOrderRow struct {
 	UpdatedAtMs  int64
 }
 
-// PerpSettlementRow mirrors `perp_settlements` (append-only fill ledger).
+// PerpSettlementRow mirrors `perp_settlements` (append-only fill ledger;
+// the ADR-0079 fee columns make it double as the trade-fee ledger).
 type PerpSettlementRow struct {
 	PerpSeqID      uint64
 	UserID         uint64
@@ -75,10 +76,33 @@ type PerpSettlementRow struct {
 	Price          string
 	Qty            string
 	RealizedPnl    string
-	Fee            string
+	Fee            string // signed: > 0 paid, < 0 rebate received (ADR-0079)
 	MarginAdded    string
 	MarginReleased string
-	TsUnixMs       int64
+	// ADR-0079 fee attribution.
+	LiquidityRole    int8
+	FeeRuleID        string
+	FeeRate          string
+	FeeAsset         string
+	FeeDeficit       string
+	RebateSuppressed bool
+	WalletAfter      string
+	TsUnixMs         int64
+}
+
+// PerpCustomerFeeRow mirrors `perp_customer_fee_rules` (ADR-0079 §1:
+// append-only per-user fee override audit; an empty fee_rule_id records a
+// removal).
+type PerpCustomerFeeRow struct {
+	PerpSeqID    uint64
+	UserID       uint64
+	Symbol       string
+	FeeRuleID    string
+	MakerFeeRate string
+	TakerFeeRate string
+	Reason       string
+	UpdatedBy    string
+	TsUnixMs     int64
 }
 
 // PerpFundingRow mirrors `perp_funding` (append-only funding payments).
@@ -259,6 +283,7 @@ type PerpBatch struct {
 	MarginAdjust []PerpMarginAdjustmentRow
 	RiskLimits   []PerpCustomerRiskLimitRow
 	Breaches     []PerpInvariantBreachRow
+	CustomerFees []PerpCustomerFeeRow
 }
 
 // IsEmpty reports whether the batch has nothing to write.
@@ -267,7 +292,7 @@ func (b *PerpBatch) IsEmpty() bool {
 		len(b.Settlements) == 0 && len(b.Funding) == 0 && len(b.Liquidations) == 0 &&
 		len(b.TakeoverLots) == 0 && len(b.ADL) == 0 && len(b.RiskPool) == 0 && len(b.Margins) == 0 &&
 		len(b.ConfigLogs) == 0 && len(b.MarginAdjust) == 0 && len(b.RiskLimits) == 0 &&
-		len(b.Breaches) == 0
+		len(b.Breaches) == 0 && len(b.CustomerFees) == 0
 }
 
 // PerpJournalWriter is the contract the consumer uses against MySQL. Real impl
@@ -311,6 +336,8 @@ func BuildPerpBatch(events []*eventpb.PerpJournalEvent) PerpBatch {
 			appendPerpRiskLimit(&b, p.CustomerRiskLimit, seq, ts)
 		case *eventpb.PerpJournalEvent_InvariantBreach:
 			appendPerpBreach(&b, p.InvariantBreach, seq, ts)
+		case *eventpb.PerpJournalEvent_CustomerFee:
+			appendPerpCustomerFee(&b, p.CustomerFee, seq, ts)
 		}
 	}
 	return b
@@ -338,9 +365,25 @@ func appendPerpSettlement(b *PerpBatch, e *eventpb.PerpSettlementEvent, seq uint
 		FillSide: int8(e.GetFillSide()), Price: e.GetPrice(), Qty: e.GetQty(),
 		RealizedPnl: defaultZero(e.GetRealizedPnl()), Fee: defaultZero(e.GetFee()),
 		MarginAdded: defaultZero(e.GetMarginAdded()), MarginReleased: defaultZero(e.GetMarginReleased()),
-		TsUnixMs: ts,
+		LiquidityRole: int8(e.GetLiquidityRole()), FeeRuleID: e.GetFeeRuleId(),
+		FeeRate: defaultZero(e.GetFeeRate()), FeeAsset: e.GetFeeAsset(),
+		FeeDeficit: defaultZero(e.GetFeeDeficit()), RebateSuppressed: e.GetRebateSuppressed(),
+		WalletAfter: defaultZero(e.GetWalletAfter()),
+		TsUnixMs:    ts,
 	})
 	appendPerpPosition(b, e.GetPositionAfter(), seq, ts)
+}
+
+func appendPerpCustomerFee(b *PerpBatch, e *eventpb.PerpCustomerFeeEvent, seq uint64, ts int64) {
+	if e == nil {
+		return
+	}
+	b.CustomerFees = append(b.CustomerFees, PerpCustomerFeeRow{
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		FeeRuleID: e.GetFeeRuleId(), MakerFeeRate: defaultZero(e.GetMakerFeeRate()),
+		TakerFeeRate: defaultZero(e.GetTakerFeeRate()),
+		Reason:       e.GetReason(), UpdatedBy: e.GetUpdatedBy(), TsUnixMs: ts,
+	})
 }
 
 func appendPerpFunding(b *PerpBatch, e *eventpb.PerpFundingEvent, seq uint64, ts int64) {

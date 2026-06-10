@@ -57,7 +57,11 @@ CREATE TABLE IF NOT EXISTS perp_orders (
     KEY idx_user_symbol (user_id, symbol)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Append-only fill ledger (one row per PerpSettlementEvent).
+-- Append-only fill ledger (one row per PerpSettlementEvent). The ADR-0079
+-- fee columns make this table double as the trade-fee ledger: fee is signed
+-- (> 0 the user paid, < 0 a maker rebate was received), fee_deficit is the
+-- uncollectable portion. Platform revenue audit:
+-- SUM(fee - fee_deficit) GROUP BY fee_asset == engine platform_fee balance.
 CREATE TABLE IF NOT EXISTS perp_settlements (
     perp_seq_id     BIGINT UNSIGNED NOT NULL,
     user_id       BIGINT UNSIGNED NOT NULL,
@@ -72,6 +76,13 @@ CREATE TABLE IF NOT EXISTS perp_settlements (
     fee             DECIMAL(36, 18) NOT NULL DEFAULT 0,
     margin_added    DECIMAL(36, 18) NOT NULL DEFAULT 0,
     margin_released DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    liquidity_role  TINYINT         NOT NULL DEFAULT 0, -- ADR-0079: 1 maker / 2 taker
+    fee_rule_id     VARCHAR(64)     NOT NULL DEFAULT '',
+    fee_rate        DECIMAL(36, 18) NOT NULL DEFAULT 0, -- signed rate applied
+    fee_asset       VARCHAR(16)     NOT NULL DEFAULT '',
+    fee_deficit     DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    rebate_suppressed TINYINT(1)    NOT NULL DEFAULT 0,
+    wallet_after    DECIMAL(36, 18) NOT NULL DEFAULT 0,
     ts_unix_ms      BIGINT          NOT NULL,
     PRIMARY KEY (user_id, perp_seq_id),
     KEY idx_user_symbol_ts (user_id, symbol, ts_unix_ms),
@@ -261,4 +272,56 @@ CREATE TABLE IF NOT EXISTS perp_invariant_breaches (
     ts_unix_ms   BIGINT          NOT NULL,
     PRIMARY KEY (perp_seq_id),
     KEY idx_user_symbol (user_id, symbol, perp_seq_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ADR-0079 §1: per-user fee override audit (append-only; one row per
+-- PerpCustomerFeeEvent). An empty fee_rule_id records the removal of the
+-- (user_id, symbol) override. The effective override is the latest row per
+-- (user_id, symbol); the live view is queryable from perp-counter directly.
+CREATE TABLE IF NOT EXISTS perp_customer_fee_rules (
+    perp_seq_id    BIGINT UNSIGNED NOT NULL,
+    user_id        BIGINT UNSIGNED NOT NULL,
+    symbol         VARCHAR(32)     NOT NULL DEFAULT '',
+    fee_rule_id    VARCHAR(64)     NOT NULL DEFAULT '',
+    maker_fee_rate DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    taker_fee_rate DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    reason         VARCHAR(255)    NOT NULL DEFAULT '',
+    updated_by     VARCHAR(64)     NOT NULL DEFAULT '',
+    ts_unix_ms     BIGINT          NOT NULL,
+    PRIMARY KEY (perp_seq_id),
+    KEY idx_user (user_id, symbol, perp_seq_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ADR-0079 §6 daily aggregates. Rows are RECOMPUTED from the deduplicated
+-- base ledgers for every (user, symbol, UTC day) key a batch touches, inside
+-- the same transaction as the base inserts — a pure function of the base
+-- tables, so Kafka redelivery / replay can never double-count.
+CREATE TABLE IF NOT EXISTS perp_user_fee_stats_daily (
+    user_id     BIGINT UNSIGNED NOT NULL,
+    symbol      VARCHAR(32)     NOT NULL,
+    stat_date   DATE            NOT NULL, -- UTC day
+    fee_asset   VARCHAR(16)     NOT NULL DEFAULT '',
+    trading_fee DECIMAL(36, 18) NOT NULL DEFAULT 0, -- Σ positive fees charged
+    rebate      DECIMAL(36, 18) NOT NULL DEFAULT 0, -- Σ rebates received (positive)
+    fee_deficit DECIMAL(36, 18) NOT NULL DEFAULT 0, -- Σ uncollectable fee
+    PRIMARY KEY (user_id, symbol, stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS perp_funding_stats_daily (
+    user_id          BIGINT UNSIGNED NOT NULL,
+    symbol           VARCHAR(32)     NOT NULL,
+    stat_date        DATE            NOT NULL, -- UTC day
+    funding_paid     DECIMAL(36, 18) NOT NULL DEFAULT 0, -- Σ |negative payments|
+    funding_received DECIMAL(36, 18) NOT NULL DEFAULT 0, -- Σ positive payments
+    PRIMARY KEY (user_id, symbol, stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Trade-close realized PnL only (settlements + liquidations + ADL); funding
+-- is excluded — it has its own daily table (Bybit closed-PnL口径).
+CREATE TABLE IF NOT EXISTS perp_realized_pnl_stats_daily (
+    user_id      BIGINT UNSIGNED NOT NULL,
+    symbol       VARCHAR(32)     NOT NULL,
+    stat_date    DATE            NOT NULL, -- UTC day
+    realized_pnl DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, symbol, stat_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

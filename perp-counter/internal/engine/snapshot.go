@@ -30,6 +30,25 @@ type Snapshot struct {
 	// emitted — absent means ONE_WAY, so pre-hedge snapshots restore
 	// unchanged.
 	PosModes []PosModeSnap `json:"pos_modes,omitempty"`
+
+	// ADR-0079 fee state: the platform fee account's net balance per settle
+	// asset and the per-user fee override rows. Both must survive restart —
+	// the platform balance is the system-side counter-account, and a lost
+	// override would re-pin future orders at symbol rates.
+	PlatformFee  map[string]string `json:"platform_fee,omitempty"`
+	FeeOverrides []FeeOverrideSnap `json:"fee_overrides,omitempty"`
+}
+
+// FeeOverrideSnap is one (user, symbol) fee override row (ADR-0079 §1).
+type FeeOverrideSnap struct {
+	UserID    uint64 `json:"user_id"`
+	Symbol    string `json:"symbol"` // "" = user-global
+	RuleID    string `json:"rule_id"`
+	MakerRate string `json:"maker_rate"`
+	TakerRate string `json:"taker_rate"`
+	Reason    string `json:"reason,omitempty"`
+	UpdatedBy string `json:"updated_by,omitempty"`
+	UpdatedMs int64  `json:"updated_ms,omitempty"`
 }
 
 // PosModeSnap is one (user, symbol) position-mode row (ADR-0077 §1).
@@ -171,6 +190,19 @@ func (e *Engine) Snapshot() Snapshot {
 	for sym, f := range e.insurance {
 		s.Insurance[sym] = f.String()
 	}
+	if len(e.platformFee) > 0 {
+		s.PlatformFee = make(map[string]string, len(e.platformFee))
+		for asset, v := range e.platformFee {
+			s.PlatformFee[asset] = v.String()
+		}
+	}
+	for _, row := range e.customerFeeOverridesLocked() {
+		s.FeeOverrides = append(s.FeeOverrides, FeeOverrideSnap{
+			UserID: row.UserID, Symbol: row.Symbol, RuleID: row.RuleID,
+			MakerRate: row.MakerRate.String(), TakerRate: row.TakerRate.String(),
+			Reason: row.Reason, UpdatedBy: row.UpdatedBy, UpdatedMs: row.UpdatedMs,
+		})
+	}
 	for id, o := range e.transfers {
 		s.Transfers[id] = TransferSnap{
 			Status: uint8(o.Status), AvailableAfter: o.AvailableAfter.String(),
@@ -226,6 +258,8 @@ func (e *Engine) Restore(s Snapshot) {
 	e.marks = map[string]dec.Decimal{}
 	e.insurance = map[string]dec.Decimal{}
 	e.transfers = map[string]TransferOutcome{}
+	e.platformFee = map[string]dec.Decimal{}
+	e.feeOverrides = map[uint64]map[string]FeeOverride{}
 
 	for _, w := range s.Wallets {
 		e.wallets[w.UserID] = &Wallet{Available: dec.New(w.Available), Reserved: dec.New(w.Reserved),
@@ -253,6 +287,20 @@ func (e *Engine) Restore(s Snapshot) {
 	}
 	for sym, v := range s.Insurance {
 		e.insurance[sym] = dec.New(v)
+	}
+	for asset, v := range s.PlatformFee {
+		e.platformFee[asset] = dec.New(v)
+	}
+	for _, row := range s.FeeOverrides {
+		bySym := e.feeOverrides[row.UserID]
+		if bySym == nil {
+			bySym = map[string]FeeOverride{}
+			e.feeOverrides[row.UserID] = bySym
+		}
+		bySym[row.Symbol] = FeeOverride{
+			RuleID: row.RuleID, MakerRate: dec.New(row.MakerRate), TakerRate: dec.New(row.TakerRate),
+			Reason: row.Reason, UpdatedBy: row.UpdatedBy, UpdatedMs: row.UpdatedMs,
+		}
 	}
 	for id, ts := range s.Transfers {
 		e.transfers[id] = TransferOutcome{

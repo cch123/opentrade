@@ -216,6 +216,22 @@ func (s *Server) ListCustomerLeverageLimits(_ context.Context, req *connect.Requ
 	return connect.NewResponse(resp), nil
 }
 
+func (s *Server) SetCustomerFeeRate(_ context.Context, req *connect.Request[perprpc.SetCustomerFeeRateRequest]) (*connect.Response[perprpc.SetCustomerFeeRateResponse], error) {
+	resp, err := s.svc.SetCustomerFeeRate(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) ListCustomerFeeRates(_ context.Context, req *connect.Request[perprpc.ListCustomerFeeRatesRequest]) (*connect.Response[perprpc.ListCustomerFeeRatesResponse], error) {
+	resp, err := s.svc.ListCustomerFeeRates(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // positionView projects a position into the wire type, computing the
 // mark-derived fields (ADR-0068 invariant #2: unrealized/ratio use mark).
 func (s *Server) positionView(p *perpstate.Position) *perprpc.Position {

@@ -2085,6 +2085,570 @@ func (x *PerpFunding) GetPositionIdx() uint32 {
 	return 0
 }
 
+type ListPerpSettlementsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // "" = any
+	SinceMs       int64                  `protobuf:"varint,3,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
+	UntilMs       int64                  `protobuf:"varint,4,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
+	Cursor        string                 `protobuf:"bytes,5,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         int32                  `protobuf:"varint,6,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPerpSettlementsRequest) Reset() {
+	*x = ListPerpSettlementsRequest{}
+	mi := &file_rpc_history_history_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPerpSettlementsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPerpSettlementsRequest) ProtoMessage() {}
+
+func (x *ListPerpSettlementsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPerpSettlementsRequest.ProtoReflect.Descriptor instead.
+func (*ListPerpSettlementsRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ListPerpSettlementsRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ListPerpSettlementsRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *ListPerpSettlementsRequest) GetSinceMs() int64 {
+	if x != nil {
+		return x.SinceMs
+	}
+	return 0
+}
+
+func (x *ListPerpSettlementsRequest) GetUntilMs() int64 {
+	if x != nil {
+		return x.UntilMs
+	}
+	return 0
+}
+
+func (x *ListPerpSettlementsRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListPerpSettlementsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListPerpSettlementsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Settlements   []*PerpSettlement      `protobuf:"bytes,1,rep,name=settlements,proto3" json:"settlements,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPerpSettlementsResponse) Reset() {
+	*x = ListPerpSettlementsResponse{}
+	mi := &file_rpc_history_history_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPerpSettlementsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPerpSettlementsResponse) ProtoMessage() {}
+
+func (x *ListPerpSettlementsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPerpSettlementsResponse.ProtoReflect.Descriptor instead.
+func (*ListPerpSettlementsResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ListPerpSettlementsResponse) GetSettlements() []*PerpSettlement {
+	if x != nil {
+		return x.Settlements
+	}
+	return nil
+}
+
+func (x *ListPerpSettlementsResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+// PerpSettlement mirrors the `perp_settlements` projection row — one fill
+// with its ADR-0079 fee attribution.
+type PerpSettlement struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	PerpSeqId        uint64                 `protobuf:"varint,1,opt,name=perp_seq_id,json=perpSeqId,proto3" json:"perp_seq_id,omitempty"`
+	OrderId          uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	TradeId          string                 `protobuf:"bytes,3,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
+	Symbol           string                 `protobuf:"bytes,4,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	PositionIdx      uint32                 `protobuf:"varint,5,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	FillSide         int32                  `protobuf:"varint,6,opt,name=fill_side,json=fillSide,proto3" json:"fill_side,omitempty"`
+	Price            string                 `protobuf:"bytes,7,opt,name=price,proto3" json:"price,omitempty"`
+	Qty              string                 `protobuf:"bytes,8,opt,name=qty,proto3" json:"qty,omitempty"`
+	RealizedPnl      string                 `protobuf:"bytes,9,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"` // pre-fee
+	Fee              string                 `protobuf:"bytes,10,opt,name=fee,proto3" json:"fee,omitempty"`                                   // signed: > 0 paid, < 0 rebate received
+	MarginAdded      string                 `protobuf:"bytes,11,opt,name=margin_added,json=marginAdded,proto3" json:"margin_added,omitempty"`
+	MarginReleased   string                 `protobuf:"bytes,12,opt,name=margin_released,json=marginReleased,proto3" json:"margin_released,omitempty"`
+	LiquidityRole    int32                  `protobuf:"varint,13,opt,name=liquidity_role,json=liquidityRole,proto3" json:"liquidity_role,omitempty"` // 1 maker / 2 taker
+	FeeRuleId        string                 `protobuf:"bytes,14,opt,name=fee_rule_id,json=feeRuleId,proto3" json:"fee_rule_id,omitempty"`
+	FeeRate          string                 `protobuf:"bytes,15,opt,name=fee_rate,json=feeRate,proto3" json:"fee_rate,omitempty"`
+	FeeAsset         string                 `protobuf:"bytes,16,opt,name=fee_asset,json=feeAsset,proto3" json:"fee_asset,omitempty"`
+	FeeDeficit       string                 `protobuf:"bytes,17,opt,name=fee_deficit,json=feeDeficit,proto3" json:"fee_deficit,omitempty"`
+	RebateSuppressed bool                   `protobuf:"varint,18,opt,name=rebate_suppressed,json=rebateSuppressed,proto3" json:"rebate_suppressed,omitempty"`
+	TsUnixMs         int64                  `protobuf:"varint,19,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *PerpSettlement) Reset() {
+	*x = PerpSettlement{}
+	mi := &file_rpc_history_history_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PerpSettlement) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PerpSettlement) ProtoMessage() {}
+
+func (x *PerpSettlement) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PerpSettlement.ProtoReflect.Descriptor instead.
+func (*PerpSettlement) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *PerpSettlement) GetPerpSeqId() uint64 {
+	if x != nil {
+		return x.PerpSeqId
+	}
+	return 0
+}
+
+func (x *PerpSettlement) GetOrderId() uint64 {
+	if x != nil {
+		return x.OrderId
+	}
+	return 0
+}
+
+func (x *PerpSettlement) GetTradeId() string {
+	if x != nil {
+		return x.TradeId
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *PerpSettlement) GetFillSide() int32 {
+	if x != nil {
+		return x.FillSide
+	}
+	return 0
+}
+
+func (x *PerpSettlement) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetQty() string {
+	if x != nil {
+		return x.Qty
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetRealizedPnl() string {
+	if x != nil {
+		return x.RealizedPnl
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetFee() string {
+	if x != nil {
+		return x.Fee
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetMarginAdded() string {
+	if x != nil {
+		return x.MarginAdded
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetMarginReleased() string {
+	if x != nil {
+		return x.MarginReleased
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetLiquidityRole() int32 {
+	if x != nil {
+		return x.LiquidityRole
+	}
+	return 0
+}
+
+func (x *PerpSettlement) GetFeeRuleId() string {
+	if x != nil {
+		return x.FeeRuleId
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetFeeRate() string {
+	if x != nil {
+		return x.FeeRate
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetFeeAsset() string {
+	if x != nil {
+		return x.FeeAsset
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetFeeDeficit() string {
+	if x != nil {
+		return x.FeeDeficit
+	}
+	return ""
+}
+
+func (x *PerpSettlement) GetRebateSuppressed() bool {
+	if x != nil {
+		return x.RebateSuppressed
+	}
+	return false
+}
+
+func (x *PerpSettlement) GetTsUnixMs() int64 {
+	if x != nil {
+		return x.TsUnixMs
+	}
+	return 0
+}
+
+type ListPerpDailyStatsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`                   // "" = any
+	SinceMs       int64                  `protobuf:"varint,3,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"` // filters stat_date (UTC day start), 0 = unbounded
+	UntilMs       int64                  `protobuf:"varint,4,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
+	Cursor        string                 `protobuf:"bytes,5,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         int32                  `protobuf:"varint,6,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPerpDailyStatsRequest) Reset() {
+	*x = ListPerpDailyStatsRequest{}
+	mi := &file_rpc_history_history_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPerpDailyStatsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPerpDailyStatsRequest) ProtoMessage() {}
+
+func (x *ListPerpDailyStatsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPerpDailyStatsRequest.ProtoReflect.Descriptor instead.
+func (*ListPerpDailyStatsRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ListPerpDailyStatsRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ListPerpDailyStatsRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *ListPerpDailyStatsRequest) GetSinceMs() int64 {
+	if x != nil {
+		return x.SinceMs
+	}
+	return 0
+}
+
+func (x *ListPerpDailyStatsRequest) GetUntilMs() int64 {
+	if x != nil {
+		return x.UntilMs
+	}
+	return 0
+}
+
+func (x *ListPerpDailyStatsRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListPerpDailyStatsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListPerpDailyStatsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Stats         []*PerpDailyStat       `protobuf:"bytes,1,rep,name=stats,proto3" json:"stats,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPerpDailyStatsResponse) Reset() {
+	*x = ListPerpDailyStatsResponse{}
+	mi := &file_rpc_history_history_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPerpDailyStatsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPerpDailyStatsResponse) ProtoMessage() {}
+
+func (x *ListPerpDailyStatsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPerpDailyStatsResponse.ProtoReflect.Descriptor instead.
+func (*ListPerpDailyStatsResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ListPerpDailyStatsResponse) GetStats() []*PerpDailyStat {
+	if x != nil {
+		return x.Stats
+	}
+	return nil
+}
+
+func (x *ListPerpDailyStatsResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+// PerpDailyStat joins the three ADR-0079 §6 daily tables on
+// (user_id, symbol, stat_date); absent rows contribute zeros.
+type PerpDailyStat struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Symbol          string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	StatDate        string                 `protobuf:"bytes,2,opt,name=stat_date,json=statDate,proto3" json:"stat_date,omitempty"`                      // "YYYY-MM-DD" (UTC day)
+	TradingFee      string                 `protobuf:"bytes,3,opt,name=trading_fee,json=tradingFee,proto3" json:"trading_fee,omitempty"`                // Σ positive fees charged
+	Rebate          string                 `protobuf:"bytes,4,opt,name=rebate,proto3" json:"rebate,omitempty"`                                          // Σ rebates received (positive number)
+	FeeDeficit      string                 `protobuf:"bytes,5,opt,name=fee_deficit,json=feeDeficit,proto3" json:"fee_deficit,omitempty"`                // Σ uncollectable fee
+	FundingPaid     string                 `protobuf:"bytes,6,opt,name=funding_paid,json=fundingPaid,proto3" json:"funding_paid,omitempty"`             // Σ |negative funding payments|
+	FundingReceived string                 `protobuf:"bytes,7,opt,name=funding_received,json=fundingReceived,proto3" json:"funding_received,omitempty"` // Σ positive funding payments
+	RealizedPnl     string                 `protobuf:"bytes,8,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"`             // Σ trade-close realized (settle + liq + ADL; funding excluded)
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *PerpDailyStat) Reset() {
+	*x = PerpDailyStat{}
+	mi := &file_rpc_history_history_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PerpDailyStat) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PerpDailyStat) ProtoMessage() {}
+
+func (x *PerpDailyStat) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_history_history_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PerpDailyStat.ProtoReflect.Descriptor instead.
+func (*PerpDailyStat) Descriptor() ([]byte, []int) {
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *PerpDailyStat) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *PerpDailyStat) GetStatDate() string {
+	if x != nil {
+		return x.StatDate
+	}
+	return ""
+}
+
+func (x *PerpDailyStat) GetTradingFee() string {
+	if x != nil {
+		return x.TradingFee
+	}
+	return ""
+}
+
+func (x *PerpDailyStat) GetRebate() string {
+	if x != nil {
+		return x.Rebate
+	}
+	return ""
+}
+
+func (x *PerpDailyStat) GetFeeDeficit() string {
+	if x != nil {
+		return x.FeeDeficit
+	}
+	return ""
+}
+
+func (x *PerpDailyStat) GetFundingPaid() string {
+	if x != nil {
+		return x.FundingPaid
+	}
+	return ""
+}
+
+func (x *PerpDailyStat) GetFundingReceived() string {
+	if x != nil {
+		return x.FundingReceived
+	}
+	return ""
+}
+
+func (x *PerpDailyStat) GetRealizedPnl() string {
+	if x != nil {
+		return x.RealizedPnl
+	}
+	return ""
+}
+
 type ListPerpMarginAdjustmentsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -2099,7 +2663,7 @@ type ListPerpMarginAdjustmentsRequest struct {
 
 func (x *ListPerpMarginAdjustmentsRequest) Reset() {
 	*x = ListPerpMarginAdjustmentsRequest{}
-	mi := &file_rpc_history_history_proto_msgTypes[22]
+	mi := &file_rpc_history_history_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2111,7 +2675,7 @@ func (x *ListPerpMarginAdjustmentsRequest) String() string {
 func (*ListPerpMarginAdjustmentsRequest) ProtoMessage() {}
 
 func (x *ListPerpMarginAdjustmentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[22]
+	mi := &file_rpc_history_history_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2124,7 +2688,7 @@ func (x *ListPerpMarginAdjustmentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPerpMarginAdjustmentsRequest.ProtoReflect.Descriptor instead.
 func (*ListPerpMarginAdjustmentsRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{22}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListPerpMarginAdjustmentsRequest) GetUserId() uint64 {
@@ -2179,7 +2743,7 @@ type ListPerpMarginAdjustmentsResponse struct {
 
 func (x *ListPerpMarginAdjustmentsResponse) Reset() {
 	*x = ListPerpMarginAdjustmentsResponse{}
-	mi := &file_rpc_history_history_proto_msgTypes[23]
+	mi := &file_rpc_history_history_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2191,7 +2755,7 @@ func (x *ListPerpMarginAdjustmentsResponse) String() string {
 func (*ListPerpMarginAdjustmentsResponse) ProtoMessage() {}
 
 func (x *ListPerpMarginAdjustmentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[23]
+	mi := &file_rpc_history_history_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2204,7 +2768,7 @@ func (x *ListPerpMarginAdjustmentsResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ListPerpMarginAdjustmentsResponse.ProtoReflect.Descriptor instead.
 func (*ListPerpMarginAdjustmentsResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{23}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListPerpMarginAdjustmentsResponse) GetAdjustments() []*PerpMarginAdjustment {
@@ -2242,7 +2806,7 @@ type PerpMarginAdjustment struct {
 
 func (x *PerpMarginAdjustment) Reset() {
 	*x = PerpMarginAdjustment{}
-	mi := &file_rpc_history_history_proto_msgTypes[24]
+	mi := &file_rpc_history_history_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2254,7 +2818,7 @@ func (x *PerpMarginAdjustment) String() string {
 func (*PerpMarginAdjustment) ProtoMessage() {}
 
 func (x *PerpMarginAdjustment) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[24]
+	mi := &file_rpc_history_history_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2267,7 +2831,7 @@ func (x *PerpMarginAdjustment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpMarginAdjustment.ProtoReflect.Descriptor instead.
 func (*PerpMarginAdjustment) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{24}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *PerpMarginAdjustment) GetPerpSeqId() uint64 {
@@ -2368,7 +2932,7 @@ type ListPerpConfigLogsRequest struct {
 
 func (x *ListPerpConfigLogsRequest) Reset() {
 	*x = ListPerpConfigLogsRequest{}
-	mi := &file_rpc_history_history_proto_msgTypes[25]
+	mi := &file_rpc_history_history_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2380,7 +2944,7 @@ func (x *ListPerpConfigLogsRequest) String() string {
 func (*ListPerpConfigLogsRequest) ProtoMessage() {}
 
 func (x *ListPerpConfigLogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[25]
+	mi := &file_rpc_history_history_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2393,7 +2957,7 @@ func (x *ListPerpConfigLogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPerpConfigLogsRequest.ProtoReflect.Descriptor instead.
 func (*ListPerpConfigLogsRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{25}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListPerpConfigLogsRequest) GetUserId() uint64 {
@@ -2448,7 +3012,7 @@ type ListPerpConfigLogsResponse struct {
 
 func (x *ListPerpConfigLogsResponse) Reset() {
 	*x = ListPerpConfigLogsResponse{}
-	mi := &file_rpc_history_history_proto_msgTypes[26]
+	mi := &file_rpc_history_history_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2460,7 +3024,7 @@ func (x *ListPerpConfigLogsResponse) String() string {
 func (*ListPerpConfigLogsResponse) ProtoMessage() {}
 
 func (x *ListPerpConfigLogsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[26]
+	mi := &file_rpc_history_history_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2473,7 +3037,7 @@ func (x *ListPerpConfigLogsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPerpConfigLogsResponse.ProtoReflect.Descriptor instead.
 func (*ListPerpConfigLogsResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{26}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListPerpConfigLogsResponse) GetLogs() []*PerpConfigLog {
@@ -2512,7 +3076,7 @@ type PerpConfigLog struct {
 
 func (x *PerpConfigLog) Reset() {
 	*x = PerpConfigLog{}
-	mi := &file_rpc_history_history_proto_msgTypes[27]
+	mi := &file_rpc_history_history_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2524,7 +3088,7 @@ func (x *PerpConfigLog) String() string {
 func (*PerpConfigLog) ProtoMessage() {}
 
 func (x *PerpConfigLog) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[27]
+	mi := &file_rpc_history_history_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2537,7 +3101,7 @@ func (x *PerpConfigLog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpConfigLog.ProtoReflect.Descriptor instead.
 func (*PerpConfigLog) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{27}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *PerpConfigLog) GetPerpSeqId() uint64 {
@@ -2645,7 +3209,7 @@ type ListPerpLiquidationsRequest struct {
 
 func (x *ListPerpLiquidationsRequest) Reset() {
 	*x = ListPerpLiquidationsRequest{}
-	mi := &file_rpc_history_history_proto_msgTypes[28]
+	mi := &file_rpc_history_history_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2657,7 +3221,7 @@ func (x *ListPerpLiquidationsRequest) String() string {
 func (*ListPerpLiquidationsRequest) ProtoMessage() {}
 
 func (x *ListPerpLiquidationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[28]
+	mi := &file_rpc_history_history_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2670,7 +3234,7 @@ func (x *ListPerpLiquidationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPerpLiquidationsRequest.ProtoReflect.Descriptor instead.
 func (*ListPerpLiquidationsRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{28}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ListPerpLiquidationsRequest) GetUserId() uint64 {
@@ -2725,7 +3289,7 @@ type ListPerpLiquidationsResponse struct {
 
 func (x *ListPerpLiquidationsResponse) Reset() {
 	*x = ListPerpLiquidationsResponse{}
-	mi := &file_rpc_history_history_proto_msgTypes[29]
+	mi := &file_rpc_history_history_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2737,7 +3301,7 @@ func (x *ListPerpLiquidationsResponse) String() string {
 func (*ListPerpLiquidationsResponse) ProtoMessage() {}
 
 func (x *ListPerpLiquidationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[29]
+	mi := &file_rpc_history_history_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2750,7 +3314,7 @@ func (x *ListPerpLiquidationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPerpLiquidationsResponse.ProtoReflect.Descriptor instead.
 func (*ListPerpLiquidationsResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{29}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ListPerpLiquidationsResponse) GetLiquidations() []*PerpLiquidation {
@@ -2787,7 +3351,7 @@ type PerpLiquidation struct {
 
 func (x *PerpLiquidation) Reset() {
 	*x = PerpLiquidation{}
-	mi := &file_rpc_history_history_proto_msgTypes[30]
+	mi := &file_rpc_history_history_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2799,7 +3363,7 @@ func (x *PerpLiquidation) String() string {
 func (*PerpLiquidation) ProtoMessage() {}
 
 func (x *PerpLiquidation) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[30]
+	mi := &file_rpc_history_history_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2812,7 +3376,7 @@ func (x *PerpLiquidation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpLiquidation.ProtoReflect.Descriptor instead.
 func (*PerpLiquidation) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{30}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *PerpLiquidation) GetPerpSeqId() uint64 {
@@ -2906,7 +3470,7 @@ type ListPerpADLRequest struct {
 
 func (x *ListPerpADLRequest) Reset() {
 	*x = ListPerpADLRequest{}
-	mi := &file_rpc_history_history_proto_msgTypes[31]
+	mi := &file_rpc_history_history_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2918,7 +3482,7 @@ func (x *ListPerpADLRequest) String() string {
 func (*ListPerpADLRequest) ProtoMessage() {}
 
 func (x *ListPerpADLRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[31]
+	mi := &file_rpc_history_history_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2931,7 +3495,7 @@ func (x *ListPerpADLRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPerpADLRequest.ProtoReflect.Descriptor instead.
 func (*ListPerpADLRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{31}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ListPerpADLRequest) GetUserId() uint64 {
@@ -2986,7 +3550,7 @@ type ListPerpADLResponse struct {
 
 func (x *ListPerpADLResponse) Reset() {
 	*x = ListPerpADLResponse{}
-	mi := &file_rpc_history_history_proto_msgTypes[32]
+	mi := &file_rpc_history_history_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2998,7 +3562,7 @@ func (x *ListPerpADLResponse) String() string {
 func (*ListPerpADLResponse) ProtoMessage() {}
 
 func (x *ListPerpADLResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[32]
+	mi := &file_rpc_history_history_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3011,7 +3575,7 @@ func (x *ListPerpADLResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPerpADLResponse.ProtoReflect.Descriptor instead.
 func (*ListPerpADLResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{32}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListPerpADLResponse) GetAdl() []*PerpADL {
@@ -3047,7 +3611,7 @@ type PerpADL struct {
 
 func (x *PerpADL) Reset() {
 	*x = PerpADL{}
-	mi := &file_rpc_history_history_proto_msgTypes[33]
+	mi := &file_rpc_history_history_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3059,7 +3623,7 @@ func (x *PerpADL) String() string {
 func (*PerpADL) ProtoMessage() {}
 
 func (x *PerpADL) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_history_history_proto_msgTypes[33]
+	mi := &file_rpc_history_history_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3072,7 +3636,7 @@ func (x *PerpADL) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpADL.ProtoReflect.Descriptor instead.
 func (*PerpADL) Descriptor() ([]byte, []int) {
-	return file_rpc_history_history_proto_rawDescGZIP(), []int{33}
+	return file_rpc_history_history_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *PerpADL) GetPerpSeqId() uint64 {
@@ -3323,7 +3887,63 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\apayment\x18\x06 \x01(\tR\apayment\x12\x1c\n" +
 	"\n" +
 	"ts_unix_ms\x18\a \x01(\x03R\btsUnixMs\x12!\n" +
-	"\fposition_idx\x18\b \x01(\rR\vpositionIdx\"\xb7\x01\n" +
+	"\fposition_idx\x18\b \x01(\rR\vpositionIdx\"\xb1\x01\n" +
+	"\x1aListPerpSettlementsRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
+	"\bsince_ms\x18\x03 \x01(\x03R\asinceMs\x12\x19\n" +
+	"\buntil_ms\x18\x04 \x01(\x03R\auntilMs\x12\x16\n" +
+	"\x06cursor\x18\x05 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\x06 \x01(\x05R\x05limit\"\x87\x01\n" +
+	"\x1bListPerpSettlementsResponse\x12G\n" +
+	"\vsettlements\x18\x01 \x03(\v2%.opentrade.rpc.history.PerpSettlementR\vsettlements\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"\xd2\x04\n" +
+	"\x0ePerpSettlement\x12\x1e\n" +
+	"\vperp_seq_id\x18\x01 \x01(\x04R\tperpSeqId\x12\x19\n" +
+	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x19\n" +
+	"\btrade_id\x18\x03 \x01(\tR\atradeId\x12\x16\n" +
+	"\x06symbol\x18\x04 \x01(\tR\x06symbol\x12!\n" +
+	"\fposition_idx\x18\x05 \x01(\rR\vpositionIdx\x12\x1b\n" +
+	"\tfill_side\x18\x06 \x01(\x05R\bfillSide\x12\x14\n" +
+	"\x05price\x18\a \x01(\tR\x05price\x12\x10\n" +
+	"\x03qty\x18\b \x01(\tR\x03qty\x12!\n" +
+	"\frealized_pnl\x18\t \x01(\tR\vrealizedPnl\x12\x10\n" +
+	"\x03fee\x18\n" +
+	" \x01(\tR\x03fee\x12!\n" +
+	"\fmargin_added\x18\v \x01(\tR\vmarginAdded\x12'\n" +
+	"\x0fmargin_released\x18\f \x01(\tR\x0emarginReleased\x12%\n" +
+	"\x0eliquidity_role\x18\r \x01(\x05R\rliquidityRole\x12\x1e\n" +
+	"\vfee_rule_id\x18\x0e \x01(\tR\tfeeRuleId\x12\x19\n" +
+	"\bfee_rate\x18\x0f \x01(\tR\afeeRate\x12\x1b\n" +
+	"\tfee_asset\x18\x10 \x01(\tR\bfeeAsset\x12\x1f\n" +
+	"\vfee_deficit\x18\x11 \x01(\tR\n" +
+	"feeDeficit\x12+\n" +
+	"\x11rebate_suppressed\x18\x12 \x01(\bR\x10rebateSuppressed\x12\x1c\n" +
+	"\n" +
+	"ts_unix_ms\x18\x13 \x01(\x03R\btsUnixMs\"\xb0\x01\n" +
+	"\x19ListPerpDailyStatsRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
+	"\bsince_ms\x18\x03 \x01(\x03R\asinceMs\x12\x19\n" +
+	"\buntil_ms\x18\x04 \x01(\x03R\auntilMs\x12\x16\n" +
+	"\x06cursor\x18\x05 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\x06 \x01(\x05R\x05limit\"y\n" +
+	"\x1aListPerpDailyStatsResponse\x12:\n" +
+	"\x05stats\x18\x01 \x03(\v2$.opentrade.rpc.history.PerpDailyStatR\x05stats\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"\x8f\x02\n" +
+	"\rPerpDailyStat\x12\x16\n" +
+	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12\x1b\n" +
+	"\tstat_date\x18\x02 \x01(\tR\bstatDate\x12\x1f\n" +
+	"\vtrading_fee\x18\x03 \x01(\tR\n" +
+	"tradingFee\x12\x16\n" +
+	"\x06rebate\x18\x04 \x01(\tR\x06rebate\x12\x1f\n" +
+	"\vfee_deficit\x18\x05 \x01(\tR\n" +
+	"feeDeficit\x12!\n" +
+	"\ffunding_paid\x18\x06 \x01(\tR\vfundingPaid\x12)\n" +
+	"\x10funding_received\x18\a \x01(\tR\x0ffundingReceived\x12!\n" +
+	"\frealized_pnl\x18\b \x01(\tR\vrealizedPnl\"\xb7\x01\n" +
 	" ListPerpMarginAdjustmentsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
@@ -3457,8 +4077,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x19TRIGGER_SCOPE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14TRIGGER_SCOPE_ACTIVE\x10\x01\x12\x1a\n" +
 	"\x16TRIGGER_SCOPE_TERMINAL\x10\x02\x12\x15\n" +
-	"\x11TRIGGER_SCOPE_ALL\x10\x032\xce\n" +
-	"\n" +
+	"\x11TRIGGER_SCOPE_ALL\x10\x032\xc7\f\n" +
 	"\x0eHistoryService\x12[\n" +
 	"\bGetOrder\x12&.opentrade.rpc.history.GetOrderRequest\x1a'.opentrade.rpc.history.GetOrderResponse\x12a\n" +
 	"\n" +
@@ -3471,7 +4090,9 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x14ListPerpLiquidations\x122.opentrade.rpc.history.ListPerpLiquidationsRequest\x1a3.opentrade.rpc.history.ListPerpLiquidationsResponse\x12d\n" +
 	"\vListPerpADL\x12).opentrade.rpc.history.ListPerpADLRequest\x1a*.opentrade.rpc.history.ListPerpADLResponse\x12\x8e\x01\n" +
 	"\x19ListPerpMarginAdjustments\x127.opentrade.rpc.history.ListPerpMarginAdjustmentsRequest\x1a8.opentrade.rpc.history.ListPerpMarginAdjustmentsResponse\x12y\n" +
-	"\x12ListPerpConfigLogs\x120.opentrade.rpc.history.ListPerpConfigLogsRequest\x1a1.opentrade.rpc.history.ListPerpConfigLogsResponse\x12a\n" +
+	"\x12ListPerpConfigLogs\x120.opentrade.rpc.history.ListPerpConfigLogsRequest\x1a1.opentrade.rpc.history.ListPerpConfigLogsResponse\x12|\n" +
+	"\x13ListPerpSettlements\x121.opentrade.rpc.history.ListPerpSettlementsRequest\x1a2.opentrade.rpc.history.ListPerpSettlementsResponse\x12y\n" +
+	"\x12ListPerpDailyStats\x120.opentrade.rpc.history.ListPerpDailyStatsRequest\x1a1.opentrade.rpc.history.ListPerpDailyStatsResponse\x12a\n" +
 	"\n" +
 	"GetTrigger\x12(.opentrade.rpc.history.GetTriggerRequest\x1a).opentrade.rpc.history.GetTriggerResponse\x12g\n" +
 	"\fListTriggers\x12*.opentrade.rpc.history.ListTriggersRequest\x1a+.opentrade.rpc.history.ListTriggersResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/history;historyrpcb\x06proto3"
@@ -3489,7 +4110,7 @@ func file_rpc_history_history_proto_rawDescGZIP() []byte {
 }
 
 var file_rpc_history_history_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_rpc_history_history_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_rpc_history_history_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_rpc_history_history_proto_goTypes = []any{
 	(OrderScope)(0),                           // 0: opentrade.rpc.history.OrderScope
 	(OrderStatus)(0),                          // 1: opentrade.rpc.history.OrderStatus
@@ -3517,81 +4138,93 @@ var file_rpc_history_history_proto_goTypes = []any{
 	(*ListPerpFundingRequest)(nil),            // 23: opentrade.rpc.history.ListPerpFundingRequest
 	(*ListPerpFundingResponse)(nil),           // 24: opentrade.rpc.history.ListPerpFundingResponse
 	(*PerpFunding)(nil),                       // 25: opentrade.rpc.history.PerpFunding
-	(*ListPerpMarginAdjustmentsRequest)(nil),  // 26: opentrade.rpc.history.ListPerpMarginAdjustmentsRequest
-	(*ListPerpMarginAdjustmentsResponse)(nil), // 27: opentrade.rpc.history.ListPerpMarginAdjustmentsResponse
-	(*PerpMarginAdjustment)(nil),              // 28: opentrade.rpc.history.PerpMarginAdjustment
-	(*ListPerpConfigLogsRequest)(nil),         // 29: opentrade.rpc.history.ListPerpConfigLogsRequest
-	(*ListPerpConfigLogsResponse)(nil),        // 30: opentrade.rpc.history.ListPerpConfigLogsResponse
-	(*PerpConfigLog)(nil),                     // 31: opentrade.rpc.history.PerpConfigLog
-	(*ListPerpLiquidationsRequest)(nil),       // 32: opentrade.rpc.history.ListPerpLiquidationsRequest
-	(*ListPerpLiquidationsResponse)(nil),      // 33: opentrade.rpc.history.ListPerpLiquidationsResponse
-	(*PerpLiquidation)(nil),                   // 34: opentrade.rpc.history.PerpLiquidation
-	(*ListPerpADLRequest)(nil),                // 35: opentrade.rpc.history.ListPerpADLRequest
-	(*ListPerpADLResponse)(nil),               // 36: opentrade.rpc.history.ListPerpADLResponse
-	(*PerpADL)(nil),                           // 37: opentrade.rpc.history.PerpADL
-	(event.Side)(0),                           // 38: opentrade.event.Side
-	(event.OrderType)(0),                      // 39: opentrade.event.OrderType
-	(event.TimeInForce)(0),                    // 40: opentrade.event.TimeInForce
-	(trigger.TriggerStatus)(0),                // 41: opentrade.rpc.trigger.TriggerStatus
-	(trigger.TriggerType)(0),                  // 42: opentrade.rpc.trigger.TriggerType
+	(*ListPerpSettlementsRequest)(nil),        // 26: opentrade.rpc.history.ListPerpSettlementsRequest
+	(*ListPerpSettlementsResponse)(nil),       // 27: opentrade.rpc.history.ListPerpSettlementsResponse
+	(*PerpSettlement)(nil),                    // 28: opentrade.rpc.history.PerpSettlement
+	(*ListPerpDailyStatsRequest)(nil),         // 29: opentrade.rpc.history.ListPerpDailyStatsRequest
+	(*ListPerpDailyStatsResponse)(nil),        // 30: opentrade.rpc.history.ListPerpDailyStatsResponse
+	(*PerpDailyStat)(nil),                     // 31: opentrade.rpc.history.PerpDailyStat
+	(*ListPerpMarginAdjustmentsRequest)(nil),  // 32: opentrade.rpc.history.ListPerpMarginAdjustmentsRequest
+	(*ListPerpMarginAdjustmentsResponse)(nil), // 33: opentrade.rpc.history.ListPerpMarginAdjustmentsResponse
+	(*PerpMarginAdjustment)(nil),              // 34: opentrade.rpc.history.PerpMarginAdjustment
+	(*ListPerpConfigLogsRequest)(nil),         // 35: opentrade.rpc.history.ListPerpConfigLogsRequest
+	(*ListPerpConfigLogsResponse)(nil),        // 36: opentrade.rpc.history.ListPerpConfigLogsResponse
+	(*PerpConfigLog)(nil),                     // 37: opentrade.rpc.history.PerpConfigLog
+	(*ListPerpLiquidationsRequest)(nil),       // 38: opentrade.rpc.history.ListPerpLiquidationsRequest
+	(*ListPerpLiquidationsResponse)(nil),      // 39: opentrade.rpc.history.ListPerpLiquidationsResponse
+	(*PerpLiquidation)(nil),                   // 40: opentrade.rpc.history.PerpLiquidation
+	(*ListPerpADLRequest)(nil),                // 41: opentrade.rpc.history.ListPerpADLRequest
+	(*ListPerpADLResponse)(nil),               // 42: opentrade.rpc.history.ListPerpADLResponse
+	(*PerpADL)(nil),                           // 43: opentrade.rpc.history.PerpADL
+	(event.Side)(0),                           // 44: opentrade.event.Side
+	(event.OrderType)(0),                      // 45: opentrade.event.OrderType
+	(event.TimeInForce)(0),                    // 46: opentrade.event.TimeInForce
+	(trigger.TriggerStatus)(0),                // 47: opentrade.rpc.trigger.TriggerStatus
+	(trigger.TriggerType)(0),                  // 48: opentrade.rpc.trigger.TriggerType
 }
 var file_rpc_history_history_proto_depIdxs = []int32{
 	8,  // 0: opentrade.rpc.history.GetOrderResponse.order:type_name -> opentrade.rpc.history.Order
 	0,  // 1: opentrade.rpc.history.ListOrdersRequest.scope:type_name -> opentrade.rpc.history.OrderScope
 	1,  // 2: opentrade.rpc.history.ListOrdersRequest.statuses:type_name -> opentrade.rpc.history.OrderStatus
 	8,  // 3: opentrade.rpc.history.ListOrdersResponse.orders:type_name -> opentrade.rpc.history.Order
-	38, // 4: opentrade.rpc.history.Order.side:type_name -> opentrade.event.Side
-	39, // 5: opentrade.rpc.history.Order.order_type:type_name -> opentrade.event.OrderType
-	40, // 6: opentrade.rpc.history.Order.tif:type_name -> opentrade.event.TimeInForce
+	44, // 4: opentrade.rpc.history.Order.side:type_name -> opentrade.event.Side
+	45, // 5: opentrade.rpc.history.Order.order_type:type_name -> opentrade.event.OrderType
+	46, // 6: opentrade.rpc.history.Order.tif:type_name -> opentrade.event.TimeInForce
 	1,  // 7: opentrade.rpc.history.Order.status:type_name -> opentrade.rpc.history.OrderStatus
 	11, // 8: opentrade.rpc.history.ListTradesResponse.trades:type_name -> opentrade.rpc.history.Trade
 	2,  // 9: opentrade.rpc.history.Trade.role:type_name -> opentrade.rpc.history.TradeRole
-	38, // 10: opentrade.rpc.history.Trade.side:type_name -> opentrade.event.Side
+	44, // 10: opentrade.rpc.history.Trade.side:type_name -> opentrade.event.Side
 	19, // 11: opentrade.rpc.history.ListAccountLogsResponse.logs:type_name -> opentrade.rpc.history.AccountLog
 	18, // 12: opentrade.rpc.history.GetTriggerResponse.trigger:type_name -> opentrade.rpc.history.Trigger
 	3,  // 13: opentrade.rpc.history.ListTriggersRequest.scope:type_name -> opentrade.rpc.history.TriggerScope
-	41, // 14: opentrade.rpc.history.ListTriggersRequest.statuses:type_name -> opentrade.rpc.trigger.TriggerStatus
+	47, // 14: opentrade.rpc.history.ListTriggersRequest.statuses:type_name -> opentrade.rpc.trigger.TriggerStatus
 	18, // 15: opentrade.rpc.history.ListTriggersResponse.triggers:type_name -> opentrade.rpc.history.Trigger
-	38, // 16: opentrade.rpc.history.Trigger.side:type_name -> opentrade.event.Side
-	42, // 17: opentrade.rpc.history.Trigger.type:type_name -> opentrade.rpc.trigger.TriggerType
-	40, // 18: opentrade.rpc.history.Trigger.tif:type_name -> opentrade.event.TimeInForce
-	41, // 19: opentrade.rpc.history.Trigger.status:type_name -> opentrade.rpc.trigger.TriggerStatus
+	44, // 16: opentrade.rpc.history.Trigger.side:type_name -> opentrade.event.Side
+	48, // 17: opentrade.rpc.history.Trigger.type:type_name -> opentrade.rpc.trigger.TriggerType
+	46, // 18: opentrade.rpc.history.Trigger.tif:type_name -> opentrade.event.TimeInForce
+	47, // 19: opentrade.rpc.history.Trigger.status:type_name -> opentrade.rpc.trigger.TriggerStatus
 	22, // 20: opentrade.rpc.history.ListPerpPositionsResponse.positions:type_name -> opentrade.rpc.history.PerpPosition
-	38, // 21: opentrade.rpc.history.PerpPosition.side:type_name -> opentrade.event.Side
+	44, // 21: opentrade.rpc.history.PerpPosition.side:type_name -> opentrade.event.Side
 	25, // 22: opentrade.rpc.history.ListPerpFundingResponse.funding:type_name -> opentrade.rpc.history.PerpFunding
-	28, // 23: opentrade.rpc.history.ListPerpMarginAdjustmentsResponse.adjustments:type_name -> opentrade.rpc.history.PerpMarginAdjustment
-	31, // 24: opentrade.rpc.history.ListPerpConfigLogsResponse.logs:type_name -> opentrade.rpc.history.PerpConfigLog
-	34, // 25: opentrade.rpc.history.ListPerpLiquidationsResponse.liquidations:type_name -> opentrade.rpc.history.PerpLiquidation
-	37, // 26: opentrade.rpc.history.ListPerpADLResponse.adl:type_name -> opentrade.rpc.history.PerpADL
-	4,  // 27: opentrade.rpc.history.HistoryService.GetOrder:input_type -> opentrade.rpc.history.GetOrderRequest
-	6,  // 28: opentrade.rpc.history.HistoryService.ListOrders:input_type -> opentrade.rpc.history.ListOrdersRequest
-	9,  // 29: opentrade.rpc.history.HistoryService.ListTrades:input_type -> opentrade.rpc.history.ListTradesRequest
-	12, // 30: opentrade.rpc.history.HistoryService.ListAccountLogs:input_type -> opentrade.rpc.history.ListAccountLogsRequest
-	20, // 31: opentrade.rpc.history.HistoryService.ListPerpPositions:input_type -> opentrade.rpc.history.ListPerpPositionsRequest
-	23, // 32: opentrade.rpc.history.HistoryService.ListPerpFunding:input_type -> opentrade.rpc.history.ListPerpFundingRequest
-	32, // 33: opentrade.rpc.history.HistoryService.ListPerpLiquidations:input_type -> opentrade.rpc.history.ListPerpLiquidationsRequest
-	35, // 34: opentrade.rpc.history.HistoryService.ListPerpADL:input_type -> opentrade.rpc.history.ListPerpADLRequest
-	26, // 35: opentrade.rpc.history.HistoryService.ListPerpMarginAdjustments:input_type -> opentrade.rpc.history.ListPerpMarginAdjustmentsRequest
-	29, // 36: opentrade.rpc.history.HistoryService.ListPerpConfigLogs:input_type -> opentrade.rpc.history.ListPerpConfigLogsRequest
-	14, // 37: opentrade.rpc.history.HistoryService.GetTrigger:input_type -> opentrade.rpc.history.GetTriggerRequest
-	16, // 38: opentrade.rpc.history.HistoryService.ListTriggers:input_type -> opentrade.rpc.history.ListTriggersRequest
-	5,  // 39: opentrade.rpc.history.HistoryService.GetOrder:output_type -> opentrade.rpc.history.GetOrderResponse
-	7,  // 40: opentrade.rpc.history.HistoryService.ListOrders:output_type -> opentrade.rpc.history.ListOrdersResponse
-	10, // 41: opentrade.rpc.history.HistoryService.ListTrades:output_type -> opentrade.rpc.history.ListTradesResponse
-	13, // 42: opentrade.rpc.history.HistoryService.ListAccountLogs:output_type -> opentrade.rpc.history.ListAccountLogsResponse
-	21, // 43: opentrade.rpc.history.HistoryService.ListPerpPositions:output_type -> opentrade.rpc.history.ListPerpPositionsResponse
-	24, // 44: opentrade.rpc.history.HistoryService.ListPerpFunding:output_type -> opentrade.rpc.history.ListPerpFundingResponse
-	33, // 45: opentrade.rpc.history.HistoryService.ListPerpLiquidations:output_type -> opentrade.rpc.history.ListPerpLiquidationsResponse
-	36, // 46: opentrade.rpc.history.HistoryService.ListPerpADL:output_type -> opentrade.rpc.history.ListPerpADLResponse
-	27, // 47: opentrade.rpc.history.HistoryService.ListPerpMarginAdjustments:output_type -> opentrade.rpc.history.ListPerpMarginAdjustmentsResponse
-	30, // 48: opentrade.rpc.history.HistoryService.ListPerpConfigLogs:output_type -> opentrade.rpc.history.ListPerpConfigLogsResponse
-	15, // 49: opentrade.rpc.history.HistoryService.GetTrigger:output_type -> opentrade.rpc.history.GetTriggerResponse
-	17, // 50: opentrade.rpc.history.HistoryService.ListTriggers:output_type -> opentrade.rpc.history.ListTriggersResponse
-	39, // [39:51] is the sub-list for method output_type
-	27, // [27:39] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	28, // 23: opentrade.rpc.history.ListPerpSettlementsResponse.settlements:type_name -> opentrade.rpc.history.PerpSettlement
+	31, // 24: opentrade.rpc.history.ListPerpDailyStatsResponse.stats:type_name -> opentrade.rpc.history.PerpDailyStat
+	34, // 25: opentrade.rpc.history.ListPerpMarginAdjustmentsResponse.adjustments:type_name -> opentrade.rpc.history.PerpMarginAdjustment
+	37, // 26: opentrade.rpc.history.ListPerpConfigLogsResponse.logs:type_name -> opentrade.rpc.history.PerpConfigLog
+	40, // 27: opentrade.rpc.history.ListPerpLiquidationsResponse.liquidations:type_name -> opentrade.rpc.history.PerpLiquidation
+	43, // 28: opentrade.rpc.history.ListPerpADLResponse.adl:type_name -> opentrade.rpc.history.PerpADL
+	4,  // 29: opentrade.rpc.history.HistoryService.GetOrder:input_type -> opentrade.rpc.history.GetOrderRequest
+	6,  // 30: opentrade.rpc.history.HistoryService.ListOrders:input_type -> opentrade.rpc.history.ListOrdersRequest
+	9,  // 31: opentrade.rpc.history.HistoryService.ListTrades:input_type -> opentrade.rpc.history.ListTradesRequest
+	12, // 32: opentrade.rpc.history.HistoryService.ListAccountLogs:input_type -> opentrade.rpc.history.ListAccountLogsRequest
+	20, // 33: opentrade.rpc.history.HistoryService.ListPerpPositions:input_type -> opentrade.rpc.history.ListPerpPositionsRequest
+	23, // 34: opentrade.rpc.history.HistoryService.ListPerpFunding:input_type -> opentrade.rpc.history.ListPerpFundingRequest
+	38, // 35: opentrade.rpc.history.HistoryService.ListPerpLiquidations:input_type -> opentrade.rpc.history.ListPerpLiquidationsRequest
+	41, // 36: opentrade.rpc.history.HistoryService.ListPerpADL:input_type -> opentrade.rpc.history.ListPerpADLRequest
+	32, // 37: opentrade.rpc.history.HistoryService.ListPerpMarginAdjustments:input_type -> opentrade.rpc.history.ListPerpMarginAdjustmentsRequest
+	35, // 38: opentrade.rpc.history.HistoryService.ListPerpConfigLogs:input_type -> opentrade.rpc.history.ListPerpConfigLogsRequest
+	26, // 39: opentrade.rpc.history.HistoryService.ListPerpSettlements:input_type -> opentrade.rpc.history.ListPerpSettlementsRequest
+	29, // 40: opentrade.rpc.history.HistoryService.ListPerpDailyStats:input_type -> opentrade.rpc.history.ListPerpDailyStatsRequest
+	14, // 41: opentrade.rpc.history.HistoryService.GetTrigger:input_type -> opentrade.rpc.history.GetTriggerRequest
+	16, // 42: opentrade.rpc.history.HistoryService.ListTriggers:input_type -> opentrade.rpc.history.ListTriggersRequest
+	5,  // 43: opentrade.rpc.history.HistoryService.GetOrder:output_type -> opentrade.rpc.history.GetOrderResponse
+	7,  // 44: opentrade.rpc.history.HistoryService.ListOrders:output_type -> opentrade.rpc.history.ListOrdersResponse
+	10, // 45: opentrade.rpc.history.HistoryService.ListTrades:output_type -> opentrade.rpc.history.ListTradesResponse
+	13, // 46: opentrade.rpc.history.HistoryService.ListAccountLogs:output_type -> opentrade.rpc.history.ListAccountLogsResponse
+	21, // 47: opentrade.rpc.history.HistoryService.ListPerpPositions:output_type -> opentrade.rpc.history.ListPerpPositionsResponse
+	24, // 48: opentrade.rpc.history.HistoryService.ListPerpFunding:output_type -> opentrade.rpc.history.ListPerpFundingResponse
+	39, // 49: opentrade.rpc.history.HistoryService.ListPerpLiquidations:output_type -> opentrade.rpc.history.ListPerpLiquidationsResponse
+	42, // 50: opentrade.rpc.history.HistoryService.ListPerpADL:output_type -> opentrade.rpc.history.ListPerpADLResponse
+	33, // 51: opentrade.rpc.history.HistoryService.ListPerpMarginAdjustments:output_type -> opentrade.rpc.history.ListPerpMarginAdjustmentsResponse
+	36, // 52: opentrade.rpc.history.HistoryService.ListPerpConfigLogs:output_type -> opentrade.rpc.history.ListPerpConfigLogsResponse
+	27, // 53: opentrade.rpc.history.HistoryService.ListPerpSettlements:output_type -> opentrade.rpc.history.ListPerpSettlementsResponse
+	30, // 54: opentrade.rpc.history.HistoryService.ListPerpDailyStats:output_type -> opentrade.rpc.history.ListPerpDailyStatsResponse
+	15, // 55: opentrade.rpc.history.HistoryService.GetTrigger:output_type -> opentrade.rpc.history.GetTriggerResponse
+	17, // 56: opentrade.rpc.history.HistoryService.ListTriggers:output_type -> opentrade.rpc.history.ListTriggersResponse
+	43, // [43:57] is the sub-list for method output_type
+	29, // [29:43] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_rpc_history_history_proto_init() }
@@ -3605,7 +4238,7 @@ func file_rpc_history_history_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_history_history_proto_rawDesc), len(file_rpc_history_history_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   34,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

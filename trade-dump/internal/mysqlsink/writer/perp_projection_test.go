@@ -25,6 +25,8 @@ func perpEvt(seq uint64, payload any) *eventpb.PerpJournalEvent {
 		e.Payload = &eventpb.PerpJournalEvent_RiskPoolSettlement{RiskPoolSettlement: p}
 	case *eventpb.PerpMarginEvent:
 		e.Payload = &eventpb.PerpJournalEvent_Margin{Margin: p}
+	case *eventpb.PerpCustomerFeeEvent:
+		e.Payload = &eventpb.PerpJournalEvent_CustomerFee{CustomerFee: p}
 	}
 	return e
 }
@@ -164,5 +166,65 @@ func TestBuildPerpBatch_EmptyAndIsEmpty(t *testing.T) {
 	b := BuildPerpBatch(nil)
 	if !b.IsEmpty() {
 		t.Fatal("nil events should produce an empty batch")
+	}
+}
+
+// ADR-0079: the settlement row carries the full fee attribution, and a
+// customer-fee event lands in its own audit table.
+func TestBuildPerpBatch_FeeFieldsAndCustomerFee(t *testing.T) {
+	b := BuildPerpBatch([]*eventpb.PerpJournalEvent{
+		perpEvt(11, &eventpb.PerpSettlementEvent{
+			UserId: 1001, OrderId: 100, TradeId: "t9", Symbol: "BTC-USDT-PERP",
+			FillSide: eventpb.Side_SIDE_BUY, Price: "100", Qty: "1",
+			Fee: "-0.05", LiquidityRole: eventpb.LiquidityRole_LIQUIDITY_ROLE_MAKER,
+			FeeRuleId: "mm-tier1", FeeRate: "-0.0005", FeeAsset: "USDT",
+			FeeDeficit: "0", RebateSuppressed: false, WalletAfter: "990.05",
+			PositionAfter: posSnap(1001, "BTC-USDT-PERP", "1", "100"),
+		}),
+		perpEvt(12, &eventpb.PerpCustomerFeeEvent{
+			UserId: 1001, Symbol: "BTC-USDT-PERP", FeeRuleId: "mm-tier1",
+			MakerFeeRate: "-0.0005", TakerFeeRate: "0.001", Reason: "mm program", UpdatedBy: "ops",
+		}),
+	})
+	if len(b.Settlements) != 1 {
+		t.Fatalf("want 1 settlement, got %d", len(b.Settlements))
+	}
+	s := b.Settlements[0]
+	if s.Fee != "-0.05" || s.LiquidityRole != int8(eventpb.LiquidityRole_LIQUIDITY_ROLE_MAKER) ||
+		s.FeeRuleID != "mm-tier1" || s.FeeRate != "-0.0005" || s.FeeAsset != "USDT" ||
+		s.FeeDeficit != "0" || s.RebateSuppressed || s.WalletAfter != "990.05" {
+		t.Fatalf("fee attribution lost in projection: %+v", s)
+	}
+	if len(b.CustomerFees) != 1 {
+		t.Fatalf("want 1 customer fee row, got %d", len(b.CustomerFees))
+	}
+	cf := b.CustomerFees[0]
+	if cf.PerpSeqID != 12 || cf.UserID != 1001 || cf.FeeRuleID != "mm-tier1" ||
+		cf.MakerFeeRate != "-0.0005" || cf.TakerFeeRate != "0.001" || cf.UpdatedBy != "ops" {
+		t.Fatalf("customer fee row wrong: %+v", cf)
+	}
+}
+
+// The daily-stat aggregation key derives the UTC day from the row timestamp;
+// boundary instants land on the correct side.
+func TestPerpStatKeyOf_UTCDayBoundary(t *testing.T) {
+	const day0 = int64(1748736000000) // 2025-06-01T00:00:00Z
+	cases := []struct {
+		ts   int64
+		date string
+	}{
+		{day0, "2025-06-01"},
+		{day0 - 1, "2025-05-31"},
+		{day0 + dayMs - 1, "2025-06-01"},
+		{day0 + dayMs, "2025-06-02"},
+	}
+	for _, tc := range cases {
+		k := perpStatKeyOf(1001, "BTC-USDT-PERP", tc.ts)
+		if k.date() != tc.date {
+			t.Errorf("ts %d: got %s want %s", tc.ts, k.date(), tc.date)
+		}
+		if k.DayStartMs%dayMs != 0 || tc.ts < k.DayStartMs || tc.ts >= k.dayEndMs() {
+			t.Errorf("ts %d: window [%d, %d) does not contain it", tc.ts, k.DayStartMs, k.dayEndMs())
+		}
 	}
 }

@@ -55,6 +55,14 @@ type PerpLedgerCursor struct {
 	PerpSeqID uint64 `json:"q"`
 }
 
+// PerpDailyStatCursor paginates ListPerpDailyStats (ADR-0079 §6 daily
+// aggregates), ordered by (stat_date DESC, symbol ASC) — (date, symbol) is
+// the unique key within a user.
+type PerpDailyStatCursor struct {
+	Date   string `json:"d"` // "YYYY-MM-DD"
+	Symbol string `json:"s"`
+}
+
 var enc = base64.RawURLEncoding
 
 // ErrInvalid is returned when a cursor string fails to decode. Callers

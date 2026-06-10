@@ -173,6 +173,10 @@ func perpUserIDOf(evt *eventpb.PerpJournalEvent) uint64 {
 		if p.CustomerRiskLimit != nil {
 			return p.CustomerRiskLimit.UserId
 		}
+	case *eventpb.PerpJournalEvent_CustomerFee:
+		if p.CustomerFee != nil {
+			return p.CustomerFee.UserId
+		}
 	}
 	return 0
 }

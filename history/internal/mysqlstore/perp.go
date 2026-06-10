@@ -7,6 +7,7 @@ package mysqlstore
 import (
 	"context"
 	"strings"
+	"time"
 
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 	"github.com/xargin/opentrade/history/internal/cursor"
@@ -348,4 +349,164 @@ func (s *Store) ListPerpConfigLogs(ctx context.Context, f PerpLedgerFilter, rawC
 		}
 	}
 	return out, next, nil
+}
+
+// ListPerpSettlements pages a user's fills with their ADR-0079 fee
+// attribution (perp_settlements doubles as the trade-fee ledger), newest
+// first.
+func (s *Store) ListPerpSettlements(ctx context.Context, f PerpLedgerFilter, rawCursor string, limit int) ([]*historypb.PerpSettlement, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	limit = clampLimit(limit)
+
+	conds, args, err := perpLedgerConds(f, rawCursor)
+	if err != nil {
+		return nil, "", err
+	}
+	q := `
+		SELECT perp_seq_id, order_id, trade_id, symbol, position_idx, fill_side,
+		       CAST(price AS CHAR), CAST(qty AS CHAR), CAST(realized_pnl AS CHAR),
+		       CAST(fee AS CHAR), CAST(margin_added AS CHAR), CAST(margin_released AS CHAR),
+		       liquidity_role, fee_rule_id, CAST(fee_rate AS CHAR), fee_asset,
+		       CAST(fee_deficit AS CHAR), rebate_suppressed, ts_unix_ms
+		FROM perp_settlements
+		WHERE ` + strings.Join(conds, " AND ") + `
+		ORDER BY ts_unix_ms DESC, perp_seq_id DESC
+		LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	var out []*historypb.PerpSettlement
+	for rows.Next() {
+		var r historypb.PerpSettlement
+		if err := rows.Scan(&r.PerpSeqId, &r.OrderId, &r.TradeId, &r.Symbol, &r.PositionIdx, &r.FillSide,
+			&r.Price, &r.Qty, &r.RealizedPnl,
+			&r.Fee, &r.MarginAdded, &r.MarginReleased,
+			&r.LiquidityRole, &r.FeeRuleId, &r.FeeRate, &r.FeeAsset,
+			&r.FeeDeficit, &r.RebateSuppressed, &r.TsUnixMs); err != nil {
+			return nil, "", err
+		}
+		out = append(out, &r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		out = out[:limit]
+		next, err = cursor.Encode(cursor.PerpLedgerCursor{Ts: last.TsUnixMs, PerpSeqID: last.PerpSeqId})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return out, next, nil
+}
+
+// ListPerpDailyStats pages a user's ADR-0079 §6 daily aggregates, newest
+// date first. The three daily tables are sparse (a day may have trades but
+// no funding, or funding but no trades), so the key set is the UNION of all
+// three, LEFT JOINed back for the values — absent rows read as zeros.
+func (s *Store) ListPerpDailyStats(ctx context.Context, f PerpLedgerFilter, rawCursor string, limit int) ([]*historypb.PerpDailyStat, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	limit = clampLimit(limit)
+
+	var cur cursor.PerpDailyStatCursor
+	if err := cursor.Decode(rawCursor, &cur); err != nil {
+		return nil, "", err
+	}
+
+	// Per-table key conditions (user scope + optional symbol + date window).
+	conds := []string{"user_id = ?"}
+	args := []any{f.UserID}
+	if f.Symbol != "" {
+		conds = append(conds, "symbol = ?")
+		args = append(args, f.Symbol)
+	}
+	if f.SinceMs > 0 {
+		conds = append(conds, "stat_date >= ?")
+		args = append(args, msToUTCDate(f.SinceMs))
+	}
+	if f.UntilMs > 0 {
+		conds = append(conds, "stat_date <= ?")
+		args = append(args, msToUTCDate(f.UntilMs))
+	}
+	where := strings.Join(conds, " AND ")
+	keyQ := `SELECT symbol, stat_date FROM perp_user_fee_stats_daily WHERE ` + where + `
+		UNION SELECT symbol, stat_date FROM perp_funding_stats_daily WHERE ` + where + `
+		UNION SELECT symbol, stat_date FROM perp_realized_pnl_stats_daily WHERE ` + where
+
+	outer := []string{"1=1"}
+	outerArgs := []any{}
+	if rawCursor != "" {
+		outer = append(outer, "(k.stat_date < ? OR (k.stat_date = ? AND k.symbol > ?))")
+		outerArgs = append(outerArgs, cur.Date, cur.Date, cur.Symbol)
+	}
+
+	q := `
+		SELECT k.symbol, CAST(k.stat_date AS CHAR),
+		       CAST(COALESCE(fe.trading_fee, 0) AS CHAR), CAST(COALESCE(fe.rebate, 0) AS CHAR),
+		       CAST(COALESCE(fe.fee_deficit, 0) AS CHAR),
+		       CAST(COALESCE(fu.funding_paid, 0) AS CHAR), CAST(COALESCE(fu.funding_received, 0) AS CHAR),
+		       CAST(COALESCE(rp.realized_pnl, 0) AS CHAR)
+		FROM (` + keyQ + `) k
+		LEFT JOIN perp_user_fee_stats_daily fe
+		  ON fe.user_id = ? AND fe.symbol = k.symbol AND fe.stat_date = k.stat_date
+		LEFT JOIN perp_funding_stats_daily fu
+		  ON fu.user_id = ? AND fu.symbol = k.symbol AND fu.stat_date = k.stat_date
+		LEFT JOIN perp_realized_pnl_stats_daily rp
+		  ON rp.user_id = ? AND rp.symbol = k.symbol AND rp.stat_date = k.stat_date
+		WHERE ` + strings.Join(outer, " AND ") + `
+		ORDER BY k.stat_date DESC, k.symbol ASC
+		LIMIT ?`
+
+	all := make([]any, 0, len(args)*3+len(outerArgs)+4)
+	all = append(all, args...) // fee keys
+	all = append(all, args...) // funding keys
+	all = append(all, args...) // realized keys
+	all = append(all, f.UserID, f.UserID, f.UserID)
+	all = append(all, outerArgs...)
+	all = append(all, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, q, all...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	var out []*historypb.PerpDailyStat
+	for rows.Next() {
+		var r historypb.PerpDailyStat
+		if err := rows.Scan(&r.Symbol, &r.StatDate, &r.TradingFee, &r.Rebate, &r.FeeDeficit,
+			&r.FundingPaid, &r.FundingReceived, &r.RealizedPnl); err != nil {
+			return nil, "", err
+		}
+		out = append(out, &r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		out = out[:limit]
+		next, err = cursor.Encode(cursor.PerpDailyStatCursor{Date: last.StatDate, Symbol: last.Symbol})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return out, next, nil
+}
+
+// msToUTCDate converts a unix-ms timestamp to its UTC calendar date string.
+func msToUTCDate(ms int64) string {
+	return time.UnixMilli(ms).UTC().Format("2006-01-02")
 }

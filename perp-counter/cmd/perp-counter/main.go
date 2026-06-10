@@ -66,6 +66,7 @@ type Config struct {
 	BackstopAfterTicks int
 	VShardCount        int
 	RiskCoordinator    bool
+	NegativeMakerFee   bool
 	IDGenShard         int
 	Env                string
 	LogLevel           string
@@ -329,8 +330,9 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		BackstopAccount: cfg.BackstopAccount, BackstopAfterTicks: cfg.BackstopAfterTicks,
 		RiskCoordinatorEnabled: cfg.RiskCoordinator,
 		AutoAddTriggerBuffer:   d.autoAddTrigger, AutoAddTargetBuffer: d.autoAddTarget,
-		AutoAddMaxPerEvent: d.autoAddMax,
-		Catalog:            catalog,
+		AutoAddMaxPerEvent:    d.autoAddMax,
+		AllowNegativeMakerFee: cfg.NegativeMakerFee,
+		Catalog:               catalog,
 	})
 	if catalog != nil {
 		// Rebuild the precomputed liq-price index whenever any symbol's
@@ -516,6 +518,8 @@ func parseFlags() Config {
 	flag.IntVar(&cfg.BackstopAfterTicks, "backstop-after-ticks", 2, "mark ticks to wait before escalating an in-flight liquidation to backstop")
 	flag.IntVar(&cfg.VShardCount, "vshard-count", 1, "perp-counter user vshard count; values >1 require --risk-coordinator-enabled (ADR-0071)")
 	flag.BoolVar(&cfg.RiskCoordinator, "risk-coordinator-enabled", false, "disable shard-local ADL decisions because perp-risk owns global insurance/ADL (ADR-0071)")
+	flag.BoolVar(&cfg.NegativeMakerFee, "allow-negative-maker-fee", false,
+		"ADR-0079 §5 deployment attestation that Match runs with STP enabled; while false, negative maker rates are degraded to zero at order admission")
 	flag.IntVar(&cfg.IDGenShard, "idgen-shard", 0, "snowflake shard id for perp order ids (avoid collisions with counter)")
 	flag.StringVar(&cfg.Env, "env", "dev", "environment: dev | prod")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "log level")

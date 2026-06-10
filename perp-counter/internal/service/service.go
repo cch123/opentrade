@@ -75,6 +75,11 @@ type Order struct {
 	// shifts the IM reservation reference price for buys.
 	SlippageBps uint32
 	ReservedIM  dec.Decimal
+	// ReservedFee is the still-held ADR-0079 fee buffer (taker rate on the IM
+	// reference notional, reserved with the IM at PlaceOrder). Fills consume
+	// it as fees are charged; the remainder releases with the terminal
+	// transition (多退少补 settles at terminal, not per fill).
+	ReservedFee dec.Decimal
 	FilledQty   dec.Decimal
 	Status      eventpb.InternalOrderStatus
 	CreatedMs   int64
@@ -84,6 +89,17 @@ type Order struct {
 	// under (ADR-0075); stamped into the OrderEvent for Match's handshake.
 	// 0 = catalog disabled.
 	ConfigVersion uint64
+
+	// ADR-0079 §1 fee pin: rates/rule resolved at admission from the SAME
+	// catalog view the order was admitted under (+ per-user override), then
+	// carried by the order (and its snapshot) so settlement and crash replay
+	// charge identical fees. FeeMakerSuppressed records that a negative maker
+	// rate was degraded to zero at admission (negative rates disabled).
+	FeeRuleID          string
+	FeeMakerRate       dec.Decimal
+	FeeTakerRate       dec.Decimal
+	FeeAsset           string
+	FeeMakerSuppressed bool
 }
 
 // Config tunes the service.
@@ -125,6 +141,14 @@ type Config struct {
 	// Triggers is the ADR-0077 §3 mode-switch seam. nil = no checker: exact
 	// while perp position-bound triggers do not exist (pre-ADR-0078).
 	Triggers TriggerChecker
+
+	// AllowNegativeMakerFee is the ADR-0079 §5 deployment attestation that
+	// Match runs with STP enabled. While false (default), a negative maker
+	// rate — from SymbolConfig or a per-user override — is degraded to zero
+	// at admission pinning (deterministic; the settlement journal marks
+	// rebate_suppressed), and SetCustomerFeeRate rejects negative maker
+	// overrides outright.
+	AllowNegativeMakerFee bool
 
 	Clock func() time.Time // nil → time.Now
 }
@@ -290,7 +314,17 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			resp = s.reject(req, reason)
 			return
 		}
-		var reservedIM dec.Decimal = zero
+		// ADR-0079 §1: pin the fee quadruple at admission, from the SAME
+		// catalog view the gates ran against (content fetched by version —
+		// immutable, no second Active() read). Every order pins, including
+		// reduce-only (closing fills pay fees too); only the buffer below is
+		// open-order-only.
+		pin, pinReject := s.feePinFor(user, symbol, cfgVersion)
+		if pinReject != "" {
+			resp = s.reject(req, pinReject)
+			return
+		}
+		var reservedIM, reservedFee dec.Decimal = zero, zero
 		if !req.GetReduceOnly() {
 			imPrice := price
 			if isMarket {
@@ -331,6 +365,13 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 				}
 			}
 			im := perpstate.InitMargin(imPrice, qty, lev)
+			// ADR-0079 §4: the order cost adds a fee buffer at the pinned
+			// taker rate (the worst-case role) on the same IM reference
+			// notional, so the open fee can never dig Available negative.
+			// Reserved in ONE call with the IM — affordability is judged on
+			// the whole order cost atomically.
+			feeBuf := imPrice.Mul(qty).Mul(pin.Taker)
+			cost := im.Add(feeBuf)
 			if mode == perpstate.MarginCross {
 				// ADR-0074 §4: candidate-pool admission, then reserve the order
 				// IM from free cash (rule #4).
@@ -338,15 +379,16 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 					resp = s.reject(req, reason)
 					return
 				}
-				if !s.eng.ReserveCross(user, im) {
+				if !s.eng.ReserveCross(user, cost) {
 					resp = s.reject(req, "insufficient_margin")
 					return
 				}
-			} else if !s.eng.Reserve(user, im) {
+			} else if !s.eng.Reserve(user, cost) {
 				resp = s.reject(req, "insufficient_margin")
 				return
 			}
 			reservedIM = im
+			reservedFee = feeBuf
 		}
 
 		o := &Order{
@@ -355,10 +397,12 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			Price: price, Qty: qty, Leverage: lev, Mode: mode, PositionIdx: posIdx,
 			ReduceOnly:  req.GetReduceOnly(),
 			SlippageBps: req.GetSlippageBps(),
-			ReservedIM:  reservedIM, FilledQty: zero,
+			ReservedIM:  reservedIM, ReservedFee: reservedFee, FilledQty: zero,
 			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			CreatedMs: s.now(), UpdatedMs: s.now(),
 			ConfigVersion: cfgVersion,
+			FeeRuleID:     pin.RuleID, FeeMakerRate: pin.Maker, FeeTakerRate: pin.Taker,
+			FeeAsset: pin.Asset, FeeMakerSuppressed: pin.MakerSuppressed,
 		}
 		s.putOrder(o)
 
@@ -367,11 +411,11 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			// order, so the reservation must be undone synchronously. Once the
 			// event is accepted by Match, all later release paths are driven by
 			// trade-event lifecycle records for replay safety.
-			if reservedIM.Sign() > 0 {
+			if cost := reservedIM.Add(reservedFee); cost.Sign() > 0 {
 				if mode == perpstate.MarginCross {
-					s.eng.ReleaseCross(user, reservedIM)
+					s.eng.ReleaseCross(user, cost)
 				} else {
-					s.eng.Release(user, reservedIM)
+					s.eng.Release(user, cost)
 				}
 			}
 			s.delOrder(o.OrderID)
@@ -445,35 +489,39 @@ func (s *Service) HandleTrade(t *eventpb.Trade, matchSeq uint64) {
 	}
 	takerSide := fromEventSide(t.GetTakerSide())
 	if taker := t.GetTakerUserId(); taker != 0 {
-		s.settleLeg(taker, t.GetTakerOrderId(), takerSide, matchSeq, t,
-			t.GetTakerStatusAfter(), t.GetTakerFilledQtyAfter())
+		s.settleLeg(taker, t.GetTakerOrderId(), takerSide, eventpb.LiquidityRole_LIQUIDITY_ROLE_TAKER,
+			matchSeq, t, t.GetTakerStatusAfter(), t.GetTakerFilledQtyAfter())
 	}
 	if maker := t.GetMakerUserId(); maker != 0 {
-		s.settleLeg(maker, t.GetMakerOrderId(), takerSide.Opposite(), matchSeq, t,
-			t.GetMakerStatusAfter(), t.GetMakerFilledQtyAfter())
+		s.settleLeg(maker, t.GetMakerOrderId(), takerSide.Opposite(), eventpb.LiquidityRole_LIQUIDITY_ROLE_MAKER,
+			matchSeq, t, t.GetMakerStatusAfter(), t.GetMakerFilledQtyAfter())
 	}
 }
 
-func (s *Service) settleLeg(user uint64, orderID uint64, side perpstate.Side, matchSeq uint64,
-	t *eventpb.Trade, statusAfter eventpb.InternalOrderStatus, filledAfter string) {
+func (s *Service) settleLeg(user uint64, orderID uint64, side perpstate.Side, role eventpb.LiquidityRole,
+	matchSeq uint64, t *eventpb.Trade, statusAfter eventpb.InternalOrderStatus, filledAfter string) {
 	s.seq.do(user, func() {
 		o := s.getOrder(orderID)
 		if o == nil || o.UserID != user {
 			return // not owned by this shard / not a perp order we track
 		}
 		// A fill of the bankruptcy reduce_only order settles to insurance, not
-		// the wallet (ADR-0068 §8), via a separate path.
+		// the wallet (ADR-0068 §8), via a separate path. No trade fee either —
+		// liquidation economics are liq_fee_rate → insurance (ADR-0070), not
+		// maker/taker fees (ADR-0079 §4).
 		if liq := s.liquidationFor(orderID); liq != nil {
 			s.settleLiquidationFill(o, liq, side, matchSeq, t, statusAfter, filledAfter)
 			return
 		}
 		fill := perpstate.Fill{Side: side, Price: dec.New(t.GetPrice()), Qty: dec.New(t.GetQty()), Fee: zero}
-		res, excess, applied := s.eng.ApplyFillWithSeq(user, o.Symbol, o.PositionIdx, o.Leverage, matchSeq, fill)
+		charge, fee := s.feeChargeFor(o, role, fill.Price, fill.Qty, false)
+		res, excess, feeOut, applied := s.eng.ApplyFillWithFee(user, o.Symbol, o.PositionIdx, o.Leverage, matchSeq, fill, charge)
 		if !applied {
 			return // replay
 		}
+		fee.Outcome = feeOut
 		s.emitBreachIfAny(o, t, excess)
-		s.afterFill(o, t, side, res, statusAfter, filledAfter)
+		s.afterFill(o, t, side, res, fee, statusAfter, filledAfter)
 	})
 }
 
@@ -481,7 +529,10 @@ func (s *Service) settleLeg(user uint64, orderID uint64, side perpstate.Side, ma
 // step, bypassing the per-leg seq guard (it would skip the second leg) and
 // advancing the watermark once at the end. In hedge mode the two orders may
 // target different position legs (e.g. open-long matching open-short) or the
-// same leg — each routes by its own order's PositionIdx.
+// same leg — each routes by its own order's PositionIdx. Fees: the taker leg
+// pays its (non-negative) taker rate as usual; a negative maker rate is
+// suppressed to zero (ADR-0079 §5 self-trade rule — deterministic from the
+// Trade payload, defense in depth under Match's STP).
 func (s *Service) settleSelfTrade(user uint64, t *eventpb.Trade, matchSeq uint64) {
 	takerSide := fromEventSide(t.GetTakerSide())
 	s.seq.do(user, func() {
@@ -491,28 +542,64 @@ func (s *Service) settleSelfTrade(user uint64, t *eventpb.Trade, matchSeq uint64
 		qty := dec.New(t.GetQty())
 		// Guard once on the taker order's leg watermark.
 		if taker != nil {
-			res, excess, applied := s.eng.ApplyFillWithSeq(user, taker.Symbol, taker.PositionIdx, taker.Leverage, matchSeq,
-				perpstate.Fill{Side: takerSide, Price: price, Qty: qty, Fee: zero})
+			charge, fee := s.feeChargeFor(taker, eventpb.LiquidityRole_LIQUIDITY_ROLE_TAKER, price, qty, true)
+			res, excess, feeOut, applied := s.eng.ApplyFillWithFee(user, taker.Symbol, taker.PositionIdx, taker.Leverage, matchSeq,
+				perpstate.Fill{Side: takerSide, Price: price, Qty: qty, Fee: zero}, charge)
 			if !applied {
 				return
 			}
+			fee.Outcome = feeOut
 			s.emitBreachIfAny(taker, t, excess)
-			s.afterFill(taker, t, takerSide, res, t.GetTakerStatusAfter(), t.GetTakerFilledQtyAfter())
+			s.afterFill(taker, t, takerSide, res, fee, t.GetTakerStatusAfter(), t.GetTakerFilledQtyAfter())
 		}
 		if maker != nil {
 			// seq=0 bypasses the guard (already advanced by the taker leg).
-			res, excess, _ := s.eng.ApplyFillWithSeq(user, maker.Symbol, maker.PositionIdx, maker.Leverage, 0,
-				perpstate.Fill{Side: takerSide.Opposite(), Price: price, Qty: qty, Fee: zero})
+			charge, fee := s.feeChargeFor(maker, eventpb.LiquidityRole_LIQUIDITY_ROLE_MAKER, price, qty, true)
+			res, excess, feeOut, _ := s.eng.ApplyFillWithFee(user, maker.Symbol, maker.PositionIdx, maker.Leverage, 0,
+				perpstate.Fill{Side: takerSide.Opposite(), Price: price, Qty: qty, Fee: zero}, charge)
+			fee.Outcome = feeOut
 			s.emitBreachIfAny(maker, t, excess)
-			s.afterFill(maker, t, takerSide.Opposite(), res, t.GetMakerStatusAfter(), t.GetMakerFilledQtyAfter())
+			s.afterFill(maker, t, takerSide.Opposite(), res, fee, t.GetMakerStatusAfter(), t.GetMakerFilledQtyAfter())
 		}
 	})
+}
+
+// settleFee bundles one leg's resolved fee for journaling: the requested
+// signed amount (from the order's pinned rates) plus how it actually routed.
+type settleFee struct {
+	Role       eventpb.LiquidityRole
+	Amount     dec.Decimal // signed: > 0 user pays, < 0 rebate
+	Rate       dec.Decimal // signed rate applied
+	Suppressed bool        // a negative maker rate was degraded to zero
+	Outcome    engine.FeeOutcome
+}
+
+// feeChargeFor computes one fill's fee from the order's ADR-0079 pin. The
+// only settle-time inputs are the Trade payload (price/qty/role/self-trade)
+// and the order record — both deterministic under replay.
+func (s *Service) feeChargeFor(o *Order, role eventpb.LiquidityRole, price, qty dec.Decimal, selfTrade bool) (engine.FeeCharge, settleFee) {
+	rate := o.FeeTakerRate
+	suppressed := false
+	if role == eventpb.LiquidityRole_LIQUIDITY_ROLE_MAKER {
+		rate = o.FeeMakerRate
+		suppressed = o.FeeMakerSuppressed
+		if rate.Sign() < 0 && selfTrade {
+			rate = zero
+			suppressed = true
+		}
+	}
+	amount := price.Mul(qty).Mul(rate)
+	charge := engine.FeeCharge{
+		Amount: amount, Asset: o.FeeAsset,
+		FromReserve: o.ReservedFee, Cross: o.Mode == perpstate.MarginCross,
+	}
+	return charge, settleFee{Role: role, Amount: amount, Rate: rate, Suppressed: suppressed}
 }
 
 // afterFill updates order bookkeeping + emits settlement & status journal.
 // Caller holds the user's seq lock.
 func (s *Service) afterFill(o *Order, t *eventpb.Trade, side perpstate.Side, res perpstate.FillResult,
-	statusAfter eventpb.InternalOrderStatus, filledAfter string) {
+	fee settleFee, statusAfter eventpb.InternalOrderStatus, filledAfter string) {
 	old := o.Status
 	prevFilled := o.FilledQty
 	// Isolated: drain this order's still-held initial margin by what this
@@ -542,6 +629,17 @@ func (s *Service) afterFill(o *Order, t *eventpb.Trade, side perpstate.Side, res
 			}
 		}
 	}
+	// The engine drew this fill's fee from the order's fee reservation
+	// (ADR-0079 §4); mirror the draw so the terminal release frees only what
+	// is still held. The unconsumed buffer (maker filled below the taker-rate
+	// buffer) stays reserved until the terminal transition — 多退少补 settles
+	// at terminal, not per fill.
+	if fee.Outcome.ReserveUsed.Sign() > 0 {
+		o.ReservedFee = o.ReservedFee.Sub(fee.Outcome.ReserveUsed)
+		if o.ReservedFee.Sign() < 0 {
+			o.ReservedFee = zero
+		}
+	}
 	if filledAfter != "" {
 		o.FilledQty = dec.New(filledAfter)
 	}
@@ -549,7 +647,7 @@ func (s *Service) afterFill(o *Order, t *eventpb.Trade, side perpstate.Side, res
 		o.Status = statusAfter
 	}
 	o.UpdatedMs = s.now()
-	s.emitSettlement(o, t, side, res)
+	s.emitSettlement(o, t, side, res, fee)
 	if o.Status != old {
 		s.emitOrderStatus(o, old, o.Status)
 	}

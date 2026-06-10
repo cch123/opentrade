@@ -90,6 +90,15 @@ func ValidateConfig(spec PerpSymbol, c PerpSymbolConfig) error {
 	if err := validateFees(c.Fees); err != nil {
 		return err
 	}
+	// ADR-0079 §4 invariant: every tier's maintenance margin must cover the
+	// taker fee, so closing a still-healthy position always releases enough
+	// equity to pay its closing fee (fee_deficit is then a gap-only event).
+	for _, t := range c.RiskTiers {
+		if t.MaintMarginRatio.Cmp(c.Fees.TakerFeeRate) < 0 {
+			return fmt.Errorf("perpcfg: risk tier %d maintenance_margin_ratio %s is below fees.taker_fee_rate %s (ADR-0079 §4)",
+				t.RiskID, t.MaintMarginRatio, c.Fees.TakerFeeRate)
+		}
+	}
 	if err := validateProtection(c.PriceProtection); err != nil {
 		return err
 	}
@@ -295,6 +304,11 @@ func validateFees(f FeeParams) error {
 	}
 	if f.TakerFeeRate.Sign() < 0 || f.TakerFeeRate.Cmp(one) >= 0 {
 		return fmt.Errorf("perpcfg: fees.taker_fee_rate must be in [0, 1)")
+	}
+	// ADR-0079 §1: the taker rate is the fee-buffer upper bound, so no role
+	// may be charged above it.
+	if f.MakerFeeRate.Cmp(f.TakerFeeRate) > 0 {
+		return fmt.Errorf("perpcfg: fees.maker_fee_rate must be <= fees.taker_fee_rate (ADR-0079 §1)")
 	}
 	return nil
 }

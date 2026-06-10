@@ -92,6 +92,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/perp/account-config", s.handlePerpAccountConfig)
 	mux.HandleFunc("GET /v1/perp/margin-adjustments", s.handlePerpMarginAdjustments)
 	mux.HandleFunc("GET /v1/perp/config-logs", s.handlePerpConfigLogs)
+	mux.HandleFunc("GET /v1/perp/fills", s.handlePerpFills)
+	mux.HandleFunc("GET /v1/perp/daily-stats", s.handlePerpDailyStats)
 	mux.HandleFunc("GET /v1/perp/instruments", s.handlePerpInstruments)
 	mux.HandleFunc("GET /v1/perp/instruments/{symbol}", s.handlePerpInstrument)
 	mux.HandleFunc("POST /v1/order", s.handlePlaceOrder)
