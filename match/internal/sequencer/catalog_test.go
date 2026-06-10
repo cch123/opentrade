@@ -6,6 +6,7 @@ package sequencer
 // stale catalog.
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -16,15 +17,33 @@ import (
 
 const perpSym = "BTC-USDT-PERP"
 
-// fakeCatalog implements ConfigLookup with a settable view.
+// fakeCatalog implements ConfigLookup with a settable view. Mutex-guarded
+// like the real perpcfg.Cache — tests mutate it while the worker goroutine
+// reads.
 type fakeCatalog struct {
+	mu    sync.Mutex
 	view  perpcfg.View
 	has   bool
 	stale bool
 }
 
-func (f *fakeCatalog) Active(string) (perpcfg.View, bool) { return f.view, f.has }
-func (f *fakeCatalog) Stale() bool                        { return f.stale }
+func (f *fakeCatalog) Active(string) (perpcfg.View, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.view, f.has
+}
+
+func (f *fakeCatalog) Stale() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stale
+}
+
+func (f *fakeCatalog) setCfg(cfg *perpcfg.PerpSymbolConfig) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.view.Cfg = cfg
+}
 
 func catalogAt(version uint64, status perpcfg.Status) *fakeCatalog {
 	return &fakeCatalog{
@@ -193,7 +212,7 @@ func TestCancelsBypassStatusGate(t *testing.T) {
 	next := *cat.view.Cfg
 	next.Status = perpcfg.StatusSettling
 	next.ConfigVersion = 2
-	cat.view.Cfg = &next
+	cat.setCfg(&next)
 
 	w.Submit(&Event{Kind: EventOrderCancel, Symbol: perpSym, OrderID: 1, UserID: 7})
 	time.Sleep(10 * time.Millisecond)
