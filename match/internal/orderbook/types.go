@@ -113,7 +113,13 @@ const (
 	RejectSymbolNotTrading   RejectReason = 5
 	RejectDuplicateOrderID   RejectReason = 6
 	RejectFOKNotFilled       RejectReason = 7
-	RejectInternal           RejectReason = 99
+	// ADR-0075 config_version handshake + status machine outcomes.
+	RejectConfigVersionTooNew RejectReason = 8  // local catalog older than the order's version
+	RejectStaleOrderConfig    RejectReason = 9  // order admitted under an outdated version
+	RejectUnknownSymbolConfig RejectReason = 10 // symbol absent from the catalog cache / cache stale (fail-closed)
+	RejectSymbolStatusForbids RejectReason = 11 // status machine refuses this op
+	RejectPriceOutOfRange     RejectReason = 12 // limit price outside SymbolConfig bounds
+	RejectInternal            RejectReason = 99
 )
 
 func (r RejectReason) String() string {
@@ -134,6 +140,16 @@ func (r RejectReason) String() string {
 		return "duplicate_order_id"
 	case RejectFOKNotFilled:
 		return "fok_not_filled"
+	case RejectConfigVersionTooNew:
+		return "config_version_too_new"
+	case RejectStaleOrderConfig:
+		return "stale_order_config"
+	case RejectUnknownSymbolConfig:
+		return "unknown_symbol_config"
+	case RejectSymbolStatusForbids:
+		return "symbol_status_forbids"
+	case RejectPriceOutOfRange:
+		return "price_out_of_range"
 	case RejectInternal:
 		return "internal"
 	default:

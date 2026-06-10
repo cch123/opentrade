@@ -80,10 +80,11 @@ func OrderEventToInternal(pb *eventpb.OrderEvent, src sequencer.SourceMeta) (*se
 			CreatedAt:      createdAt,
 		}
 		return &sequencer.Event{
-			Kind:   sequencer.EventOrderPlaced,
-			Symbol: placed.Symbol,
-			Order:  o,
-			Source: src,
+			Kind:          sequencer.EventOrderPlaced,
+			Symbol:        placed.Symbol,
+			Order:         o,
+			ConfigVersion: placed.SymbolConfigVersion,
+			Source:        src,
 		}, nil
 
 	case *eventpb.OrderEvent_Cancel:
@@ -248,6 +249,16 @@ func rejectReasonToProto(r orderbook.RejectReason) eventpb.RejectReason {
 		return eventpb.RejectReason_REJECT_REASON_DUPLICATE_ORDER_ID
 	case orderbook.RejectFOKNotFilled:
 		return eventpb.RejectReason_REJECT_REASON_FOK_NOT_FILLED
+	case orderbook.RejectConfigVersionTooNew:
+		return eventpb.RejectReason_REJECT_REASON_CONFIG_VERSION_TOO_NEW
+	case orderbook.RejectStaleOrderConfig:
+		return eventpb.RejectReason_REJECT_REASON_STALE_ORDER_CONFIG
+	case orderbook.RejectUnknownSymbolConfig:
+		return eventpb.RejectReason_REJECT_REASON_UNKNOWN_SYMBOL_CONFIG
+	case orderbook.RejectSymbolStatusForbids:
+		return eventpb.RejectReason_REJECT_REASON_SYMBOL_STATUS_FORBIDS
+	case orderbook.RejectPriceOutOfRange:
+		return eventpb.RejectReason_REJECT_REASON_PRICE_OUT_OF_RANGE
 	default:
 		return eventpb.RejectReason_REJECT_REASON_INTERNAL
 	}

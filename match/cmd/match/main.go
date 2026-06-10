@@ -46,6 +46,7 @@ import (
 	"github.com/xargin/opentrade/pkg/election"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
 	"github.com/xargin/opentrade/pkg/logx"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 )
 
 // orderBookFullTopNMax caps the OrderBook Full frame depth cap per side
@@ -85,6 +86,13 @@ type Config struct {
 	EtcdEndpoints   []string
 	EtcdPrefix      string
 	EtcdDialTimeout time.Duration
+
+	// ADR-0075 perp symbol catalog. Empty DSN disables the handshake —
+	// version-stamped (perp) orders are then rejected fail-closed, so a perp
+	// shard MUST set it; spot-only shards leave it empty.
+	CatalogDSN          string
+	CatalogPollInterval time.Duration
+	CatalogMaxStaleness time.Duration
 
 	Symbols []string
 
@@ -200,6 +208,37 @@ func runElectionLoop(rootCtx context.Context, cfg Config, logger *zap.Logger) {
 func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	// --- Shared pipeline --------------------------------------------------
 
+	// ADR-0075: the perp symbol catalog backing the config_version
+	// handshake. Initial load failure aborts startup (fail-closed) — a perp
+	// shard running blind would reject every stamped order while hiding the
+	// store outage.
+	var catalog *perpcfg.Cache
+	if cfg.CatalogDSN != "" {
+		store, err := perpcfg.OpenMySQLStore(perpcfg.MySQLConfig{DSN: cfg.CatalogDSN})
+		if err != nil {
+			logger.Error("perp catalog store", zap.Error(err))
+			return
+		}
+		defer func() { _ = store.Close() }()
+		catalog = perpcfg.NewCache(perpcfg.CacheConfig{
+			Store:        store,
+			PollInterval: cfg.CatalogPollInterval,
+			MaxStaleness: cfg.CatalogMaxStaleness,
+			Logger:       logger,
+		})
+		loadCtx, cancelLoad := context.WithTimeout(ctx, 10*time.Second)
+		err = catalog.Load(loadCtx)
+		cancelLoad()
+		if err != nil {
+			logger.Error("perp catalog initial load", zap.Error(err))
+			return
+		}
+		go catalog.Run(ctx)
+		logger.Info("perp catalog loaded (ADR-0075)",
+			zap.Strings("symbols", catalog.Symbols()),
+			zap.Duration("poll", cfg.CatalogPollInterval))
+	}
+
 	dispatcher := journal.NewDispatcher()
 	outbox := make(chan *sequencer.Output, 4096)
 	mdOutbox := make(chan *sequencer.MarketDataOutput, 4096) // ADR-0055
@@ -264,11 +303,15 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	reg, err := registry.New(workersCtx, registry.Config{
 		Dispatcher: dispatcher,
 		Factory: func(symbol string) *sequencer.SymbolWorker {
-			return sequencer.NewSymbolWorker(sequencer.Config{
+			workerCfg := sequencer.Config{
 				Symbol:  symbol,
 				Inbox:   2048,
 				STPMode: engine.STPNone,
-			}, outbox, mdOutbox)
+			}
+			if catalog != nil {
+				workerCfg.Catalog = catalog
+			}
+			return sequencer.NewSymbolWorker(workerCfg, outbox, mdOutbox)
 		},
 		Restore: func(w *sequencer.SymbolWorker) error {
 			return tryRestoreSnapshot(w, cfg, logger)
@@ -544,6 +587,9 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.EtcdPrefix, "etcd-prefix", cfg.EtcdPrefix, "etcd key prefix for symbol configs")
 	flag.DurationVar(&cfg.EtcdDialTimeout, "etcd-dial-timeout", cfg.EtcdDialTimeout, "etcd dial timeout")
 	flag.StringVar(&symbolsStr, "symbols", "", "comma-separated static symbol list (used when --etcd is empty)")
+	flag.StringVar(&cfg.CatalogDSN, "catalog-dsn", "", "MySQL DSN of the ADR-0075 perp symbol catalog; required on shards matching perp symbols, empty on spot-only shards")
+	flag.DurationVar(&cfg.CatalogPollInterval, "catalog-poll-interval", time.Second, "catalog anchor poll cadence")
+	flag.DurationVar(&cfg.CatalogMaxStaleness, "catalog-max-staleness", 30*time.Second, "reject version-stamped orders when the catalog cache has not synced for this long (fail-closed)")
 	flag.StringVar(&cfg.OrderTopic, "order-topic", cfg.OrderTopic, "legacy single order-event topic (used when --order-topic-regex is empty; ADR-0050)")
 	flag.StringVar(&cfg.OrderTopicRegex, "order-topic-regex", cfg.OrderTopicRegex, "regex matching per-symbol order-event topics (ADR-0050); empty means subscribe only to currently owned symbols")
 	flag.StringVar(&cfg.OrderTopicPrefix, "order-topic-prefix", cfg.OrderTopicPrefix, "per-symbol order-event topic prefix (ADR-0050). Used to map snapshot offsets: worker's symbol → `<prefix>-<symbol>`")

@@ -64,6 +64,9 @@ enum RejectReason {
   // ADR-0075 §2: the symbol's status machine forbids this operation (e.g.
   // a plain order in POST_ONLY, any new order in CANCEL_ONLY).
   REJECT_REASON_SYMBOL_STATUS_FORBIDS = 11;
+  // ADR-0075: limit price outside the SymbolConfig min/max price bounds
+  // (Match-side orderbook-scope re-check).
+  REJECT_REASON_PRICE_OUT_OF_RANGE = 12;
   REJECT_REASON_INTERNAL = 99;
 }
 

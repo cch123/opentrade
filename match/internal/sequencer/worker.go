@@ -9,17 +9,31 @@ import (
 	"github.com/xargin/opentrade/match/internal/engine"
 	"github.com/xargin/opentrade/match/internal/orderbook"
 	"github.com/xargin/opentrade/pkg/dec"
+	"github.com/xargin/opentrade/pkg/perpcfg"
 )
 
 // ErrSymbolMismatch is returned when an OrderPlaced event carries a symbol
 // that does not match the worker's symbol.
 var ErrSymbolMismatch = errors.New("sequencer: symbol mismatch")
 
+// ConfigLookup is the slice of the ADR-0075 catalog cache the worker needs
+// for the config_version handshake and the orderbook-scope status/precision
+// checks. *perpcfg.Cache satisfies it.
+type ConfigLookup interface {
+	Active(symbol string) (perpcfg.View, bool)
+	Stale() bool
+}
+
 // Config configures a SymbolWorker.
 type Config struct {
 	Symbol  string
 	Inbox   int // channel capacity; default 2048
 	STPMode engine.STPMode
+
+	// Catalog enables the ADR-0075 handshake for version-stamped orders.
+	// nil + a stamped order = reject unknown_symbol_config (fail-closed: a
+	// perp deployment without its catalog is a wiring error, not a pass).
+	Catalog ConfigLookup
 }
 
 // SymbolWorker serializes all matching for a single symbol.
@@ -29,8 +43,9 @@ type Config struct {
 // See ADR-0016 (per-symbol single-thread matching) and ADR-0019 (constant
 // goroutine actor model).
 type SymbolWorker struct {
-	symbol string
-	stp    engine.STPMode
+	symbol  string
+	stp     engine.STPMode
+	catalog ConfigLookup
 
 	// mu guards book / matchSeq / bookSeq / offsets so snapshot readers
 	// (WithStateLocked / Offsets) can take a consistent view without racing
@@ -61,6 +76,7 @@ func NewSymbolWorker(cfg Config, outbox chan<- *Output, mdOutbox chan<- *MarketD
 		symbol:   cfg.Symbol,
 		book:     orderbook.NewBook(cfg.Symbol),
 		stp:      cfg.STPMode,
+		catalog:  cfg.Catalog,
 		inbox:    make(chan *Event, cfg.Inbox),
 		outbox:   outbox,
 		mdOutbox: mdOutbox,
@@ -252,6 +268,21 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 		return
 	}
 
+	// ADR-0075 config_version handshake + orderbook-scope config checks for
+	// version-stamped (perp) orders.
+	if reason := w.admitCatalog(evt); reason != orderbook.RejectNone {
+		w.emit(&Output{
+			Kind:         OutputOrderRejected,
+			Symbol:       w.symbol,
+			UserID:       o.UserID,
+			OrderID:      o.ID,
+			Side:         o.Side,
+			RejectReason: reason,
+			SourceOffset: evt.Source,
+		})
+		return
+	}
+
 	// Duplicate order id — treat as defensive rejection (ADR-0015 match-side
 	// defense-in-depth).
 	if w.book.Has(o.ID) {
@@ -344,6 +375,60 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 	default:
 		panic(fmt.Sprintf("sequencer: unknown TakerStatus %d", res.Status))
 	}
+}
+
+// admitCatalog runs the ADR-0075 §1 four-way version handshake plus the
+// orderbook-scope checks Match owns (§2): status machine, price tick/bounds,
+// lot size. Spot orders (ConfigVersion 0) skip everything. Account-plane
+// rules (margin, reduce-only, qty/notional limits) stay with perp-counter —
+// the version equality is exactly what guarantees both services applied the
+// SAME parameter set to this order.
+//
+// Cancels are deliberately NOT status-gated here: removing a resting order
+// is book-safe in every status, user-facing cancel restrictions are
+// perp-counter's admission concern, and the system's own flows (liquidation
+// cleanup, delivery settlement) must always be able to clear the book.
+func (w *SymbolWorker) admitCatalog(evt *Event) orderbook.RejectReason {
+	if evt.ConfigVersion == 0 {
+		return orderbook.RejectNone
+	}
+	// A stamped order with no catalog wired, or a cache the store has not
+	// refreshed within its staleness budget, cannot prove version equality —
+	// fail closed (ADR-0075: 拒绝未知版本或本地缓存过期超过阈值的 symbol).
+	if w.catalog == nil || w.catalog.Stale() {
+		return orderbook.RejectUnknownSymbolConfig
+	}
+	view, ok := w.catalog.Active(w.symbol)
+	if !ok {
+		return orderbook.RejectUnknownSymbolConfig
+	}
+	switch perpcfg.CheckVersion(view.Cfg.ConfigVersion, true, evt.ConfigVersion) {
+	case perpcfg.VersionTooNew:
+		return orderbook.RejectConfigVersionTooNew
+	case perpcfg.VersionStale:
+		return orderbook.RejectStaleOrderConfig
+	}
+	o := evt.Order
+	if !view.Cfg.Status.BookAllowsPlace(o.TIF == orderbook.PostOnly) {
+		return orderbook.RejectSymbolStatusForbids
+	}
+	// Same-version precision / price-range re-check (defense in depth — the
+	// counter validated the identical predicate at the identical version).
+	if o.Type != orderbook.Market {
+		p := view.Cfg.Precision
+		if p.TickSize.Sign() > 0 && o.Price.Mod(p.TickSize).Sign() != 0 {
+			return orderbook.RejectInvalidPriceTick
+		}
+		l := view.Cfg.OrderLimits
+		if (l.MinPrice.Sign() > 0 && o.Price.Cmp(l.MinPrice) < 0) ||
+			(l.MaxPrice.Sign() > 0 && o.Price.Cmp(l.MaxPrice) > 0) {
+			return orderbook.RejectPriceOutOfRange
+		}
+	}
+	if step := view.Cfg.Precision.QtyStep; step.Sign() > 0 && o.Qty.Sign() > 0 && o.Qty.Mod(step).Sign() != 0 {
+		return orderbook.RejectInvalidLotSize
+	}
+	return orderbook.RejectNone
 }
 
 func (w *SymbolWorker) handleCancel(evt *Event) {

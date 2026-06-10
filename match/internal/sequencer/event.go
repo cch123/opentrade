@@ -25,6 +25,11 @@ type Event struct {
 	OrderID uint64           // required for EventOrderCancel
 	UserID  uint64           // required for EventOrderCancel (authorization)
 
+	// ConfigVersion is the ADR-0075 handshake stamp from OrderPlaced: the
+	// SymbolConfig version perp-counter admitted the order under. 0 = spot
+	// order, no handshake.
+	ConfigVersion uint64
+
 	// Source is Kafka provenance, carried through so the Kafka layer can
 	// commit the offset after the event has been fully processed.
 	Source SourceMeta
