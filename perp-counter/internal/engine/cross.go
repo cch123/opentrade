@@ -87,9 +87,16 @@ func (e *Engine) CrossPoolHealth(user uint64) (perpstate.PoolHealth, bool) {
 
 // CrossOrderCheck is the ADR-0074 §4 admission gate: simulate the order's
 // maximum position-increase impact on the user's cross pool and require the
-// candidate to clear the initial requirement plus buffer. im is the order's
-// initial-margin reservation about to be taken (the candidate drawable is
-// Available - im: stacking orders consume free cash, rule #4).
+// candidate to clear the initial requirement plus buffer.
+//
+// Drawable is Available as-is. Resting orders are accounted exactly: each
+// holds a CrossReserved reservation equal to its filled initial requirement,
+// and Available already excludes those holds — so excluding their future
+// requirements from the candidate is offset one-for-one by the excluded
+// cash. This order's own reservation cycle is net-zero on Available (held
+// now, released on fill while its requirement appears), so it must NOT be
+// subtracted here — only counted once, as the candidate's requirement.
+// Stacking still consumes free cash via ReserveCross (rule #4).
 func (e *Engine) CrossOrderCheck(user uint64, symbol string, side perpstate.Side, price, qty, leverage, im, buffer dec.Decimal) (string, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -100,10 +107,10 @@ func (e *Engine) CrossOrderCheck(user uint64, symbol string, side perpstate.Side
 	if w == nil {
 		return "insufficient_margin", false
 	}
-	drawable := w.Available.Sub(im)
-	if drawable.Sign() < 0 {
+	if w.Available.Cmp(im) < 0 {
 		return "insufficient_margin", false
 	}
+	drawable := w.Available
 	cand := perpstate.Position{UserID: user, Symbol: symbol, Mode: perpstate.MarginCross, Leverage: leverage}
 	if bySym := e.positions[user]; bySym != nil {
 		if p := bySym[symbol]; p != nil {
@@ -241,6 +248,33 @@ func (e *Engine) SwitchToIsolated(user uint64, symbol, opID string, requestedMar
 	p.Version++
 	e.syncIndexesLocked(user, symbol, p)
 	return e.cacheOpLocked(opID, e.opStateLocked(p, w, true, "", target))
+}
+
+// CrossCloseEntry is one step of a cross liquidation plan: the position to
+// force-close, snapshotted under the read lock. Within the owning user's
+// sequencer the snapshot stays valid (all mutations of this user's positions
+// are serialized there).
+type CrossCloseEntry struct {
+	Symbol  string
+	Side    perpstate.Side
+	Size    dec.Decimal
+	RiskID  uint32
+	Version uint64
+}
+
+// CrossClosePlanOf returns the user's cross positions in forced-close order
+// (largest unrealized loss first — ADR-0074 open-question decision v1).
+func (e *Engine) CrossClosePlanOf(user uint64) []CrossCloseEntry {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	plan := perpstate.CrossClosePlan(perpstate.Cross(zero, e.crossPositionsLocked(user)), e.marks)
+	out := make([]CrossCloseEntry, 0, len(plan))
+	for _, p := range plan {
+		out = append(out, CrossCloseEntry{
+			Symbol: p.Symbol, Side: p.Side, Size: p.Size, RiskID: p.RiskID, Version: p.Version,
+		})
+	}
+	return out
 }
 
 // CrossForceClose closes the user's full cross position in symbol at price

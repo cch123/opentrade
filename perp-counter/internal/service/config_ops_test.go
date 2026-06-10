@@ -81,8 +81,10 @@ func TestSetPositionLeverage_ResizesAndJournals(t *testing.T) {
 	if out.PositionMargin != "20" {
 		t.Fatalf("margin after = %s, want 20", out.PositionMargin)
 	}
-	if jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetPositionConfig() != nil }) != 1 {
-		t.Fatal("expected a position-config journal event")
+	if jr.count(func(e *eventpb.PerpJournalEvent) bool {
+		return e.GetPositionConfig().GetReason() == "set_leverage"
+	}) != 1 {
+		t.Fatal("expected a set_leverage position-config journal event")
 	}
 	adj := 0
 	for _, e := range jr.evts {

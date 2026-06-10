@@ -16,6 +16,72 @@ import (
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
+// SetMarginMode handles the §5 isolated↔cross switch. Both ADR checks that
+// need service-owned state run first (active orders, in-flight liquidation);
+// the engine primitive then simulates both resulting states and applies the
+// cash leg atomically.
+func (s *Service) SetMarginMode(req *perprpc.SetMarginModeRequest) (*perprpc.SetMarginModeResponse, error) {
+	user, symbol := req.GetUserId(), req.GetSymbol()
+	if err := requireUserSymbol(user, symbol); err != nil {
+		return nil, err
+	}
+	target := req.GetTargetMode()
+	if target != perprpc.MarginMode_MARGIN_MODE_ISOLATED && target != perprpc.MarginMode_MARGIN_MODE_CROSS {
+		return nil, errInvalid("invalid target_mode")
+	}
+	targetMargin := zero
+	if v := req.GetTargetMargin(); v != "" {
+		parsed, err := dec.Parse(v)
+		if err != nil || parsed.Sign() < 0 {
+			return nil, errInvalid("invalid target_margin")
+		}
+		targetMargin = parsed
+	}
+	resp := &perprpc.SetMarginModeResponse{}
+	s.seq.do(user, func() {
+		if out, ok := s.eng.CachedOp(req.GetClientOpId()); ok && req.GetClientOpId() != "" {
+			fillModeResp(resp, out)
+			return
+		}
+		// §5: no live orders may straddle the switch (reduce-only included —
+		// alternatives C: provability over UX) and the position must not be
+		// mid-liquidation/takeover.
+		if s.hasActiveOrders(user, symbol) {
+			fillModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "active_orders_cancel_first"})
+			return
+		}
+		if s.hasLiquidation(liqKey(user, symbol)) {
+			fillModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "liquidation_in_flight"})
+			return
+		}
+		before, _ := s.eng.PositionRaw(user, symbol)
+		var out engine.OpOutcome
+		if target == perprpc.MarginMode_MARGIN_MODE_CROSS {
+			out = s.eng.SwitchToCross(user, symbol, req.GetClientOpId(), s.cfg.TargetMarginBuffer)
+		} else {
+			out = s.eng.SwitchToIsolated(user, symbol, req.GetClientOpId(), targetMargin,
+				s.cfg.TargetMarginBuffer, s.cfg.TargetMarginBuffer)
+		}
+		fillModeResp(resp, out)
+		if !out.Accepted {
+			return
+		}
+		s.emitPositionConfig(user, symbol, "set_margin_mode", req.GetClientOpId())
+		if out.Moved.Sign() > 0 {
+			s.emitMarginAdjustment(user, symbol,
+				eventpb.PerpMarginAdjustmentEvent_KIND_MODE_SWITCH, out, before.Margin, req.GetClientOpId())
+		}
+	})
+	return resp, nil
+}
+
+func fillModeResp(resp *perprpc.SetMarginModeResponse, out engine.OpOutcome) {
+	resp.Accepted, resp.RejectReason = out.Accepted, out.Reason
+	resp.MarginMode = toWireMode(out.Mode)
+	resp.PositionMargin = out.MarginAfter.String()
+	resp.FreeBalanceAfter = out.FreeAfter.String()
+}
+
 // SetPositionLeverage handles the §8 leverage config op.
 func (s *Service) SetPositionLeverage(req *perprpc.SetPositionLeverageRequest) (*perprpc.SetPositionLeverageResponse, error) {
 	user, symbol := req.GetUserId(), req.GetSymbol()

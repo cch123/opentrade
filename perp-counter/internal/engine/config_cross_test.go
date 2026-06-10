@@ -209,20 +209,26 @@ func TestCrossOrderCheck_StackedOrdersConsumeFreeCash(t *testing.T) {
 	e.SetMark(sym, d("100"))
 	e.SwitchToCross(1001, sym, "op-c", zero) // flat config flip
 
-	// Order IM at 10x on notional 1000 = 100. Candidate IM requirement = 100.
-	// drawable = 250 - 100 = 150 >= 100 → pass.
+	// Order IM at 10x on notional 1000 = 100 = its post-fill requirement.
+	// equity 250 >= candidate requirement 100 → pass; reserve consumes 100.
 	if reason, ok := e.CrossOrderCheck(1001, sym, perpstate.SideBuy, d("100"), d("10"), d("10"), d("100"), zero); !ok {
 		t.Fatalf("first order should pass: %s", reason)
 	}
 	if !e.ReserveCross(1001, d("100")) {
 		t.Fatal("reserve")
 	}
-	// Second identical order: drawable = 150 - 100 = 50, but candidate pool
-	// requirement only counts the POSITION increase of this order (100).
-	// 50 < 100 → reject. (The first order's exposure is carried by its cash
-	// reservation — rule #4.)
+	// Second identical order: Available 150 >= this order's requirement 100
+	// → pass (the first order's future requirement is exactly offset by its
+	// excluded reservation). Total committed = 200 <= 250 equity.
+	if reason, ok := e.CrossOrderCheck(1001, sym, perpstate.SideBuy, d("100"), d("10"), d("10"), d("100"), zero); !ok {
+		t.Fatalf("second order should pass: %s", reason)
+	}
+	if !e.ReserveCross(1001, d("100")) {
+		t.Fatal("reserve second")
+	}
+	// Third order: Available 50 < im 100 → free cash exhausted (rule #4).
 	if _, ok := e.CrossOrderCheck(1001, sym, perpstate.SideBuy, d("100"), d("10"), d("10"), d("100"), zero); ok {
-		t.Fatal("second order must fail once free cash is consumed")
+		t.Fatal("third order must fail once free cash is consumed")
 	}
 }
 

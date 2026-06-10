@@ -37,7 +37,11 @@ type Journal interface {
 	Emit(evt *eventpb.PerpJournalEvent)
 }
 
-// Order is an in-flight perp order record held by the service.
+// Order is an in-flight perp order record held by the service. Mode is the
+// position's margin mode at admission time (ADR-0074): it routes the IM
+// reservation to the right wallet bucket — isolated reservations convert to
+// position margin on fill, cross reservations release back to free balance
+// per filled proportion.
 type Order struct {
 	OrderID    uint64
 	ClientID   string
@@ -49,6 +53,7 @@ type Order struct {
 	Price      dec.Decimal
 	Qty        dec.Decimal
 	Leverage   dec.Decimal
+	Mode       perpstate.MarginMode
 	ReduceOnly bool
 	ReservedIM dec.Decimal
 	FilledQty  dec.Decimal
@@ -172,9 +177,15 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 	if err != nil || qty.Sign() <= 0 {
 		return nil, errors.New("invalid qty")
 	}
-	lev, err := dec.Parse(req.GetLeverage())
-	if err != nil || lev.Sign() <= 0 {
-		return nil, errors.New("invalid leverage")
+	// ADR-0074 §8: leverage is position config; the order field is only a
+	// convenience entry that creates/overwrites the config. Empty = use the
+	// configured leverage.
+	reqLev := zero
+	if v := req.GetLeverage(); v != "" {
+		reqLev, err = dec.Parse(v)
+		if err != nil || reqLev.Sign() <= 0 {
+			return nil, errors.New("invalid leverage")
+		}
 	}
 	var price dec.Decimal
 	isMarket := req.GetOrderType() == eventpb.OrderType_ORDER_TYPE_MARKET
@@ -187,16 +198,22 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 
 	resp := &perprpc.PlaceOrderResponse{ReceivedTsUnixMs: s.now()}
 	s.seq.do(req.GetUserId(), func() {
+		user, symbol := req.GetUserId(), req.GetSymbol()
 		// reduce_only must close, never increase: requires an existing
 		// position on the side opposite this order. This is intentionally only
 		// the admission gate; the settlement side still needs its own clamp once
 		// Match fills can arrive after the position has changed.
 		if req.GetReduceOnly() {
-			pos, ok := s.eng.PositionOf(req.GetUserId(), req.GetSymbol())
+			pos, ok := s.eng.PositionOf(user, symbol)
 			if !ok || pos.Side == side {
 				resp = s.reject(req, "reduce_only_requires_opposite_position")
 				return
 			}
+		}
+		lev, mode, riskID, reason := s.resolveOrderLeverage(user, symbol, reqLev)
+		if reason != "" {
+			resp = s.reject(req, reason)
+			return
 		}
 		var reservedIM dec.Decimal = zero
 		if !req.GetReduceOnly() {
@@ -206,18 +223,40 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 				// reserves initial margin at the current mark. That may reject
 				// aggressively, but it keeps the counter service independent from
 				// order-book liquidity and avoids using last-trade noise for margin.
-				imPrice = s.eng.MarkOf(req.GetSymbol())
+				imPrice = s.eng.MarkOf(symbol)
 				if imPrice.Sign() <= 0 {
 					resp = s.reject(req, "no_mark_for_market_order")
 					return
 				}
 			}
-			if maxLev := s.maxLeverageForOrder(req.GetUserId(), req.GetSymbol(), side, imPrice, qty); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
+			if maxLev := s.maxLeverageForOrder(user, symbol, side, imPrice, qty); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
 				resp = s.reject(req, "leverage_exceeds_max")
 				return
 			}
+			// ADR-0074 §9: position + resting orders + this order must fit the
+			// selected risk tier's notional cap.
+			if tierCap := s.risk.MaxNotionalFor(riskID); tierCap.Sign() > 0 {
+				total := s.positionMarkNotional(user, symbol).
+					Add(s.activeOrderNotional(user, symbol)).
+					Add(imPrice.Mul(qty))
+				if total.Cmp(tierCap) > 0 {
+					resp = s.reject(req, "notional_exceeds_tier_cap")
+					return
+				}
+			}
 			im := perpstate.InitMargin(imPrice, qty, lev)
-			if !s.eng.Reserve(req.GetUserId(), im) {
+			if mode == perpstate.MarginCross {
+				// ADR-0074 §4: candidate-pool admission, then reserve the order
+				// IM from free cash (rule #4).
+				if reason, ok := s.eng.CrossOrderCheck(user, symbol, side, imPrice, qty, lev, im, s.cfg.TargetMarginBuffer); !ok {
+					resp = s.reject(req, reason)
+					return
+				}
+				if !s.eng.ReserveCross(user, im) {
+					resp = s.reject(req, "insufficient_margin")
+					return
+				}
+			} else if !s.eng.Reserve(user, im) {
 				resp = s.reject(req, "insufficient_margin")
 				return
 			}
@@ -225,9 +264,9 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 		}
 
 		o := &Order{
-			OrderID: s.nextID(), ClientID: req.GetClientOrderId(), UserID: req.GetUserId(),
-			Symbol: req.GetSymbol(), Side: side, Type: req.GetOrderType(), TIF: req.GetTif(),
-			Price: price, Qty: qty, Leverage: lev, ReduceOnly: req.GetReduceOnly(),
+			OrderID: s.nextID(), ClientID: req.GetClientOrderId(), UserID: user,
+			Symbol: symbol, Side: side, Type: req.GetOrderType(), TIF: req.GetTif(),
+			Price: price, Qty: qty, Leverage: lev, Mode: mode, ReduceOnly: req.GetReduceOnly(),
 			ReservedIM: reservedIM, FilledQty: zero,
 			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			CreatedMs: s.now(), UpdatedMs: s.now(),
@@ -240,7 +279,11 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			// event is accepted by Match, all later release paths are driven by
 			// trade-event lifecycle records for replay safety.
 			if reservedIM.Sign() > 0 {
-				s.eng.Release(req.GetUserId(), reservedIM)
+				if mode == perpstate.MarginCross {
+					s.eng.ReleaseCross(user, reservedIM)
+				} else {
+					s.eng.Release(user, reservedIM)
+				}
 			}
 			s.delOrder(o.OrderID)
 			resp = s.reject(req, "dispatch_failed")
@@ -373,15 +416,32 @@ func (s *Service) settleSelfTrade(user uint64, t *eventpb.Trade, matchSeq uint64
 func (s *Service) afterFill(o *Order, t *eventpb.Trade, side perpstate.Side, res perpstate.FillResult,
 	statusAfter eventpb.InternalOrderStatus, filledAfter string) {
 	old := o.Status
-	// Drain this order's still-held initial margin by what this fill committed
-	// to position margin (engine.routeCash draws MarginAdded from Reserved
-	// first). What's left is the residual a later cancel/reject/expire must
-	// release — releasing the full original ReservedIM would double-count the
-	// part already converted to position_margin.
+	prevFilled := o.FilledQty
+	// Isolated: drain this order's still-held initial margin by what this
+	// fill committed to position margin (engine.routeCash draws MarginAdded
+	// from Reserved first). What's left is the residual a later
+	// cancel/reject/expire must release — releasing the full original
+	// ReservedIM would double-count the part already converted to
+	// position_margin.
 	if res.MarginAdded.Sign() > 0 {
 		o.ReservedIM = o.ReservedIM.Sub(res.MarginAdded)
 		if o.ReservedIM.Sign() < 0 {
 			o.ReservedIM = zero
+		}
+	}
+	// Cross: no margin bucket exists — the reservation for the filled
+	// proportion converts back to free cash and the exposure is carried as a
+	// derived requirement instead (ADR-0074 §4).
+	if o.Mode == perpstate.MarginCross && o.ReservedIM.Sign() > 0 {
+		remaining := o.Qty.Sub(prevFilled)
+		fillQty := dec.New(t.GetQty())
+		if remaining.Sign() > 0 && fillQty.Sign() > 0 {
+			release := dec.Min(o.ReservedIM,
+				o.ReservedIM.Mul(dec.Min(fillQty, remaining)).Div(remaining))
+			if release.Sign() > 0 {
+				s.eng.ReleaseCross(o.UserID, release)
+				o.ReservedIM = o.ReservedIM.Sub(release)
+			}
 		}
 	}
 	if filledAfter != "" {
@@ -396,6 +456,10 @@ func (s *Service) afterFill(o *Order, t *eventpb.Trade, side perpstate.Side, res
 		s.emitOrderStatus(o, old, o.Status)
 	}
 	if isTerminal(o.Status) {
+		// A taker filled at a better price than it reserved for leaves a
+		// residual hold that no later lifecycle event would free — release it
+		// with the terminal transition.
+		s.releaseRemainingIM(o)
 		s.delOrder(o.OrderID)
 	}
 }

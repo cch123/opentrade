@@ -94,6 +94,7 @@ func (s *Service) emitFunding(symbol, roundIDStr string, rate dec.Decimal, res e
 func (s *Service) onMarkTick(symbol string) {
 	s.runAutoAdd(symbol)
 	s.scanLiquidations(symbol)
+	s.scanCrossLiquidations(symbol)
 }
 
 // parseFundingRound extracts the unix-seconds round id from a funding_round_id

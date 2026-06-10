@@ -190,7 +190,60 @@ func (s *Service) positionSnap(user uint64, symbol string) *eventpb.PerpPosition
 		UserId: p.UserID, Symbol: p.Symbol, Side: toEventSide(p.Side),
 		Size: p.Size.String(), EntryPrice: p.Entry.String(), Margin: p.Margin.String(),
 		Leverage: p.Leverage.String(), RealizedPnl: p.Realized.String(), Version: p.Version,
+		MarginMode: toWireMarginMode(p.Mode), RiskId: p.RiskID,
 	}
+}
+
+// resolveOrderLeverage applies ADR-0074 §8's config-first leverage rule for
+// PlaceOrder: an omitted leverage uses the position config; a provided value
+// that differs from the config is a write-through convenience set, allowed
+// only while nothing live depends on the old value (flat position, no
+// orders). Returns the effective leverage + the position's mode and riskID
+// for the admission checks. Caller holds the user's seq lock.
+func (s *Service) resolveOrderLeverage(user uint64, symbol string, reqLev dec.Decimal) (lev dec.Decimal, mode perpstate.MarginMode, riskID uint32, reason string) {
+	rec, _ := s.eng.PositionRaw(user, symbol)
+	mode = rec.Mode
+	if mode == 0 {
+		mode = perpstate.MarginIsolated
+	}
+	riskID = rec.RiskID
+	cfgLev := rec.Leverage
+	switch {
+	case reqLev.Sign() == 0:
+		if cfgLev.Sign() <= 0 {
+			return zero, mode, riskID, "leverage_required"
+		}
+		return cfgLev, mode, riskID, ""
+	case cfgLev.Sign() > 0 && cfgLev.Cmp(reqLev) == 0:
+		return reqLev, mode, riskID, ""
+	default:
+		// Config write-through. A live position or resting orders pin the old
+		// leverage — the user must go through SetPositionLeverage (which
+		// resizes margin / re-checks requirements) instead of a side effect.
+		if (!rec.IsFlat() && cfgLev.Sign() > 0) || s.hasActiveOrders(user, symbol) {
+			return zero, mode, riskID, "leverage_conflict_use_set_leverage"
+		}
+		out := s.eng.SetLeverage(user, symbol, "", reqLev, s.cfg.TargetMarginBuffer)
+		if !out.Accepted {
+			return zero, mode, riskID, out.Reason
+		}
+		s.emitPositionConfig(user, symbol, "place_order", "")
+		return reqLev, mode, riskID, ""
+	}
+}
+
+// positionMarkNotional values the current position at mark (entry when no
+// mark yet) — the §9 tier-cap admission input.
+func (s *Service) positionMarkNotional(user uint64, symbol string) dec.Decimal {
+	p, ok := s.eng.PositionOf(user, symbol)
+	if !ok {
+		return zero
+	}
+	mark := s.eng.MarkOf(symbol)
+	if mark.Sign() <= 0 {
+		mark = p.Entry
+	}
+	return p.Notional(mark)
 }
 
 func (s *Service) reject(req *perprpc.PlaceOrderRequest, reason string) *perprpc.PlaceOrderResponse {

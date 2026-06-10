@@ -18,6 +18,7 @@ package service
 
 import (
 	eventpb "github.com/xargin/opentrade/api/gen/event"
+	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
 // HandleTradeEvent is the perp-trade-event consumer entry point. It routes a
@@ -141,12 +142,18 @@ func (s *Service) handleExpired(e *eventpb.OrderExpired) {
 }
 
 // releaseRemainingIM returns an order's still-held initial margin to the
-// wallet's available balance. afterFill has already drained the part converted
-// to position margin, so this releases only the unfilled remainder's hold.
-// Caller holds the user's seq lock.
+// wallet's available balance, from the bucket matching the order's margin
+// mode (ADR-0074). afterFill has already drained the part converted to
+// position margin (isolated) or released per filled proportion (cross), so
+// this releases only the unfilled remainder's hold. Caller holds the user's
+// seq lock.
 func (s *Service) releaseRemainingIM(o *Order) {
 	if o.ReservedIM.Sign() > 0 {
-		s.eng.Release(o.UserID, o.ReservedIM)
+		if o.Mode == perpstate.MarginCross {
+			s.eng.ReleaseCross(o.UserID, o.ReservedIM)
+		} else {
+			s.eng.Release(o.UserID, o.ReservedIM)
+		}
 		o.ReservedIM = zero
 	}
 }

@@ -38,6 +38,7 @@ type OrderSnap struct {
 	Price      string `json:"price"`
 	Qty        string `json:"qty"`
 	Leverage   string `json:"leverage"`
+	Mode       uint8  `json:"mode,omitempty"` // perpstate.MarginMode (ADR-0074)
 	ReduceOnly bool   `json:"reduce_only"`
 	ReservedIM string `json:"reserved_im"`
 	FilledQty  string `json:"filled_qty"`
@@ -96,6 +97,7 @@ func (s *Service) snapshotLocked() Snapshot {
 			OrderID: o.OrderID, ClientID: o.ClientID, UserID: o.UserID, Symbol: o.Symbol,
 			Side: uint8(o.Side), Type: int32(o.Type), TIF: int32(o.TIF),
 			Price: o.Price.String(), Qty: o.Qty.String(), Leverage: o.Leverage.String(),
+			Mode:       uint8(o.Mode),
 			ReduceOnly: o.ReduceOnly, ReservedIM: o.ReservedIM.String(), FilledQty: o.FilledQty.String(),
 			Status: int32(o.Status), CreatedMs: o.CreatedMs, UpdatedMs: o.UpdatedMs,
 		})
@@ -132,6 +134,7 @@ func (s *Service) Restore(snap Snapshot) {
 			OrderID: os.OrderID, ClientID: os.ClientID, UserID: os.UserID, Symbol: os.Symbol,
 			Side: perpstate.Side(os.Side), Type: eventpb.OrderType(os.Type), TIF: eventpb.TimeInForce(os.TIF),
 			Price: dec.New(os.Price), Qty: dec.New(os.Qty), Leverage: dec.New(os.Leverage),
+			Mode:       perpstate.MarginMode(os.Mode),
 			ReduceOnly: os.ReduceOnly, ReservedIM: dec.New(os.ReservedIM), FilledQty: dec.New(os.FilledQty),
 			Status: eventpb.InternalOrderStatus(os.Status), CreatedMs: os.CreatedMs, UpdatedMs: os.UpdatedMs,
 		}
