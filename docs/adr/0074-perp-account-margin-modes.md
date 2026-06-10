@@ -1,6 +1,6 @@
 # ADR-0074: perp 账户与保证金模式 —— cross / unified / portfolio 的演进路径
 
-- 状态: **Proposed**（2026-05-31 起草；从 `docs/roadmap.md` 的"账户与保证金模式"产品化缺口提升为独立 ADR）
+- 状态: **Accepted / Implemented (P0+P1)**（2026-05-31 起草；2026-06-10 落地 P0 isolated 操作面 + P1 USDT cross margin 全链路，里程碑 commit 见"实现进度"表；P2 unified / P3 portfolio 按本 ADR 定位仅保留接口缝——`PoolRiskModel` 接口 + `risk_model=STANDARD` 预留字段——不属于本次交付）
 - 日期: 2026-05-31
 - 决策者: xargin, Codex
 - 相关 ADR: 0068（USDT 线性 perp，collateral pool 抽象）、0070（阶梯风险限额 / 部分强平 / ADL）、0071（perp 分片化风控 + 全局协调器）、0072（强平扫描索引）、0073（TakenOverLot + RiskPool settlement）、0056（SymbolConfig via MySQL）、0057（asset-service + futures 资金入口）、0048（snapshot 绑 offset）、0018（UserSequencer）
@@ -696,11 +696,46 @@ trade-dump / history 必须能查询：
 - cross pool 多 symbol health、订单预占、撤单释放、partial fill 后 requirement 重算。
 - snapshot roundtrip：配置、margin adjustment 幂等水位、cross pool derived state 重建一致。
 
+## 实现进度 (Implementation Progress)
+
+2026-06-10 落地，里程碑逐个 commit（每个均含单测，race-clean）：
+
+| Milestone | 内容 | Commit |
+|---|---|---|
+| M1 | perpstate：`PoolRiskModel` 接口 + `StandardRisk`（per-position 分档 IM/MM 求和）、cross-aware fill/funding 代数（cross 仓位 `Margin` 恒 0）、`RiskID`/`AutoAddMargin` 配置字段、`EffectiveTierIndex`（max(自动档, riskID) 保守取档）、`CrossClosePlan` 排序 | `7ed5c8a` |
+| M2 | proto：`PerpPositionConfigEvent` / `PerpMarginAdjustmentEvent` / `PerpCustomerRiskLimitEvent` + 全部 §13 RPC；`QueryMarginResponse` 重构为账本桶 + 派生值（§2） | `2612219` |
+| M3 | engine：配置原语（杠杆/riskID/加减保证金/auto-add/双向模式切换，单临界区内"校验+变更+幂等缓存"）、`CrossReserved` 子桶、cross pool 评估、`CrossForceClose`/`CrossSettleDeficit`、提现按 available_to_withdraw 闸门、Snapshot v2 | `a4dda22` |
+| M4 | service P0：SetPositionLeverage / SetRiskId / AdjustIsolatedMargin / SetAutoAddMargin / 客户杠杆上限 + 查询；mark tick 内 auto-add **先于**强平扫描；准入杠杆上限走 min-chain | `8377ac9` |
+| M5 | service P1：cross 下单准入 + 按成交比例释放预占 + SetMarginMode + cross pool 强平（亏损最大优先逐仓平至健康，兜底保险结算）；顺带修复"成交价优于预占价时 FILLED 终态残余预占泄漏" | `9e3bc14` |
+| M6 | server Connect handler 全量接线 + QueryMargin 真实派生值 + main.go auto-add flags | `cb4959c` |
+| M7 | trade-dump 三张新投影表（config_logs / margin_adjustments / customer_risk_limits）+ positions 加 margin_mode/risk_id；push 私有流转发新事件；history 两条流水查询 RPC；BFF /v1/perp/* 配置路由 | `5decd1c` |
+
+### 落地决策（开放问题就地拍板部分）
+
+- **cross funding 直接进 `free_balance`**，isolated funding 维持进 `position_margin`（perpstate.ApplyFunding 按 mode 分流，engine 路由钱包侧）。
+- **isolated → cross 全额释放 margin**（不保留"手动锁定"半 cross 语义），与 §5 建议一致。
+- **cross `LiquidationPlan` v1 = 未实现亏损最大优先**（确定性平局按 symbol 字典序）；逐仓平掉后重评估 pool health，恢复健康即停。
+- **cross 强平 v1 不经 Match**：直接按 mark 价 backstop 接管（每仓发 `PerpTakeoverEvent`，lot 进 ADR-0073 协调器轨道），用户保留平仓后的剩余权益；终态负余额由保险基金清零并发 deficit 结算事件。"先挂 Match 单、N tick 后升级 backstop"的阶梯留作后续优化。
+- **pool 破产 deficit 归属触发 symbol**（多 symbol pool 的缺口没有规范归属；保险基金按 symbol 记账，取触发本次强平的 symbol，已注释说明）。
+- **cross 仓位 v1 豁免 ADL 候选**（margin-based ADL score 对 pool 级权益无意义；候选筛选显式跳过 cross，待 cross 专用 score 另行展开）。
+- **准入会计恒等式**：每张挂单的 `CrossReserved` 预占额恰等于其成交后的 IM requirement，因此候选池 equity 排除其它挂单预占现金即可精确抵消不计其未来 requirement 的误差——本单 IM 只按 requirement 计一次，不重复从 drawable 扣除（否则双重计数，要求 2×IM）。
+- **强平视角 equity 含 `CrossReserved`**（可撤单回收的现金），准入视角不含——避免挂大单瞬间 pool 假性恶化触发误强平，同时保持准入严口径。
+- **SetMarginMode / SetPositionLeverage 对任何活跃订单拒绝**（含 reduce-only，备选方案 C 的最严格读法：可证明性优先）；SetRiskId 允许活跃订单存在，但把其名义值计入档位上限校验。
+- **engine.Wallet 字段名保留 `Available`/`Reserved`**（Go 标识符不改名，避免无语义的大面积 diff）；§2 账本桶语义映射在 Wallet 类型注释与 proto 字段名上显式表达（`free_balance` / `order_margin_reserved`）。
+
+### P2/P3 预留缝（本次仅留接口，未实现）
+
+- `PoolRiskModel` 是唯一风险公式入口，portfolio margin 只替换该接口实现。
+- `QueryAccountConfigResponse.risk_model = "STANDARD"`、`cross_pool_id = "cross:{user}:USDT"` 字段已上线。
+- unified margin 的 collateral account 服务边界仍需单独 ADR（见开放问题）。
+
 ## 开放问题 (Open Questions)
 
-- cross funding 结算是否直接进 `free_balance`，isolated funding 是否继续进 `position_margin`，需要和当前 funding journal 逐项对齐。
-- isolated → cross 时是否允许用户保留一部分 margin 作为"手动锁定"，还是全部释放为 cross drawable；P1 建议全部释放，避免半 cross 语义。
-- cross 强平的 `LiquidationPlan` 第一版按什么排序：亏损贡献、ADL score、名义值、还是逐 symbol 风险档优先。
+- ~~cross funding 结算是否直接进 `free_balance`~~（已拍板：是，见"落地决策"）。
+- ~~isolated → cross 是否允许保留部分 margin~~（已拍板：全部释放）。
+- ~~cross 强平的 `LiquidationPlan` 第一版排序~~（已拍板：未实现亏损最大优先）。
+- cross 强平是否引入"先 Match 限价单、超时再 backstop"的执行阶梯（v1 直接 backstop 接管；引入 Match 路径需处理跨 tick 的在途状态机）。
+- cross 仓位的 ADL 候选语义（pool 级权益下的 score 公式），v1 豁免。
 - unified margin 的 collateral account 归 asset-service 扩展，还是新建 margin-account 服务；P2 前需要单独 ADR。
 - portfolio margin 的风险参数版本如何和历史 mark / index / vol 数据一起归档，确保强平可复盘。
 

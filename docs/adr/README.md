@@ -144,7 +144,7 @@
 | [0071](0071-perp-sharded-insurance-and-cross-shard-adl.md) | perp 分片化风控 — 全局保险基金 + 跨 shard ADL（协调器决策 / shard 版本戳执行） | Accepted / MVP Implemented |
 | [0072](0072-perp-liquidation-scan-index.md) | 强平扫描改为强平价排序索引 — 阈值穿越查询取代每 tick 全量评估 | Accepted / Implemented |
 | [0073](0073-perp-takeover-inventory-and-riskpool-settlement.md) | perp 强平托管仓位 — TakenOverLot 生命周期 + RiskPool 结算 + ADL 消耗库存 | Accepted / MVP Implemented |
-| [0074](0074-perp-account-margin-modes.md) | perp 账户与保证金模式 — cross / unified / portfolio 的演进路径 | Proposed |
+| [0074](0074-perp-account-margin-modes.md) | perp 账户与保证金模式 — cross / unified / portfolio 的演进路径 | Accepted / Implemented (P0+P1) |
 | [0075](0075-perp-symbol-config-productization.md) | perp 合约 SymbolConfig 产品化 | Proposed |
 | [0076](0076-perp-contract-product-expansion.md) | perp 合约品类扩展 — linear dated futures / settlement，inverse 延后 | Proposed |
 | [0077](0077-perp-position-mode-hedge-both-side.md) | perp 持仓模式 — one-way / hedge both-side position | Proposed |
