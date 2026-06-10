@@ -50,7 +50,7 @@ func (s *Service) scanLiquidations(symbol string) {
 	if !s.risk.HasMMR() {
 		return // no MMR configured → liquidation disabled
 	}
-	for _, cand := range s.eng.LiquidatablePositions(symbol, s.risk.MMRFunc()) {
+	for _, cand := range s.eng.LiquidatablePositions(symbol) {
 		if cand.UserID == s.cfg.BackstopAccount {
 			continue // system inventory is managed off-system and must not recurse
 		}
@@ -72,14 +72,14 @@ func (s *Service) beginLiquidation(cand engine.LiquidationCandidate) {
 		if s.hasLiquidation(key) {
 			return // already being liquidated
 		}
-		c, ok := s.eng.LiquidationCheck(cand.UserID, cand.Symbol, s.risk.MMRFunc())
+		c, ok := s.eng.LiquidationCheck(cand.UserID, cand.Symbol)
 		if !ok {
 			return // moved back above maintenance since the scan
 		}
 		qty := c.Size
 		price := c.BankruptcyPrice
 		mode := liquidationFull
-		if reduceQty := s.eng.ReduceToTarget(c.UserID, c.Symbol, s.risk.MMRFunc(), s.cfg.TargetMarginBuffer); reduceQty.Sign() > 0 && reduceQty.Cmp(c.Size) < 0 {
+		if reduceQty := s.eng.ReduceToTarget(c.UserID, c.Symbol, s.cfg.TargetMarginBuffer); reduceQty.Sign() > 0 && reduceQty.Cmp(c.Size) < 0 {
 			// Partial liquidation prefers the smaller close at liq price when it
 			// restores health. If the solver cannot find such a slice, the flow
 			// falls back to full bankruptcy close so liquidation always makes

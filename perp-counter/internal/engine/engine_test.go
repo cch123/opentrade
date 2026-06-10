@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/xargin/opentrade/pkg/dec"
@@ -196,19 +197,19 @@ func TestEngine_SettleFunding(t *testing.T) {
 
 func TestEngine_LiquidatablePositions(t *testing.T) {
 	e := New()
+	e.SetRiskModel(perpstate.NewRiskModel(nil, d("0.005"), zero, zero))
 	openPos(e, 1001, "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10") // long, margin 10
-	mmr := d("0.005")
 
 	e.SetMark("BTC-USDT-PERP", d("100"))
-	if got := e.LiquidatablePositions("BTC-USDT-PERP", perpstate.ConstantMMR(mmr)); len(got) != 0 {
+	if got := e.LiquidatablePositions("BTC-USDT-PERP"); len(got) != 0 {
 		t.Fatalf("healthy long at entry should not be liquidatable, got %d", len(got))
 	}
 	e.SetMark("BTC-USDT-PERP", d("95"))
-	if got := e.LiquidatablePositions("BTC-USDT-PERP", perpstate.ConstantMMR(mmr)); len(got) != 0 {
+	if got := e.LiquidatablePositions("BTC-USDT-PERP"); len(got) != 0 {
 		t.Fatalf("long at 95 (ratio ~0.0526) should be safe, got %d", len(got))
 	}
 	e.SetMark("BTC-USDT-PERP", d("90"))
-	got := e.LiquidatablePositions("BTC-USDT-PERP", perpstate.ConstantMMR(mmr))
+	got := e.LiquidatablePositions("BTC-USDT-PERP")
 	if len(got) != 1 {
 		t.Fatalf("long at 90 (equity 0) should be liquidatable, got %d", len(got))
 	}
@@ -220,76 +221,85 @@ func TestEngine_LiquidatablePositions(t *testing.T) {
 
 func TestEngine_LiquidationIndexMatchesFullScanAcrossMutations(t *testing.T) {
 	e := New()
-	mmrOf := perpstate.ConstantMMR(d("0.05"))
-	e.SetLiquidationMMRFunc(mmrOf)
+	model := perpstate.NewRiskModel(nil, d("0.05"), zero, zero)
+	e.SetRiskModel(model)
 	symbol := "BTC-USDT-PERP"
 
 	openPos(e, 1001, symbol, perpstate.SideBuy, "100", "1", "10")
 	openPos(e, 1002, symbol, perpstate.SideBuy, "100", "1", "20")
 	openPos(e, 1003, symbol, perpstate.SideSell, "100", "1", "10")
-	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+	assertLiquidationIndexMatchesFullScan(t, e, symbol)
 
 	// Closing to flat must remove the old index key; otherwise later mark gaps
 	// would keep producing a false candidate for a position that no longer
 	// exists.
 	e.ApplyFillWithSeq(1001, symbol, d("10"), 1,
 		perpstate.Fill{Side: perpstate.SideSell, Price: d("100"), Qty: d("1")})
-	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+	assertLiquidationIndexMatchesFullScan(t, e, symbol)
 
 	// A flip is the most error-prone update because the position leaves the
 	// long tree and re-enters the short tree under the same (user,symbol).
 	e.ApplyFillWithSeq(1002, symbol, d("20"), 1,
 		perpstate.Fill{Side: perpstate.SideSell, Price: d("100"), Qty: d("2")})
-	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+	assertLiquidationIndexMatchesFullScan(t, e, symbol)
 
 	e.SetMark(symbol, d("100"))
 	e.ApplyFunding(1003, symbol, d("0.01"))
-	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+	assertLiquidationIndexMatchesFullScan(t, e, symbol)
 
 	e.ApplyPartialLiquidationFill(1002, symbol, 2,
 		perpstate.Fill{Side: perpstate.SideBuy, Price: d("95"), Qty: d("0.25")},
 		d("0.001"))
-	assertLiquidationIndexMatchesFullScan(t, e, symbol, mmrOf)
+	assertLiquidationIndexMatchesFullScan(t, e, symbol)
 }
 
 func TestEngine_LiquidationIndexRebuildsOnRestore(t *testing.T) {
-	mmrOf := perpstate.ConstantMMR(d("0.05"))
+	model := perpstate.NewRiskModel(nil, d("0.05"), zero, zero)
 	symbol := "BTC-USDT-PERP"
 	e := New()
-	e.SetLiquidationMMRFunc(mmrOf)
+	e.SetRiskModel(model)
 	openPos(e, 1001, symbol, perpstate.SideBuy, "100", "1", "10")
 	openPos(e, 1002, symbol, perpstate.SideSell, "100", "1", "10")
 	e.SetMark(symbol, d("90"))
 	snap := e.Snapshot()
 
 	configuredBeforeRestore := New()
-	configuredBeforeRestore.SetLiquidationMMRFunc(mmrOf)
+	configuredBeforeRestore.SetRiskModel(model)
 	configuredBeforeRestore.Restore(snap)
-	assertLiquidationIndexMatchesFullScan(t, configuredBeforeRestore, symbol, mmrOf)
+	assertLiquidationIndexMatchesFullScan(t, configuredBeforeRestore, symbol)
 
 	configuredAfterRestore := New()
 	configuredAfterRestore.Restore(snap)
-	configuredAfterRestore.SetLiquidationMMRFunc(mmrOf)
-	assertLiquidationIndexMatchesFullScan(t, configuredAfterRestore, symbol, mmrOf)
+	configuredAfterRestore.SetRiskModel(model)
+	assertLiquidationIndexMatchesFullScan(t, configuredAfterRestore, symbol)
 }
 
-func assertLiquidationIndexMatchesFullScan(t *testing.T, e *Engine, symbol string, mmrOf perpstate.MMRFunc) {
+func assertLiquidationIndexMatchesFullScan(t *testing.T, e *Engine, symbol string) {
 	t.Helper()
 	for _, mark := range []string{"80", "94", "95", "100", "105", "115"} {
 		m := d(mark)
 		e.SetMark(symbol, m)
-		got := liquidationCandidateSummary(e.LiquidatablePositions(symbol, mmrOf))
-		want := liquidationCandidateSummary(fullScanLiquidationsForTest(e, symbol, m, mmrOf))
+		got := liquidationCandidateSummary(e.LiquidatablePositions(symbol))
+		want := liquidationCandidateSummary(fullScanLiquidationsForTest(e, symbol, m))
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("mark %s indexed candidates mismatch:\n got  %v\n want %v", mark, got, want)
 		}
 	}
 }
 
-func fullScanLiquidationsForTest(e *Engine, symbol string, mark dec.Decimal, mmrOf perpstate.MMRFunc) []LiquidationCandidate {
+// fullScanLiquidationsForTest is the index-free reference: every position is
+// rechecked through the same candidate predicate the indexed path uses.
+func fullScanLiquidationsForTest(e *Engine, symbol string, mark dec.Decimal) []LiquidationCandidate {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.liquidatablePositionsFullScanLocked(symbol, mark, mmrOf)
+	var out []LiquidationCandidate
+	for user, bySym := range e.positions {
+		if cand, ok := e.liquidationCandidateLocked(user, symbol, bySym[symbol], mark); ok {
+			out = append(out, cand)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out
 }
 
 func liquidationCandidateSummary(candidates []LiquidationCandidate) []string {

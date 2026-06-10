@@ -134,11 +134,11 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 		liqByKey:   map[string]*liquidation{},
 		liqByOrder: map[uint64]*liquidation{},
 	}
-	// ADR-0072 lets Engine maintain the liq-price index in the same lock as
-	// position writes. The service still owns risk-tier configuration, so it
-	// installs the resolver once after construction and again only if config is
-	// explicitly reloaded in a future admin path.
-	eng.SetLiquidationMMRFunc(svc.risk.MMRFunc())
+	// ADR-0072/0074: Engine maintains the liq-price index and resolves each
+	// position's effective MMR (tier table + RiskID) itself, so the service
+	// installs the whole risk model once after construction (and again only
+	// if config is explicitly reloaded in a future admin path).
+	eng.SetRiskModel(svc.risk)
 	return svc
 }
 

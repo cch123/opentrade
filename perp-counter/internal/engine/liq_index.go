@@ -58,15 +58,15 @@ func newLiqIndex() *liqIndex {
 	}
 }
 
-func (idx *liqIndex) rebuild(positions map[uint64]map[string]*perpstate.Position, mmrOf perpstate.MMRFunc) {
+func (idx *liqIndex) rebuild(positions map[uint64]map[string]*perpstate.Position, mmrFor func(*perpstate.Position) perpstate.MMRFunc) {
 	idx.symbols = map[string]*symbolLiqIndex{}
 	idx.byPosition = map[liqPositionKey]liqIndexEntry{}
-	if mmrOf == nil {
+	if mmrFor == nil {
 		return
 	}
 	for user, bySym := range positions {
 		for symbol, p := range bySym {
-			idx.upsert(user, symbol, p, mmrOf)
+			idx.upsert(user, symbol, p, mmrFor(p))
 		}
 	}
 }
@@ -74,6 +74,12 @@ func (idx *liqIndex) rebuild(positions map[uint64]map[string]*perpstate.Position
 func (idx *liqIndex) upsert(user uint64, symbol string, p *perpstate.Position, mmrOf perpstate.MMRFunc) {
 	idx.remove(user, symbol)
 	if p == nil || p.IsFlat() || mmrOf == nil {
+		return
+	}
+	// Cross positions have no per-position liquidation price — the account
+	// pool is the trigger unit (ADR-0074 §4 rule #6). Indexing them would
+	// produce wrong candidates from isolated-style math.
+	if p.Mode == perpstate.MarginCross {
 		return
 	}
 	if p.Side != perpstate.SideBuy && p.Side != perpstate.SideSell {

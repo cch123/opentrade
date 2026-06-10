@@ -18,6 +18,36 @@ type Snapshot struct {
 	Marks     map[string]string       `json:"marks"`
 	Insurance map[string]string       `json:"insurance"`
 	Transfers map[string]TransferSnap `json:"transfers"` // transfer_id → cached outcome (AssetHolder idempotency)
+
+	// ADR-0074 state. Limits are the admin leverage caps; Ops is the config
+	// op idempotency cache (client_op_id → first outcome) — both must
+	// survive restart or a replayed op could double-apply (same rule as
+	// Transfers / ADR-0048 "all recovery watermarks persist").
+	Limits []LimitSnap       `json:"limits,omitempty"`
+	Ops    map[string]OpSnap `json:"ops,omitempty"`
+}
+
+// LimitSnap is one customer leverage cap row (ADR-0074 §10).
+type LimitSnap struct {
+	UserID      uint64 `json:"user_id"`
+	Symbol      string `json:"symbol"` // "" = user-global
+	MaxLeverage string `json:"max_leverage"`
+	Reason      string `json:"reason,omitempty"`
+	UpdatedBy   string `json:"updated_by,omitempty"`
+	UpdatedMs   int64  `json:"updated_ms,omitempty"`
+}
+
+// OpSnap is one cached config-op outcome (ADR-0074 client_op_id idempotency).
+type OpSnap struct {
+	Accepted    bool   `json:"accepted"`
+	Reason      string `json:"reason,omitempty"`
+	Mode        uint8  `json:"mode,omitempty"`
+	Leverage    string `json:"leverage"`
+	RiskID      uint32 `json:"risk_id,omitempty"`
+	MarginAfter string `json:"margin_after"`
+	FreeAfter   string `json:"free_after"`
+	Moved       string `json:"moved"`
+	Version     uint64 `json:"version,omitempty"`
 }
 
 // TransferSnap is one cached transfer outcome (AssetHolder dedup, ADR-0057).
@@ -28,11 +58,12 @@ type TransferSnap struct {
 	RejectReason   string `json:"reject_reason"`
 }
 
-// WalletSnap is one user's margin balance.
+// WalletSnap is one user's margin ledger buckets (ADR-0074 §2).
 type WalletSnap struct {
-	UserID    uint64 `json:"user_id"`
-	Available string `json:"available"`
-	Reserved  string `json:"reserved"`
+	UserID        uint64 `json:"user_id"`
+	Available     string `json:"available"`
+	Reserved      string `json:"reserved"`
+	CrossReserved string `json:"cross_reserved"`
 }
 
 // PositionSnap is one (user, symbol) position with its recovery watermarks.
@@ -46,6 +77,9 @@ type PositionSnap struct {
 	Leverage         string `json:"leverage"`
 	Realized         string `json:"realized"`
 	Mode             uint8  `json:"mode"`
+	RiskID           uint32 `json:"risk_id,omitempty"`
+	AutoAddMargin    bool   `json:"auto_add_margin,omitempty"`
+	AutoAddMax       string `json:"auto_add_max,omitempty"`
 	LastMatchSeq     uint64 `json:"last_match_seq"`
 	LastAdlRound     uint64 `json:"last_adl_round"`
 	FundingRoundSeen int64  `json:"funding_round_seen"`
@@ -69,6 +103,7 @@ func (e *Engine) Snapshot() Snapshot {
 		w := e.wallets[u]
 		s.Wallets = append(s.Wallets, WalletSnap{
 			UserID: u, Available: w.Available.String(), Reserved: w.Reserved.String(),
+			CrossReserved: w.CrossReserved.String(),
 		})
 	}
 
@@ -90,6 +125,7 @@ func (e *Engine) Snapshot() Snapshot {
 				UserID: p.UserID, Symbol: p.Symbol, Side: uint8(p.Side),
 				Size: p.Size.String(), Entry: p.Entry.String(), Margin: p.Margin.String(),
 				Leverage: p.Leverage.String(), Realized: p.Realized.String(), Mode: uint8(p.Mode),
+				RiskID: p.RiskID, AutoAddMargin: p.AutoAddMargin, AutoAddMax: p.AutoAddMax.String(),
 				LastMatchSeq: p.LastMatchSeq, LastAdlRound: p.LastAdlRound,
 				FundingRoundSeen: p.FundingRoundSeen, Version: p.Version,
 			})
@@ -108,7 +144,33 @@ func (e *Engine) Snapshot() Snapshot {
 			ReservedAfter: o.ReservedAfter.String(), RejectReason: o.RejectReason,
 		}
 	}
+	for _, row := range e.customerLeverageLimitsLocked() {
+		s.Limits = append(s.Limits, LimitSnap{
+			UserID: row.UserID, Symbol: row.Symbol, MaxLeverage: row.MaxLeverage.String(),
+			Reason: row.Reason, UpdatedBy: row.UpdatedBy, UpdatedMs: row.UpdatedMs,
+		})
+	}
+	if len(e.ops) > 0 {
+		s.Ops = make(map[string]OpSnap, len(e.ops))
+		for id, o := range e.ops {
+			s.Ops[id] = OpSnap{
+				Accepted: o.Accepted, Reason: o.Reason, Mode: uint8(o.Mode),
+				Leverage: o.Leverage.String(), RiskID: o.RiskID,
+				MarginAfter: o.MarginAfter.String(), FreeAfter: o.FreeAfter.String(),
+				Moved: o.Moved.String(), Version: o.Version,
+			}
+		}
+	}
 	return s
+}
+
+// snapDec parses a snapshot decimal, treating "" (a field absent from an
+// older snapshot) as zero.
+func snapDec(v string) dec.Decimal {
+	if v == "" {
+		return zero
+	}
+	return dec.New(v)
 }
 
 // Restore replaces engine state with s. Used at startup after loading the
@@ -125,7 +187,8 @@ func (e *Engine) Restore(s Snapshot) {
 	e.transfers = map[string]TransferOutcome{}
 
 	for _, w := range s.Wallets {
-		e.wallets[w.UserID] = &Wallet{Available: dec.New(w.Available), Reserved: dec.New(w.Reserved)}
+		e.wallets[w.UserID] = &Wallet{Available: dec.New(w.Available), Reserved: dec.New(w.Reserved),
+			CrossReserved: snapDec(w.CrossReserved)}
 	}
 	for _, ps := range s.Positions {
 		bySym := e.positions[ps.UserID]
@@ -137,7 +200,9 @@ func (e *Engine) Restore(s Snapshot) {
 			UserID: ps.UserID, Symbol: ps.Symbol, Side: perpstate.Side(ps.Side),
 			Size: dec.New(ps.Size), Entry: dec.New(ps.Entry), Margin: dec.New(ps.Margin),
 			Leverage: dec.New(ps.Leverage), Realized: dec.New(ps.Realized),
-			Mode: perpstate.MarginMode(ps.Mode), LastMatchSeq: ps.LastMatchSeq,
+			Mode:   perpstate.MarginMode(ps.Mode),
+			RiskID: ps.RiskID, AutoAddMargin: ps.AutoAddMargin, AutoAddMax: snapDec(ps.AutoAddMax),
+			LastMatchSeq: ps.LastMatchSeq,
 			LastAdlRound: ps.LastAdlRound, FundingRoundSeen: ps.FundingRoundSeen, Version: ps.Version,
 		}
 	}
@@ -151,6 +216,25 @@ func (e *Engine) Restore(s Snapshot) {
 		e.transfers[id] = TransferOutcome{
 			Status: TransferStatus(ts.Status), AvailableAfter: dec.New(ts.AvailableAfter),
 			ReservedAfter: dec.New(ts.ReservedAfter), RejectReason: ts.RejectReason,
+		}
+	}
+	e.levLimits = map[uint64]map[string]CustomerLimit{}
+	for _, row := range s.Limits {
+		bySym := e.levLimits[row.UserID]
+		if bySym == nil {
+			bySym = map[string]CustomerLimit{}
+			e.levLimits[row.UserID] = bySym
+		}
+		bySym[row.Symbol] = CustomerLimit{MaxLeverage: dec.New(row.MaxLeverage),
+			Reason: row.Reason, UpdatedBy: row.UpdatedBy, UpdatedMs: row.UpdatedMs}
+	}
+	e.ops = map[string]OpOutcome{}
+	for id, o := range s.Ops {
+		e.ops[id] = OpOutcome{
+			Accepted: o.Accepted, Reason: o.Reason, Mode: perpstate.MarginMode(o.Mode),
+			Leverage: snapDec(o.Leverage), RiskID: o.RiskID,
+			MarginAfter: snapDec(o.MarginAfter), FreeAfter: snapDec(o.FreeAfter),
+			Moved: snapDec(o.Moved), Version: o.Version,
 		}
 	}
 	// ADR-0072 keeps the liq-price index out of snapshots because it is a

@@ -80,6 +80,17 @@ func (s StandardRisk) Eval(cp CollateralPool, marks map[string]dec.Decimal) Pool
 	return h
 }
 
+// PositionInitialRequirement is one position's standard IM requirement at the
+// given marks — exported for callers sizing a single position's requirement
+// (mode-switch target margin, query views) so the formula never forks from
+// pool Eval.
+func (s StandardRisk) PositionInitialRequirement(p *Position, marks map[string]dec.Decimal) dec.Decimal {
+	if p == nil || p.IsFlat() {
+		return zero
+	}
+	return s.initialRequirement(p, p.Notional(marks[p.Symbol]))
+}
+
 // initialRequirement is one position's IM requirement at notional n. The
 // effective leverage is the position's configured leverage clamped by the
 // effective tier's cap; a missing/zero leverage degrades to 1x (full

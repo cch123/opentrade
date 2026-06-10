@@ -20,10 +20,24 @@ import (
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
-// Wallet is a user's USDT futures-margin balance.
+// Wallet is a user's USDT futures-margin ledger (ADR-0074 §2 buckets).
+//
+//	Available     = free_balance: cash not locked by isolated position margin
+//	                or open-order reservations.
+//	Reserved      = order_margin_reserved for ISOLATED-mode orders; converts
+//	                into position margin on fill (ADR-0041).
+//	CrossReserved = order_margin_reserved for CROSS-mode orders; released
+//	                back to Available on fill/cancel (a cross position holds
+//	                no margin bucket). Kept separate from Reserved because
+//	                cross pool equity counts it (recoverable by cancelling)
+//	                while isolated reservations are excluded.
+//
+// Everything else the API reports (available_to_trade, cross requirements)
+// is derived from positions + marks + risk tiers, never stored here.
 type Wallet struct {
-	Available dec.Decimal // free margin
-	Reserved  dec.Decimal // initial margin held against open orders (ADR-0041)
+	Available     dec.Decimal
+	Reserved      dec.Decimal
+	CrossReserved dec.Decimal
 }
 
 // TransferStatus is the outcome of a futures-wallet transfer (AssetHolder
@@ -46,6 +60,15 @@ type TransferOutcome struct {
 	RejectReason   string
 }
 
+// CustomerLimit is one ADR-0074 §10 leverage cap row. Symbol "" applies to
+// every symbol; a symbol-scoped row overrides the global row.
+type CustomerLimit struct {
+	MaxLeverage dec.Decimal
+	Reason      string
+	UpdatedBy   string
+	UpdatedMs   int64
+}
+
 // Engine is the in-memory perp account state.
 type Engine struct {
 	mu        sync.RWMutex
@@ -55,23 +78,41 @@ type Engine struct {
 	insurance map[string]dec.Decimal
 	transfers map[string]TransferOutcome // transfer_id → outcome (AssetHolder idempotency, ADR-0057)
 
+	// ADR-0074 state. levLimits[user][symbol] ("" = user-global) is the admin
+	// leverage cap; ops caches config-op outcomes by client_op_id (same
+	// pattern as transfers); crossUsers[symbol] tracks who holds a cross
+	// position in the symbol so a mark tick can evaluate the affected
+	// account pools without a full scan.
+	levLimits  map[uint64]map[string]CustomerLimit
+	ops        map[string]OpOutcome
+	crossUsers map[string]map[uint64]struct{}
+	autoAdd    map[string]map[uint64]struct{} // symbol → users with a live auto-add-enabled isolated position
+
 	// liqIndex is ADR-0072 derived state: it is rebuilt from positions after
 	// restore and updated in the same write critical section as every position
-	// mutation. liqMMR is configured by the service because risk tiers belong to
-	// service config, while Engine owns the position mutation boundary.
+	// mutation. Cross positions are excluded — their liquidation trigger is
+	// the account pool, not a per-position price (ADR-0074 §4 rule #6). risk
+	// resolves each position's effective MMR (tier + RiskID); it is installed
+	// by the service because tier tables belong to service config, while
+	// Engine owns the position mutation boundary.
 	liqIndex *liqIndex
-	liqMMR   perpstate.MMRFunc
+	risk     perpstate.RiskModel
+	riskSet  bool
 }
 
 // New returns an empty engine.
 func New() *Engine {
 	return &Engine{
-		wallets:   map[uint64]*Wallet{},
-		positions: map[uint64]map[string]*perpstate.Position{},
-		marks:     map[string]dec.Decimal{},
-		insurance: map[string]dec.Decimal{},
-		transfers: map[string]TransferOutcome{},
-		liqIndex:  newLiqIndex(),
+		wallets:    map[uint64]*Wallet{},
+		positions:  map[uint64]map[string]*perpstate.Position{},
+		marks:      map[string]dec.Decimal{},
+		insurance:  map[string]dec.Decimal{},
+		transfers:  map[string]TransferOutcome{},
+		levLimits:  map[uint64]map[string]CustomerLimit{},
+		ops:        map[string]OpOutcome{},
+		crossUsers: map[string]map[uint64]struct{}{},
+		autoAdd:    map[string]map[uint64]struct{}{},
+		liqIndex:   newLiqIndex(),
 	}
 }
 
@@ -94,6 +135,10 @@ func (e *Engine) TransferIn(user uint64, transferID string, amt dec.Decimal) (Tr
 // TransferOut debits free margin for a saga leg (futures→funding withdraw),
 // idempotent on transferID. An insufficient balance is cached as a REJECTED
 // outcome so the same id never succeeds later (the saga must use a fresh id).
+// The withdrawable bound is available_to_withdraw, not Available: a cross
+// account's free cash also backs its cross positions' initial requirement,
+// so unrealized losses / IM must stay covered after the cash leaves
+// (ADR-0074 §2).
 func (e *Engine) TransferOut(user uint64, transferID string, amt dec.Decimal) (TransferOutcome, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -101,7 +146,7 @@ func (e *Engine) TransferOut(user uint64, transferID string, amt dec.Decimal) (T
 		return prev, true
 	}
 	w := e.walletLocked(user)
-	if w.Available.Cmp(amt) < 0 {
+	if e.availableToWithdrawLocked(user).Cmp(amt) < 0 {
 		out := TransferOutcome{Status: TransferRejected, RejectReason: "insufficient_available",
 			AvailableAfter: w.Available, ReservedAfter: w.Reserved}
 		e.transfers[transferID] = out
@@ -116,7 +161,7 @@ func (e *Engine) TransferOut(user uint64, transferID string, amt dec.Decimal) (T
 func (e *Engine) walletLocked(user uint64) *Wallet {
 	w := e.wallets[user]
 	if w == nil {
-		w = &Wallet{Available: zero, Reserved: zero}
+		w = &Wallet{Available: zero, Reserved: zero, CrossReserved: zero}
 		e.wallets[user] = w
 	}
 	return w
@@ -150,21 +195,42 @@ func (e *Engine) Deposit(user uint64, amt dec.Decimal) dec.Decimal {
 }
 
 // Withdraw debits free margin (futures→funding TransferOut). Returns false
-// when available is insufficient.
+// when available_to_withdraw is insufficient (see TransferOut).
 func (e *Engine) Withdraw(user uint64, amt dec.Decimal) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	w := e.walletLocked(user)
-	if w.Available.Cmp(amt) < 0 {
+	if e.availableToWithdrawLocked(user).Cmp(amt) < 0 {
 		return false
 	}
+	w := e.walletLocked(user)
 	w.Available = w.Available.Sub(amt)
 	return true
 }
 
-// Reserve holds initial margin for a new order (Available→Reserved). Returns
-// false when available is insufficient — the perp pre-trade risk gate
-// (ADR-0068 §4; the check spot deliberately skips).
+// availableToWithdrawLocked is the ADR-0074 §2 derived bound:
+// max(0, min(free_balance, cross equity - cross initial requirement)). For a
+// user with no cross positions it equals Available. Caller holds e.mu (any).
+func (e *Engine) availableToWithdrawLocked(user uint64) dec.Decimal {
+	w := e.wallets[user]
+	if w == nil {
+		return zero
+	}
+	cross := e.crossPositionsLocked(user)
+	if len(cross) == 0 {
+		return w.Available
+	}
+	h := e.crossHealthLocked(w, cross)
+	headroom := h.Equity.Sub(h.InitialRequirement)
+	out := dec.Min(w.Available, headroom)
+	if out.Sign() < 0 {
+		return zero
+	}
+	return out
+}
+
+// Reserve holds initial margin for a new ISOLATED-mode order
+// (Available→Reserved). Returns false when available is insufficient — the
+// perp pre-trade risk gate (ADR-0068 §4; the check spot deliberately skips).
 func (e *Engine) Reserve(user uint64, im dec.Decimal) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -177,14 +243,42 @@ func (e *Engine) Reserve(user uint64, im dec.Decimal) bool {
 	return true
 }
 
-// Release returns held initial margin to available (Reserved→Available) on
-// cancel / reject. Clamped to what is actually reserved.
+// Release returns held isolated-order initial margin to available
+// (Reserved→Available) on cancel / reject. Clamped to what is actually
+// reserved.
 func (e *Engine) Release(user uint64, im dec.Decimal) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	w := e.walletLocked(user)
 	move := dec.Min(im, w.Reserved)
 	w.Reserved = w.Reserved.Sub(move)
+	w.Available = w.Available.Add(move)
+}
+
+// ReserveCross holds initial margin for a CROSS-mode order
+// (Available→CrossReserved, ADR-0074 §4 rule #4).
+func (e *Engine) ReserveCross(user uint64, im dec.Decimal) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	w := e.walletLocked(user)
+	if w.Available.Cmp(im) < 0 {
+		return false
+	}
+	w.Available = w.Available.Sub(im)
+	w.CrossReserved = w.CrossReserved.Add(im)
+	return true
+}
+
+// ReleaseCross returns held cross-order initial margin to available — on
+// cancel / reject / expire, and on each fill for the filled proportion (a
+// cross fill converts the reservation back to free cash; the exposure is
+// carried as a derived requirement, not a margin bucket).
+func (e *Engine) ReleaseCross(user uint64, im dec.Decimal) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	w := e.walletLocked(user)
+	move := dec.Min(im, w.CrossReserved)
+	w.CrossReserved = w.CrossReserved.Sub(move)
 	w.Available = w.Available.Add(move)
 }
 
@@ -203,15 +297,27 @@ func (e *Engine) MarkOf(symbol string) dec.Decimal {
 	return e.marks[symbol]
 }
 
-// SetLiquidationMMRFunc configures ADR-0072's derived liq-price index. The
-// resolver is intentionally held by Engine after service startup so every
-// position mutation can update the index without widening all mutation method
-// signatures. Callers that change risk tiers must call this again to rebuild.
-func (e *Engine) SetLiquidationMMRFunc(mmrOf perpstate.MMRFunc) {
+// SetRiskModel installs the per-symbol-config risk model and rebuilds the
+// derived liq-price index (ADR-0072). The model is held by Engine after
+// service startup so every position mutation can resolve its effective MMR
+// (tier table + the position's RiskID, ADR-0074 §9) without widening all
+// mutation method signatures. Callers that change risk tiers must call this
+// again to rebuild.
+func (e *Engine) SetRiskModel(m perpstate.RiskModel) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.liqMMR = mmrOf
+	e.risk = m
+	e.riskSet = true
 	e.rebuildLiquidationIndexLocked()
+}
+
+// mmrForLocked resolves a position's effective MMR function. nil when no
+// risk model with a usable MMR is installed (liquidation disabled).
+func (e *Engine) mmrForLocked(p *perpstate.Position) perpstate.MMRFunc {
+	if !e.riskSet || !e.risk.HasMMR() {
+		return nil
+	}
+	return e.risk.EffectiveMMRFunc(p.RiskID)
 }
 
 // ApplyFill applies a trade fill to (user, symbol)'s position and routes the
@@ -232,7 +338,7 @@ func (e *Engine) ApplyFill(user uint64, symbol string, leverage dec.Decimal, f p
 	res := p.ApplyFill(f)
 	p.Version++
 	e.routeCashLocked(user, res)
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	return res
 }
 
@@ -258,7 +364,7 @@ func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, leverage dec.Decim
 	}
 	p.Version++
 	e.routeCashLocked(user, res)
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	return res, true
 }
 
@@ -286,8 +392,10 @@ func (e *Engine) routeCashLocked(user uint64, res perpstate.FillResult) {
 }
 
 // ApplyFunding settles one funding interval against (user, symbol) at the
-// latest mark (ADR-0068 §7). Returns the signed margin delta (negative =
-// the position paid). No-op (zero) when the position is absent or flat.
+// latest mark (ADR-0068 §7). Returns the signed delta (negative = the
+// position paid). Isolated funding lands in position margin; cross funding
+// settles in the wallet free balance (ADR-0074). No-op (zero) when the
+// position is absent or flat.
 func (e *Engine) ApplyFunding(user uint64, symbol string, rate dec.Decimal) dec.Decimal {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -300,9 +408,21 @@ func (e *Engine) ApplyFunding(user uint64, symbol string, rate dec.Decimal) dec.
 		return zero
 	}
 	delta := p.ApplyFunding(e.marks[symbol], rate)
+	e.routeFundingLocked(user, p, delta)
 	p.Version++
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	return delta
+}
+
+// routeFundingLocked credits/debits a cross position's funding into the
+// wallet free balance (perpstate leaves cross Margin untouched). Isolated
+// funding already landed in position margin. Caller holds e.mu.
+func (e *Engine) routeFundingLocked(user uint64, p *perpstate.Position, delta dec.Decimal) {
+	if p.Mode != perpstate.MarginCross || delta.Sign() == 0 {
+		return
+	}
+	w := e.walletLocked(user)
+	w.Available = w.Available.Add(delta)
 }
 
 // FundingResult is one position's funding settlement outcome.
@@ -333,9 +453,10 @@ func (e *Engine) SettleFunding(symbol string, roundID int64, rate dec.Decimal) [
 			continue // already settled this round
 		}
 		delta := p.ApplyFunding(mark, rate)
+		e.routeFundingLocked(user, p, delta)
 		p.FundingRoundSeen = roundID
 		p.Version++
-		e.syncLiquidationIndexLocked(user, symbol, p)
+		e.syncIndexesLocked(user, symbol, p)
 		out = append(out, FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
@@ -381,9 +502,10 @@ func (e *Engine) SettleFundingUser(user uint64, symbol string, roundID int64, ra
 		return FundingResult{}, false
 	}
 	delta := p.ApplyFunding(e.marks[symbol], rate)
+	e.routeFundingLocked(user, p, delta)
 	p.FundingRoundSeen = roundID
 	p.Version++
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	return FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p}, true
 }
 
@@ -424,38 +546,27 @@ type LiquidationCandidate struct {
 	PositionVersion uint64
 }
 
-// LiquidatablePositions returns the positions whose precomputed liq_price has
-// been crossed by the current mark (ADR-0072). The index is only a candidate
+// LiquidatablePositions returns the ISOLATED positions whose precomputed
+// liq_price has been crossed by the current mark (ADR-0072). Each position's
+// MMR resolves through its effective tier (RiskID-aware, ADR-0074 §9). Cross
+// positions never appear here — their trigger is the account pool, evaluated
+// via CrossPoolCheck (ADR-0074 §4 rule #6). The index is only a candidate
 // accelerator: every returned entry is still rechecked through CollateralPool
-// under the read lock so the public behavior stays identical to the old
-// full-scan path and future false positives remain harmless.
-func (e *Engine) LiquidatablePositions(symbol string, mmrOf perpstate.MMRFunc) []LiquidationCandidate {
+// under the read lock so future false positives remain harmless.
+func (e *Engine) LiquidatablePositions(symbol string) []LiquidationCandidate {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	mark := e.marks[symbol]
-	if mark.Sign() <= 0 {
+	if mark.Sign() <= 0 || !e.riskSet || !e.risk.HasMMR() {
 		return nil
 	}
-	if mmrOf == nil {
-		mmrOf = e.liqMMR
-	}
-	if mmrOf == nil {
-		return nil
-	}
-	if e.liqMMR != nil && e.liqIndex != nil {
-		return e.liquidatablePositionsFromIndexLocked(symbol, mark, mmrOf)
-	}
-	return e.liquidatablePositionsFullScanLocked(symbol, mark, mmrOf)
-}
-
-func (e *Engine) liquidatablePositionsFromIndexLocked(symbol string, mark dec.Decimal, mmrOf perpstate.MMRFunc) []LiquidationCandidate {
 	var out []LiquidationCandidate
 	for _, entry := range e.liqIndex.crossed(symbol, mark) {
 		bySym := e.positions[entry.userID]
 		if bySym == nil {
 			continue
 		}
-		if cand, ok := e.liquidationCandidateLocked(entry.userID, symbol, bySym[symbol], mark, mmrOf); ok {
+		if cand, ok := e.liquidationCandidateLocked(entry.userID, symbol, bySym[symbol], mark); ok {
 			out = append(out, cand)
 		}
 	}
@@ -463,19 +574,12 @@ func (e *Engine) liquidatablePositionsFromIndexLocked(symbol string, mark dec.De
 	return out
 }
 
-func (e *Engine) liquidatablePositionsFullScanLocked(symbol string, mark dec.Decimal, mmrOf perpstate.MMRFunc) []LiquidationCandidate {
-	var out []LiquidationCandidate
-	for user, bySym := range e.positions {
-		if cand, ok := e.liquidationCandidateLocked(user, symbol, bySym[symbol], mark, mmrOf); ok {
-			out = append(out, cand)
-		}
+func (e *Engine) liquidationCandidateLocked(user uint64, symbol string, p *perpstate.Position, mark dec.Decimal) (LiquidationCandidate, bool) {
+	if p == nil || p.IsFlat() || p.Mode == perpstate.MarginCross {
+		return LiquidationCandidate{}, false
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
-	return out
-}
-
-func (e *Engine) liquidationCandidateLocked(user uint64, symbol string, p *perpstate.Position, mark dec.Decimal, mmrOf perpstate.MMRFunc) (LiquidationCandidate, bool) {
-	if p == nil || p.IsFlat() {
+	mmrOf := e.mmrForLocked(p)
+	if mmrOf == nil {
 		return LiquidationCandidate{}, false
 	}
 	marks := map[string]dec.Decimal{symbol: mark}
@@ -496,36 +600,21 @@ func (e *Engine) liquidationCandidateLocked(user uint64, symbol string, p *perps
 // breaches. The service calls this inside the user's sequencer to re-verify
 // before acting (the scan that found it ran lock-free and the position may have
 // moved since — TOCTOU guard, ADR-0068 invariant #1).
-func (e *Engine) LiquidationCheck(user uint64, symbol string, mmrOf perpstate.MMRFunc) (LiquidationCandidate, bool) {
+func (e *Engine) LiquidationCheck(user uint64, symbol string) (LiquidationCandidate, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
 	if bySym == nil {
 		return LiquidationCandidate{}, false
 	}
-	p := bySym[symbol]
-	if p == nil || p.IsFlat() {
-		return LiquidationCandidate{}, false
-	}
-	mark := e.marks[symbol]
-	marks := map[string]dec.Decimal{symbol: mark}
-	pool := perpstate.Isolated(p)
-	if !pool.Liquidatable(marks, mmrOf) {
-		return LiquidationCandidate{}, false
-	}
-	h := pool.Eval(marks)
-	return LiquidationCandidate{
-		UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
-		Mark: mark, LiqPrice: p.LiqPrice(mmrOf), BankruptcyPrice: p.BankruptcyPrice(),
-		MaintMarginRate: mmrOf(h.Notional), PositionVersion: p.Version,
-	}, true
+	return e.liquidationCandidateLocked(user, symbol, bySym[symbol], e.marks[symbol])
 }
 
 // ReduceToTarget computes ADR-0070's partial-liquidation quantity for a single
 // isolated position using a locked snapshot. The service still re-checks the
 // candidate inside the user's sequencer; this helper only centralizes the pure
 // pool math so callers do not bypass the CollateralPool boundary.
-func (e *Engine) ReduceToTarget(user uint64, symbol string, mmrOf perpstate.MMRFunc, buffer dec.Decimal) dec.Decimal {
+func (e *Engine) ReduceToTarget(user uint64, symbol string, buffer dec.Decimal) dec.Decimal {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
@@ -533,11 +622,11 @@ func (e *Engine) ReduceToTarget(user uint64, symbol string, mmrOf perpstate.MMRF
 		return zero
 	}
 	p := bySym[symbol]
-	if p == nil || p.IsFlat() {
+	if p == nil || p.IsFlat() || p.Mode == perpstate.MarginCross {
 		return zero
 	}
 	return perpstate.ReduceToTarget(perpstate.Isolated(p),
-		map[string]dec.Decimal{symbol: e.marks[symbol]}, mmrOf, buffer)
+		map[string]dec.Decimal{symbol: e.marks[symbol]}, e.mmrForLocked(p), buffer)
 }
 
 // ApplyLiquidationFill applies one fill of the bankruptcy reduce_only order to a
@@ -565,7 +654,7 @@ func (e *Engine) ApplyLiquidationFill(user uint64, symbol string, seq uint64, f 
 	// Equity freed by this reduce goes to insurance, not the wallet.
 	insuranceDelta = res.MarginReleased.Add(res.Realized).Sub(res.Fee)
 	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	return res, insuranceDelta, true
 }
 
@@ -592,7 +681,7 @@ func (e *Engine) ApplyPartialLiquidationFill(user uint64, symbol string, seq uin
 	p.Version++
 	insuranceDelta = res.Fee
 	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	return res, insuranceDelta, true
 }
 
@@ -625,7 +714,7 @@ func (e *Engine) BackstopTakeover(user uint64, symbol string, qty, price dec.Dec
 		insuranceDelta = res.MarginReleased.Add(res.Realized).Sub(res.Fee)
 	}
 	p.Version++
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
 	if closeQty.Sign() > 0 {
 		e.applyBackstopInventoryLocked(backstopUser, symbol, originalSide, price, closeQty)
@@ -681,6 +770,13 @@ func (e *Engine) selectAdlCandidates(symbol string, wantSide perpstate.Side, adl
 		if p == nil || p.IsFlat() || (wantSide != 0 && p.Side != wantSide) {
 			continue
 		}
+		// Cross positions are exempt from ADL v1 (their equity is pool-level;
+		// the margin-based score below has no meaning for them). The
+		// Margin<=0 guard already excludes them — the mode check makes the
+		// rule explicit rather than incidental.
+		if p.Mode == perpstate.MarginCross {
+			continue
+		}
 		upnl := p.UnrealizedPnL(mark)
 		if upnl.Sign() <= 0 || p.Margin.Sign() <= 0 {
 			continue
@@ -731,7 +827,7 @@ func (e *Engine) ApplyAdlCloseGuarded(user uint64, symbol string, qty, adlPrice 
 		return perpstate.FillResult{}, zero, false
 	}
 	p := bySym[symbol]
-	if p == nil || p.IsFlat() {
+	if p == nil || p.IsFlat() || p.Mode == perpstate.MarginCross {
 		return perpstate.FillResult{}, zero, false
 	}
 	if enforceObserved {
@@ -757,7 +853,7 @@ func (e *Engine) ApplyAdlCloseGuarded(user uint64, symbol string, qty, adlPrice 
 	}
 	p.Version++
 	e.routeCashLocked(user, res)
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	return res, closeQty, true
 }
 
@@ -809,7 +905,7 @@ func (e *Engine) applyBackstopInventoryLocked(user uint64, symbol string, side p
 		p.Side = side
 		p.Mode = perpstate.MarginIsolated
 		p.Version++
-		e.syncLiquidationIndexLocked(user, symbol, p)
+		e.syncIndexesLocked(user, symbol, p)
 		return
 	}
 	closeQty := dec.Min(qty, p.Size)
@@ -831,7 +927,7 @@ func (e *Engine) applyBackstopInventoryLocked(user uint64, symbol string, side p
 		}
 	}
 	p.Version++
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 }
 
 // ForceClose liquidates a position fully at fillPrice (the price the
@@ -870,22 +966,56 @@ func (e *Engine) ForceClose(user uint64, symbol string, fillPrice dec.Decimal) (
 	p.Side = 0
 	p.Version++
 	e.insurance[symbol] = e.insurance[symbol].Add(equity)
-	e.syncLiquidationIndexLocked(user, symbol, p)
+	e.syncIndexesLocked(user, symbol, p)
 	return equity, true
 }
 
-func (e *Engine) syncLiquidationIndexLocked(user uint64, symbol string, p *perpstate.Position) {
+// syncIndexesLocked refreshes the derived views after any position mutation:
+// the isolated liq-price index (cross positions are removed, not indexed)
+// and the cross / auto-add membership indexes. Caller holds e.mu.
+func (e *Engine) syncIndexesLocked(user uint64, symbol string, p *perpstate.Position) {
 	if e.liqIndex == nil {
 		e.liqIndex = newLiqIndex()
 	}
-	e.liqIndex.upsert(user, symbol, p, e.liqMMR)
+	e.liqIndex.upsert(user, symbol, p, e.mmrForLocked(p))
+	setMembership(e.crossUsers, symbol, user, p.Mode == perpstate.MarginCross && !p.IsFlat())
+	setMembership(e.autoAdd, symbol, user,
+		p.AutoAddMargin && p.Mode != perpstate.MarginCross && !p.IsFlat())
+}
+
+// setMembership adds/removes user from a symbol-keyed membership index.
+func setMembership(idx map[string]map[uint64]struct{}, symbol string, user uint64, in bool) {
+	byUser := idx[symbol]
+	if in {
+		if byUser == nil {
+			byUser = map[uint64]struct{}{}
+			idx[symbol] = byUser
+		}
+		byUser[user] = struct{}{}
+		return
+	}
+	if byUser != nil {
+		delete(byUser, user)
+		if len(byUser) == 0 {
+			delete(idx, symbol)
+		}
+	}
 }
 
 func (e *Engine) rebuildLiquidationIndexLocked() {
 	if e.liqIndex == nil {
 		e.liqIndex = newLiqIndex()
 	}
-	e.liqIndex.rebuild(e.positions, e.liqMMR)
+	e.liqIndex.rebuild(e.positions, e.mmrForLocked)
+	e.crossUsers = map[string]map[uint64]struct{}{}
+	e.autoAdd = map[string]map[uint64]struct{}{}
+	for user, bySym := range e.positions {
+		for symbol, p := range bySym {
+			setMembership(e.crossUsers, symbol, user, p.Mode == perpstate.MarginCross && !p.IsFlat())
+			setMembership(e.autoAdd, symbol, user,
+				p.AutoAddMargin && p.Mode != perpstate.MarginCross && !p.IsFlat())
+		}
+	}
 }
 
 // WalletOf returns a copy of the user's wallet.
