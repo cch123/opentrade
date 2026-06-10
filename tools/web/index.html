@@ -267,9 +267,13 @@
 'use strict';
 
 // ---------- State ----------
+// User ids are numeric uint64 platform-wide; BFF and the faucet reject
+// anything else. Kept as strings here since they ride in headers/JSON.
+const isUserID = (s) => /^\d+$/.test(s) && !/^0+$/.test(s);
+
 const state = {
-  user: localStorage.getItem('ot_user') || 'alice',
-  users: JSON.parse(localStorage.getItem('ot_users') || '["alice","bob"]'),
+  user: localStorage.getItem('ot_user') || '1',
+  users: JSON.parse(localStorage.getItem('ot_users') || '["1","2"]'),
   symbol: 'BTC-USDT',
   side: 'buy',
   orderType: 'limit',
@@ -300,6 +304,12 @@ const state = {
   stream: [],
   wsReconnectTimer: null,
 };
+
+// Drop pre-uint64-migration user names (e.g. "alice") persisted in
+// localStorage; they fail BFF auth on every REST/WS call now.
+state.users = state.users.filter(isUserID);
+if (!state.users.length) state.users = ['1', '2'];
+if (!isUserID(state.user)) state.user = state.users[0];
 
 // ---------- Utils ----------
 const $ = (id) => document.getElementById(id);
@@ -989,10 +999,11 @@ function schedulePoll() {
 
 // ---------- Wiring ----------
 function addUserFlow() {
-  const name = prompt('custom user id:');
+  const name = prompt('custom user id (positive integer):');
   if (!name) return;
   const t = name.trim();
   if (!t) return;
+  if (!isUserID(t)) { setStatus(`user id must be a positive integer, got "${t}"`, false); return; }
   if (!state.users.includes(t)) state.users.push(t);
   state.user = t;
   persistUser();

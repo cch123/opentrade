@@ -48,7 +48,7 @@ func newFaucet() *faucet {
 // Counter can briefly answer FailedPrecondition right after boot (the
 // coordinator hasn't finished assigning the user's vshard to this node yet),
 // and a just-launched holder can answer Unavailable; both are retried.
-func (f *faucet) credit(ctx context.Context, target, user, transferID, asset, amount string) (string, error) {
+func (f *faucet) credit(ctx context.Context, target string, user uint64, transferID, asset, amount string) (string, error) {
 	var client assetholderrpcconnect.AssetHolderClient
 	peer := "faucet"
 	switch target {

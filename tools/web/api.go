@@ -105,7 +105,10 @@ func (a *apiServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 // handleFaucet credits a dev balance. Body:
 //
-//	{"user":"alice","target":"spot","asset":"USDT","amount":"30000"}
+//	{"user":"1","target":"spot","asset":"USDT","amount":"30000"}
+//
+// user is the platform-wide numeric account id (uint64), sent as a string
+// like the other decimal fields.
 func (a *apiServer) handleFaucet(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		User   string `json:"user"`
@@ -121,19 +124,25 @@ func (a *apiServer) handleFaucet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "user, asset and amount are required")
 		return
 	}
+	// Same rule as pkg/auth.parseUserID: numeric and non-zero.
+	userID, err := strconv.ParseUint(body.User, 10, 64)
+	if err != nil || userID == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("user %q must be a positive numeric id", body.User))
+		return
+	}
 	if body.Target == "" {
 		body.Target = "spot"
 	}
-	transferID := fmt.Sprintf("faucet-%s-%s-%d", body.Target, body.User, time.Now().UnixNano())
+	transferID := fmt.Sprintf("faucet-%s-%d-%d", body.Target, userID, time.Now().UnixNano())
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	avail, err := a.faucet.credit(ctx, body.Target, body.User, transferID, body.Asset, body.Amount)
+	avail, err := a.faucet.credit(ctx, body.Target, userID, transferID, body.Asset, body.Amount)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "faucet failed: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":            body.User,
+		"user":            userID,
 		"target":          body.Target,
 		"asset":           body.Asset,
 		"available_after": avail,
