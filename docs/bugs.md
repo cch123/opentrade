@@ -58,6 +58,12 @@ _(none)_
 
 ### 2026-06-10
 
+- **tools/web 编译失败：faucet 仍把 string user 传给 uint64 的 `TransferInRequest.user_id`** — `cd tools/web && go build ./...` 报 `./faucet.go:65:15: cannot use user (variable of type string) as uint64 value in struct literal`。user id 全栈 string→uint64 迁移遗漏了 tools/web；前端默认用户 `"alice"` / `"bob"` 属同一遗留——`pkg/auth.parseUserID` 只接受非零数字 `X-User-Id`，旧默认值会被 BFF 在所有 REST/WS 调用上拒绝。
+  - 状态：fixed
+  - commit: [`6cc8ca2`](../../commit/6cc8ca2)
+  - 根因：tools/web 在 go.work 里但不在 Makefile `MODULES` 列表中，CI 的 `make build` / `make vet` 不编译它，迁移时的断裂一直未被构建暴露。
+  - 修法：`handleFaucet` 在 API 边界 `strconv.ParseUint` 校验（非数字 / 0 → 400，规则对齐 `pkg/auth.parseUserID`），`faucet.credit` 参数改 `uint64`；index.html 默认用户改 `"1"` / `"2"`，启动时过滤 localStorage 中残留的旧用户名，自定义用户输入加数字校验。
+
 - **journal catch-up 重建的 market-buy-by-quote 订单退化成零量限价单** — `FreezeEvent` 没有 `quote_qty` / `slippage_bps` 字段，跨 snapshot/journal catch-up 边界的 ADR-0035 市价买单（按 quote 预算）被 `applyFreezeEvent` 重建后 `QuoteQty=0 ∧ Qty=0`：catch-up 结束后的 LIVE 成交走 `settleTaker` 的限价买分支（Price=0），`FrozenQuoteDelta=0` 冻结永不消耗，且 `statusAfterFill` 在首笔部分成交就判 FILLED（`filledAfter ≥ Qty(0)`）。
   - 状态：fixed
   - commit: [`4c6d6b4`](../../commit/4c6d6b4)
