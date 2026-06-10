@@ -58,6 +58,12 @@ _(none)_
 
 ### 2026-06-10
 
+- **push 私有流静默丢弃 InvariantBreach 事件，违反 proto "never silently dropped" 契约** — `push/internal/consumer/perp_private.go` `perpUserIDOf` 的 switch 漏掉 `InvariantBreach` payload（ADR-0077 §2 / ADR-0081 §2，记录 reduce-only 平仓成交 under-settle 的 excess），落入 default 返回 0，`dispatch` 把 userID==0 当系统事件直接 return——不推送、不留日志。`perp_journal.proto` 对该事件的注释明确 "alert / manual-repair input, never silently dropped"，且它携带 user_id，与其余 11 类用户事件（OrderStatus/Settlement/.../CustomerFee）同属私有流语义。客户端可见后果：订单显示成交但仓位未等量减少，私有流上没有任何解释该分叉的事件。
+  - 状态：fixed
+  - commit: [`5f1b93b`](../../commit/5f1b93b)
+  - 根因：与 7438df9 同族——给 payload oneof 新增事件类型时没有同步 push 侧的 user 路由 switch，且 push 没有穷举 oneof 的回归测试，遗漏静默退化为丢弃。
+  - 修法：补 `InvariantBreach` case 按 user_id 路由（决策：推送给客户而非仅 ops 告警——事件只含用户自身数据，私有流已承载 Liquidation/Takeover/Adl/CustomerRiskLimit 等同样偏 ops 的用户事件，且 7438df9 已把它按 user_id 分区进该用户的全序流）；`RiskPoolSettlement` 改为显式 case return 0，注明系统级不路由；表测试扩到全部 13 类 payload；新增 `TestPerpUserIDOf_OneofExhaustive` 镜像 perp-counter 的反射穷举测试遍历 payload oneof——带 user_id 的 payload 未被 switch 处理即失败（已用临时删 case 验证测试确实报错）。
+
 - **perp-journal 四类用户事件分区键缺失，多分区下打破 per-user 全序** — `perp-counter/internal/journal/convert.go` `journalPartitionKey` 的 switch 漏掉 ADR-0074/0077/0079/0081 新增的 `PositionConfig` / `MarginAdjustment` / `CustomerRiskLimit` / `InvariantBreach` 四类 payload，落入 default 返回 ""（默认 partitioner），同一用户的这些事件与其按 user_id 正确哈希的 OrderStatus/Settlement 等事件可落在不同分区，违反 `perp_journal.proto` 头部声明的 "Partition key: user_id"。消费方影响排查：push 私有流（`push/internal/consumer/perp_private.go` 按 user 路由 WS）在多分区部署下可见保证金调整相对结算乱序；trade-dump 投影四张表均为 `INSERT IGNORE` + `perp_seq_id` 主键，幂等且对到达序不敏感；perp-risk coordinator 不消费这四类 payload；perp-counter 自身恢复走 engine/service snapshot，不回放 perp-journal——均无状态损坏。
   - 状态：fixed
   - commit: [`7438df9`](../../commit/7438df9)
