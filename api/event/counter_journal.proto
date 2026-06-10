@@ -72,6 +72,14 @@ message CounterJournalEvent {
 }
 
 // Funds frozen as result of PlaceOrder.
+//
+// quote_qty / slippage_bps mirror the same fields on OrderPlaced: catch-up
+// rebuilds the in-memory Order from this event when the order straddles the
+// snapshot/journal boundary, and settlement keys off the order shape
+// (IsMarketBuyByQuote / IsMarketBuyByBase). Without quote_qty a rebuilt
+// ADR-0035 market-buy-by-quote order degenerates to a zero-qty limit shape:
+// fills stop consuming frozen quote and the first partial fill reads as
+// FILLED.
 message FreezeEvent {
   uint64 user_id = 1;
   uint64 order_id = 2;
@@ -85,6 +93,8 @@ message FreezeEvent {
   string freeze_asset = 10;
   string freeze_amount = 11;    // decimal
   BalanceSnapshot balance_after = 12;
+  string quote_qty = 13;        // decimal; ADR-0035 market-buy quote budget, "0" otherwise
+  uint32 slippage_bps = 14;     // ADR-0083 protected market order (>0); 0 otherwise
 }
 
 // Reverse of freeze (Match rejected, full cancel without fill, etc.).

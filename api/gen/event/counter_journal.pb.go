@@ -388,6 +388,14 @@ func (*CounterJournalEvent_TeCheckpoint) isCounterJournalEvent_Payload() {}
 func (*CounterJournalEvent_StartupFence) isCounterJournalEvent_Payload() {}
 
 // Funds frozen as result of PlaceOrder.
+//
+// quote_qty / slippage_bps mirror the same fields on OrderPlaced: catch-up
+// rebuilds the in-memory Order from this event when the order straddles the
+// snapshot/journal boundary, and settlement keys off the order shape
+// (IsMarketBuyByQuote / IsMarketBuyByBase). Without quote_qty a rebuilt
+// ADR-0035 market-buy-by-quote order degenerates to a zero-qty limit shape:
+// fills stop consuming frozen quote and the first partial fill reads as
+// FILLED.
 type FreezeEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -402,6 +410,8 @@ type FreezeEvent struct {
 	FreezeAsset   string                 `protobuf:"bytes,10,opt,name=freeze_asset,json=freezeAsset,proto3" json:"freeze_asset,omitempty"`
 	FreezeAmount  string                 `protobuf:"bytes,11,opt,name=freeze_amount,json=freezeAmount,proto3" json:"freeze_amount,omitempty"` // decimal
 	BalanceAfter  *BalanceSnapshot       `protobuf:"bytes,12,opt,name=balance_after,json=balanceAfter,proto3" json:"balance_after,omitempty"`
+	QuoteQty      string                 `protobuf:"bytes,13,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`           // decimal; ADR-0035 market-buy quote budget, "0" otherwise
+	SlippageBps   uint32                 `protobuf:"varint,14,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"` // ADR-0083 protected market order (>0); 0 otherwise
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -518,6 +528,20 @@ func (x *FreezeEvent) GetBalanceAfter() *BalanceSnapshot {
 		return x.BalanceAfter
 	}
 	return nil
+}
+
+func (x *FreezeEvent) GetQuoteQty() string {
+	if x != nil {
+		return x.QuoteQty
+	}
+	return ""
+}
+
+func (x *FreezeEvent) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
+	}
+	return 0
 }
 
 // Reverse of freeze (Match rejected, full cancel without fill, etc.).
@@ -1204,7 +1228,7 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"cancel_req\x18\x0f \x01(\v2 .opentrade.event.CancelRequestedH\x00R\tcancelReq\x12I\n" +
 	"\rte_checkpoint\x182 \x01(\v2\".opentrade.event.TECheckpointEventH\x00R\fteCheckpoint\x12I\n" +
 	"\rstartup_fence\x184 \x01(\v2\".opentrade.event.StartupFenceEventH\x00R\fstartupFenceB\t\n" +
-	"\apayload\"\xce\x03\n" +
+	"\apayload\"\x8e\x04\n" +
 	"\vFreezeEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12&\n" +
@@ -1219,7 +1243,9 @@ const file_event_counter_journal_proto_rawDesc = "" +
 	"\ffreeze_asset\x18\n" +
 	" \x01(\tR\vfreezeAsset\x12#\n" +
 	"\rfreeze_amount\x18\v \x01(\tR\ffreezeAmount\x12E\n" +
-	"\rbalance_after\x18\f \x01(\v2 .opentrade.event.BalanceSnapshotR\fbalanceAfter\"\xb8\x01\n" +
+	"\rbalance_after\x18\f \x01(\v2 .opentrade.event.BalanceSnapshotR\fbalanceAfter\x12\x1b\n" +
+	"\tquote_qty\x18\r \x01(\tR\bquoteQty\x12!\n" +
+	"\fslippage_bps\x18\x0e \x01(\rR\vslippageBps\"\xb8\x01\n" +
 	"\rUnfreezeEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x14\n" +

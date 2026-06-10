@@ -157,6 +157,19 @@ func applyFreezeEvent(state *ShardState, evt *eventpb.FreezeEvent) error {
 		}
 		frozenAmount = v
 	}
+	// quote_qty / slippage_bps restore the order's shape predicates
+	// (IsMarketBuyByQuote / IsMarketBuyByBase): settlement and terminal
+	// unfreeze pick their formulas off these, so a rebuilt order must
+	// carry them or live fills after catch-up settle as a degenerate
+	// zero-qty limit order.
+	quoteQty := dec.Zero
+	if evt.QuoteQty != "" {
+		v, err := dec.Parse(evt.QuoteQty)
+		if err != nil {
+			return fmt.Errorf("freeze quote_qty: %w", err)
+		}
+		quoteQty = v
+	}
 	state.Orders().RestoreInsert(&Order{
 		ID:            evt.OrderId,
 		ClientOrderID: evt.ClientOrderId,
@@ -167,6 +180,8 @@ func applyFreezeEvent(state *ShardState, evt *eventpb.FreezeEvent) error {
 		TIF:           tifFromProto(evt.Tif),
 		Price:         price,
 		Qty:           qty,
+		QuoteQty:      quoteQty,
+		SlippageBps:   evt.SlippageBps,
 		FrozenAsset:   evt.FreezeAsset,
 		FrozenAmount:  frozenAmount,
 		Status:        OrderStatusPendingNew,
@@ -223,10 +238,17 @@ func applySettlementEvent(state *ShardState, evt *eventpb.SettlementEvent) error
 
 // accumulateFrozenSpent mirrors the settlement-side FrozenSpent
 // bookkeeping so a terminal transition after replay correctly
-// refunds residual. Sell-side orders consume FrozenAmount in base
-// units (== qty); buy-side LIMIT orders consume in quote units
-// (== price × qty); buy-side market-by-quote orders consume in quote
-// units derived from delta_quote.
+// refunds residual (UnfreezeOnTerminal releases FrozenAmount −
+// FrozenSpent).
+//
+// The event's unfreeze_base / unfreeze_quote carry |FrozenBaseDelta| /
+// |FrozenQuoteDelta| verbatim from the live PartySettlement, so summing
+// them reproduces exactly what ApplyPartySettlement accumulated — for
+// every order shape. Recomputing from price × qty is NOT equivalent:
+// evt.Price is the match price, while a price-improved limit-buy taker
+// consumes reservation at its own (higher) order price. An undersized
+// replayed FrozenSpent makes the later terminal unfreeze release more
+// than the order still holds, driving Balance.Frozen negative.
 func accumulateFrozenSpent(state *ShardState, o *Order, evt *eventpb.SettlementEvent) error {
 	if o == nil || evt == nil {
 		return nil
@@ -234,34 +256,29 @@ func accumulateFrozenSpent(state *ShardState, o *Order, evt *eventpb.SettlementE
 	if o.FrozenAsset == "" {
 		return nil
 	}
-	qty, _ := dec.Parse(evt.Qty)
-	price, _ := dec.Parse(evt.Price)
-	var delta dec.Decimal
-	switch o.Side {
-	case SideAsk:
-		delta = qty
-	case SideBid:
-		if o.IsMarketBuyByQuote() {
-			d, err := dec.Parse(evt.DeltaQuote)
-			if err == nil {
-				if d.Sign() < 0 {
-					delta = d.Neg()
-				} else {
-					delta = d
-				}
-			} else {
-				delta = price.Mul(qty)
-			}
-		} else {
-			delta = price.Mul(qty)
+	consumed := dec.Zero
+	if evt.UnfreezeBase != "" {
+		v, err := dec.Parse(evt.UnfreezeBase)
+		if err != nil {
+			return fmt.Errorf("settle unfreeze_base: %w", err)
 		}
-	default:
+		if v.Sign() > 0 {
+			consumed = consumed.Add(v)
+		}
+	}
+	if evt.UnfreezeQuote != "" {
+		v, err := dec.Parse(evt.UnfreezeQuote)
+		if err != nil {
+			return fmt.Errorf("settle unfreeze_quote: %w", err)
+		}
+		if v.Sign() > 0 {
+			consumed = consumed.Add(v)
+		}
+	}
+	if !dec.IsPositive(consumed) {
 		return nil
 	}
-	if !dec.IsPositive(delta) {
-		return nil
-	}
-	if _, err := state.Orders().AddFrozenSpent(evt.OrderId, delta); err != nil && !errors.Is(err, ErrOrderNotFound) {
+	if _, err := state.Orders().AddFrozenSpent(evt.OrderId, consumed); err != nil && !errors.Is(err, ErrOrderNotFound) {
 		return fmt.Errorf("accumulate frozen_spent: %w", err)
 	}
 	return nil

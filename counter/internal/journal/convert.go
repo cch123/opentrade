@@ -141,6 +141,8 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 				Tif:           tif,
 				Price:         o.Price.String(),
 				Qty:           o.Qty.String(),
+				QuoteQty:      o.QuoteQty.String(),
+				SlippageBps:   o.SlippageBps,
 				FreezeAsset:   o.FrozenAsset,
 				FreezeAmount:  o.FrozenAmount.String(),
 				BalanceAfter: &eventpb.BalanceSnapshot{
