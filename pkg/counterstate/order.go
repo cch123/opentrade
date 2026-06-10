@@ -154,6 +154,12 @@ type Order struct {
 	// refund the unused quote.
 	QuoteQty dec.Decimal
 
+	// SlippageBps marks an ADR-0083 protected market order (>0). Counter
+	// only needs it at placement (shape validation + the order-event wire
+	// stamp); settlement keys off the order shape, not the bps value. For a
+	// protected market buy by base qty the user's quote_cap is FrozenAmount.
+	SlippageBps uint32
+
 	// Funds reserved for this order.
 	FrozenAsset  string
 	FrozenAmount dec.Decimal
@@ -179,6 +185,14 @@ type Order struct {
 // formula.
 func (o *Order) IsMarketBuyByQuote() bool {
 	return o.Type == OrderTypeMarket && o.Side == SideBid && dec.IsPositive(o.QuoteQty)
+}
+
+// IsMarketBuyByBase reports whether this is an ADR-0083 protected market buy
+// by base qty (frozen amount = the user's quote_cap). Like the by-quote
+// shape, per-fill settlement consumes match_price × qty from the frozen
+// quote — there is no user price to refund improvement against.
+func (o *Order) IsMarketBuyByBase() bool {
+	return o.Type == OrderTypeMarket && o.Side == SideBid && dec.IsPositive(o.Qty)
 }
 
 // Clone returns a deep copy suitable for snapshotting or returning to API

@@ -255,6 +255,8 @@ func rejectReasonToString(n int8) string {
 		return "duplicate_order_id"
 	case eventpb.RejectReason_REJECT_REASON_FOK_NOT_FILLED:
 		return "fok_not_filled"
+	case eventpb.RejectReason_REJECT_REASON_NO_BOOK_REFERENCE:
+		return "no_book_reference"
 	case eventpb.RejectReason_REJECT_REASON_INTERNAL:
 		return "internal"
 	}

@@ -96,6 +96,14 @@ type Output struct {
 	// before it left the book.
 	FilledQty dec.Decimal
 
+	// OutputOrderExpired, ADR-0083 protected market orders only: the effective
+	// price bound the order executed under and the book reference price the
+	// collar was derived from. ProtectRef > 0 marks the order as protected
+	// (the ref is always positive when a collar was computed); both are zero
+	// for non-protected orders.
+	ProtectLimit dec.Decimal
+	ProtectRef   dec.Decimal
+
 	// SourceOffset carries the Kafka offset from which this emission
 	// originated (propagated from Event.Source).
 	SourceOffset SourceMeta

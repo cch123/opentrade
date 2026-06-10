@@ -130,8 +130,11 @@ type OrderPlaced struct {
 	Tif           TimeInForce            `protobuf:"varint,7,opt,name=tif,proto3,enum=opentrade.event.TimeInForce" json:"tif,omitempty"`
 	Price         string                 `protobuf:"bytes,8,opt,name=price,proto3" json:"price,omitempty"` // empty for market
 	Qty           string                 `protobuf:"bytes,9,opt,name=qty,proto3" json:"qty,omitempty"`     // base asset qty; empty for market buy with quote_qty
-	// For market / IOC etc. Counter may pre-freeze with an estimated cap;
-	// Match receives the actual cap so it can reject if mismatch.
+	// The amount Counter froze for this order. For a protected market buy by
+	// base qty (ADR-0083: slippage_bps > 0, qty set, quote_qty empty) this is
+	// the user's quote_cap and Match MUST bound execution by
+	// effective_limit = min(collar, freeze_cap / qty) so the actual quote
+	// spend never exceeds the freeze (INV-1). Informational for other shapes.
 	FreezeCap string `protobuf:"bytes,10,opt,name=freeze_cap,json=freezeCap,proto3" json:"freeze_cap,omitempty"`
 	// Market buy by quote budget (BN-style quoteOrderQty, ADR-0035). Non-empty
 	// means: market buy that consumes ask-side liquidity until at most this
@@ -145,8 +148,15 @@ type OrderPlaced struct {
 	// inside one order's lifecycle. 0 = spot order (no perp catalog entry) —
 	// Match skips the handshake.
 	SymbolConfigVersion uint64 `protobuf:"varint,12,opt,name=symbol_config_version,json=symbolConfigVersion,proto3" json:"symbol_config_version,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// ADR-0083: slippage tolerance in basis points (1 bp = 0.01%). 0 = no
+	// protection. >0 is only valid on MARKET orders: Match derives the collar
+	// from the opposite best price inside the symbol worker tick
+	// (buy: best_ask × (1 + bps/10000), sell: best_bid × (1 − bps/10000)) and
+	// executes IOC-style under that bound; empty opposite side rejects with
+	// NO_BOOK_REFERENCE.
+	SlippageBps   uint32 `protobuf:"varint,13,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OrderPlaced) Reset() {
@@ -263,6 +273,13 @@ func (x *OrderPlaced) GetSymbolConfigVersion() uint64 {
 	return 0
 }
 
+func (x *OrderPlaced) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
+	}
+	return 0
+}
+
 type OrderCancel struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -335,7 +352,7 @@ const file_event_order_event_proto_rawDesc = "" +
 	"\x06placed\x18\n" +
 	" \x01(\v2\x1c.opentrade.event.OrderPlacedH\x00R\x06placed\x126\n" +
 	"\x06cancel\x18\v \x01(\v2\x1c.opentrade.event.OrderCancelH\x00R\x06cancelB\t\n" +
-	"\apayload\"\xaf\x03\n" +
+	"\apayload\"\xd2\x03\n" +
 	"\vOrderPlaced\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12&\n" +
@@ -351,7 +368,8 @@ const file_event_order_event_proto_rawDesc = "" +
 	"freeze_cap\x18\n" +
 	" \x01(\tR\tfreezeCap\x12\x1b\n" +
 	"\tquote_qty\x18\v \x01(\tR\bquoteQty\x122\n" +
-	"\x15symbol_config_version\x18\f \x01(\x04R\x13symbolConfigVersion\"Y\n" +
+	"\x15symbol_config_version\x18\f \x01(\x04R\x13symbolConfigVersion\x12!\n" +
+	"\fslippage_bps\x18\r \x01(\rR\vslippageBps\"Y\n" +
 	"\vOrderCancel\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +

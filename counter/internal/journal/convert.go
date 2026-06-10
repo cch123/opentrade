@@ -172,6 +172,7 @@ func BuildPlaceOrderEvents(in PlaceOrderEventInput) (*eventpb.CounterJournalEven
 				Qty:           o.Qty.String(),
 				QuoteQty:      o.QuoteQty.String(),
 				FreezeCap:     o.FrozenAmount.String(),
+				SlippageBps:   o.SlippageBps,
 			},
 		},
 	}

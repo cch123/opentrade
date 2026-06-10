@@ -140,7 +140,11 @@ type PlaceOrderRequest struct {
 	// ADR-0077 §2 position intent, fail-closed both ways: must be 0 in
 	// ONE_WAY mode; must be 1 (long leg) or 2 (short leg) in HEDGE mode, with
 	// (side, position_idx, reduce_only) agreeing per the admission matrix.
-	PositionIdx   uint32 `protobuf:"varint,12,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	PositionIdx uint32 `protobuf:"varint,12,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	// ADR-0083: slippage tolerance in basis points (1 bp = 0.01%), only valid
+	// on MARKET orders, range (0, 10000]. IM for a protected market buy is
+	// reserved at mark × (1 + bps/10000); sells stay at mark.
+	SlippageBps   uint32 `protobuf:"varint,13,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -255,6 +259,13 @@ func (x *PlaceOrderRequest) GetMarginMode() MarginMode {
 func (x *PlaceOrderRequest) GetPositionIdx() uint32 {
 	if x != nil {
 		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *PlaceOrderRequest) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
 	}
 	return 0
 }
@@ -2706,7 +2717,7 @@ var File_rpc_perp_perp_proto protoreflect.FileDescriptor
 
 const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\n" +
-	"\x13rpc/perp/perp.proto\x12\x12opentrade.rpc.perp\x1a\x12event/common.proto\"\xcb\x03\n" +
+	"\x13rpc/perp/perp.proto\x12\x12opentrade.rpc.perp\x1a\x12event/common.proto\"\xee\x03\n" +
 	"\x11PlaceOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x16\n" +
@@ -2723,7 +2734,8 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"reduceOnly\x12?\n" +
 	"\vmargin_mode\x18\v \x01(\x0e2\x1e.opentrade.rpc.perp.MarginModeR\n" +
 	"marginMode\x12!\n" +
-	"\fposition_idx\x18\f \x01(\rR\vpositionIdx\"\xc7\x01\n" +
+	"\fposition_idx\x18\f \x01(\rR\vpositionIdx\x12!\n" +
+	"\fslippage_bps\x18\r \x01(\rR\vslippageBps\"\xc7\x01\n" +
 	"\x12PlaceOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x1a\n" +

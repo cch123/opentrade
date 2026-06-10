@@ -41,6 +41,7 @@ type OrderSnap struct {
 	Mode        uint8  `json:"mode,omitempty"`         // perpstate.MarginMode (ADR-0074)
 	PositionIdx uint8  `json:"position_idx,omitempty"` // ADR-0077 order intent (0 = net)
 	ReduceOnly  bool   `json:"reduce_only"`
+	SlippageBps uint32 `json:"slippage_bps,omitempty"` // ADR-0083 protected market order
 	ReservedIM  string `json:"reserved_im"`
 	FilledQty   string `json:"filled_qty"`
 	Status      int32  `json:"status"`
@@ -108,6 +109,7 @@ func (s *Service) snapshotLocked() Snapshot {
 			Price: o.Price.String(), Qty: o.Qty.String(), Leverage: o.Leverage.String(),
 			Mode:        uint8(o.Mode),
 			PositionIdx: o.PositionIdx,
+			SlippageBps: o.SlippageBps,
 			ReduceOnly:  o.ReduceOnly, ReservedIM: o.ReservedIM.String(), FilledQty: o.FilledQty.String(),
 			Status: int32(o.Status), CreatedMs: o.CreatedMs, UpdatedMs: o.UpdatedMs,
 			ConfigVersion: o.ConfigVersion,
@@ -148,6 +150,7 @@ func (s *Service) Restore(snap Snapshot) {
 			Price: dec.New(os.Price), Qty: dec.New(os.Qty), Leverage: dec.New(os.Leverage),
 			Mode:        perpstate.MarginMode(os.Mode),
 			PositionIdx: os.PositionIdx,
+			SlippageBps: os.SlippageBps,
 			ReduceOnly:  os.ReduceOnly, ReservedIM: dec.New(os.ReservedIM), FilledQty: dec.New(os.FilledQty),
 			Status: eventpb.InternalOrderStatus(os.Status), CreatedMs: os.CreatedMs, UpdatedMs: os.UpdatedMs,
 			ConfigVersion: os.ConfigVersion,

@@ -70,6 +70,10 @@ type Order struct {
 	Mode        perpstate.MarginMode
 	PositionIdx uint8
 	ReduceOnly  bool
+	// SlippageBps marks an ADR-0083 protected market order (>0). Stamped
+	// onto the OrderEvent wire so Match derives the collar; locally it only
+	// shifts the IM reservation reference price for buys.
+	SlippageBps uint32
 	ReservedIM  dec.Decimal
 	FilledQty   dec.Decimal
 	Status      eventpb.InternalOrderStatus
@@ -235,6 +239,12 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			return nil, errors.New("invalid price")
 		}
 	}
+	// ADR-0083: slippage protection is a market-order-only attribute; Match
+	// derives the collar from its book, perp-counter only validates the range
+	// and adjusts the IM reference price below.
+	if req.GetSlippageBps() > 10_000 || (req.GetSlippageBps() > 0 && !isMarket) {
+		return nil, errors.New("invalid slippage_bps")
+	}
 
 	if req.GetPositionIdx() > uint32(perpstate.IdxShort) {
 		return nil, errors.New("invalid position_idx")
@@ -293,6 +303,16 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 					resp = s.reject(req, "no_mark_for_market_order")
 					return
 				}
+				// ADR-0083 §5: a protected market buy admits fills up to
+				// best_ask × (1 + bps), so reserve IM at the adverse-adjusted
+				// mark × (1 + bps). Sells fill below mark, where mark itself is
+				// already the conservative notional bound. This is a best-effort
+				// approximation, not a strict upper bound (the book can sit above
+				// mark); the settlement-side margin recompute + liquidation
+				// engine remain the hard backstop.
+				if req.GetSlippageBps() > 0 && side == perpstate.SideBuy {
+					imPrice = imPrice.Mul(dec.FromInt(10_000 + int64(req.GetSlippageBps()))).Shift(-4)
+				}
 			}
 			if maxLev := s.maxLeverageForOrder(user, symbol, posIdx, side, imPrice, qty); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
 				resp = s.reject(req, "leverage_exceeds_max")
@@ -333,8 +353,9 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			OrderID: s.nextID(), ClientID: req.GetClientOrderId(), UserID: user,
 			Symbol: symbol, Side: side, Type: req.GetOrderType(), TIF: req.GetTif(),
 			Price: price, Qty: qty, Leverage: lev, Mode: mode, PositionIdx: posIdx,
-			ReduceOnly: req.GetReduceOnly(),
-			ReservedIM: reservedIM, FilledQty: zero,
+			ReduceOnly:  req.GetReduceOnly(),
+			SlippageBps: req.GetSlippageBps(),
+			ReservedIM:  reservedIM, FilledQty: zero,
 			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			CreatedMs: s.now(), UpdatedMs: s.now(),
 			ConfigVersion: cfgVersion,

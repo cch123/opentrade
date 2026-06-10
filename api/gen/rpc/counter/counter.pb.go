@@ -49,8 +49,17 @@ type PlaceOrderRequest struct {
 	// unavailable (BFF has no cached depth yet, e.g. right after restart)
 	// → Counter falls back to M3 behaviour (skip MarketByBase check).
 	ReferencePrice string `protobuf:"bytes,11,opt,name=reference_price,json=referencePrice,proto3" json:"reference_price,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// ADR-0083: slippage tolerance in basis points (1 bp = 0.01%), only valid
+	// on MARKET orders, range (0, 10000]. Match derives the protection collar
+	// from the opposite best price at execution time.
+	SlippageBps uint32 `protobuf:"varint,12,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"`
+	// ADR-0083: max quote spend the user commits to for a protected market
+	// buy by base qty (slippage_bps > 0, qty set, quote_qty empty). Counter
+	// freezes exactly this amount; Match bounds execution by
+	// min(collar, quote_cap/qty). Required for that shape, rejected elsewhere.
+	QuoteCap      string `protobuf:"bytes,13,opt,name=quote_cap,json=quoteCap,proto3" json:"quote_cap,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PlaceOrderRequest) Reset() {
@@ -156,6 +165,20 @@ func (x *PlaceOrderRequest) GetReservationId() string {
 func (x *PlaceOrderRequest) GetReferencePrice() string {
 	if x != nil {
 		return x.ReferencePrice
+	}
+	return ""
+}
+
+func (x *PlaceOrderRequest) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
+	}
+	return 0
+}
+
+func (x *PlaceOrderRequest) GetQuoteCap() string {
+	if x != nil {
+		return x.QuoteCap
 	}
 	return ""
 }
@@ -1220,7 +1243,7 @@ var File_rpc_counter_counter_proto protoreflect.FileDescriptor
 
 const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\n" +
-	"\x19rpc/counter/counter.proto\x12\x15opentrade.rpc.counter\x1a\x12event/common.proto\"\x97\x03\n" +
+	"\x19rpc/counter/counter.proto\x12\x15opentrade.rpc.counter\x1a\x12event/common.proto\"\xd7\x03\n" +
 	"\x11PlaceOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x16\n" +
@@ -1234,7 +1257,9 @@ const file_rpc_counter_counter_proto_rawDesc = "" +
 	"\tquote_qty\x18\t \x01(\tR\bquoteQty\x12%\n" +
 	"\x0ereservation_id\x18\n" +
 	" \x01(\tR\rreservationId\x12'\n" +
-	"\x0freference_price\x18\v \x01(\tR\x0ereferencePrice\"\xa2\x01\n" +
+	"\x0freference_price\x18\v \x01(\tR\x0ereferencePrice\x12!\n" +
+	"\fslippage_bps\x18\f \x01(\rR\vslippageBps\x12\x1b\n" +
+	"\tquote_cap\x18\r \x01(\tR\bquoteCap\"\xa2\x01\n" +
 	"\x12PlaceOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x1a\n" +

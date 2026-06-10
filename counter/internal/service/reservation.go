@@ -46,7 +46,10 @@ func (s *Service) Reserve(_ context.Context, req ReserveRequest) (*ReserveResult
 	if !s.OwnsUser(req.UserID) {
 		return nil, ErrWrongShard
 	}
-	asset, amount, err := counterstate.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty)
+	// Trigger reservations never carry ADR-0083 protection (quote_cap /
+	// slippage_bps stay zero) — a protected market order freezes at place
+	// time through the normal PlaceOrder path.
+	asset, amount, err := counterstate.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty, dec.Zero, 0)
 	if err != nil {
 		return nil, err
 	}

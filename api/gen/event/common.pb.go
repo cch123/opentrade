@@ -274,7 +274,10 @@ const (
 	// ADR-0075: limit price outside the SymbolConfig min/max price bounds
 	// (Match-side orderbook-scope re-check).
 	RejectReason_REJECT_REASON_PRICE_OUT_OF_RANGE RejectReason = 12
-	RejectReason_REJECT_REASON_INTERNAL           RejectReason = 99
+	// ADR-0083: protected market order arrived while the opposite book side is
+	// empty — no reference price to derive the collar from (fail-closed).
+	RejectReason_REJECT_REASON_NO_BOOK_REFERENCE RejectReason = 13
+	RejectReason_REJECT_REASON_INTERNAL          RejectReason = 99
 )
 
 // Enum value maps for RejectReason.
@@ -293,6 +296,7 @@ var (
 		10: "REJECT_REASON_UNKNOWN_SYMBOL_CONFIG",
 		11: "REJECT_REASON_SYMBOL_STATUS_FORBIDS",
 		12: "REJECT_REASON_PRICE_OUT_OF_RANGE",
+		13: "REJECT_REASON_NO_BOOK_REFERENCE",
 		99: "REJECT_REASON_INTERNAL",
 	}
 	RejectReason_value = map[string]int32{
@@ -309,6 +313,7 @@ var (
 		"REJECT_REASON_UNKNOWN_SYMBOL_CONFIG":  10,
 		"REJECT_REASON_SYMBOL_STATUS_FORBIDS":  11,
 		"REJECT_REASON_PRICE_OUT_OF_RANGE":     12,
+		"REJECT_REASON_NO_BOOK_REFERENCE":      13,
 		"REJECT_REASON_INTERNAL":               99,
 	}
 )
@@ -518,7 +523,7 @@ const file_event_common_proto_rawDesc = "" +
 	"$INTERNAL_ORDER_STATUS_PENDING_CANCEL\x10\x05\x12\"\n" +
 	"\x1eINTERNAL_ORDER_STATUS_CANCELED\x10\x06\x12\"\n" +
 	"\x1eINTERNAL_ORDER_STATUS_REJECTED\x10\a\x12!\n" +
-	"\x1dINTERNAL_ORDER_STATUS_EXPIRED\x10\b*\x99\x04\n" +
+	"\x1dINTERNAL_ORDER_STATUS_EXPIRED\x10\b*\xbe\x04\n" +
 	"\fRejectReason\x12\x1d\n" +
 	"\x19REJECT_REASON_UNSPECIFIED\x10\x00\x12$\n" +
 	" REJECT_REASON_INVALID_PRICE_TICK\x10\x01\x12\"\n" +
@@ -533,7 +538,8 @@ const file_event_common_proto_rawDesc = "" +
 	"#REJECT_REASON_UNKNOWN_SYMBOL_CONFIG\x10\n" +
 	"\x12'\n" +
 	"#REJECT_REASON_SYMBOL_STATUS_FORBIDS\x10\v\x12$\n" +
-	" REJECT_REASON_PRICE_OUT_OF_RANGE\x10\f\x12\x1a\n" +
+	" REJECT_REASON_PRICE_OUT_OF_RANGE\x10\f\x12#\n" +
+	"\x1fREJECT_REASON_NO_BOOK_REFERENCE\x10\r\x12\x1a\n" +
 	"\x16REJECT_REASON_INTERNAL\x10c*\xed\x02\n" +
 	"\x10PerpSymbolStatus\x12\"\n" +
 	"\x1ePERP_SYMBOL_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +

@@ -67,6 +67,9 @@ enum RejectReason {
   // ADR-0075: limit price outside the SymbolConfig min/max price bounds
   // (Match-side orderbook-scope re-check).
   REJECT_REASON_PRICE_OUT_OF_RANGE = 12;
+  // ADR-0083: protected market order arrived while the opposite book side is
+  // empty — no reference price to derive the collar from (fail-closed).
+  REJECT_REASON_NO_BOOK_REFERENCE = 13;
   REJECT_REASON_INTERNAL = 99;
 }
 

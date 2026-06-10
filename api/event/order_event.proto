@@ -34,8 +34,11 @@ message OrderPlaced {
   string price = 8;    // empty for market
   string qty = 9;      // base asset qty; empty for market buy with quote_qty
 
-  // For market / IOC etc. Counter may pre-freeze with an estimated cap;
-  // Match receives the actual cap so it can reject if mismatch.
+  // The amount Counter froze for this order. For a protected market buy by
+  // base qty (ADR-0083: slippage_bps > 0, qty set, quote_qty empty) this is
+  // the user's quote_cap and Match MUST bound execution by
+  // effective_limit = min(collar, freeze_cap / qty) so the actual quote
+  // spend never exceeds the freeze (INV-1). Informational for other shapes.
   string freeze_cap = 10;
 
   // Market buy by quote budget (BN-style quoteOrderQty, ADR-0035). Non-empty
@@ -51,6 +54,14 @@ message OrderPlaced {
   // inside one order's lifecycle. 0 = spot order (no perp catalog entry) —
   // Match skips the handshake.
   uint64 symbol_config_version = 12;
+
+  // ADR-0083: slippage tolerance in basis points (1 bp = 0.01%). 0 = no
+  // protection. >0 is only valid on MARKET orders: Match derives the collar
+  // from the opposite best price inside the symbol worker tick
+  // (buy: best_ask × (1 + bps/10000), sell: best_bid × (1 − bps/10000)) and
+  // executes IOC-style under that bound; empty opposite side rejects with
+  // NO_BOOK_REFERENCE.
+  uint32 slippage_bps = 13;
 }
 
 message OrderCancel {

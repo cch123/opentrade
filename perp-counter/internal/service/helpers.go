@@ -138,6 +138,10 @@ func (s *Service) placedOrderEvent(o *Order) *eventpb.OrderEvent {
 			// ADR-0075 handshake stamp: Match must hold the SAME catalog
 			// version or reject. 0 = catalog disabled, Match skips the check.
 			SymbolConfigVersion: o.ConfigVersion,
+			// ADR-0083: Match derives the protection collar from its book for
+			// slippage-stamped market orders. Perp has no quote_cap (IM is the
+			// funds bound), so freeze_cap stays empty.
+			SlippageBps: o.SlippageBps,
 		}},
 	}
 }

@@ -2,7 +2,6 @@ package rest
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -13,40 +12,6 @@ import (
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
 	"github.com/xargin/opentrade/pkg/auth"
 )
-
-// applySlippage adjusts lastPrice by slippageBps for the given side:
-//
-//	buy  → price × (1 + bps/10000)  (willing to pay up to this much)
-//	sell → price × (1 - bps/10000)  (willing to sell down to this much)
-//
-// Rounded to 8 decimals, plenty for every listed symbol today. Returns
-// the decimal string so caller can forward it verbatim.
-func applySlippage(lastPrice string, bps int, side eventpb.Side) (string, error) {
-	last, err := decimal.NewFromString(lastPrice)
-	if err != nil {
-		return "", fmt.Errorf("invalid last_price %q: %w", lastPrice, err)
-	}
-	if last.Sign() <= 0 {
-		return "", fmt.Errorf("last_price must be > 0")
-	}
-	if bps <= 0 || bps > 10_000 {
-		return "", fmt.Errorf("slippage_bps must be in (0, 10000]")
-	}
-	delta := last.Mul(decimal.NewFromInt(int64(bps))).Div(decimal.NewFromInt(10_000))
-	var out decimal.Decimal
-	switch side {
-	case eventpb.Side_SIDE_BUY:
-		out = last.Add(delta)
-	case eventpb.Side_SIDE_SELL:
-		out = last.Sub(delta)
-	default:
-		return "", fmt.Errorf("invalid side for slippage")
-	}
-	if out.Sign() <= 0 {
-		return "", fmt.Errorf("protected price went non-positive")
-	}
-	return out.Truncate(8).String(), nil
-}
 
 // bestEffortMidPrice returns (bestBid+bestAsk)/2 from BFF's market cache as
 // a decimal string, or "" when a mid-price cannot be derived (no cache, no
@@ -83,12 +48,15 @@ type placeOrderBody struct {
 	Qty           string `json:"qty,omitempty"`       // base qty; empty for market buy with quote_qty
 	QuoteQty      string `json:"quote_qty,omitempty"` // market buy quote budget (BN quoteOrderQty, ADR-0035)
 
-	// Optional slippage protection for market orders (ADR-0035 §路径 B).
-	// When SlippageBps > 0 the client MUST also supply LastPrice; BFF
-	// rewrites the order to LIMIT+IOC with price = LastPrice × (1 ± slippage)
-	// before forwarding to counter. Not a server-side concern beyond BFF.
-	LastPrice   string `json:"last_price,omitempty"`
+	// ADR-0083 native protected market order: BFF forwards both fields
+	// verbatim; Match derives the collar from the opposite best price at
+	// execution time. SlippageBps in (0, 10000], market orders only.
+	// QuoteCap is required for (and only valid on) a protected market buy
+	// by base qty — Counter freezes exactly that amount. Clients that want
+	// protection relative to the price they SAW (the retired ADR-0035 路径
+	// B semantics) submit a LIMIT IOC with a self-computed price instead.
 	SlippageBps int    `json:"slippage_bps,omitempty"`
+	QuoteCap    string `json:"quote_cap,omitempty"`
 }
 
 func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
@@ -117,53 +85,68 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Translate MARKET + slippage_bps into LIMIT + IOC with a protective
-	// price (ADR-0035 §路径 B). When slippage_bps is 0/absent we forward
-	// the MARKET straight through for the server-side native path.
-	if ot == eventpb.OrderType_ORDER_TYPE_MARKET && body.SlippageBps > 0 {
-		if body.LastPrice == "" {
+	// ADR-0083: slippage protection is native — the collar is derived by
+	// Match from its own book at execution time; BFF only shape-checks.
+	if body.SlippageBps != 0 {
+		if body.SlippageBps < 0 || body.SlippageBps > 10_000 {
+			writeError(w, http.StatusBadRequest, "slippage_bps must be in (0, 10000] (ADR-0083)")
+			return
+		}
+		if ot != eventpb.OrderType_ORDER_TYPE_MARKET {
 			writeError(w, http.StatusBadRequest,
-				"slippage_bps requires last_price from the client (ADR-0035)")
+				"slippage_bps is only valid on market orders (ADR-0083); for a limit-priced "+
+					"protection submit LIMIT IOC with your own price")
 			return
 		}
-		if body.QuoteQty != "" {
-			writeError(w, http.StatusBadRequest,
-				"slippage_bps with quote_qty is ambiguous; drop one or the other (ADR-0035)")
-			return
-		}
-		protectedPrice, perr := applySlippage(body.LastPrice, body.SlippageBps, side)
-		if perr != nil {
-			writeError(w, http.StatusBadRequest, perr.Error())
-			return
-		}
-		body.Price = protectedPrice
-		body.TIF = "ioc"
-		ot = eventpb.OrderType_ORDER_TYPE_LIMIT
 	}
 
-	// Validate the shape now that translation (if any) settled.
 	switch ot {
 	case eventpb.OrderType_ORDER_TYPE_LIMIT:
 		if body.Qty == "" || body.Price == "" {
 			writeError(w, http.StatusBadRequest, "limit orders require qty and price")
 			return
 		}
+		if body.QuoteCap != "" {
+			writeError(w, http.StatusBadRequest, "quote_cap is only valid on a protected market buy (ADR-0083)")
+			return
+		}
 	case eventpb.OrderType_ORDER_TYPE_MARKET:
 		if side == eventpb.Side_SIDE_BUY {
-			if body.QuoteQty == "" {
+			switch {
+			case body.QuoteQty != "":
+				if body.Qty != "" {
+					writeError(w, http.StatusBadRequest,
+						"market buy: pass either qty (protected, ADR-0083) or quote_qty, not both")
+					return
+				}
+				if body.QuoteCap != "" {
+					writeError(w, http.StatusBadRequest,
+						"market buy by quote_qty must not carry quote_cap — the budget is the cap (ADR-0083)")
+					return
+				}
+			case body.Qty != "":
+				// Market buy by base qty exists only as an ADR-0083 protected
+				// order: Counter freezes quote_cap, Match bounds execution by
+				// min(collar, quote_cap/qty).
+				if body.SlippageBps <= 0 || body.QuoteCap == "" {
+					writeError(w, http.StatusBadRequest,
+						"market buy by qty requires slippage_bps + quote_cap (ADR-0083); "+
+							"or submit quote_qty for a budget-driven market buy (ADR-0035)")
+					return
+				}
+			default:
 				writeError(w, http.StatusBadRequest,
-					"market buy requires quote_qty (ADR-0035); for qty-based market buy, "+
-						"translate client-side via last_price + slippage_bps")
-				return
-			}
-			if body.Qty != "" {
-				writeError(w, http.StatusBadRequest,
-					"market buy: pass either qty (with slippage_bps + last_price) or quote_qty, not both")
+					"market buy requires quote_qty (ADR-0035) or qty + slippage_bps + quote_cap (ADR-0083)")
 				return
 			}
 		} else {
 			if body.Qty == "" {
 				writeError(w, http.StatusBadRequest, "market sell requires qty")
+				return
+			}
+			if body.QuoteCap != "" {
+				writeError(w, http.StatusBadRequest,
+					"quote_cap is only valid on a protected market buy — sells freeze base qty (ADR-0083)")
 				return
 			}
 		}
@@ -177,10 +160,8 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 
 	// ADR-0053 M3.b: best-effort mid-price for counter-side MARKET-by-base
 	// precision validation. Only relevant when a MARKET-sell or MARKET-buy-
-	// by-qty path reaches counter (i.e. not the LIMIT+IOC slippage-
-	// protected rewrite, which already carries a hard Price). We compute it
-	// untriggerly; counter ignores reference_price for LIMIT /
-	// MarketBuyByQuote anyway.
+	// by-qty path reaches counter. We compute it unconditionally; counter
+	// ignores reference_price for LIMIT / MarketBuyByQuote anyway.
 	referencePrice := s.bestEffortMidPrice(body.Symbol)
 
 	resp, err := s.counter.PlaceOrder(r.Context(), connect.NewRequest(&counterrpc.PlaceOrderRequest{
@@ -194,6 +175,8 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		Qty:            body.Qty,
 		QuoteQty:       body.QuoteQty,
 		ReferencePrice: referencePrice,
+		SlippageBps:    uint32(body.SlippageBps),
+		QuoteCap:       body.QuoteCap,
 	}))
 	if err != nil {
 		writeConnectError(w, err)

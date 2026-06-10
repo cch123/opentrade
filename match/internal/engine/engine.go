@@ -210,23 +210,19 @@ func finalize(book *orderbook.Book, taker *orderbook.Order, trades []Trade) Resu
 // ---------------------------------------------------------------------------
 
 // crosses reports whether taker can match the given maker.
-//   - Market taker: always crosses.
+//   - Market taker (unprotected): always crosses.
+//   - Protected market taker (ADR-0083): bounded by the collar in Price,
+//     same comparison as a limit taker.
 //   - Limit Buy: taker.Price >= maker.Price
 //   - Limit Sell: taker.Price <= maker.Price
 func crosses(taker, maker *orderbook.Order) bool {
-	if taker.Type == orderbook.Market {
-		return true
-	}
-	if taker.Side == orderbook.Bid {
-		return taker.Price.Cmp(maker.Price) >= 0
-	}
-	return taker.Price.Cmp(maker.Price) <= 0
+	return priceAcceptable(taker, maker.Price)
 }
 
 // priceAcceptable reports whether the given maker price is acceptable to the
-// taker (at or better than taker's limit).
+// taker (at or better than taker's limit / protection collar).
 func priceAcceptable(taker *orderbook.Order, makerPrice dec.Decimal) bool {
-	if taker.Type == orderbook.Market {
+	if taker.Type == orderbook.Market && !taker.IsProtected() {
 		return true
 	}
 	if taker.Side == orderbook.Bid {

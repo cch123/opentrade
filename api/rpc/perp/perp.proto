@@ -81,6 +81,10 @@ message PlaceOrderRequest {
   // ONE_WAY mode; must be 1 (long leg) or 2 (short leg) in HEDGE mode, with
   // (side, position_idx, reduce_only) agreeing per the admission matrix.
   uint32 position_idx = 12;
+  // ADR-0083: slippage tolerance in basis points (1 bp = 0.01%), only valid
+  // on MARKET orders, range (0, 10000]. IM for a protected market buy is
+  // reserved at mark × (1 + bps/10000); sells stay at mark.
+  uint32 slippage_bps = 13;
 }
 
 message PlaceOrderResponse {

@@ -277,3 +277,61 @@ func TestOrderLifecycle_PartialThenFull(t *testing.T) {
 		t.Fatalf("orders evicted after fill, have %d", svc.OrderCount())
 	}
 }
+
+// -----------------------------------------------------------------------------
+// ADR-0083 protected market orders
+// -----------------------------------------------------------------------------
+
+func TestPlaceOrder_ProtectedMarketBuyReservesAdjustedIM(t *testing.T) {
+	svc, eng, disp, _ := newSvc()
+	eng.Deposit(user1, dec.New("1000"))
+	eng.SetMark("BTC-USDT-PERP", dec.New("100"))
+	req := &perprpc.PlaceOrderRequest{
+		UserId: user1, Symbol: "BTC-USDT-PERP", Side: eventpb.Side_SIDE_BUY,
+		OrderType: eventpb.OrderType_ORDER_TYPE_MARKET, Tif: eventpb.TimeInForce_TIME_IN_FORCE_GTC,
+		Qty: "1", Leverage: "10", SlippageBps: 100,
+	}
+	resp, err := svc.PlaceOrder(req)
+	if err != nil || !resp.Accepted {
+		t.Fatalf("place: err=%v accepted=%v reason=%s", err, resp.Accepted, resp.RejectReason)
+	}
+	// IM reference = mark × (1 + 100/10000) = 101 → IM = 101×1/10 = 10.1
+	// (vs 10 for an unprotected market buy at mark).
+	eqd(t, eng.WalletOf(user1).Reserved, "10.1", "protected buy IM at adjusted mark")
+	if len(disp.orders) != 1 || disp.orders[0].GetPlaced().GetSlippageBps() != 100 {
+		t.Fatalf("slippage_bps not stamped on the wire: %+v", disp.orders)
+	}
+}
+
+func TestPlaceOrder_ProtectedMarketSellReservesAtMark(t *testing.T) {
+	svc, eng, _, _ := newSvc()
+	eng.Deposit(user1, dec.New("1000"))
+	eng.SetMark("BTC-USDT-PERP", dec.New("100"))
+	req := &perprpc.PlaceOrderRequest{
+		UserId: user1, Symbol: "BTC-USDT-PERP", Side: eventpb.Side_SIDE_SELL,
+		OrderType: eventpb.OrderType_ORDER_TYPE_MARKET, Tif: eventpb.TimeInForce_TIME_IN_FORCE_GTC,
+		Qty: "1", Leverage: "10", SlippageBps: 100,
+	}
+	resp, err := svc.PlaceOrder(req)
+	if err != nil || !resp.Accepted {
+		t.Fatalf("place: err=%v accepted=%v reason=%s", err, resp.Accepted, resp.RejectReason)
+	}
+	// Sells fill below mark — mark stays the conservative IM reference.
+	eqd(t, eng.WalletOf(user1).Reserved, "10", "protected sell IM at mark")
+}
+
+func TestPlaceOrder_SlippageOnLimitRejected(t *testing.T) {
+	svc, eng, _, _ := newSvc()
+	eng.Deposit(user1, dec.New("1000"))
+	req := placeReq(user1, "BTC-USDT-PERP", eventpb.Side_SIDE_BUY, "100", "1", "10", false)
+	req.SlippageBps = 50
+	if _, err := svc.PlaceOrder(req); err == nil {
+		t.Fatal("slippage_bps on a limit order must be rejected")
+	}
+	req.SlippageBps = 10001
+	req.OrderType = eventpb.OrderType_ORDER_TYPE_MARKET
+	req.Price = ""
+	if _, err := svc.PlaceOrder(req); err == nil {
+		t.Fatal("slippage_bps above 10000 must be rejected")
+	}
+}

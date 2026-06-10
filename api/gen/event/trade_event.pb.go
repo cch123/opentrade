@@ -540,12 +540,18 @@ func (x *OrderCancelled) GetFilledQty() string {
 }
 
 type OrderExpired struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	OrderId       uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
-	Symbol        string                 `protobuf:"bytes,3,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	FilledQty     string                 `protobuf:"bytes,4,opt,name=filled_qty,json=filledQty,proto3" json:"filled_qty,omitempty"`
-	Reason        RejectReason           `protobuf:"varint,5,opt,name=reason,proto3,enum=opentrade.event.RejectReason" json:"reason,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	UserId    uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrderId   uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Symbol    string                 `protobuf:"bytes,3,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	FilledQty string                 `protobuf:"bytes,4,opt,name=filled_qty,json=filledQty,proto3" json:"filled_qty,omitempty"`
+	Reason    RejectReason           `protobuf:"varint,5,opt,name=reason,proto3,enum=opentrade.event.RejectReason" json:"reason,omitempty"`
+	// ADR-0083 protected market order audit trail: the effective price bound
+	// Match executed under (min of the book collar and freeze_cap/qty) and the
+	// book reference price (best opposite price) the collar was derived from.
+	// Empty for non-protected orders.
+	ProtectLimit  string `protobuf:"bytes,6,opt,name=protect_limit,json=protectLimit,proto3" json:"protect_limit,omitempty"`
+	ProtectRef    string `protobuf:"bytes,7,opt,name=protect_ref,json=protectRef,proto3" json:"protect_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -615,6 +621,20 @@ func (x *OrderExpired) GetReason() RejectReason {
 	return RejectReason_REJECT_REASON_UNSPECIFIED
 }
 
+func (x *OrderExpired) GetProtectLimit() string {
+	if x != nil {
+		return x.ProtectLimit
+	}
+	return ""
+}
+
+func (x *OrderExpired) GetProtectRef() string {
+	if x != nil {
+		return x.ProtectRef
+	}
+	return ""
+}
+
 var File_event_trade_event_proto protoreflect.FileDescriptor
 
 const file_event_trade_event_proto_rawDesc = "" +
@@ -666,14 +686,17 @@ const file_event_trade_event_proto_rawDesc = "" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
 	"\x06symbol\x18\x03 \x01(\tR\x06symbol\x12\x1d\n" +
 	"\n" +
-	"filled_qty\x18\x04 \x01(\tR\tfilledQty\"\xb0\x01\n" +
+	"filled_qty\x18\x04 \x01(\tR\tfilledQty\"\xf6\x01\n" +
 	"\fOrderExpired\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
 	"\x06symbol\x18\x03 \x01(\tR\x06symbol\x12\x1d\n" +
 	"\n" +
 	"filled_qty\x18\x04 \x01(\tR\tfilledQty\x125\n" +
-	"\x06reason\x18\x05 \x01(\x0e2\x1d.opentrade.event.RejectReasonR\x06reasonB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
+	"\x06reason\x18\x05 \x01(\x0e2\x1d.opentrade.event.RejectReasonR\x06reason\x12#\n" +
+	"\rprotect_limit\x18\x06 \x01(\tR\fprotectLimit\x12\x1f\n" +
+	"\vprotect_ref\x18\a \x01(\tR\n" +
+	"protectRefB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
 var (
 	file_event_trade_event_proto_rawDescOnce sync.Once

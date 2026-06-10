@@ -392,6 +392,10 @@ func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderR
 		}
 		refPrice = p
 	}
+	quoteCap, err := dec.Parse(req.QuoteCap)
+	if err != nil {
+		return service.PlaceOrderRequest{}, fmt.Errorf("invalid quote_cap %q: %w", req.QuoteCap, err)
+	}
 	return service.PlaceOrderRequest{
 		UserID:         req.UserId,
 		ClientOrderID:  req.ClientOrderId,
@@ -404,6 +408,8 @@ func placeOrderFromProto(req *counterrpc.PlaceOrderRequest) (service.PlaceOrderR
 		QuoteQty:       quoteQty,
 		ReservationID:  req.ReservationId,
 		ReferencePrice: refPrice,
+		SlippageBps:    req.SlippageBps,
+		QuoteCap:       quoteCap,
 	}, nil
 }
 

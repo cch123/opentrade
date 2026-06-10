@@ -45,6 +45,12 @@ type PlaceOrderRequest struct {
 	// check). Zero = unavailable; counter then skips the MinQuoteAmount
 	// branch for MarketByBase (M3 legacy behaviour).
 	ReferencePrice dec.Decimal
+	// SlippageBps (ADR-0083) marks a protected market order (>0, max 10000).
+	// Match derives the collar from the opposite best price at execution.
+	SlippageBps uint32
+	// QuoteCap (ADR-0083) is the max quote spend for a protected market buy
+	// by base qty — Counter freezes exactly this amount. Zero elsewhere.
+	QuoteCap dec.Decimal
 }
 
 // PlaceOrderResult is the response payload.
@@ -87,7 +93,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 	}
 
 	// Validate shape + compute freeze outside the sequencer.
-	freezeAsset, freezeAmount, err := counterstate.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty)
+	freezeAsset, freezeAmount, err := counterstate.ComputeFreeze(req.Symbol, req.Side, req.OrderType, req.Price, req.Qty, req.QuoteQty, req.QuoteCap, req.SlippageBps)
 	if err != nil {
 		return &PlaceOrderResult{
 			ClientOrderID: req.ClientOrderID,
@@ -202,6 +208,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Place
 			Price:         req.Price,
 			Qty:           req.Qty,
 			QuoteQty:      req.QuoteQty,
+			SlippageBps:   req.SlippageBps,
 			FilledQty:     dec.Zero,
 			FrozenAsset:   freezeAsset,
 			FrozenAmount:  freezeAmount,

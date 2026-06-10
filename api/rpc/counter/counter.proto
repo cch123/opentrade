@@ -102,6 +102,15 @@ message PlaceOrderRequest {
   // unavailable (BFF has no cached depth yet, e.g. right after restart)
   // → Counter falls back to M3 behaviour (skip MarketByBase check).
   string reference_price = 11;
+  // ADR-0083: slippage tolerance in basis points (1 bp = 0.01%), only valid
+  // on MARKET orders, range (0, 10000]. Match derives the protection collar
+  // from the opposite best price at execution time.
+  uint32 slippage_bps = 12;
+  // ADR-0083: max quote spend the user commits to for a protected market
+  // buy by base qty (slippage_bps > 0, qty set, quote_qty empty). Counter
+  // freezes exactly this amount; Match bounds execution by
+  // min(collar, quote_cap/qty). Required for that shape, rejected elsewhere.
+  string quote_cap = 13;
 }
 
 message PlaceOrderResponse {

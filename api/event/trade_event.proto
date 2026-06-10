@@ -87,4 +87,11 @@ message OrderExpired {
   string symbol = 3;
   string filled_qty = 4;
   RejectReason reason = 5;
+
+  // ADR-0083 protected market order audit trail: the effective price bound
+  // Match executed under (min of the book collar and freeze_cap/qty) and the
+  // book reference price (best opposite price) the collar was derived from.
+  // Empty for non-protected orders.
+  string protect_limit = 6;
+  string protect_ref = 7;
 }

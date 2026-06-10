@@ -84,6 +84,24 @@ type Order struct {
 	// every other shape — matching then drives off Remaining as before.
 	QuoteQty       dec.Decimal
 	RemainingQuote dec.Decimal
+
+	// ADR-0083 protected market order. SlippageBps > 0 marks a MARKET order
+	// as protected: the SymbolWorker derives the collar from the opposite
+	// best price before matching and stores the effective limit in Price
+	// (min of collar and FreezeCap/Qty for base-driven buys — INV-1). The
+	// engine then bounds matching by Price exactly like a limit taker.
+	// FreezeCap is the amount Counter froze (quote_cap for base-driven
+	// protected buys). ProtectRef records the book reference the collar was
+	// derived from, for the OrderExpired audit fields.
+	SlippageBps uint32
+	FreezeCap   dec.Decimal
+	ProtectRef  dec.Decimal
+}
+
+// IsProtected reports whether this MARKET order carries ADR-0083 slippage
+// protection (the engine must respect Price as the execution bound).
+func (o *Order) IsProtected() bool {
+	return o.Type == Market && o.SlippageBps > 0
 }
 
 // IsQuoteDriven reports whether matching should consume quote currency
@@ -119,7 +137,10 @@ const (
 	RejectUnknownSymbolConfig RejectReason = 10 // symbol absent from the catalog cache / cache stale (fail-closed)
 	RejectSymbolStatusForbids RejectReason = 11 // status machine refuses this op
 	RejectPriceOutOfRange     RejectReason = 12 // limit price outside SymbolConfig bounds
-	RejectInternal            RejectReason = 99
+	// ADR-0083: protected market order with an empty opposite book side — no
+	// reference price to derive the collar from (fail-closed).
+	RejectNoBookReference RejectReason = 13
+	RejectInternal        RejectReason = 99
 )
 
 func (r RejectReason) String() string {
@@ -150,6 +171,8 @@ func (r RejectReason) String() string {
 		return "symbol_status_forbids"
 	case RejectPriceOutOfRange:
 		return "price_out_of_range"
+	case RejectNoBookReference:
+		return "no_book_reference"
 	case RejectInternal:
 		return "internal"
 	default:

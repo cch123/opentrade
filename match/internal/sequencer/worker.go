@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/xargin/opentrade/match/internal/engine"
 	"github.com/xargin/opentrade/match/internal/orderbook"
 	"github.com/xargin/opentrade/pkg/dec"
@@ -34,6 +36,10 @@ type Config struct {
 	// nil + a stamped order = reject unknown_symbol_config (fail-closed: a
 	// perp deployment without its catalog is a wiring error, not a pass).
 	Catalog ConfigLookup
+
+	// Logger is used for per-order audit logging (ADR-0083 collar
+	// derivation). nil = no-op.
+	Logger *zap.Logger
 }
 
 // SymbolWorker serializes all matching for a single symbol.
@@ -46,6 +52,7 @@ type SymbolWorker struct {
 	symbol  string
 	stp     engine.STPMode
 	catalog ConfigLookup
+	logger  *zap.Logger
 
 	// mu guards book / matchSeq / bookSeq / offsets so snapshot readers
 	// (WithStateLocked / Offsets) can take a consistent view without racing
@@ -72,11 +79,15 @@ func NewSymbolWorker(cfg Config, outbox chan<- *Output, mdOutbox chan<- *MarketD
 	if cfg.Inbox <= 0 {
 		cfg.Inbox = 2048
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = zap.NewNop()
+	}
 	return &SymbolWorker{
 		symbol:   cfg.Symbol,
 		book:     orderbook.NewBook(cfg.Symbol),
 		stp:      cfg.STPMode,
 		catalog:  cfg.Catalog,
+		logger:   cfg.Logger,
 		inbox:    make(chan *Event, cfg.Inbox),
 		outbox:   outbox,
 		mdOutbox: mdOutbox,
@@ -297,6 +308,25 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 		return
 	}
 
+	// ADR-0083 protected market order: derive the collar from the opposite
+	// best price in this same tick (book read + execution are not separable —
+	// an async collar would be a TOCTOU race) and store the effective limit
+	// in o.Price for the engine to bound matching with.
+	if o.IsProtected() {
+		if reason := w.applyProtection(o); reason != orderbook.RejectNone {
+			w.emit(&Output{
+				Kind:         OutputOrderRejected,
+				Symbol:       w.symbol,
+				UserID:       o.UserID,
+				OrderID:      o.ID,
+				Side:         o.Side,
+				RejectReason: reason,
+				SourceOffset: evt.Source,
+			})
+			return
+		}
+	}
+
 	res := engine.Match(w.book, o, w.stp)
 
 	// Emit trades first (they precede the final order status).
@@ -349,6 +379,8 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 				OrderID:      o.ID,
 				Side:         o.Side,
 				FilledQty:    o.Qty.Sub(o.Remaining),
+				ProtectLimit: protectLimitOf(o),
+				ProtectRef:   o.ProtectRef,
 				SourceOffset: evt.Source,
 			})
 		}
@@ -360,6 +392,8 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 			OrderID:      o.ID,
 			Side:         o.Side,
 			FilledQty:    o.Qty.Sub(o.Remaining),
+			ProtectLimit: protectLimitOf(o),
+			ProtectRef:   o.ProtectRef,
 			SourceOffset: evt.Source,
 		})
 	case engine.TakerRejected:
@@ -375,6 +409,73 @@ func (w *SymbolWorker) handlePlaced(evt *Event) {
 	default:
 		panic(fmt.Sprintf("sequencer: unknown TakerStatus %d", res.Status))
 	}
+}
+
+// ulp18 is the smallest price increment applyProtection works in: one unit
+// of the 18-decimal grid the cap-derived limit is rounded on.
+var ulp18 = dec.New("0.000000000000000001")
+
+// protectLimitOf returns the effective protection bound for emission: the
+// collar-derived Price for protected orders, zero otherwise (for every other
+// shape Price is the user's limit, not a protection bound).
+func protectLimitOf(o *orderbook.Order) dec.Decimal {
+	if o.IsProtected() {
+		return o.Price
+	}
+	return dec.Zero
+}
+
+// applyProtection derives the ADR-0083 collar for a protected market order
+// and stores the effective execution bound in o.Price / the book reference
+// in o.ProtectRef. Returns RejectNoBookReference when the opposite side is
+// empty (fail-closed). Must run on the worker goroutine in the same handle()
+// pass as the engine.Match call that consumes the bound — an asynchronously
+// computed collar would be a TOCTOU race against the book. Determinism
+// (INV-2): the result is a pure function of the book state at this order's
+// position in the per-symbol input sequence, so snapshot+offset replay
+// reproduces it bit-for-bit.
+func (w *SymbolWorker) applyProtection(o *orderbook.Order) orderbook.RejectReason {
+	ref, ok := w.book.BestPrice(o.Side.Opposite())
+	if !ok || !dec.IsPositive(ref) {
+		return orderbook.RejectNoBookReference
+	}
+	bps := int64(o.SlippageBps)
+	var limit dec.Decimal
+	if o.Side == orderbook.Bid {
+		// collar = ref × (1 + bps/10⁴); Mul + Shift(-4) is exact, no division.
+		limit = ref.Mul(dec.FromInt(10_000 + bps)).Shift(-4)
+		// INV-1 (funds safety): a base-driven protected buy must spend at most
+		// FreezeCap (Counter froze exactly that). Bound the limit by
+		// FreezeCap/Qty rounded strictly downward so limit × Qty ≤ FreezeCap.
+		if !o.IsQuoteDriven() && dec.IsPositive(o.Qty) && dec.IsPositive(o.FreezeCap) {
+			capLimit := o.FreezeCap.DivRound(o.Qty, 18)
+			if capLimit.Mul(o.Qty).Cmp(o.FreezeCap) > 0 {
+				capLimit = capLimit.Sub(ulp18)
+			}
+			if capLimit.Sign() < 0 {
+				capLimit = dec.Zero
+			}
+			limit = dec.Min(limit, capLimit)
+		}
+	} else {
+		limit = ref.Mul(dec.FromInt(10_000 - bps)).Shift(-4)
+		if limit.Sign() < 0 {
+			// Defensive: bps > 10000 should be rejected upstream; a zero floor
+			// equals "tolerate any price down to zero".
+			limit = dec.Zero
+		}
+	}
+	o.Price = limit
+	o.ProtectRef = ref
+	w.logger.Debug("protected market collar",
+		zap.String("symbol", w.symbol),
+		zap.Uint64("order_id", o.ID),
+		zap.String("side", o.Side.String()),
+		zap.Uint32("slippage_bps", o.SlippageBps),
+		zap.String("ref", ref.String()),
+		zap.String("effective_limit", limit.String()),
+	)
+	return orderbook.RejectNone
 }
 
 // admitCatalog runs the ADR-0075 §1 four-way version handshake plus the

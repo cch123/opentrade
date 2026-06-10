@@ -112,10 +112,12 @@ func settleTaker(o *Order, ti TradeInput, base, quote string) PartySettlement {
 	}
 	switch o.Side {
 	case SideBid: // taker bought: frozen at taker's price, receives base
-		if o.IsMarketBuyByQuote() {
-			// Market buy by quote: reservation is a budget in quote, per-trade
-			// it consumes exactly matchQuote from frozen. No price-improvement
-			// refund — the taker never specified a price.
+		if o.IsMarketBuyByQuote() || o.IsMarketBuyByBase() {
+			// Market buy (by quote budget, ADR-0035, or protected by base qty,
+			// ADR-0083): the reservation is a quote budget/cap; per-trade it
+			// consumes exactly matchQuote from frozen. No price-improvement
+			// refund — the taker never specified a price. For the by-base
+			// shape Match guarantees Σ matchQuote ≤ FrozenAmount (INV-1).
 			s.FrozenQuoteDelta = matchQuote.Neg()
 		} else {
 			// Limit buy: reservation for this slice = o.Price * ti.Qty (taker's

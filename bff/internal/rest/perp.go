@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	eventpb "github.com/xargin/opentrade/api/gen/event"
 	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
 	"github.com/xargin/opentrade/pkg/auth"
@@ -47,6 +48,9 @@ type perpPlaceOrderBody struct {
 	// ADR-0077 §2 position intent: 0 in one-way mode; 1 (long leg) / 2
 	// (short leg) in hedge mode — perp-counter fail-closes both ways.
 	PositionIdx uint32 `json:"position_idx,omitempty"`
+	// ADR-0083 protected market order: slippage tolerance in bp (market
+	// orders only); Match derives the collar from its book at execution.
+	SlippageBps int `json:"slippage_bps,omitempty"`
 }
 
 func (s *Server) handlePerpPlaceOrder(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +85,16 @@ func (s *Server) handlePerpPlaceOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if body.SlippageBps != 0 {
+		if body.SlippageBps < 0 || body.SlippageBps > 10_000 {
+			writeError(w, http.StatusBadRequest, "slippage_bps must be in (0, 10000] (ADR-0083)")
+			return
+		}
+		if ot != eventpb.OrderType_ORDER_TYPE_MARKET {
+			writeError(w, http.StatusBadRequest, "slippage_bps is only valid on market orders (ADR-0083)")
+			return
+		}
+	}
 	resp, err := s.perp.PlaceOrder(r.Context(), connect.NewRequest(&perprpc.PlaceOrderRequest{
 		UserId:        userID,
 		ClientOrderId: body.ClientOrderID,
@@ -93,6 +107,7 @@ func (s *Server) handlePerpPlaceOrder(w http.ResponseWriter, r *http.Request) {
 		Leverage:      body.Leverage,
 		ReduceOnly:    body.ReduceOnly,
 		PositionIdx:   body.PositionIdx,
+		SlippageBps:   uint32(body.SlippageBps),
 	}))
 	if err != nil {
 		writeConnectError(w, err)

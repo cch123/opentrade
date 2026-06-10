@@ -53,6 +53,10 @@ func OrderEventToInternal(pb *eventpb.OrderEvent, src sequencer.SourceMeta) (*se
 		if err != nil {
 			return nil, fmt.Errorf("bad quote_qty: %w", err)
 		}
+		freezeCap, err := dec.Parse(placed.FreezeCap)
+		if err != nil {
+			return nil, fmt.Errorf("bad freeze_cap: %w", err)
+		}
 		// Market buy with quote_qty (ADR-0035) drives matching by budget, so
 		// base qty is allowed to be zero. Every other shape still requires
 		// a positive qty.
@@ -77,6 +81,8 @@ func OrderEventToInternal(pb *eventpb.OrderEvent, src sequencer.SourceMeta) (*se
 			Remaining:      qty,
 			QuoteQty:       quoteQty,
 			RemainingQuote: quoteQty,
+			SlippageBps:    placed.SlippageBps,
+			FreezeCap:      freezeCap,
 			CreatedAt:      createdAt,
 		}
 		return &sequencer.Event{
@@ -160,15 +166,21 @@ func OutputToTradeEvent(out *sequencer.Output, producerID string) (*eventpb.Trad
 			},
 		}
 	case sequencer.OutputOrderExpired:
-		te.Payload = &eventpb.TradeEvent_Expired{
-			Expired: &eventpb.OrderExpired{
-				UserId:    out.UserID,
-				OrderId:   out.OrderID,
-				Symbol:    out.Symbol,
-				FilledQty: out.FilledQty.String(),
-				Reason:    rejectReasonToProto(out.RejectReason),
-			},
+		expired := &eventpb.OrderExpired{
+			UserId:    out.UserID,
+			OrderId:   out.OrderID,
+			Symbol:    out.Symbol,
+			FilledQty: out.FilledQty.String(),
+			Reason:    rejectReasonToProto(out.RejectReason),
 		}
+		// ADR-0083 audit fields: a positive ProtectRef marks a protected
+		// order (the collar reference is always > 0 when one was derived;
+		// the limit itself may legitimately be 0 — e.g. a dust quote_cap).
+		if dec.IsPositive(out.ProtectRef) {
+			expired.ProtectLimit = out.ProtectLimit.String()
+			expired.ProtectRef = out.ProtectRef.String()
+		}
+		te.Payload = &eventpb.TradeEvent_Expired{Expired: expired}
 	default:
 		return nil, fmt.Errorf("unknown output kind: %d", out.Kind)
 	}
@@ -259,6 +271,8 @@ func rejectReasonToProto(r orderbook.RejectReason) eventpb.RejectReason {
 		return eventpb.RejectReason_REJECT_REASON_SYMBOL_STATUS_FORBIDS
 	case orderbook.RejectPriceOutOfRange:
 		return eventpb.RejectReason_REJECT_REASON_PRICE_OUT_OF_RANGE
+	case orderbook.RejectNoBookReference:
+		return eventpb.RejectReason_REJECT_REASON_NO_BOOK_REFERENCE
 	default:
 		return eventpb.RejectReason_REJECT_REASON_INTERNAL
 	}

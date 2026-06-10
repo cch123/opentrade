@@ -307,6 +307,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 				Symbol:  symbol,
 				Inbox:   2048,
 				STPMode: engine.STPNone,
+				Logger:  logger,
 			}
 			if catalog != nil {
 				workerCfg.Catalog = catalog

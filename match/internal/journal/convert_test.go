@@ -175,3 +175,68 @@ func TestOutputToTradeEvent_Rejected(t *testing.T) {
 		t.Fatalf("reject reason: %v", rej.Reason)
 	}
 }
+
+func TestOrderEventToInternal_ProtectedFields(t *testing.T) {
+	pb := &eventpb.OrderEvent{
+		Meta: &eventpb.EventMeta{TsUnixMs: 1000},
+		Payload: &eventpb.OrderEvent_Placed{
+			Placed: &eventpb.OrderPlaced{
+				UserId:      1001,
+				OrderId:     7,
+				Symbol:      "BTC-USDT",
+				Side:        eventpb.Side_SIDE_BUY,
+				OrderType:   eventpb.OrderType_ORDER_TYPE_MARKET,
+				Tif:         eventpb.TimeInForce_TIME_IN_FORCE_GTC,
+				Qty:         "2",
+				FreezeCap:   "300",
+				SlippageBps: 50,
+			},
+		},
+	}
+	got, err := OrderEventToInternal(pb, sequencer.SourceMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	o := got.Order
+	if o.SlippageBps != 50 || o.FreezeCap.Cmp(dec.New("300")) != 0 {
+		t.Fatalf("protected fields lost: bps=%d cap=%s", o.SlippageBps, o.FreezeCap)
+	}
+	if !o.IsProtected() {
+		t.Fatal("order should report IsProtected")
+	}
+}
+
+func TestOutputToTradeEvent_ExpiredProtectAudit(t *testing.T) {
+	out := &sequencer.Output{
+		Kind:         sequencer.OutputOrderExpired,
+		MatchSeq:     9,
+		Symbol:       "BTC-USDT",
+		UserID:       1001,
+		OrderID:      7,
+		Side:         orderbook.Bid,
+		FilledQty:    dec.New("1"),
+		ProtectLimit: dec.New("101"),
+		ProtectRef:   dec.New("100"),
+	}
+	te, err := OutputToTradeEvent(out, "match-test")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	exp := te.GetExpired()
+	if exp == nil {
+		t.Fatal("expected Expired payload")
+	}
+	if exp.ProtectLimit != "101" || exp.ProtectRef != "100" {
+		t.Fatalf("protect audit = %q/%q, want 101/100", exp.ProtectLimit, exp.ProtectRef)
+	}
+
+	// Non-protected expirations keep the audit fields empty (not "0").
+	out.ProtectLimit, out.ProtectRef = dec.Zero, dec.Zero
+	te, err = OutputToTradeEvent(out, "match-test")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if exp := te.GetExpired(); exp.ProtectLimit != "" || exp.ProtectRef != "" {
+		t.Fatalf("protect audit should be empty, got %q/%q", exp.ProtectLimit, exp.ProtectRef)
+	}
+}

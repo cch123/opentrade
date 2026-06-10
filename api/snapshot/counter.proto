@@ -81,6 +81,7 @@ message CounterOrder {
   // transition, so the timestamp has no live consumer.
   reserved 19;
   reserved "terminated_at";
+  uint32 slippage_bps = 20;                      // ADR-0083 protected market order
 }
 
 message CounterDedupEntry {

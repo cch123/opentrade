@@ -386,7 +386,10 @@ func TestPlaceOrder_ReferencePriceEmptyWhenSnapshotMissing(t *testing.T) {
 	}
 }
 
-func TestPlaceOrder_MarketBuyWithSlippageTranslatesToLimitIOC(t *testing.T) {
+// ADR-0083: protected market buy by base qty forwards natively — MARKET
+// stays MARKET, slippage_bps + quote_cap ride the RPC, the collar is
+// derived inside Match.
+func TestPlaceOrder_ProtectedMarketBuyForwardedNatively(t *testing.T) {
 	var seen *counterrpc.PlaceOrderRequest
 	fc := &fakeCounter{
 		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
@@ -395,8 +398,7 @@ func TestPlaceOrder_MarketBuyWithSlippageTranslatesToLimitIOC(t *testing.T) {
 		},
 	}
 	srv := newServer(fc)
-	// buy @ last=50000 + 50 bps slippage → protected price = 50250
-	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"0.5","last_price":"50000","slippage_bps":50}`
+	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"0.5","slippage_bps":50,"quote_cap":"26000"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
 	req.Header.Set(auth.HeaderUserID, "1001")
 	rr := httptest.NewRecorder()
@@ -404,18 +406,17 @@ func TestPlaceOrder_MarketBuyWithSlippageTranslatesToLimitIOC(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
 	}
-	if seen.OrderType != eventpb.OrderType_ORDER_TYPE_LIMIT {
-		t.Fatalf("should be translated to LIMIT: %+v", seen)
+	if seen.OrderType != eventpb.OrderType_ORDER_TYPE_MARKET {
+		t.Fatalf("must stay MARKET (native protection, ADR-0083): %+v", seen)
 	}
-	if seen.Tif != eventpb.TimeInForce_TIME_IN_FORCE_IOC {
-		t.Errorf("tif = %v, want IOC", seen.Tif)
-	}
-	if seen.Price != "50250" {
-		t.Errorf("price = %q, want 50250", seen.Price)
+	if seen.SlippageBps != 50 || seen.QuoteCap != "26000" || seen.Qty != "0.5" {
+		t.Errorf("forwarded fields: bps=%d cap=%q qty=%q", seen.SlippageBps, seen.QuoteCap, seen.Qty)
 	}
 }
 
-func TestPlaceOrder_MarketWithSlippageButNoLastPrice(t *testing.T) {
+// Protected market buy by qty without quote_cap cannot be funds-bounded —
+// BFF refuses before counter (ADR-0083).
+func TestPlaceOrder_ProtectedMarketBuyNeedsQuoteCap(t *testing.T) {
 	srv := newServer(&fakeCounter{})
 	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"market","qty":"0.5","slippage_bps":50}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
@@ -424,6 +425,42 @@ func TestPlaceOrder_MarketWithSlippageButNoLastPrice(t *testing.T) {
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPlaceOrder_SlippageOnLimitRejected(t *testing.T) {
+	srv := newServer(&fakeCounter{})
+	body := `{"symbol":"BTC-USDT","side":"buy","order_type":"limit","price":"100","qty":"1","slippage_bps":50}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "1001")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Protected market sell needs no quote_cap (base qty is the freeze) and
+// forwards natively with the bps stamp.
+func TestPlaceOrder_ProtectedMarketSellForwarded(t *testing.T) {
+	var seen *counterrpc.PlaceOrderRequest
+	fc := &fakeCounter{
+		placeFn: func(req *counterrpc.PlaceOrderRequest) (*counterrpc.PlaceOrderResponse, error) {
+			seen = req
+			return &counterrpc.PlaceOrderResponse{OrderId: 1, Accepted: true}, nil
+		},
+	}
+	srv := newServer(fc)
+	body := `{"symbol":"BTC-USDT","side":"sell","order_type":"market","qty":"0.5","slippage_bps":30}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewBufferString(body))
+	req.Header.Set(auth.HeaderUserID, "1001")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if seen.SlippageBps != 30 || seen.QuoteCap != "" {
+		t.Errorf("forwarded fields: bps=%d cap=%q", seen.SlippageBps, seen.QuoteCap)
 	}
 }
 

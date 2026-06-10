@@ -101,7 +101,8 @@ type OrderSnapshot struct {
 	TIF             uint8  `json:"tif"`
 	Price           string `json:"price"`
 	Qty             string `json:"qty"`
-	QuoteQty        string `json:"quote_qty,omitempty"` // ADR-0035 market buy budget
+	QuoteQty        string `json:"quote_qty,omitempty"`    // ADR-0035 market buy budget
+	SlippageBps     uint32 `json:"slippage_bps,omitempty"` // ADR-0083 protected market order
 	FilledQty       string `json:"filled_qty"`
 	FrozenAsset     string `json:"frozen_asset,omitempty"`
 	FrozenAmount    string `json:"frozen_amount"`
@@ -215,6 +216,7 @@ func CaptureFromState(
 			Price:           o.Price.String(),
 			Qty:             o.Qty.String(),
 			QuoteQty:        o.QuoteQty.String(),
+			SlippageBps:     o.SlippageBps,
 			FilledQty:       o.FilledQty.String(),
 			FrozenAsset:     o.FrozenAsset,
 			FrozenAmount:    o.FrozenAmount.String(),
@@ -318,6 +320,7 @@ func RestoreState(shardID int, state *counterstate.ShardState, snap *ShardSnapsh
 			Price:           price,
 			Qty:             qty,
 			QuoteQty:        quoteQty,
+			SlippageBps:     os.SlippageBps,
 			FilledQty:       filled,
 			FrozenAsset:     os.FrozenAsset,
 			FrozenAmount:    frozen,
@@ -554,6 +557,7 @@ func orderToProto(o *OrderSnapshot) *snapshotpb.CounterOrder {
 		PreCancelStatus: uint32(o.PreCancelStatus),
 		CreatedAt:       o.CreatedAt,
 		UpdatedAt:       o.UpdatedAt,
+		SlippageBps:     o.SlippageBps,
 	}
 }
 
@@ -653,6 +657,7 @@ func orderFromProto(o *snapshotpb.CounterOrder) OrderSnapshot {
 		PreCancelStatus: uint8(o.PreCancelStatus),
 		CreatedAt:       o.CreatedAt,
 		UpdatedAt:       o.UpdatedAt,
+		SlippageBps:     o.SlippageBps,
 	}
 }
 

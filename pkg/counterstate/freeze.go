@@ -15,6 +15,11 @@ var (
 	ErrInvalidQty          = errors.New("qty must be > 0")
 	ErrInvalidPrice        = errors.New("price must be > 0 for limit orders")
 	ErrMarketBuyNeedsQuote = errors.New("market buy requires quote_qty (ADR-0035)")
+	// ADR-0083 protected market order shape errors.
+	ErrInvalidSlippage      = errors.New("slippage_bps must be in (0, 10000] and only on market orders (ADR-0083)")
+	ErrProtectedBuyNeedsCap = errors.New("protected market buy by qty requires quote_cap (ADR-0083)")
+	ErrQuoteCapNotAllowed   = errors.New("quote_cap is only valid on a protected market buy by qty (ADR-0083)")
+	ErrProtectedQuoteHasCap = errors.New("market buy by quote_qty must not carry quote_cap — the budget is the cap (ADR-0083)")
 )
 
 // SymbolAssets extracts (base, quote) from a "BASE-QUOTE" symbol. Returns
@@ -29,26 +34,36 @@ func SymbolAssets(symbol string) (base, quote string, err error) {
 
 // ComputeFreeze returns (asset, amount) that an order must freeze on placement.
 //
-// Supported shapes (ADR-0035):
+// Supported shapes (ADR-0035 + ADR-0083):
 //
-//	Limit Buy:             freeze quote = price × qty
-//	Limit Sell:            freeze base  = qty
-//	Market Sell:           freeze base  = qty  (no price; taker eats asks)
-//	Market Buy + quoteQty: freeze quote = quoteQty  (BN quoteOrderQty form)
+//	Limit Buy:                          freeze quote = price × qty
+//	Limit Sell:                         freeze base  = qty
+//	Market Sell:                        freeze base  = qty  (no price; taker eats asks)
+//	Market Buy + quoteQty:              freeze quote = quoteQty  (BN quoteOrderQty form)
+//	Protected Market Buy + qty + cap:   freeze quote = quoteCap  (ADR-0083; slippageBps > 0)
 //
-// Market Buy with only `qty` (no quoteQty) is explicitly rejected. Counter
-// deliberately does not keep price / order-book context, so it cannot turn a
-// base quantity into a quote freeze cap at placement time. Callers must pass
-// the quote budget they want frozen as quoteQty; otherwise Counter would need
-// to subscribe to market-data and stop being a state-machine-only component
-// (see ADR-0035 §备选方案 Z).
-func ComputeFreeze(symbol string, side Side, typ OrderType, price, qty, quoteQty dec.Decimal) (asset string, amount dec.Decimal, err error) {
+// Market Buy with only `qty` (no quoteQty) is rejected unless it is an
+// ADR-0083 protected order with an explicit quoteCap: Counter deliberately
+// does not keep price / order-book context (ADR-0035 §备选方案 Z), so the
+// user must commit to a max quote spend up-front; Match then bounds the
+// execution by min(collar, quoteCap/qty) — INV-1 — so the actual spend never
+// exceeds this freeze.
+//
+// slippageBps is validated here (single source of truth for order-shape
+// rules): it must be 0 on non-market orders and within (0, 10000] when set.
+func ComputeFreeze(symbol string, side Side, typ OrderType, price, qty, quoteQty, quoteCap dec.Decimal, slippageBps uint32) (asset string, amount dec.Decimal, err error) {
 	base, quote, err := SymbolAssets(symbol)
 	if err != nil {
 		return "", dec.Zero, err
 	}
+	if slippageBps > 10_000 || (slippageBps > 0 && typ != OrderTypeMarket) {
+		return "", dec.Zero, ErrInvalidSlippage
+	}
 	switch typ {
 	case OrderTypeLimit:
+		if dec.IsPositive(quoteCap) {
+			return "", dec.Zero, ErrQuoteCapNotAllowed
+		}
 		if !dec.IsPositive(qty) {
 			return "", dec.Zero, ErrInvalidQty
 		}
@@ -66,15 +81,35 @@ func ComputeFreeze(symbol string, side Side, typ OrderType, price, qty, quoteQty
 	case OrderTypeMarket:
 		switch side {
 		case SideAsk:
+			if dec.IsPositive(quoteCap) {
+				return "", dec.Zero, ErrQuoteCapNotAllowed
+			}
 			if !dec.IsPositive(qty) {
 				return "", dec.Zero, ErrInvalidQty
 			}
 			return base, qty, nil
 		case SideBid:
-			if !dec.IsPositive(quoteQty) {
-				return "", dec.Zero, ErrMarketBuyNeedsQuote
+			if dec.IsPositive(quoteQty) {
+				if dec.IsPositive(quoteCap) {
+					return "", dec.Zero, ErrProtectedQuoteHasCap
+				}
+				return quote, quoteQty, nil
 			}
-			return quote, quoteQty, nil
+			// ADR-0083: market buy by base qty — only as a protected order
+			// with an explicit quote_cap to freeze.
+			if slippageBps > 0 {
+				if !dec.IsPositive(qty) {
+					return "", dec.Zero, ErrInvalidQty
+				}
+				if !dec.IsPositive(quoteCap) {
+					return "", dec.Zero, ErrProtectedBuyNeedsCap
+				}
+				return quote, quoteCap, nil
+			}
+			if dec.IsPositive(quoteCap) {
+				return "", dec.Zero, ErrQuoteCapNotAllowed
+			}
+			return "", dec.Zero, ErrMarketBuyNeedsQuote
 		default:
 			return "", dec.Zero, ErrInvalidSide
 		}
