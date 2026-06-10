@@ -22,15 +22,28 @@ service PerpService {
   rpc QueryOrder(QueryOrderRequest) returns (QueryOrderResponse);
   rpc QueryPositions(QueryPositionsRequest) returns (QueryPositionsResponse);
   rpc QueryMargin(QueryMarginRequest) returns (QueryMarginResponse);
+
+  // ADR-0074 account / position config surface. Mutations are idempotent on
+  // client_op_id (a repeat returns the first outcome) and run inside the
+  // owning user's sequencer.
+  rpc SetMarginMode(SetMarginModeRequest) returns (SetMarginModeResponse);
+  rpc AdjustIsolatedMargin(AdjustIsolatedMarginRequest) returns (AdjustIsolatedMarginResponse);
+  rpc SetAutoAddMargin(SetAutoAddMarginRequest) returns (SetAutoAddMarginResponse);
+  rpc SetPositionLeverage(SetPositionLeverageRequest) returns (SetPositionLeverageResponse);
+  rpc SetRiskId(SetRiskIdRequest) returns (SetRiskIdResponse);
+  rpc QueryPositionConfig(QueryPositionConfigRequest) returns (QueryPositionConfigResponse);
+  rpc QueryAccountConfig(QueryAccountConfigRequest) returns (QueryAccountConfigResponse);
+
+  // ADR-0074 §10 admin plane (internal; not routed by the public BFF).
+  rpc SetCustomerLeverageLimit(SetCustomerLeverageLimitRequest) returns (SetCustomerLeverageLimitResponse);
+  rpc ListCustomerLeverageLimits(ListCustomerLeverageLimitsRequest) returns (ListCustomerLeverageLimitsResponse);
 }
 
-// MarginMode mirrors perpstate.MarginMode (ADR-0068 §3.1). MVP implements
-// ISOLATED only; CROSS is reserved so the wire shape is stable when cross
-// margin lands as an additive change.
+// MarginMode mirrors perpstate.MarginMode (ADR-0068 §3.1 / ADR-0074).
 enum MarginMode {
   MARGIN_MODE_UNSPECIFIED = 0;
   MARGIN_MODE_ISOLATED = 1;
-  MARGIN_MODE_CROSS = 2; // reserved (future)
+  MARGIN_MODE_CROSS = 2;
 }
 
 message PlaceOrderRequest {
@@ -103,24 +116,176 @@ message Position {
   opentrade.event.Side side = 2;
   string size = 3;
   string entry_price = 4;
-  string margin = 5;
+  string margin = 5;          // isolated margin; "0" for cross (equity lives in the pool)
   string leverage = 6;
   MarginMode margin_mode = 7;
   string mark_price = 8;
   string unrealized_pnl = 9;
   string realized_pnl = 10;
-  string liq_price = 11;
+  string liq_price = 11;      // isolated only; cross liquidation is pool-level (ADR-0074 §4 rule #6)
   string margin_ratio = 12;
+  uint32 risk_id = 13;        // selected risk tier (0 = auto)
 }
 
 message QueryMarginRequest {
   uint64 user_id = 1;
 }
 
+// QueryMarginResponse separates persisted ledger buckets from derived risk
+// values (ADR-0074 §2): free_balance / order_margin_reserved /
+// isolated_margin_locked are journaled cash; the cross_* fields and the
+// available_* fields are computed from positions + marks + risk tiers at
+// query time and never appear as money movements in the journal.
 message QueryMarginResponse {
-  string asset = 1;            // "USDT"
-  string available = 2;        // free margin balance
-  string reserved = 3;         // IM held against open orders (ADR-0041 reservation)
-  string position_margin = 4;  // sum of margin locked in positions
-  string unrealized_pnl = 5;   // sum across positions at latest mark
+  string asset = 1;                      // "USDT"
+  string free_balance = 2;               // cash not locked by isolated margin or order reservations
+  string order_margin_reserved = 3;      // IM held against open orders (ADR-0041 reservation)
+  string isolated_margin_locked = 4;     // Σ isolated position.margin (positions are authoritative)
+  string isolated_unrealized_pnl = 5;    // derived: Σ isolated uPnL at mark
+  string cross_unrealized_pnl = 6;       // derived: Σ cross uPnL at mark
+  string cross_initial_required = 7;     // derived: cross pool IM requirement
+  string cross_maintenance_required = 8; // derived: cross pool MM requirement
+  string available_to_trade = 9;         // derived: free + min(cross uPnL, 0) - cross IM requirement
+  string available_to_withdraw = 10;     // derived: max(0, min(free_balance, available_to_trade))
+}
+
+// --- ADR-0074 config ops ------------------------------------------------
+
+message SetMarginModeRequest {
+  uint64 user_id = 1;
+  string symbol = 2;
+  MarginMode target_mode = 3;
+  string target_margin = 4;   // cross→isolated only: requested isolated margin (decimal, optional)
+  string client_op_id = 5;
+}
+
+message SetMarginModeResponse {
+  bool accepted = 1;
+  string reject_reason = 2;
+  MarginMode margin_mode = 3;     // post-op mode
+  string position_margin = 4;     // post-op isolated margin ("0" for cross)
+  string free_balance_after = 5;
+}
+
+message AdjustIsolatedMarginRequest {
+  uint64 user_id = 1;
+  string symbol = 2;
+  string delta = 3;           // signed decimal: >0 add from free balance, <0 remove to free balance
+  string client_op_id = 4;
+}
+
+message AdjustIsolatedMarginResponse {
+  bool accepted = 1;
+  string reject_reason = 2;
+  string position_margin = 3;
+  string free_balance_after = 4;
+}
+
+message SetAutoAddMarginRequest {
+  uint64 user_id = 1;
+  string symbol = 2;
+  bool enabled = 3;
+  string max_add_per_event = 4; // decimal, "0"/empty = uncapped
+  string client_op_id = 5;
+}
+
+message SetAutoAddMarginResponse {
+  bool accepted = 1;
+  string reject_reason = 2;
+}
+
+message SetPositionLeverageRequest {
+  uint64 user_id = 1;
+  string symbol = 2;
+  string leverage = 3;        // decimal > 0
+  string client_op_id = 4;
+}
+
+message SetPositionLeverageResponse {
+  bool accepted = 1;
+  string reject_reason = 2;
+  string leverage = 3;            // post-op configured leverage
+  string position_margin = 4;     // post-op isolated margin (resized by the change)
+  string free_balance_after = 5;
+}
+
+message SetRiskIdRequest {
+  uint64 user_id = 1;
+  string symbol = 2;
+  uint32 risk_id = 3;         // 1-based tier index; 0 = auto
+  string client_op_id = 4;
+}
+
+message SetRiskIdResponse {
+  bool accepted = 1;
+  string reject_reason = 2;
+  uint32 risk_id = 3;
+}
+
+message QueryPositionConfigRequest {
+  uint64 user_id = 1;
+  string symbol = 2;          // empty = all symbols with a config or position
+}
+
+// PositionConfig is the per-(user, symbol) view (ADR-0074 glossary). The
+// effective_* fields are derived from tier table + customer cap at query time.
+message PositionConfig {
+  string symbol = 1;
+  MarginMode margin_mode = 2;
+  string leverage = 3;
+  uint32 risk_id = 4;
+  bool auto_add_margin = 5;
+  string auto_add_max = 6;
+  string effective_max_leverage = 7; // min(tier cap, customer cap, product default)
+  string max_notional = 8;           // selected risk tier's notional cap ("0" = uncapped)
+}
+
+message QueryPositionConfigResponse {
+  repeated PositionConfig configs = 1;
+}
+
+message QueryAccountConfigRequest {
+  uint64 user_id = 1;
+}
+
+// AccountConfig is the account-level view. risk_model is reserved plumbing
+// for ADR-0074 §12 (portfolio margin replaces the pool risk model, not the
+// account topology); only STANDARD is implemented.
+message QueryAccountConfigResponse {
+  string settle_asset = 1;        // "USDT"
+  string risk_model = 2;          // STANDARD | PORTFOLIO (reserved)
+  string cross_pool_id = 3;       // "cross:{user_id}:USDT"
+  repeated CustomerLeverageLimit leverage_limits = 4; // caps applying to this user
+}
+
+// --- ADR-0074 §10 admin plane -------------------------------------------
+
+message CustomerLeverageLimit {
+  uint64 user_id = 1;
+  string symbol = 2;          // empty = all symbols
+  string max_leverage = 3;    // decimal
+  string reason = 4;
+  string updated_by = 5;
+  int64 updated_at_unix_ms = 6;
+}
+
+message SetCustomerLeverageLimitRequest {
+  uint64 user_id = 1;
+  string symbol = 2;          // empty = user-global cap
+  string max_leverage = 3;    // decimal; "0" removes the cap
+  string reason = 4;
+  string updated_by = 5;
+}
+
+message SetCustomerLeverageLimitResponse {
+  bool accepted = 1;
+  string reject_reason = 2;
+}
+
+message ListCustomerLeverageLimitsRequest {
+  uint64 user_id = 1;         // 0 = all users
+}
+
+message ListCustomerLeverageLimitsResponse {
+  repeated CustomerLeverageLimit limits = 1;
 }

@@ -18,19 +18,32 @@ option go_package = "github.com/xargin/opentrade/api/gen/event;event";
 // typed-producer naming), used downstream as the per-row idempotency guard.
 // -----------------------------------------------------------------------------
 
+// PerpMarginMode mirrors perpstate.MarginMode on the journal wire
+// (ADR-0074). Kept in the event package so journal consumers (trade-dump /
+// push / shadow replay) do not import the rpc package.
+enum PerpMarginMode {
+  PERP_MARGIN_MODE_UNSPECIFIED = 0;
+  PERP_MARGIN_MODE_ISOLATED = 1;
+  PERP_MARGIN_MODE_CROSS = 2;
+}
+
 // Post-change snapshot of a position, embedded in events so replay/audit
 // needs no cross-referencing (mirrors BalanceSnapshot). Side is unset and
-// size "0" when the position is flat after the change.
+// size "0" when the position is flat after the change. A cross position
+// reports margin "0" — its equity lives in the account cross pool
+// (ADR-0074 §4 rule #2).
 message PerpPositionSnapshot {
   uint64 user_id = 1;
   string symbol = 2;
   Side side = 3;
   string size = 4;          // decimal
   string entry_price = 5;   // decimal
-  string margin = 6;        // decimal USDT
+  string margin = 6;        // decimal USDT (isolated only; "0" for cross)
   string leverage = 7;      // decimal
   string realized_pnl = 8;  // cumulative, decimal
   uint64 version = 9;
+  PerpMarginMode margin_mode = 10;
+  uint32 risk_id = 11;      // user-selected risk tier (0 = auto)
 }
 
 message PerpJournalEvent {
@@ -46,6 +59,9 @@ message PerpJournalEvent {
     PerpAdlEvent         adl          = 15;
     PerpTakeoverEvent    takeover     = 16;
     RiskPoolSettlementEvent risk_pool_settlement = 17;
+    PerpPositionConfigEvent   position_config   = 18; // ADR-0074
+    PerpMarginAdjustmentEvent margin_adjustment = 19; // ADR-0074
+    PerpCustomerRiskLimitEvent customer_risk_limit = 20; // ADR-0074
   }
 }
 
@@ -168,6 +184,59 @@ message PerpAdlEvent {
   string requested_qty = 9;
   PerpPositionSnapshot position_after = 10;
   string fact_qty = 11;
+}
+
+// Position config change (ADR-0074 §13): margin mode switch, leverage
+// change, risk_id selection, or auto-add-margin toggle. position_version is
+// the post-change version; cash moved by the change (mode switch margin
+// release/lock, leverage-driven margin resize) is journaled separately as a
+// PerpMarginAdjustmentEvent so config history and money movement stay
+// independently auditable.
+message PerpPositionConfigEvent {
+  uint64 user_id = 1;
+  string symbol = 2;
+  PerpMarginMode margin_mode = 3;
+  string leverage = 4;          // decimal
+  uint32 risk_id = 5;           // 0 = auto
+  bool auto_add_margin = 6;
+  string auto_add_max = 7;      // decimal; cap per auto-add event, "0" = uncapped
+  uint64 position_version = 8;
+  string reason = 9;            // which op produced this (set_leverage / set_risk_id / set_margin_mode / set_auto_add)
+  string client_op_id = 10;     // idempotency key of the user op
+}
+
+// Isolated position margin movement (ADR-0074 §13): manual add/remove, the
+// cash leg of a mode switch, or an automatic top-up. amount is always
+// positive; kind encodes the direction.
+message PerpMarginAdjustmentEvent {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_ADD_ISOLATED = 1;     // wallet free balance -> position margin
+    KIND_REMOVE_ISOLATED = 2;  // position margin -> wallet free balance
+    KIND_MODE_SWITCH = 3;      // margin released (-> cross) or locked (-> isolated)
+    KIND_AUTO_ADD = 4;         // mark-tick auto top-up (ADR-0074 §7)
+    KIND_LEVERAGE_RESIZE = 5;  // margin moved by a leverage change (ADR-0074 §8)
+  }
+  uint64 user_id = 1;
+  string symbol = 2;
+  Kind kind = 3;
+  string amount = 4;           // decimal, positive
+  string margin_before = 5;    // position margin before
+  string margin_after = 6;     // position margin after
+  string wallet_after = 7;     // wallet free balance after
+  uint64 position_version = 8;
+  string client_op_id = 9;     // empty for AUTO_ADD (system-initiated)
+  string mark_price = 10;      // mark at decision time (auto-add / health checks audit)
+}
+
+// Customer leverage cap change (ADR-0074 §10, admin plane). A symbol-scoped
+// row overrides the user-global row; max_leverage "0" removes the cap.
+message PerpCustomerRiskLimitEvent {
+  uint64 user_id = 1;
+  string symbol = 2;           // empty = applies to all symbols
+  string max_leverage = 3;     // decimal; "0" = cap removed
+  string reason = 4;
+  string updated_by = 5;
 }
 
 // RiskPool settlement is the only authoritative fund movement for a completed

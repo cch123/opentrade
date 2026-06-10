@@ -12,14 +12,19 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
+	"github.com/xargin/opentrade/api/gen/rpc/perp/perprpcconnect"
 	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/perp-counter/internal/service"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
-// Server satisfies perprpcconnect.PerpServiceHandler.
+// Server satisfies perprpcconnect.PerpServiceHandler. The embedded
+// Unimplemented handler covers the ADR-0074 config RPCs until their service
+// paths land; each is replaced by a real handler in the wiring milestone.
 type Server struct {
+	perprpcconnect.UnimplementedPerpServiceHandler
+
 	eng        *engine.Engine
 	svc        *service.Service
 	defaultMMR dec.Decimal // maintenance margin rate for derived liq/ratio (M6: per-symbol)
@@ -82,21 +87,44 @@ func (s *Server) QueryMargin(_ context.Context, req *connect.Request[perprpc.Que
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
 	}
 	w := s.eng.WalletOf(user)
-	posMargin := dec.FromInt(0)
-	uPnL := dec.FromInt(0)
+	isoMargin := dec.FromInt(0)
+	isoUPnL := dec.FromInt(0)
+	crossUPnL := dec.FromInt(0)
 	for _, p := range s.eng.PositionsOf(user) {
-		posMargin = posMargin.Add(p.Margin)
 		mark := s.eng.MarkOf(p.Symbol)
+		u := dec.FromInt(0)
 		if mark.Sign() > 0 {
-			uPnL = uPnL.Add(p.UnrealizedPnL(mark))
+			u = p.UnrealizedPnL(mark)
 		}
+		if p.Mode == perpstate.MarginCross {
+			crossUPnL = crossUPnL.Add(u)
+			continue
+		}
+		isoMargin = isoMargin.Add(p.Margin)
+		isoUPnL = isoUPnL.Add(u)
+	}
+	// Derived availability (ADR-0074 §2). Cross requirements are zero until
+	// the cross pool evaluation is wired through the engine (M6 fills these
+	// from StandardRisk); the formulas below already follow the final shape.
+	zero := dec.FromInt(0)
+	crossIM := zero
+	crossMM := zero
+	availTrade := w.Available.Add(dec.Min(crossUPnL, zero)).Sub(crossIM)
+	availWithdraw := dec.Min(w.Available, availTrade)
+	if availWithdraw.Sign() < 0 {
+		availWithdraw = zero
 	}
 	return connect.NewResponse(&perprpc.QueryMarginResponse{
-		Asset:          "USDT",
-		Available:      w.Available.String(),
-		Reserved:       w.Reserved.String(),
-		PositionMargin: posMargin.String(),
-		UnrealizedPnl:  uPnL.String(),
+		Asset:                    "USDT",
+		FreeBalance:              w.Available.String(),
+		OrderMarginReserved:      w.Reserved.String(),
+		IsolatedMarginLocked:     isoMargin.String(),
+		IsolatedUnrealizedPnl:    isoUPnL.String(),
+		CrossUnrealizedPnl:       crossUPnL.String(),
+		CrossInitialRequired:     crossIM.String(),
+		CrossMaintenanceRequired: crossMM.String(),
+		AvailableToTrade:         availTrade.String(),
+		AvailableToWithdraw:      availWithdraw.String(),
 	}), nil
 }
 

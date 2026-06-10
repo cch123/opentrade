@@ -176,11 +176,16 @@ func (s *Server) handlePerpMargin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"asset":           resp.Msg.Asset,
-		"available":       resp.Msg.Available,
-		"reserved":        resp.Msg.Reserved,
-		"position_margin": resp.Msg.PositionMargin,
-		"unrealized_pnl":  resp.Msg.UnrealizedPnl,
+		"asset":                      resp.Msg.Asset,
+		"free_balance":               resp.Msg.FreeBalance,
+		"order_margin_reserved":      resp.Msg.OrderMarginReserved,
+		"isolated_margin_locked":     resp.Msg.IsolatedMarginLocked,
+		"isolated_unrealized_pnl":    resp.Msg.IsolatedUnrealizedPnl,
+		"cross_unrealized_pnl":       resp.Msg.CrossUnrealizedPnl,
+		"cross_initial_required":     resp.Msg.CrossInitialRequired,
+		"cross_maintenance_required": resp.Msg.CrossMaintenanceRequired,
+		"available_to_trade":         resp.Msg.AvailableToTrade,
+		"available_to_withdraw":      resp.Msg.AvailableToWithdraw,
 	})
 }
 

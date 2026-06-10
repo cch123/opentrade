@@ -43,7 +43,34 @@ func (f *fakePerp) QueryPositions(_ context.Context, _ *connect.Request[perprpc.
 	}}), nil
 }
 func (f *fakePerp) QueryMargin(_ context.Context, _ *connect.Request[perprpc.QueryMarginRequest]) (*connect.Response[perprpc.QueryMarginResponse], error) {
-	return connect.NewResponse(&perprpc.QueryMarginResponse{Asset: "USDT", Available: "990", Reserved: "10"}), nil
+	return connect.NewResponse(&perprpc.QueryMarginResponse{Asset: "USDT", FreeBalance: "990", OrderMarginReserved: "10"}), nil
+}
+func (f *fakePerp) SetMarginMode(_ context.Context, _ *connect.Request[perprpc.SetMarginModeRequest]) (*connect.Response[perprpc.SetMarginModeResponse], error) {
+	return connect.NewResponse(&perprpc.SetMarginModeResponse{Accepted: true}), nil
+}
+func (f *fakePerp) AdjustIsolatedMargin(_ context.Context, _ *connect.Request[perprpc.AdjustIsolatedMarginRequest]) (*connect.Response[perprpc.AdjustIsolatedMarginResponse], error) {
+	return connect.NewResponse(&perprpc.AdjustIsolatedMarginResponse{Accepted: true}), nil
+}
+func (f *fakePerp) SetAutoAddMargin(_ context.Context, _ *connect.Request[perprpc.SetAutoAddMarginRequest]) (*connect.Response[perprpc.SetAutoAddMarginResponse], error) {
+	return connect.NewResponse(&perprpc.SetAutoAddMarginResponse{Accepted: true}), nil
+}
+func (f *fakePerp) SetPositionLeverage(_ context.Context, _ *connect.Request[perprpc.SetPositionLeverageRequest]) (*connect.Response[perprpc.SetPositionLeverageResponse], error) {
+	return connect.NewResponse(&perprpc.SetPositionLeverageResponse{Accepted: true}), nil
+}
+func (f *fakePerp) SetRiskId(_ context.Context, _ *connect.Request[perprpc.SetRiskIdRequest]) (*connect.Response[perprpc.SetRiskIdResponse], error) {
+	return connect.NewResponse(&perprpc.SetRiskIdResponse{Accepted: true}), nil
+}
+func (f *fakePerp) QueryPositionConfig(_ context.Context, _ *connect.Request[perprpc.QueryPositionConfigRequest]) (*connect.Response[perprpc.QueryPositionConfigResponse], error) {
+	return connect.NewResponse(&perprpc.QueryPositionConfigResponse{}), nil
+}
+func (f *fakePerp) QueryAccountConfig(_ context.Context, _ *connect.Request[perprpc.QueryAccountConfigRequest]) (*connect.Response[perprpc.QueryAccountConfigResponse], error) {
+	return connect.NewResponse(&perprpc.QueryAccountConfigResponse{}), nil
+}
+func (f *fakePerp) SetCustomerLeverageLimit(_ context.Context, _ *connect.Request[perprpc.SetCustomerLeverageLimitRequest]) (*connect.Response[perprpc.SetCustomerLeverageLimitResponse], error) {
+	return connect.NewResponse(&perprpc.SetCustomerLeverageLimitResponse{Accepted: true}), nil
+}
+func (f *fakePerp) ListCustomerLeverageLimits(_ context.Context, _ *connect.Request[perprpc.ListCustomerLeverageLimitsRequest]) (*connect.Response[perprpc.ListCustomerLeverageLimitsResponse], error) {
+	return connect.NewResponse(&perprpc.ListCustomerLeverageLimitsResponse{}), nil
 }
 
 func newPerpServer(fp *fakePerp) *Server {
@@ -104,7 +131,7 @@ func TestPerpPositionsAndMargin(t *testing.T) {
 	srv.Handler().ServeHTTP(rr, req)
 	var mr map[string]any
 	_ = json.Unmarshal(rr.Body.Bytes(), &mr)
-	if mr["available"] != "990" || mr["reserved"] != "10" {
+	if mr["free_balance"] != "990" || mr["order_margin_reserved"] != "10" {
 		t.Fatalf("margin = %+v", mr)
 	}
 }

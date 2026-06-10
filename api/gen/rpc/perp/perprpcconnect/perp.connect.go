@@ -44,6 +44,32 @@ const (
 	PerpServiceQueryPositionsProcedure = "/opentrade.rpc.perp.PerpService/QueryPositions"
 	// PerpServiceQueryMarginProcedure is the fully-qualified name of the PerpService's QueryMargin RPC.
 	PerpServiceQueryMarginProcedure = "/opentrade.rpc.perp.PerpService/QueryMargin"
+	// PerpServiceSetMarginModeProcedure is the fully-qualified name of the PerpService's SetMarginMode
+	// RPC.
+	PerpServiceSetMarginModeProcedure = "/opentrade.rpc.perp.PerpService/SetMarginMode"
+	// PerpServiceAdjustIsolatedMarginProcedure is the fully-qualified name of the PerpService's
+	// AdjustIsolatedMargin RPC.
+	PerpServiceAdjustIsolatedMarginProcedure = "/opentrade.rpc.perp.PerpService/AdjustIsolatedMargin"
+	// PerpServiceSetAutoAddMarginProcedure is the fully-qualified name of the PerpService's
+	// SetAutoAddMargin RPC.
+	PerpServiceSetAutoAddMarginProcedure = "/opentrade.rpc.perp.PerpService/SetAutoAddMargin"
+	// PerpServiceSetPositionLeverageProcedure is the fully-qualified name of the PerpService's
+	// SetPositionLeverage RPC.
+	PerpServiceSetPositionLeverageProcedure = "/opentrade.rpc.perp.PerpService/SetPositionLeverage"
+	// PerpServiceSetRiskIdProcedure is the fully-qualified name of the PerpService's SetRiskId RPC.
+	PerpServiceSetRiskIdProcedure = "/opentrade.rpc.perp.PerpService/SetRiskId"
+	// PerpServiceQueryPositionConfigProcedure is the fully-qualified name of the PerpService's
+	// QueryPositionConfig RPC.
+	PerpServiceQueryPositionConfigProcedure = "/opentrade.rpc.perp.PerpService/QueryPositionConfig"
+	// PerpServiceQueryAccountConfigProcedure is the fully-qualified name of the PerpService's
+	// QueryAccountConfig RPC.
+	PerpServiceQueryAccountConfigProcedure = "/opentrade.rpc.perp.PerpService/QueryAccountConfig"
+	// PerpServiceSetCustomerLeverageLimitProcedure is the fully-qualified name of the PerpService's
+	// SetCustomerLeverageLimit RPC.
+	PerpServiceSetCustomerLeverageLimitProcedure = "/opentrade.rpc.perp.PerpService/SetCustomerLeverageLimit"
+	// PerpServiceListCustomerLeverageLimitsProcedure is the fully-qualified name of the PerpService's
+	// ListCustomerLeverageLimits RPC.
+	PerpServiceListCustomerLeverageLimitsProcedure = "/opentrade.rpc.perp.PerpService/ListCustomerLeverageLimits"
 )
 
 // PerpServiceClient is a client for the opentrade.rpc.perp.PerpService service.
@@ -53,6 +79,19 @@ type PerpServiceClient interface {
 	QueryOrder(context.Context, *connect.Request[perp.QueryOrderRequest]) (*connect.Response[perp.QueryOrderResponse], error)
 	QueryPositions(context.Context, *connect.Request[perp.QueryPositionsRequest]) (*connect.Response[perp.QueryPositionsResponse], error)
 	QueryMargin(context.Context, *connect.Request[perp.QueryMarginRequest]) (*connect.Response[perp.QueryMarginResponse], error)
+	// ADR-0074 account / position config surface. Mutations are idempotent on
+	// client_op_id (a repeat returns the first outcome) and run inside the
+	// owning user's sequencer.
+	SetMarginMode(context.Context, *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error)
+	AdjustIsolatedMargin(context.Context, *connect.Request[perp.AdjustIsolatedMarginRequest]) (*connect.Response[perp.AdjustIsolatedMarginResponse], error)
+	SetAutoAddMargin(context.Context, *connect.Request[perp.SetAutoAddMarginRequest]) (*connect.Response[perp.SetAutoAddMarginResponse], error)
+	SetPositionLeverage(context.Context, *connect.Request[perp.SetPositionLeverageRequest]) (*connect.Response[perp.SetPositionLeverageResponse], error)
+	SetRiskId(context.Context, *connect.Request[perp.SetRiskIdRequest]) (*connect.Response[perp.SetRiskIdResponse], error)
+	QueryPositionConfig(context.Context, *connect.Request[perp.QueryPositionConfigRequest]) (*connect.Response[perp.QueryPositionConfigResponse], error)
+	QueryAccountConfig(context.Context, *connect.Request[perp.QueryAccountConfigRequest]) (*connect.Response[perp.QueryAccountConfigResponse], error)
+	// ADR-0074 §10 admin plane (internal; not routed by the public BFF).
+	SetCustomerLeverageLimit(context.Context, *connect.Request[perp.SetCustomerLeverageLimitRequest]) (*connect.Response[perp.SetCustomerLeverageLimitResponse], error)
+	ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error)
 }
 
 // NewPerpServiceClient constructs a client for the opentrade.rpc.perp.PerpService service. By
@@ -96,16 +135,79 @@ func NewPerpServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(perpServiceMethods.ByName("QueryMargin")),
 			connect.WithClientOptions(opts...),
 		),
+		setMarginMode: connect.NewClient[perp.SetMarginModeRequest, perp.SetMarginModeResponse](
+			httpClient,
+			baseURL+PerpServiceSetMarginModeProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("SetMarginMode")),
+			connect.WithClientOptions(opts...),
+		),
+		adjustIsolatedMargin: connect.NewClient[perp.AdjustIsolatedMarginRequest, perp.AdjustIsolatedMarginResponse](
+			httpClient,
+			baseURL+PerpServiceAdjustIsolatedMarginProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("AdjustIsolatedMargin")),
+			connect.WithClientOptions(opts...),
+		),
+		setAutoAddMargin: connect.NewClient[perp.SetAutoAddMarginRequest, perp.SetAutoAddMarginResponse](
+			httpClient,
+			baseURL+PerpServiceSetAutoAddMarginProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("SetAutoAddMargin")),
+			connect.WithClientOptions(opts...),
+		),
+		setPositionLeverage: connect.NewClient[perp.SetPositionLeverageRequest, perp.SetPositionLeverageResponse](
+			httpClient,
+			baseURL+PerpServiceSetPositionLeverageProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("SetPositionLeverage")),
+			connect.WithClientOptions(opts...),
+		),
+		setRiskId: connect.NewClient[perp.SetRiskIdRequest, perp.SetRiskIdResponse](
+			httpClient,
+			baseURL+PerpServiceSetRiskIdProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("SetRiskId")),
+			connect.WithClientOptions(opts...),
+		),
+		queryPositionConfig: connect.NewClient[perp.QueryPositionConfigRequest, perp.QueryPositionConfigResponse](
+			httpClient,
+			baseURL+PerpServiceQueryPositionConfigProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("QueryPositionConfig")),
+			connect.WithClientOptions(opts...),
+		),
+		queryAccountConfig: connect.NewClient[perp.QueryAccountConfigRequest, perp.QueryAccountConfigResponse](
+			httpClient,
+			baseURL+PerpServiceQueryAccountConfigProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("QueryAccountConfig")),
+			connect.WithClientOptions(opts...),
+		),
+		setCustomerLeverageLimit: connect.NewClient[perp.SetCustomerLeverageLimitRequest, perp.SetCustomerLeverageLimitResponse](
+			httpClient,
+			baseURL+PerpServiceSetCustomerLeverageLimitProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("SetCustomerLeverageLimit")),
+			connect.WithClientOptions(opts...),
+		),
+		listCustomerLeverageLimits: connect.NewClient[perp.ListCustomerLeverageLimitsRequest, perp.ListCustomerLeverageLimitsResponse](
+			httpClient,
+			baseURL+PerpServiceListCustomerLeverageLimitsProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("ListCustomerLeverageLimits")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // perpServiceClient implements PerpServiceClient.
 type perpServiceClient struct {
-	placeOrder     *connect.Client[perp.PlaceOrderRequest, perp.PlaceOrderResponse]
-	cancelOrder    *connect.Client[perp.CancelOrderRequest, perp.CancelOrderResponse]
-	queryOrder     *connect.Client[perp.QueryOrderRequest, perp.QueryOrderResponse]
-	queryPositions *connect.Client[perp.QueryPositionsRequest, perp.QueryPositionsResponse]
-	queryMargin    *connect.Client[perp.QueryMarginRequest, perp.QueryMarginResponse]
+	placeOrder                 *connect.Client[perp.PlaceOrderRequest, perp.PlaceOrderResponse]
+	cancelOrder                *connect.Client[perp.CancelOrderRequest, perp.CancelOrderResponse]
+	queryOrder                 *connect.Client[perp.QueryOrderRequest, perp.QueryOrderResponse]
+	queryPositions             *connect.Client[perp.QueryPositionsRequest, perp.QueryPositionsResponse]
+	queryMargin                *connect.Client[perp.QueryMarginRequest, perp.QueryMarginResponse]
+	setMarginMode              *connect.Client[perp.SetMarginModeRequest, perp.SetMarginModeResponse]
+	adjustIsolatedMargin       *connect.Client[perp.AdjustIsolatedMarginRequest, perp.AdjustIsolatedMarginResponse]
+	setAutoAddMargin           *connect.Client[perp.SetAutoAddMarginRequest, perp.SetAutoAddMarginResponse]
+	setPositionLeverage        *connect.Client[perp.SetPositionLeverageRequest, perp.SetPositionLeverageResponse]
+	setRiskId                  *connect.Client[perp.SetRiskIdRequest, perp.SetRiskIdResponse]
+	queryPositionConfig        *connect.Client[perp.QueryPositionConfigRequest, perp.QueryPositionConfigResponse]
+	queryAccountConfig         *connect.Client[perp.QueryAccountConfigRequest, perp.QueryAccountConfigResponse]
+	setCustomerLeverageLimit   *connect.Client[perp.SetCustomerLeverageLimitRequest, perp.SetCustomerLeverageLimitResponse]
+	listCustomerLeverageLimits *connect.Client[perp.ListCustomerLeverageLimitsRequest, perp.ListCustomerLeverageLimitsResponse]
 }
 
 // PlaceOrder calls opentrade.rpc.perp.PerpService.PlaceOrder.
@@ -133,6 +235,51 @@ func (c *perpServiceClient) QueryMargin(ctx context.Context, req *connect.Reques
 	return c.queryMargin.CallUnary(ctx, req)
 }
 
+// SetMarginMode calls opentrade.rpc.perp.PerpService.SetMarginMode.
+func (c *perpServiceClient) SetMarginMode(ctx context.Context, req *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error) {
+	return c.setMarginMode.CallUnary(ctx, req)
+}
+
+// AdjustIsolatedMargin calls opentrade.rpc.perp.PerpService.AdjustIsolatedMargin.
+func (c *perpServiceClient) AdjustIsolatedMargin(ctx context.Context, req *connect.Request[perp.AdjustIsolatedMarginRequest]) (*connect.Response[perp.AdjustIsolatedMarginResponse], error) {
+	return c.adjustIsolatedMargin.CallUnary(ctx, req)
+}
+
+// SetAutoAddMargin calls opentrade.rpc.perp.PerpService.SetAutoAddMargin.
+func (c *perpServiceClient) SetAutoAddMargin(ctx context.Context, req *connect.Request[perp.SetAutoAddMarginRequest]) (*connect.Response[perp.SetAutoAddMarginResponse], error) {
+	return c.setAutoAddMargin.CallUnary(ctx, req)
+}
+
+// SetPositionLeverage calls opentrade.rpc.perp.PerpService.SetPositionLeverage.
+func (c *perpServiceClient) SetPositionLeverage(ctx context.Context, req *connect.Request[perp.SetPositionLeverageRequest]) (*connect.Response[perp.SetPositionLeverageResponse], error) {
+	return c.setPositionLeverage.CallUnary(ctx, req)
+}
+
+// SetRiskId calls opentrade.rpc.perp.PerpService.SetRiskId.
+func (c *perpServiceClient) SetRiskId(ctx context.Context, req *connect.Request[perp.SetRiskIdRequest]) (*connect.Response[perp.SetRiskIdResponse], error) {
+	return c.setRiskId.CallUnary(ctx, req)
+}
+
+// QueryPositionConfig calls opentrade.rpc.perp.PerpService.QueryPositionConfig.
+func (c *perpServiceClient) QueryPositionConfig(ctx context.Context, req *connect.Request[perp.QueryPositionConfigRequest]) (*connect.Response[perp.QueryPositionConfigResponse], error) {
+	return c.queryPositionConfig.CallUnary(ctx, req)
+}
+
+// QueryAccountConfig calls opentrade.rpc.perp.PerpService.QueryAccountConfig.
+func (c *perpServiceClient) QueryAccountConfig(ctx context.Context, req *connect.Request[perp.QueryAccountConfigRequest]) (*connect.Response[perp.QueryAccountConfigResponse], error) {
+	return c.queryAccountConfig.CallUnary(ctx, req)
+}
+
+// SetCustomerLeverageLimit calls opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit.
+func (c *perpServiceClient) SetCustomerLeverageLimit(ctx context.Context, req *connect.Request[perp.SetCustomerLeverageLimitRequest]) (*connect.Response[perp.SetCustomerLeverageLimitResponse], error) {
+	return c.setCustomerLeverageLimit.CallUnary(ctx, req)
+}
+
+// ListCustomerLeverageLimits calls opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits.
+func (c *perpServiceClient) ListCustomerLeverageLimits(ctx context.Context, req *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error) {
+	return c.listCustomerLeverageLimits.CallUnary(ctx, req)
+}
+
 // PerpServiceHandler is an implementation of the opentrade.rpc.perp.PerpService service.
 type PerpServiceHandler interface {
 	PlaceOrder(context.Context, *connect.Request[perp.PlaceOrderRequest]) (*connect.Response[perp.PlaceOrderResponse], error)
@@ -140,6 +287,19 @@ type PerpServiceHandler interface {
 	QueryOrder(context.Context, *connect.Request[perp.QueryOrderRequest]) (*connect.Response[perp.QueryOrderResponse], error)
 	QueryPositions(context.Context, *connect.Request[perp.QueryPositionsRequest]) (*connect.Response[perp.QueryPositionsResponse], error)
 	QueryMargin(context.Context, *connect.Request[perp.QueryMarginRequest]) (*connect.Response[perp.QueryMarginResponse], error)
+	// ADR-0074 account / position config surface. Mutations are idempotent on
+	// client_op_id (a repeat returns the first outcome) and run inside the
+	// owning user's sequencer.
+	SetMarginMode(context.Context, *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error)
+	AdjustIsolatedMargin(context.Context, *connect.Request[perp.AdjustIsolatedMarginRequest]) (*connect.Response[perp.AdjustIsolatedMarginResponse], error)
+	SetAutoAddMargin(context.Context, *connect.Request[perp.SetAutoAddMarginRequest]) (*connect.Response[perp.SetAutoAddMarginResponse], error)
+	SetPositionLeverage(context.Context, *connect.Request[perp.SetPositionLeverageRequest]) (*connect.Response[perp.SetPositionLeverageResponse], error)
+	SetRiskId(context.Context, *connect.Request[perp.SetRiskIdRequest]) (*connect.Response[perp.SetRiskIdResponse], error)
+	QueryPositionConfig(context.Context, *connect.Request[perp.QueryPositionConfigRequest]) (*connect.Response[perp.QueryPositionConfigResponse], error)
+	QueryAccountConfig(context.Context, *connect.Request[perp.QueryAccountConfigRequest]) (*connect.Response[perp.QueryAccountConfigResponse], error)
+	// ADR-0074 §10 admin plane (internal; not routed by the public BFF).
+	SetCustomerLeverageLimit(context.Context, *connect.Request[perp.SetCustomerLeverageLimitRequest]) (*connect.Response[perp.SetCustomerLeverageLimitResponse], error)
+	ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error)
 }
 
 // NewPerpServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -179,6 +339,60 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(perpServiceMethods.ByName("QueryMargin")),
 		connect.WithHandlerOptions(opts...),
 	)
+	perpServiceSetMarginModeHandler := connect.NewUnaryHandler(
+		PerpServiceSetMarginModeProcedure,
+		svc.SetMarginMode,
+		connect.WithSchema(perpServiceMethods.ByName("SetMarginMode")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceAdjustIsolatedMarginHandler := connect.NewUnaryHandler(
+		PerpServiceAdjustIsolatedMarginProcedure,
+		svc.AdjustIsolatedMargin,
+		connect.WithSchema(perpServiceMethods.ByName("AdjustIsolatedMargin")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceSetAutoAddMarginHandler := connect.NewUnaryHandler(
+		PerpServiceSetAutoAddMarginProcedure,
+		svc.SetAutoAddMargin,
+		connect.WithSchema(perpServiceMethods.ByName("SetAutoAddMargin")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceSetPositionLeverageHandler := connect.NewUnaryHandler(
+		PerpServiceSetPositionLeverageProcedure,
+		svc.SetPositionLeverage,
+		connect.WithSchema(perpServiceMethods.ByName("SetPositionLeverage")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceSetRiskIdHandler := connect.NewUnaryHandler(
+		PerpServiceSetRiskIdProcedure,
+		svc.SetRiskId,
+		connect.WithSchema(perpServiceMethods.ByName("SetRiskId")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceQueryPositionConfigHandler := connect.NewUnaryHandler(
+		PerpServiceQueryPositionConfigProcedure,
+		svc.QueryPositionConfig,
+		connect.WithSchema(perpServiceMethods.ByName("QueryPositionConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceQueryAccountConfigHandler := connect.NewUnaryHandler(
+		PerpServiceQueryAccountConfigProcedure,
+		svc.QueryAccountConfig,
+		connect.WithSchema(perpServiceMethods.ByName("QueryAccountConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceSetCustomerLeverageLimitHandler := connect.NewUnaryHandler(
+		PerpServiceSetCustomerLeverageLimitProcedure,
+		svc.SetCustomerLeverageLimit,
+		connect.WithSchema(perpServiceMethods.ByName("SetCustomerLeverageLimit")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceListCustomerLeverageLimitsHandler := connect.NewUnaryHandler(
+		PerpServiceListCustomerLeverageLimitsProcedure,
+		svc.ListCustomerLeverageLimits,
+		connect.WithSchema(perpServiceMethods.ByName("ListCustomerLeverageLimits")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/opentrade.rpc.perp.PerpService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PerpServicePlaceOrderProcedure:
@@ -191,6 +405,24 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 			perpServiceQueryPositionsHandler.ServeHTTP(w, r)
 		case PerpServiceQueryMarginProcedure:
 			perpServiceQueryMarginHandler.ServeHTTP(w, r)
+		case PerpServiceSetMarginModeProcedure:
+			perpServiceSetMarginModeHandler.ServeHTTP(w, r)
+		case PerpServiceAdjustIsolatedMarginProcedure:
+			perpServiceAdjustIsolatedMarginHandler.ServeHTTP(w, r)
+		case PerpServiceSetAutoAddMarginProcedure:
+			perpServiceSetAutoAddMarginHandler.ServeHTTP(w, r)
+		case PerpServiceSetPositionLeverageProcedure:
+			perpServiceSetPositionLeverageHandler.ServeHTTP(w, r)
+		case PerpServiceSetRiskIdProcedure:
+			perpServiceSetRiskIdHandler.ServeHTTP(w, r)
+		case PerpServiceQueryPositionConfigProcedure:
+			perpServiceQueryPositionConfigHandler.ServeHTTP(w, r)
+		case PerpServiceQueryAccountConfigProcedure:
+			perpServiceQueryAccountConfigHandler.ServeHTTP(w, r)
+		case PerpServiceSetCustomerLeverageLimitProcedure:
+			perpServiceSetCustomerLeverageLimitHandler.ServeHTTP(w, r)
+		case PerpServiceListCustomerLeverageLimitsProcedure:
+			perpServiceListCustomerLeverageLimitsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -218,4 +450,40 @@ func (UnimplementedPerpServiceHandler) QueryPositions(context.Context, *connect.
 
 func (UnimplementedPerpServiceHandler) QueryMargin(context.Context, *connect.Request[perp.QueryMarginRequest]) (*connect.Response[perp.QueryMarginResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.QueryMargin is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) SetMarginMode(context.Context, *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.SetMarginMode is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) AdjustIsolatedMargin(context.Context, *connect.Request[perp.AdjustIsolatedMarginRequest]) (*connect.Response[perp.AdjustIsolatedMarginResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.AdjustIsolatedMargin is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) SetAutoAddMargin(context.Context, *connect.Request[perp.SetAutoAddMarginRequest]) (*connect.Response[perp.SetAutoAddMarginResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.SetAutoAddMargin is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) SetPositionLeverage(context.Context, *connect.Request[perp.SetPositionLeverageRequest]) (*connect.Response[perp.SetPositionLeverageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.SetPositionLeverage is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) SetRiskId(context.Context, *connect.Request[perp.SetRiskIdRequest]) (*connect.Response[perp.SetRiskIdResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.SetRiskId is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) QueryPositionConfig(context.Context, *connect.Request[perp.QueryPositionConfigRequest]) (*connect.Response[perp.QueryPositionConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.QueryPositionConfig is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) QueryAccountConfig(context.Context, *connect.Request[perp.QueryAccountConfigRequest]) (*connect.Response[perp.QueryAccountConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.QueryAccountConfig is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) SetCustomerLeverageLimit(context.Context, *connect.Request[perp.SetCustomerLeverageLimitRequest]) (*connect.Response[perp.SetCustomerLeverageLimitResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) ListCustomerLeverageLimits(context.Context, *connect.Request[perp.ListCustomerLeverageLimitsRequest]) (*connect.Response[perp.ListCustomerLeverageLimitsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits is not implemented"))
 }
