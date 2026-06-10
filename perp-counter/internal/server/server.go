@@ -65,8 +65,12 @@ func (s *Server) QueryPositions(_ context.Context, req *connect.Request[perprpc.
 	}
 	var src []perpstate.Position
 	if sym := req.Msg.GetSymbol(); sym != "" {
-		if p, ok := s.eng.PositionOf(user, sym); ok {
-			src = []perpstate.Position{p}
+		// One row per non-flat leg (ADR-0077): net mode yields at most idx 0,
+		// hedge mode up to both legs.
+		for idx := perpstate.IdxNet; idx <= perpstate.IdxShort; idx++ {
+			if p, ok := s.eng.PositionOf(user, sym, idx); ok {
+				src = append(src, p)
+			}
 		}
 	} else {
 		src = s.eng.PositionsOf(user)
@@ -133,6 +137,15 @@ func (s *Server) QueryMargin(_ context.Context, req *connect.Request[perprpc.Que
 
 func (s *Server) SetMarginMode(_ context.Context, req *connect.Request[perprpc.SetMarginModeRequest]) (*connect.Response[perprpc.SetMarginModeResponse], error) {
 	resp, err := s.svc.SetMarginMode(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// SetPositionMode is the ADR-0077 §3 ONE_WAY ↔ HEDGE switch.
+func (s *Server) SetPositionMode(_ context.Context, req *connect.Request[perprpc.SetPositionModeRequest]) (*connect.Response[perprpc.SetPositionModeResponse], error) {
+	resp, err := s.svc.SetPositionMode(req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -209,6 +222,9 @@ func (s *Server) positionView(p *perpstate.Position) *perprpc.Position {
 	mark := s.eng.MarkOf(p.Symbol)
 	v := &perprpc.Position{
 		Symbol:      p.Symbol,
+		PositionIdx: uint32(p.PositionIdx),
+		PositionMode: toWirePositionMode(
+			s.eng.PositionModeOf(p.UserID, p.Symbol)),
 		Side:        toEventSide(p.Side),
 		Size:        p.Size.String(),
 		EntryPrice:  p.Entry.String(),
@@ -258,4 +274,11 @@ func toWireMode(m perpstate.MarginMode) perprpc.MarginMode {
 	default:
 		return perprpc.MarginMode_MARGIN_MODE_UNSPECIFIED
 	}
+}
+
+func toWirePositionMode(m perpstate.PositionMode) perprpc.PositionMode {
+	if m == perpstate.PositionHedge {
+		return perprpc.PositionMode_POSITION_MODE_HEDGE
+	}
+	return perprpc.PositionMode_POSITION_MODE_ONE_WAY
 }

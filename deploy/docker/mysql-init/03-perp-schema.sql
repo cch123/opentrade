@@ -7,12 +7,15 @@
 --
 -- All monetary values are DECIMAL(36, 18) (string at the API boundary).
 
--- Current position per (user, symbol). Upserted from the PerpPositionSnapshot
--- embedded in settlement / funding / liquidation events. A flat position keeps
--- size 0 (its watermarks live in the perp-counter snapshot, not here).
+-- Current position per (user, symbol, position_idx) — ADR-0077: idx 0 is the
+-- one-way net record, 1/2 the hedge legs. Upserted from the
+-- PerpPositionSnapshot embedded in settlement / funding / liquidation events.
+-- A flat position keeps size 0 (its watermarks live in the perp-counter
+-- snapshot, not here).
 CREATE TABLE IF NOT EXISTS perp_positions (
     user_id       BIGINT UNSIGNED NOT NULL,
     symbol        VARCHAR(32)     NOT NULL,
+    position_idx  TINYINT UNSIGNED NOT NULL DEFAULT 0, -- ADR-0077
     side          TINYINT         NOT NULL DEFAULT 0,
     size          DECIMAL(36, 18) NOT NULL DEFAULT 0,
     entry_price   DECIMAL(36, 18) NOT NULL DEFAULT 0,
@@ -24,7 +27,7 @@ CREATE TABLE IF NOT EXISTS perp_positions (
     version       BIGINT UNSIGNED NOT NULL DEFAULT 0,
     perp_seq_id   BIGINT UNSIGNED NOT NULL,
     updated_at    DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (user_id, symbol)
+    PRIMARY KEY (user_id, symbol, position_idx)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Per-user futures (USDT) margin wallet. Upserted from PerpMarginEvent
@@ -47,6 +50,7 @@ CREATE TABLE IF NOT EXISTS perp_orders (
     status        TINYINT         NOT NULL,
     filled_qty    DECIMAL(36, 18) NOT NULL DEFAULT 0,
     reduce_only   TINYINT(1)      NOT NULL DEFAULT 0,
+    position_idx  TINYINT UNSIGNED NOT NULL DEFAULT 0, -- ADR-0077 order intent
     reject_reason TINYINT         NOT NULL DEFAULT 0,
     updated_at    DATETIME(3)     NOT NULL,
     PRIMARY KEY (order_id),
@@ -60,6 +64,7 @@ CREATE TABLE IF NOT EXISTS perp_settlements (
     order_id        BIGINT UNSIGNED NOT NULL,
     trade_id        VARCHAR(64)     NOT NULL DEFAULT '',
     symbol          VARCHAR(32)     NOT NULL,
+    position_idx    TINYINT UNSIGNED NOT NULL DEFAULT 0, -- ADR-0077
     fill_side       TINYINT         NOT NULL,
     price           DECIMAL(36, 18) NOT NULL,
     qty             DECIMAL(36, 18) NOT NULL,
@@ -78,6 +83,7 @@ CREATE TABLE IF NOT EXISTS perp_funding (
     perp_seq_id      BIGINT UNSIGNED NOT NULL,
     user_id       BIGINT UNSIGNED NOT NULL,
     symbol           VARCHAR(32)     NOT NULL,
+    position_idx     TINYINT UNSIGNED NOT NULL DEFAULT 0, -- ADR-0077 per-leg funding
     funding_round_id VARCHAR(96)     NOT NULL,
     funding_rate     DECIMAL(36, 18) NOT NULL DEFAULT 0,
     mark_price       DECIMAL(36, 18) NOT NULL DEFAULT 0,
@@ -93,6 +99,7 @@ CREATE TABLE IF NOT EXISTS perp_liquidations (
     perp_seq_id      BIGINT UNSIGNED NOT NULL,
     user_id       BIGINT UNSIGNED NOT NULL,
     symbol           VARCHAR(32)     NOT NULL,
+    position_idx     TINYINT UNSIGNED NOT NULL DEFAULT 0, -- ADR-0077 liquidated leg
     liq_order_id     BIGINT UNSIGNED NOT NULL,
     bankruptcy_price DECIMAL(36, 18) NOT NULL DEFAULT 0,
     mark_price       DECIMAL(36, 18) NOT NULL DEFAULT 0,
@@ -113,6 +120,7 @@ CREATE TABLE IF NOT EXISTS perp_takeover_lots (
     perp_seq_id         BIGINT UNSIGNED NOT NULL,
     user_id       BIGINT UNSIGNED NOT NULL,
     symbol              VARCHAR(32)     NOT NULL,
+    position_idx        TINYINT UNSIGNED NOT NULL DEFAULT 0, -- ADR-0077 taken-over leg
     side                TINYINT         NOT NULL,
     total_qty           DECIMAL(36, 18) NOT NULL DEFAULT 0,
     leaves_qty          DECIMAL(36, 18) NOT NULL DEFAULT 0,
@@ -132,6 +140,7 @@ CREATE TABLE IF NOT EXISTS perp_adl_events (
     perp_seq_id    BIGINT UNSIGNED NOT NULL,
     user_id       BIGINT UNSIGNED NOT NULL,
     symbol         VARCHAR(32)     NOT NULL,
+    position_idx   TINYINT UNSIGNED NOT NULL DEFAULT 0, -- ADR-0077 reduced leg
     lot_id         VARCHAR(128)    NOT NULL DEFAULT '',
     adl_round      BIGINT UNSIGNED NOT NULL,
     price          DECIMAL(36, 18) NOT NULL DEFAULT 0,
@@ -188,6 +197,8 @@ CREATE TABLE IF NOT EXISTS perp_position_config_logs (
     user_id          BIGINT UNSIGNED NOT NULL,
     symbol           VARCHAR(32)     NOT NULL,
     margin_mode      TINYINT         NOT NULL DEFAULT 1,
+    position_mode    TINYINT         NOT NULL DEFAULT 1, -- ADR-0077: 1 one-way / 2 hedge
+    position_idx     TINYINT UNSIGNED NOT NULL DEFAULT 0, -- echo-provenance leg
     leverage         DECIMAL(36, 18) NOT NULL DEFAULT 0,
     risk_id          INT UNSIGNED    NOT NULL DEFAULT 0,
     auto_add_margin  TINYINT(1)      NOT NULL DEFAULT 0,
@@ -206,6 +217,7 @@ CREATE TABLE IF NOT EXISTS perp_margin_adjustments (
     perp_seq_id      BIGINT UNSIGNED NOT NULL,
     user_id          BIGINT UNSIGNED NOT NULL,
     symbol           VARCHAR(32)     NOT NULL,
+    position_idx     TINYINT UNSIGNED NOT NULL DEFAULT 0, -- ADR-0077: the leg whose margin moved
     kind             TINYINT         NOT NULL, -- PerpMarginAdjustmentEvent.Kind
     amount           DECIMAL(36, 18) NOT NULL DEFAULT 0,
     margin_before    DECIMAL(36, 18) NOT NULL DEFAULT 0,
@@ -231,4 +243,22 @@ CREATE TABLE IF NOT EXISTS perp_customer_risk_limits (
     ts_unix_ms   BIGINT          NOT NULL,
     PRIMARY KEY (perp_seq_id),
     KEY idx_user (user_id, symbol, perp_seq_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ADR-0077 §2 / ADR-0081 §2: REDUCE_ONLY invariant breaches — a close fill's
+-- excess a hedge leg refused to absorb (never flipped, never silently
+-- dropped). This table is the manual-repair queue input.
+CREATE TABLE IF NOT EXISTS perp_invariant_breaches (
+    perp_seq_id  BIGINT UNSIGNED NOT NULL,
+    user_id      BIGINT UNSIGNED NOT NULL,
+    symbol       VARCHAR(32)     NOT NULL,
+    position_idx TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    order_id     BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    trade_id     VARCHAR(64)     NOT NULL DEFAULT '',
+    kind         VARCHAR(64)     NOT NULL DEFAULT '',
+    excess_qty   DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    fill_price   DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    ts_unix_ms   BIGINT          NOT NULL,
+    PRIMARY KEY (perp_seq_id),
+    KEY idx_user_symbol (user_id, symbol, perp_seq_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -175,6 +175,7 @@ BlockTradeRequest
 - product API 的结果要能从 journal 重建，不依赖内存临时状态。
 - close-all 第一版只支持 market protected reduce-only，不支持用户指定复杂路径。
 - amend 默认等待旧单 terminal；fast-path 必须额外测试 worst-case reservation。
+- **ADR-0077 依赖**：TP/SL position binding 落地的同一里程碑，必须把真实的 active-trigger 查询接入 perp-counter 的 `TriggerChecker` seam（ADR-0077 §3）——否则 SetPositionMode 的 flat-only 校验会漏掉 position-bound trigger，留下 orphan trigger。
 - block trade 必须测试双用户 / 跨 shard 一腿失败整体 reject。
 - 单测覆盖 batch 部分成功、amend cancel/fill race、TP/SL 仓位消失、close-all in-flight fill、admin force 调整审计。
 

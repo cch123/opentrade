@@ -1743,6 +1743,7 @@ type PerpPosition struct {
 	Leverage        string                 `protobuf:"bytes,7,opt,name=leverage,proto3" json:"leverage,omitempty"`
 	RealizedPnl     string                 `protobuf:"bytes,8,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"`
 	UpdatedAtUnixMs int64                  `protobuf:"varint,9,opt,name=updated_at_unix_ms,json=updatedAtUnixMs,proto3" json:"updated_at_unix_ms,omitempty"`
+	PositionIdx     uint32                 `protobuf:"varint,10,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"` // ADR-0077: 0 net / 1 hedge long / 2 hedge short
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1836,6 +1837,13 @@ func (x *PerpPosition) GetRealizedPnl() string {
 func (x *PerpPosition) GetUpdatedAtUnixMs() int64 {
 	if x != nil {
 		return x.UpdatedAtUnixMs
+	}
+	return 0
+}
+
+func (x *PerpPosition) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
 	}
 	return 0
 }
@@ -1986,6 +1994,7 @@ type PerpFunding struct {
 	MarkPrice      string                 `protobuf:"bytes,5,opt,name=mark_price,json=markPrice,proto3" json:"mark_price,omitempty"`
 	Payment        string                 `protobuf:"bytes,6,opt,name=payment,proto3" json:"payment,omitempty"` // signed; negative = the position paid
 	TsUnixMs       int64                  `protobuf:"varint,7,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	PositionIdx    uint32                 `protobuf:"varint,8,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"` // ADR-0077 per-leg funding
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2065,6 +2074,13 @@ func (x *PerpFunding) GetPayment() string {
 func (x *PerpFunding) GetTsUnixMs() int64 {
 	if x != nil {
 		return x.TsUnixMs
+	}
+	return 0
+}
+
+func (x *PerpFunding) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
 	}
 	return 0
 }
@@ -2219,6 +2235,7 @@ type PerpMarginAdjustment struct {
 	ClientOpId      string                 `protobuf:"bytes,9,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"`
 	MarkPrice       string                 `protobuf:"bytes,10,opt,name=mark_price,json=markPrice,proto3" json:"mark_price,omitempty"`
 	TsUnixMs        int64                  `protobuf:"varint,11,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	PositionIdx     uint32                 `protobuf:"varint,12,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"` // ADR-0077: the leg whose margin moved
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2326,6 +2343,13 @@ func (x *PerpMarginAdjustment) GetMarkPrice() string {
 func (x *PerpMarginAdjustment) GetTsUnixMs() int64 {
 	if x != nil {
 		return x.TsUnixMs
+	}
+	return 0
+}
+
+func (x *PerpMarginAdjustment) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
 	}
 	return 0
 }
@@ -2480,6 +2504,8 @@ type PerpConfigLog struct {
 	Reason          string                 `protobuf:"bytes,9,opt,name=reason,proto3" json:"reason,omitempty"`
 	ClientOpId      string                 `protobuf:"bytes,10,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"`
 	TsUnixMs        int64                  `protobuf:"varint,11,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	PositionMode    int32                  `protobuf:"varint,12,opt,name=position_mode,json=positionMode,proto3" json:"position_mode,omitempty"` // ADR-0077: 1 one-way / 2 hedge
+	PositionIdx     uint32                 `protobuf:"varint,13,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2587,6 +2613,20 @@ func (x *PerpConfigLog) GetClientOpId() string {
 func (x *PerpConfigLog) GetTsUnixMs() int64 {
 	if x != nil {
 		return x.TsUnixMs
+	}
+	return 0
+}
+
+func (x *PerpConfigLog) GetPositionMode() int32 {
+	if x != nil {
+		return x.PositionMode
+	}
+	return 0
+}
+
+func (x *PerpConfigLog) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
 	}
 	return 0
 }
@@ -2740,6 +2780,7 @@ type PerpLiquidation struct {
 	InsuranceDelta  string                 `protobuf:"bytes,8,opt,name=insurance_delta,json=insuranceDelta,proto3" json:"insurance_delta,omitempty"`
 	AdlQueued       bool                   `protobuf:"varint,9,opt,name=adl_queued,json=adlQueued,proto3" json:"adl_queued,omitempty"`
 	TsUnixMs        int64                  `protobuf:"varint,10,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	PositionIdx     uint32                 `protobuf:"varint,11,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"` // ADR-0077 liquidated leg
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2840,6 +2881,13 @@ func (x *PerpLiquidation) GetAdlQueued() bool {
 func (x *PerpLiquidation) GetTsUnixMs() int64 {
 	if x != nil {
 		return x.TsUnixMs
+	}
+	return 0
+}
+
+func (x *PerpLiquidation) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
 	}
 	return 0
 }
@@ -2992,6 +3040,7 @@ type PerpADL struct {
 	FactQty       string                 `protobuf:"bytes,7,opt,name=fact_qty,json=factQty,proto3" json:"fact_qty,omitempty"`
 	RealizedPnl   string                 `protobuf:"bytes,8,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"`
 	TsUnixMs      int64                  `protobuf:"varint,9,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	PositionIdx   uint32                 `protobuf:"varint,10,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"` // ADR-0077 reduced leg
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3085,6 +3134,13 @@ func (x *PerpADL) GetRealizedPnl() string {
 func (x *PerpADL) GetTsUnixMs() int64 {
 	if x != nil {
 		return x.TsUnixMs
+	}
+	return 0
+}
+
+func (x *PerpADL) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
 	}
 	return 0
 }
@@ -3232,7 +3288,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"^\n" +
 	"\x19ListPerpPositionsResponse\x12A\n" +
-	"\tpositions\x18\x01 \x03(\v2#.opentrade.rpc.history.PerpPositionR\tpositions\"\xa3\x02\n" +
+	"\tpositions\x18\x01 \x03(\v2#.opentrade.rpc.history.PerpPositionR\tpositions\"\xc6\x02\n" +
 	"\fPerpPosition\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12)\n" +
@@ -3243,7 +3299,9 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x06margin\x18\x06 \x01(\tR\x06margin\x12\x1a\n" +
 	"\bleverage\x18\a \x01(\tR\bleverage\x12!\n" +
 	"\frealized_pnl\x18\b \x01(\tR\vrealizedPnl\x12+\n" +
-	"\x12updated_at_unix_ms\x18\t \x01(\x03R\x0fupdatedAtUnixMs\"\xad\x01\n" +
+	"\x12updated_at_unix_ms\x18\t \x01(\x03R\x0fupdatedAtUnixMs\x12!\n" +
+	"\fposition_idx\x18\n" +
+	" \x01(\rR\vpositionIdx\"\xad\x01\n" +
 	"\x16ListPerpFundingRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
@@ -3254,7 +3312,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x17ListPerpFundingResponse\x12<\n" +
 	"\afunding\x18\x01 \x03(\v2\".opentrade.rpc.history.PerpFundingR\afunding\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor\"\xe9\x01\n" +
+	"nextCursor\"\x8c\x02\n" +
 	"\vPerpFunding\x12\x1e\n" +
 	"\vperp_seq_id\x18\x01 \x01(\x04R\tperpSeqId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12(\n" +
@@ -3264,7 +3322,8 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"mark_price\x18\x05 \x01(\tR\tmarkPrice\x12\x18\n" +
 	"\apayment\x18\x06 \x01(\tR\apayment\x12\x1c\n" +
 	"\n" +
-	"ts_unix_ms\x18\a \x01(\x03R\btsUnixMs\"\xb7\x01\n" +
+	"ts_unix_ms\x18\a \x01(\x03R\btsUnixMs\x12!\n" +
+	"\fposition_idx\x18\b \x01(\rR\vpositionIdx\"\xb7\x01\n" +
 	" ListPerpMarginAdjustmentsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
@@ -3275,7 +3334,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"!ListPerpMarginAdjustmentsResponse\x12M\n" +
 	"\vadjustments\x18\x01 \x03(\v2+.opentrade.rpc.history.PerpMarginAdjustmentR\vadjustments\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor\"\xef\x02\n" +
+	"nextCursor\"\x92\x03\n" +
 	"\x14PerpMarginAdjustment\x12\x1e\n" +
 	"\vperp_seq_id\x18\x01 \x01(\x04R\tperpSeqId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x12\n" +
@@ -3291,7 +3350,8 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"mark_price\x18\n" +
 	" \x01(\tR\tmarkPrice\x12\x1c\n" +
 	"\n" +
-	"ts_unix_ms\x18\v \x01(\x03R\btsUnixMs\"\xb0\x01\n" +
+	"ts_unix_ms\x18\v \x01(\x03R\btsUnixMs\x12!\n" +
+	"\fposition_idx\x18\f \x01(\rR\vpositionIdx\"\xb0\x01\n" +
 	"\x19ListPerpConfigLogsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
@@ -3302,7 +3362,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x1aListPerpConfigLogsResponse\x128\n" +
 	"\x04logs\x18\x01 \x03(\v2$.opentrade.rpc.history.PerpConfigLogR\x04logs\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor\"\xea\x02\n" +
+	"nextCursor\"\xb2\x03\n" +
 	"\rPerpConfigLog\x12\x1e\n" +
 	"\vperp_seq_id\x18\x01 \x01(\x04R\tperpSeqId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x1f\n" +
@@ -3319,7 +3379,9 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	" \x01(\tR\n" +
 	"clientOpId\x12\x1c\n" +
 	"\n" +
-	"ts_unix_ms\x18\v \x01(\x03R\btsUnixMs\"\xb2\x01\n" +
+	"ts_unix_ms\x18\v \x01(\x03R\btsUnixMs\x12#\n" +
+	"\rposition_mode\x18\f \x01(\x05R\fpositionMode\x12!\n" +
+	"\fposition_idx\x18\r \x01(\rR\vpositionIdx\"\xb2\x01\n" +
 	"\x1bListPerpLiquidationsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
@@ -3330,7 +3392,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x1cListPerpLiquidationsResponse\x12J\n" +
 	"\fliquidations\x18\x01 \x03(\v2&.opentrade.rpc.history.PerpLiquidationR\fliquidations\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor\"\xdd\x02\n" +
+	"nextCursor\"\x80\x03\n" +
 	"\x0fPerpLiquidation\x12\x1e\n" +
 	"\vperp_seq_id\x18\x01 \x01(\x04R\tperpSeqId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12 \n" +
@@ -3347,7 +3409,8 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"adl_queued\x18\t \x01(\bR\tadlQueued\x12\x1c\n" +
 	"\n" +
 	"ts_unix_ms\x18\n" +
-	" \x01(\x03R\btsUnixMs\"\xa9\x01\n" +
+	" \x01(\x03R\btsUnixMs\x12!\n" +
+	"\fposition_idx\x18\v \x01(\rR\vpositionIdx\"\xa9\x01\n" +
 	"\x12ListPerpADLRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x19\n" +
@@ -3358,7 +3421,7 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\x13ListPerpADLResponse\x120\n" +
 	"\x03adl\x18\x01 \x03(\v2\x1e.opentrade.rpc.history.PerpADLR\x03adl\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor\"\x8c\x02\n" +
+	"nextCursor\"\xaf\x02\n" +
 	"\aPerpADL\x12\x1e\n" +
 	"\vperp_seq_id\x18\x01 \x01(\x04R\tperpSeqId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x15\n" +
@@ -3369,7 +3432,9 @@ const file_rpc_history_history_proto_rawDesc = "" +
 	"\bfact_qty\x18\a \x01(\tR\afactQty\x12!\n" +
 	"\frealized_pnl\x18\b \x01(\tR\vrealizedPnl\x12\x1c\n" +
 	"\n" +
-	"ts_unix_ms\x18\t \x01(\x03R\btsUnixMs*n\n" +
+	"ts_unix_ms\x18\t \x01(\x03R\btsUnixMs\x12!\n" +
+	"\fposition_idx\x18\n" +
+	" \x01(\rR\vpositionIdx*n\n" +
 	"\n" +
 	"OrderScope\x12\x1b\n" +
 	"\x17ORDER_SCOPE_UNSPECIFIED\x10\x00\x12\x14\n" +

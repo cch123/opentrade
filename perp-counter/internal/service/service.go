@@ -38,29 +38,43 @@ type Journal interface {
 	Emit(evt *eventpb.PerpJournalEvent)
 }
 
+// TriggerChecker reports whether (user, symbol) holds any ACTIVE
+// position-bound trigger (TP/SL/OCO/TrailingStop) — the ADR-0077 §3
+// mode-switch guard. Position-bound perp triggers arrive with ADR-0078; until
+// that lands no perp trigger can exist, so the nil default (no checker)
+// reporting none is exact, not fail-open. ADR-0078's implementation MUST wire
+// its real active-set query here (its implementation notes carry the
+// dependency).
+type TriggerChecker interface {
+	HasActiveTriggers(user uint64, symbol string) bool
+}
+
 // Order is an in-flight perp order record held by the service. Mode is the
 // position's margin mode at admission time (ADR-0074): it routes the IM
 // reservation to the right wallet bucket — isolated reservations convert to
 // position margin on fill, cross reservations release back to free balance
-// per filled proportion.
+// per filled proportion. PositionIdx is the ADR-0077 position intent: fills
+// route to the (user, symbol, PositionIdx) leg; the mapping lives only here
+// (+ snapshot + PerpOrderStatusEvent), never on the Match wire (§6).
 type Order struct {
-	OrderID    uint64
-	ClientID   string
-	UserID     uint64
-	Symbol     string
-	Side       perpstate.Side
-	Type       eventpb.OrderType
-	TIF        eventpb.TimeInForce
-	Price      dec.Decimal
-	Qty        dec.Decimal
-	Leverage   dec.Decimal
-	Mode       perpstate.MarginMode
-	ReduceOnly bool
-	ReservedIM dec.Decimal
-	FilledQty  dec.Decimal
-	Status     eventpb.InternalOrderStatus
-	CreatedMs  int64
-	UpdatedMs  int64
+	OrderID     uint64
+	ClientID    string
+	UserID      uint64
+	Symbol      string
+	Side        perpstate.Side
+	Type        eventpb.OrderType
+	TIF         eventpb.TimeInForce
+	Price       dec.Decimal
+	Qty         dec.Decimal
+	Leverage    dec.Decimal
+	Mode        perpstate.MarginMode
+	PositionIdx uint8
+	ReduceOnly  bool
+	ReservedIM  dec.Decimal
+	FilledQty   dec.Decimal
+	Status      eventpb.InternalOrderStatus
+	CreatedMs   int64
+	UpdatedMs   int64
 
 	// ConfigVersion is the SymbolConfig version this order was admitted
 	// under (ADR-0075); stamped into the OrderEvent for Match's handshake.
@@ -103,6 +117,10 @@ type Config struct {
 	// config_version; the legacy risk flags only back symbols it does not
 	// cover. nil = flag-driven legacy mode (dev), versions stamp 0.
 	Catalog *perpcfg.Cache
+
+	// Triggers is the ADR-0077 §3 mode-switch seam. nil = no checker: exact
+	// while perp position-bound triggers do not exist (pre-ADR-0078).
+	Triggers TriggerChecker
 
 	Clock func() time.Time // nil → time.Now
 }
@@ -218,6 +236,11 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 		}
 	}
 
+	if req.GetPositionIdx() > uint32(perpstate.IdxShort) {
+		return nil, errors.New("invalid position_idx")
+	}
+	posIdx := uint8(req.GetPositionIdx())
+
 	resp := &perprpc.PlaceOrderResponse{ReceivedTsUnixMs: s.now()}
 	s.seq.do(req.GetUserId(), func() {
 		user, symbol := req.GetUserId(), req.GetSymbol()
@@ -231,18 +254,28 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			resp = s.reject(req, cfgReject)
 			return
 		}
+		// ADR-0077 §2 position-intent matrix, fail-closed both ways. Read
+		// inside the sequencer: SetPositionMode runs there too, so the mode
+		// this order is validated against cannot change before the order is
+		// recorded.
+		symCfg := s.eng.SymbolOrderConfigOf(user, symbol)
+		if reason := perpstate.ValidateOrderIntent(symCfg.PosMode, posIdx, side, req.GetReduceOnly()); reason != "" {
+			resp = s.reject(req, reason)
+			return
+		}
 		// reduce_only must close, never increase: requires an existing
-		// position on the side opposite this order. This is intentionally only
-		// the admission gate; the settlement side still needs its own clamp once
-		// Match fills can arrive after the position has changed.
+		// position on the side opposite this order, on the targeted leg. This
+		// is intentionally only the admission gate; the settlement side clamps
+		// (and a hedge leg never flips) once Match fills can arrive after the
+		// position has changed.
 		if req.GetReduceOnly() {
-			pos, ok := s.eng.PositionOf(user, symbol)
+			pos, ok := s.eng.PositionOf(user, symbol, posIdx)
 			if !ok || pos.Side == side {
 				resp = s.reject(req, "reduce_only_requires_opposite_position")
 				return
 			}
 		}
-		lev, mode, riskID, reason := s.resolveOrderLeverage(user, symbol, reqLev)
+		lev, mode, riskID, reason := s.resolveOrderLeverage(user, symbol, symCfg, reqLev)
 		if reason != "" {
 			resp = s.reject(req, reason)
 			return
@@ -261,14 +294,15 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 					return
 				}
 			}
-			if maxLev := s.maxLeverageForOrder(user, symbol, side, imPrice, qty); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
+			if maxLev := s.maxLeverageForOrder(user, symbol, posIdx, side, imPrice, qty); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
 				resp = s.reject(req, "leverage_exceeds_max")
 				return
 			}
 			// ADR-0074 §9: position + resting orders + this order must fit the
-			// selected risk tier's notional cap (per-symbol tiers, ADR-0075).
+			// selected risk tier's notional cap (per-symbol tiers, ADR-0075;
+			// hedge legs sum GROSS — ADR-0077 §7).
 			if tierCap := s.riskModelForOrder(symbol).MaxNotionalFor(riskID); tierCap.Sign() > 0 {
-				total := s.positionMarkNotional(user, symbol).
+				total := s.eng.SymbolNotionalForCap(user, symbol).
 					Add(s.activeOrderNotional(user, symbol)).
 					Add(imPrice.Mul(qty))
 				if total.Cmp(tierCap) > 0 {
@@ -280,7 +314,7 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 			if mode == perpstate.MarginCross {
 				// ADR-0074 §4: candidate-pool admission, then reserve the order
 				// IM from free cash (rule #4).
-				if reason, ok := s.eng.CrossOrderCheck(user, symbol, side, imPrice, qty, lev, im, s.cfg.TargetMarginBuffer); !ok {
+				if reason, ok := s.eng.CrossOrderCheck(user, symbol, posIdx, side, imPrice, qty, lev, im, s.cfg.TargetMarginBuffer); !ok {
 					resp = s.reject(req, reason)
 					return
 				}
@@ -298,7 +332,8 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 		o := &Order{
 			OrderID: s.nextID(), ClientID: req.GetClientOrderId(), UserID: user,
 			Symbol: symbol, Side: side, Type: req.GetOrderType(), TIF: req.GetTif(),
-			Price: price, Qty: qty, Leverage: lev, Mode: mode, ReduceOnly: req.GetReduceOnly(),
+			Price: price, Qty: qty, Leverage: lev, Mode: mode, PositionIdx: posIdx,
+			ReduceOnly: req.GetReduceOnly(),
 			ReservedIM: reservedIM, FilledQty: zero,
 			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			CreatedMs: s.now(), UpdatedMs: s.now(),
@@ -412,17 +447,20 @@ func (s *Service) settleLeg(user uint64, orderID uint64, side perpstate.Side, ma
 			return
 		}
 		fill := perpstate.Fill{Side: side, Price: dec.New(t.GetPrice()), Qty: dec.New(t.GetQty()), Fee: zero}
-		res, applied := s.eng.ApplyFillWithSeq(user, o.Symbol, o.Leverage, matchSeq, fill)
+		res, excess, applied := s.eng.ApplyFillWithSeq(user, o.Symbol, o.PositionIdx, o.Leverage, matchSeq, fill)
 		if !applied {
 			return // replay
 		}
+		s.emitBreachIfAny(o, t, excess)
 		s.afterFill(o, t, side, res, statusAfter, filledAfter)
 	})
 }
 
 // settleSelfTrade applies both legs of a same-user trade in one serialized
 // step, bypassing the per-leg seq guard (it would skip the second leg) and
-// advancing the watermark once at the end.
+// advancing the watermark once at the end. In hedge mode the two orders may
+// target different position legs (e.g. open-long matching open-short) or the
+// same leg — each routes by its own order's PositionIdx.
 func (s *Service) settleSelfTrade(user uint64, t *eventpb.Trade, matchSeq uint64) {
 	takerSide := fromEventSide(t.GetTakerSide())
 	s.seq.do(user, func() {
@@ -430,19 +468,21 @@ func (s *Service) settleSelfTrade(user uint64, t *eventpb.Trade, matchSeq uint64
 		maker := s.getOrder(t.GetMakerOrderId())
 		price := dec.New(t.GetPrice())
 		qty := dec.New(t.GetQty())
-		// Guard once on the taker order's symbol watermark.
+		// Guard once on the taker order's leg watermark.
 		if taker != nil {
-			res, applied := s.eng.ApplyFillWithSeq(user, taker.Symbol, taker.Leverage, matchSeq,
+			res, excess, applied := s.eng.ApplyFillWithSeq(user, taker.Symbol, taker.PositionIdx, taker.Leverage, matchSeq,
 				perpstate.Fill{Side: takerSide, Price: price, Qty: qty, Fee: zero})
 			if !applied {
 				return
 			}
+			s.emitBreachIfAny(taker, t, excess)
 			s.afterFill(taker, t, takerSide, res, t.GetTakerStatusAfter(), t.GetTakerFilledQtyAfter())
 		}
 		if maker != nil {
 			// seq=0 bypasses the guard (already advanced by the taker leg).
-			res, _ := s.eng.ApplyFillWithSeq(user, maker.Symbol, maker.Leverage, 0,
+			res, excess, _ := s.eng.ApplyFillWithSeq(user, maker.Symbol, maker.PositionIdx, maker.Leverage, 0,
 				perpstate.Fill{Side: takerSide.Opposite(), Price: price, Qty: qty, Fee: zero})
+			s.emitBreachIfAny(maker, t, excess)
 			s.afterFill(maker, t, takerSide.Opposite(), res, t.GetMakerStatusAfter(), t.GetMakerFilledQtyAfter())
 		}
 	})

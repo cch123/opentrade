@@ -380,7 +380,7 @@ func (h *handler) planAndDispatchADL(ctx context.Context, lot perprisk.TakenOver
 		}
 		for _, cand := range candidates {
 			all = append(all, cand)
-			sources[taskKey(cand.UserID, cand.Symbol, cand.PosSeq, cand.PositionVersion)] = endpoint
+			sources[taskKey(cand.UserID, cand.Symbol, cand.PositionIdx, cand.PosSeq, cand.PositionVersion)] = endpoint
 		}
 	}
 	// Reserve one round for the whole plan, not one per shard. The round is the
@@ -393,7 +393,7 @@ func (h *handler) planAndDispatchADL(ctx context.Context, lot perprisk.TakenOver
 	}
 	tasks := perprisk.PlanADL(planningLot, planningLot.TakeoverPrice, round, all)
 	for _, task := range tasks {
-		endpoint := sources[taskKey(task.UserID, task.Symbol, task.PosSeq, task.PositionVersion)]
+		endpoint := sources[taskKey(task.UserID, task.Symbol, task.PositionIdx, task.PosSeq, task.PositionVersion)]
 		if endpoint == "" {
 			continue
 		}
@@ -418,8 +418,13 @@ func (h *handler) planAndDispatchADL(ctx context.Context, lot perprisk.TakenOver
 	return nil
 }
 
-func taskKey(user uint64, symbol string, posSeq, positionVersion uint64) string {
-	return strconv.FormatUint(user, 10) + "|" + symbol + "|" + strconv.FormatUint(posSeq, 10) + "|" + strconv.FormatUint(positionVersion, 10)
+// taskKey routes a planned task back to the shard that reported the source
+// candidate. position_idx is part of the key (ADR-0077 §4): a hedge user's
+// two legs are distinct candidates that may even live at the same
+// (pos_seq, version) right after a restart.
+func taskKey(user uint64, symbol string, positionIdx uint8, posSeq, positionVersion uint64) string {
+	return strconv.FormatUint(user, 10) + "|" + symbol + "|" + strconv.Itoa(int(positionIdx)) +
+		"|" + strconv.FormatUint(posSeq, 10) + "|" + strconv.FormatUint(positionVersion, 10)
 }
 
 type snapper interface {

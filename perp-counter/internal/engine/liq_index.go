@@ -40,15 +40,17 @@ type liqNode struct {
 }
 
 type liqPositionKey struct {
-	userID uint64
-	symbol string
+	userID      uint64
+	symbol      string
+	positionIdx uint8
 }
 
 type liqIndexEntry struct {
-	userID   uint64
-	symbol   string
-	side     perpstate.Side
-	liqPrice dec.Decimal
+	userID      uint64
+	symbol      string
+	positionIdx uint8
+	side        perpstate.Side
+	liqPrice    dec.Decimal
 }
 
 func newLiqIndex() *liqIndex {
@@ -58,21 +60,23 @@ func newLiqIndex() *liqIndex {
 	}
 }
 
-func (idx *liqIndex) rebuild(positions map[uint64]map[string]*perpstate.Position, mmrFor func(*perpstate.Position) perpstate.MMRFunc) {
+func (idx *liqIndex) rebuild(positions map[uint64]map[string]*symbolPositions, mmrFor func(*perpstate.Position) perpstate.MMRFunc) {
 	idx.symbols = map[string]*symbolLiqIndex{}
 	idx.byPosition = map[liqPositionKey]liqIndexEntry{}
 	if mmrFor == nil {
 		return
 	}
 	for user, bySym := range positions {
-		for symbol, p := range bySym {
-			idx.upsert(user, symbol, p, mmrFor(p))
+		for symbol, sp := range bySym {
+			for _, p := range sp.liveLegs(nil) {
+				idx.upsert(user, symbol, p.PositionIdx, p, mmrFor(p))
+			}
 		}
 	}
 }
 
-func (idx *liqIndex) upsert(user uint64, symbol string, p *perpstate.Position, mmrOf perpstate.MMRFunc) {
-	idx.remove(user, symbol)
+func (idx *liqIndex) upsert(user uint64, symbol string, posIdx uint8, p *perpstate.Position, mmrOf perpstate.MMRFunc) {
+	idx.remove(user, symbol, posIdx)
 	if p == nil || p.IsFlat() || mmrOf == nil {
 		return
 	}
@@ -89,15 +93,15 @@ func (idx *liqIndex) upsert(user uint64, symbol string, p *perpstate.Position, m
 	// mark ticks cheap; the caller still rechecks the full CollateralPool before
 	// acting so stale tier config or mark gaps only create harmless candidates.
 	entry := liqIndexEntry{
-		userID: user, symbol: symbol, side: p.Side,
+		userID: user, symbol: symbol, positionIdx: posIdx, side: p.Side,
 		liqPrice: p.LiqPrice(mmrOf),
 	}
 	idx.bySymbol(symbol).treeFor(p.Side).insert(entry)
-	idx.byPosition[liqPositionKey{userID: user, symbol: symbol}] = entry
+	idx.byPosition[liqPositionKey{userID: user, symbol: symbol, positionIdx: posIdx}] = entry
 }
 
-func (idx *liqIndex) remove(user uint64, symbol string) {
-	key := liqPositionKey{userID: user, symbol: symbol}
+func (idx *liqIndex) remove(user uint64, symbol string, posIdx uint8) {
+	key := liqPositionKey{userID: user, symbol: symbol, positionIdx: posIdx}
 	old, ok := idx.byPosition[key]
 	if !ok {
 		return
@@ -260,9 +264,9 @@ func compareLiqEntry(a, b liqIndexEntry) int {
 	if cmp := a.liqPrice.Cmp(b.liqPrice); cmp != 0 {
 		return cmp
 	}
-	// userID/symbol make the tree key total. Without this tie-breaker, two
-	// positions at the same liq price would overwrite each other and a scan
-	// could silently miss one account.
+	// userID/symbol/positionIdx make the tree key total. Without this
+	// tie-breaker, two positions at the same liq price would overwrite each
+	// other and a scan could silently miss one account.
 	if a.userID < b.userID {
 		return -1
 	}
@@ -275,6 +279,12 @@ func compareLiqEntry(a, b liqIndexEntry) int {
 	if a.symbol > b.symbol {
 		return 1
 	}
+	if a.positionIdx < b.positionIdx {
+		return -1
+	}
+	if a.positionIdx > b.positionIdx {
+		return 1
+	}
 	return 0
 }
 
@@ -283,6 +293,6 @@ func liqPriority(entry liqIndexEntry) uint64 {
 	_, _ = h.Write([]byte(entry.symbol))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(strconv.FormatUint(entry.userID, 10)))
-	_, _ = h.Write([]byte{0, byte(entry.side)})
+	_, _ = h.Write([]byte{0, byte(entry.side), entry.positionIdx})
 	return h.Sum64()
 }

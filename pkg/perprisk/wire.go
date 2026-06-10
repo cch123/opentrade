@@ -29,6 +29,7 @@ type CandidateResponse struct {
 type ADLCandidateWire struct {
 	UserID          uint64 `json:"user_id"`
 	Symbol          string `json:"symbol"`
+	PositionIdx     uint8  `json:"position_idx,omitempty"` // ADR-0077 leg
 	Side            uint8  `json:"side"`
 	Size            string `json:"size"`
 	Score           string `json:"score"`
@@ -41,6 +42,7 @@ type ADLTaskWire struct {
 	LotID           string `json:"lot_id"`
 	UserID          uint64 `json:"user_id"`
 	Symbol          string `json:"symbol"`
+	PositionIdx     uint8  `json:"position_idx,omitempty"` // ADR-0077 leg
 	Side            uint8  `json:"side"`
 	Qty             string `json:"qty"`
 	Price           string `json:"price"`
@@ -72,7 +74,7 @@ type WorkingCapitalRepayResponse struct {
 
 func CandidateToWire(c ADLCandidate) ADLCandidateWire {
 	return ADLCandidateWire{
-		UserID: c.UserID, Symbol: c.Symbol, Side: uint8(c.Side),
+		UserID: c.UserID, Symbol: c.Symbol, PositionIdx: c.PositionIdx, Side: uint8(c.Side),
 		Size: c.Size.String(), Score: c.Score.String(),
 		SacrificePerQty: c.SacrificePerQty.String(), PosSeq: c.PosSeq,
 		PositionVersion: c.PositionVersion,
@@ -93,7 +95,7 @@ func CandidateFromWire(w ADLCandidateWire) (ADLCandidate, error) {
 		return ADLCandidate{}, fmt.Errorf("candidate sacrifice_per_qty: %w", err)
 	}
 	return ADLCandidate{
-		UserID: w.UserID, Symbol: w.Symbol, Side: perpstate.Side(w.Side),
+		UserID: w.UserID, Symbol: w.Symbol, PositionIdx: w.PositionIdx, Side: perpstate.Side(w.Side),
 		Size: size, Score: score, SacrificePerQty: sacrifice,
 		PosSeq: w.PosSeq, PositionVersion: w.PositionVersion,
 	}, nil
@@ -101,7 +103,7 @@ func CandidateFromWire(w ADLCandidateWire) (ADLCandidate, error) {
 
 func TaskToWire(t ADLTask) ADLTaskWire {
 	return ADLTaskWire{
-		LotID: t.LotID, UserID: t.UserID, Symbol: t.Symbol, Side: uint8(t.Side),
+		LotID: t.LotID, UserID: t.UserID, Symbol: t.Symbol, PositionIdx: t.PositionIdx, Side: uint8(t.Side),
 		Qty: t.Qty.String(), Price: t.Price.String(),
 		PosSeq: t.PosSeq, PositionVersion: t.PositionVersion, AdlRound: t.AdlRound,
 	}
@@ -117,7 +119,7 @@ func TaskFromWire(w ADLTaskWire) (ADLTask, error) {
 		return ADLTask{}, fmt.Errorf("task price: %w", err)
 	}
 	return ADLTask{
-		LotID: w.LotID, UserID: w.UserID, Symbol: w.Symbol, Side: perpstate.Side(w.Side),
+		LotID: w.LotID, UserID: w.UserID, Symbol: w.Symbol, PositionIdx: w.PositionIdx, Side: perpstate.Side(w.Side),
 		Qty: qty, Price: price, PosSeq: w.PosSeq,
 		PositionVersion: w.PositionVersion, AdlRound: w.AdlRound,
 	}, nil

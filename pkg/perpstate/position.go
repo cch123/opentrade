@@ -50,6 +50,76 @@ func (s Side) Opposite() Side {
 	}
 }
 
+// PositionMode selects how a user's exposure in one symbol is keyed
+// (ADR-0077): one net position (idx 0, buy reduces a short / flips), or two
+// hedge legs (idx 1 = long leg, idx 2 = short leg) that move independently
+// and never flip. The mode is per-(user, symbol) config; the zero value is
+// the pre-hedge default so absent config / old snapshots read as ONE_WAY.
+type PositionMode uint8
+
+const (
+	PositionOneWay PositionMode = 0
+	PositionHedge  PositionMode = 1
+)
+
+func (m PositionMode) String() string {
+	switch m {
+	case PositionOneWay:
+		return "one_way"
+	case PositionHedge:
+		return "hedge"
+	default:
+		return "unknown"
+	}
+}
+
+// Position index values (ADR-0077 §1, aligned with Bybit positionIdx).
+const (
+	IdxNet   uint8 = 0 // ONE_WAY net position
+	IdxLong  uint8 = 1 // HEDGE long leg
+	IdxShort uint8 = 2 // HEDGE short leg
+)
+
+// LegSide returns the canonical direction a hedge leg's size carries:
+// IdxLong → buy, IdxShort → sell. IdxNet (and anything else) has no
+// canonical direction and returns 0.
+func LegSide(idx uint8) Side {
+	switch idx {
+	case IdxLong:
+		return SideBuy
+	case IdxShort:
+		return SideSell
+	default:
+		return 0
+	}
+}
+
+// ValidateOrderIntent is the ADR-0077 §2 fail-closed admission matrix: in
+// ONE_WAY only idx 0 is accepted (reduce_only keeps its net-mode meaning);
+// in HEDGE the order must name a leg and (side, idx, reduce_only) must agree
+// — reduce_only is a redundant degree of freedom used as a double-encoding
+// consistency check, never inferred. Returns "" when valid, else the reject
+// reason.
+func ValidateOrderIntent(mode PositionMode, idx uint8, side Side, reduceOnly bool) string {
+	if mode != PositionHedge {
+		if idx != IdxNet {
+			return "position_idx_requires_hedge_mode"
+		}
+		return ""
+	}
+	legSide := LegSide(idx)
+	if legSide == 0 {
+		return "position_idx_required_in_hedge_mode"
+	}
+	if reduceOnly != (side != legSide) {
+		// Opening a leg trades on its canonical side with reduce_only=false;
+		// closing trades the opposite side with reduce_only=true. The other
+		// four (side, idx, reduce_only) combinations are contradictions.
+		return "position_intent_mismatch"
+	}
+	return ""
+}
+
 // MarginMode selects how a position draws margin (ADR-0068 §3.1, ADR-0074).
 // Isolated positions hold a dedicated Margin bucket; cross positions hold no
 // cash bucket (Margin stays 0) — their margin requirement is a derived risk
@@ -82,14 +152,18 @@ func (m MarginMode) String() string {
 // (kept zeroed). Leverage is fixed at first open for the MVP; tiered
 // leverage (risk tier) is future work.
 type Position struct {
-	UserID   uint64
-	Symbol   string
-	Side     Side
-	Size     dec.Decimal // base units, >= 0
-	Entry    dec.Decimal // weighted-average entry price (USDT)
-	Margin   dec.Decimal // USDT held against this position (isolated only; cross keeps 0)
-	Leverage dec.Decimal // > 0; ADR-0074 §8: persistent position config, not a per-order field
-	Mode     MarginMode
+	UserID uint64
+	Symbol string
+	// PositionIdx is the third key segment (ADR-0077): 0 = one-way net,
+	// 1 = hedge long leg, 2 = hedge short leg. A leg's direction is part of
+	// its identity — settlement uses ApplyFillLeg, which never flips.
+	PositionIdx uint8
+	Side        Side
+	Size        dec.Decimal // base units, >= 0
+	Entry       dec.Decimal // weighted-average entry price (USDT)
+	Margin      dec.Decimal // USDT held against this position (isolated only; cross keeps 0)
+	Leverage    dec.Decimal // > 0; ADR-0074 §8: persistent position config, not a per-order field
+	Mode        MarginMode
 
 	// ADR-0074 position config. RiskID is the user-selected risk-limit tier
 	// (1-based into the symbol's tier table; 0 = auto-select the lowest tier

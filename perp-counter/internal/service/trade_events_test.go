@@ -121,7 +121,7 @@ func TestHandleCancelled_ReleasesRemainingIMAfterPartialFill(t *testing.T) {
 	w = eng.WalletOf(user1)
 	eqd(t, w.Reserved, "0", "remaining IM released on cancel")
 	eqd(t, w.Available, "990", "available = 1000 - 10 position margin still held")
-	p, ok := eng.PositionOf(user1, perpSym)
+	p, ok := eng.PositionOf(user1, perpSym, 0)
 	if !ok {
 		t.Fatal("u1 should still hold the filled position")
 	}

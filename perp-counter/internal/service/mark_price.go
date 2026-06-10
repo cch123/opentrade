@@ -55,22 +55,22 @@ func (s *Service) HandlePerpPriceEvent(evt *eventpb.PerpPriceEvent) {
 }
 
 // settleFunding fans the round out across every user holding a position in
-// symbol, each under its own sequencer (invariant #1). The per-position
-// funding_round_seen watermark (in SettleFundingUser) makes a redelivered tick
-// a no-op.
+// symbol, each under its own sequencer (invariant #1). Both hedge legs of a
+// (user, symbol) settle inside ONE sequencer step (ADR-0077 §5) — one journal
+// record per leg, no fill interleaving between them. The per-leg
+// funding_round_seen watermark (in SettleFundingUser) makes a redelivered
+// tick a no-op.
 func (s *Service) settleFunding(symbol, roundIDStr string, roundID int64, rate dec.Decimal, cfgVersion uint64) {
 	for _, user := range s.eng.UsersWithPosition(symbol) {
 		s.seq.do(user, func() {
-			res, ok := s.eng.SettleFundingUser(user, symbol, roundID, rate)
-			if !ok {
-				return
+			for _, res := range s.eng.SettleFundingUser(user, symbol, roundID, rate) {
+				s.emitFunding(symbol, roundIDStr, rate, cfgVersion, res)
 			}
-			s.emitFunding(symbol, roundIDStr, rate, cfgVersion, res)
 		})
 	}
 }
 
-// emitFunding writes a PerpFundingEvent for one position's funding settlement.
+// emitFunding writes a PerpFundingEvent for one leg's funding settlement.
 // Caller holds the user's seq lock, so the position snapshot read here reflects
 // the just-applied state. cfgVersion is the FundingTick's stamp — the version
 // whose funding params produced this round's rate (ADR-0075).
@@ -81,7 +81,7 @@ func (s *Service) emitFunding(symbol, roundIDStr string, rate dec.Decimal, cfgVe
 			UserId: res.UserID, Symbol: symbol, FundingRoundId: roundIDStr,
 			FundingRate: rate.String(), MarkPrice: s.eng.MarkOf(symbol).String(),
 			Payment:             res.Payment.String(),
-			PositionAfter:       s.positionSnap(res.UserID, symbol),
+			PositionAfter:       s.positionSnap(res.UserID, symbol, res.Position.PositionIdx),
 			SymbolConfigVersion: cfgVersion,
 		}},
 	})

@@ -27,6 +27,9 @@ service PerpService {
   // client_op_id (a repeat returns the first outcome) and run inside the
   // owning user's sequencer.
   rpc SetMarginMode(SetMarginModeRequest) returns (SetMarginModeResponse);
+  // ADR-0077 §3: ONE_WAY ↔ HEDGE switch; requires every leg flat, no active
+  // orders, no position-bound triggers, no in-flight liquidation.
+  rpc SetPositionMode(SetPositionModeRequest) returns (SetPositionModeResponse);
   rpc AdjustIsolatedMargin(AdjustIsolatedMarginRequest) returns (AdjustIsolatedMarginResponse);
   rpc SetAutoAddMargin(SetAutoAddMarginRequest) returns (SetAutoAddMarginResponse);
   rpc SetPositionLeverage(SetPositionLeverageRequest) returns (SetPositionLeverageResponse);
@@ -53,6 +56,15 @@ enum MarginMode {
   MARGIN_MODE_CROSS = 2;
 }
 
+// PositionMode mirrors perpstate.PositionMode (ADR-0077): ONE_WAY = one net
+// position per (user, symbol); HEDGE = independent long/short legs keyed by
+// position_idx (1 = long, 2 = short, Bybit-aligned).
+enum PositionMode {
+  POSITION_MODE_UNSPECIFIED = 0;
+  POSITION_MODE_ONE_WAY = 1;
+  POSITION_MODE_HEDGE = 2;
+}
+
 message PlaceOrderRequest {
   uint64 user_id = 1;
   string client_order_id = 2;                 // optional idempotency key
@@ -65,6 +77,10 @@ message PlaceOrderRequest {
   string leverage = 9;                        // decimal, e.g. "10"
   bool reduce_only = 10;                      // close-only; never increases a position
   MarginMode margin_mode = 11;                // MVP: ISOLATED
+  // ADR-0077 §2 position intent, fail-closed both ways: must be 0 in
+  // ONE_WAY mode; must be 1 (long leg) or 2 (short leg) in HEDGE mode, with
+  // (side, position_idx, reduce_only) agreeing per the admission matrix.
+  uint32 position_idx = 12;
 }
 
 message PlaceOrderResponse {
@@ -132,6 +148,8 @@ message Position {
   string liq_price = 11;      // isolated only; cross liquidation is pool-level (ADR-0074 §4 rule #6)
   string margin_ratio = 12;
   uint32 risk_id = 13;        // selected risk tier (0 = auto)
+  uint32 position_idx = 14;   // ADR-0077: 0 = net, 1 = hedge long, 2 = hedge short
+  PositionMode position_mode = 15; // the symbol's mode this leg belongs to
 }
 
 message QueryMarginRequest {
@@ -170,8 +188,23 @@ message SetMarginModeResponse {
   bool accepted = 1;
   string reject_reason = 2;
   MarginMode margin_mode = 3;     // post-op mode
-  string position_margin = 4;     // post-op isolated margin ("0" for cross)
+  string position_margin = 4;     // post-op isolated margin (hedge: summed across legs; "0" for cross)
   string free_balance_after = 5;
+}
+
+// --- ADR-0077 position mode -----------------------------------------------
+
+message SetPositionModeRequest {
+  uint64 user_id = 1;
+  string symbol = 2;          // per-(user, symbol); no account-level form (ADR-0077 修订 #1)
+  PositionMode target_mode = 3;
+  string client_op_id = 4;
+}
+
+message SetPositionModeResponse {
+  bool accepted = 1;
+  string reject_reason = 2;   // active_orders_cancel_first / active_triggers_cancel_first / liquidation_in_flight / position_not_flat
+  PositionMode position_mode = 3; // post-op mode
 }
 
 message AdjustIsolatedMarginRequest {
@@ -179,6 +212,9 @@ message AdjustIsolatedMarginRequest {
   string symbol = 2;
   string delta = 3;           // signed decimal: >0 add from free balance, <0 remove to free balance
   string client_op_id = 4;
+  // ADR-0077 §7: the only per-leg config op. Must be 0 in ONE_WAY mode and
+  // 1/2 in HEDGE mode (fail-closed both ways).
+  uint32 position_idx = 5;
 }
 
 message AdjustIsolatedMarginResponse {
@@ -234,7 +270,9 @@ message QueryPositionConfigRequest {
   string symbol = 2;          // empty = all symbols with a config or position
 }
 
-// PositionConfig is the per-(user, symbol) view (ADR-0074 glossary). The
+// PositionConfig is the per-(user, symbol, position_idx) view (ADR-0074
+// glossary + ADR-0077: one row per existing leg; margin mode / leverage /
+// risk_id are uniform across a symbol's legs per ADR-0077 §7). The
 // effective_* fields are derived from tier table + customer cap at query time.
 message PositionConfig {
   string symbol = 1;
@@ -245,6 +283,8 @@ message PositionConfig {
   string auto_add_max = 6;
   string effective_max_leverage = 7; // min(tier cap, customer cap, product default)
   string max_notional = 8;           // selected risk tier's notional cap ("0" = uncapped)
+  uint32 position_idx = 9;           // ADR-0077
+  PositionMode position_mode = 10;   // the symbol's mode
 }
 
 message QueryPositionConfigResponse {

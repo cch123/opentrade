@@ -69,11 +69,36 @@ type CustomerLimit struct {
 	UpdatedMs   int64
 }
 
+// symbolPositions is one (user, symbol)'s position container (ADR-0077 §1):
+// the per-symbol position mode plus up to three legs indexed by position_idx
+// (0 = one-way net, 1 = hedge long, 2 = hedge short). Mode and legs share one
+// container so flat-only mode-switch validation, snapshot, and replay cover a
+// single boundary. A leg, once created, is retained flat — it carries the
+// per-leg recovery watermarks (last_match_seq / funding_round_seen /
+// last_adl_round), same retention rule as the pre-hedge net record.
+type symbolPositions struct {
+	mode perpstate.PositionMode
+	legs [3]*perpstate.Position
+}
+
+// liveLegs appends the non-nil legs to dst in idx order.
+func (sp *symbolPositions) liveLegs(dst []*perpstate.Position) []*perpstate.Position {
+	if sp == nil {
+		return dst
+	}
+	for _, p := range sp.legs {
+		if p != nil {
+			dst = append(dst, p)
+		}
+	}
+	return dst
+}
+
 // Engine is the in-memory perp account state.
 type Engine struct {
 	mu        sync.RWMutex
 	wallets   map[uint64]*Wallet
-	positions map[uint64]map[string]*perpstate.Position
+	positions map[uint64]map[string]*symbolPositions
 	marks     map[string]dec.Decimal
 	insurance map[string]dec.Decimal
 	transfers map[string]TransferOutcome // transfer_id → outcome (AssetHolder idempotency, ADR-0057)
@@ -119,7 +144,7 @@ type RiskResolver func(symbol string, pinnedVersion uint64) (perpstate.RiskModel
 func New() *Engine {
 	return &Engine{
 		wallets:    map[uint64]*Wallet{},
-		positions:  map[uint64]map[string]*perpstate.Position{},
+		positions:  map[uint64]map[string]*symbolPositions{},
 		marks:      map[string]dec.Decimal{},
 		insurance:  map[string]dec.Decimal{},
 		transfers:  map[string]TransferOutcome{},
@@ -182,19 +207,100 @@ func (e *Engine) walletLocked(user uint64) *Wallet {
 	return w
 }
 
-func (e *Engine) positionLocked(user uint64, symbol string) *perpstate.Position {
+// symLocked returns (user, symbol)'s position container, creating it (mode
+// ONE_WAY) on first touch. Caller holds e.mu.
+func (e *Engine) symLocked(user uint64, symbol string) *symbolPositions {
 	bySym := e.positions[user]
 	if bySym == nil {
-		bySym = map[string]*perpstate.Position{}
+		bySym = map[string]*symbolPositions{}
 		e.positions[user] = bySym
 	}
-	p := bySym[symbol]
+	sp := bySym[symbol]
+	if sp == nil {
+		sp = &symbolPositions{}
+		bySym[symbol] = sp
+	}
+	return sp
+}
+
+// symPeekLocked returns the container or nil without creating. Caller holds
+// e.mu (any).
+func (e *Engine) symPeekLocked(user uint64, symbol string) *symbolPositions {
+	bySym := e.positions[user]
+	if bySym == nil {
+		return nil
+	}
+	return bySym[symbol]
+}
+
+// legLocked returns the (user, symbol, idx) leg, creating it on first touch.
+// Caller holds e.mu. idx is clamped into [0,2] by the caller's admission
+// validation; an out-of-range idx here is a programming error and panics via
+// the slice bound.
+func (e *Engine) legLocked(user uint64, symbol string, idx uint8) *perpstate.Position {
+	sp := e.symLocked(user, symbol)
+	p := sp.legs[idx]
 	if p == nil {
-		p = &perpstate.Position{UserID: user, Symbol: symbol, Mode: perpstate.MarginIsolated,
+		p = &perpstate.Position{UserID: user, Symbol: symbol, PositionIdx: idx,
+			Mode: perpstate.MarginIsolated,
 			Size: zero, Entry: zero, Margin: zero, Leverage: zero, Realized: zero}
-		bySym[symbol] = p
+		// Per-symbol config uniformity (ADR-0077 §7): a fresh leg inherits the
+		// sibling's config so margin mode / leverage / risk_id / auto-add stay
+		// uniform across the symbol's legs regardless of creation order.
+		for _, sib := range sp.legs {
+			if sib != nil {
+				p.Mode = sib.Mode
+				p.Leverage = sib.Leverage
+				p.RiskID = sib.RiskID
+				p.AutoAddMargin = sib.AutoAddMargin
+				p.AutoAddMax = sib.AutoAddMax
+				break
+			}
+		}
+		sp.legs[idx] = p
 	}
 	return p
+}
+
+// modeLegsLocked returns the legs the (user, symbol) container's CURRENT
+// position mode trades on, creating them on demand: idx 0 for ONE_WAY, idx
+// 1+2 for HEDGE. Multi-leg config ops operate on exactly this set. Caller
+// holds e.mu.
+func (e *Engine) modeLegsLocked(user uint64, symbol string) []*perpstate.Position {
+	if e.symLocked(user, symbol).mode == perpstate.PositionHedge {
+		return []*perpstate.Position{
+			e.legLocked(user, symbol, perpstate.IdxLong),
+			e.legLocked(user, symbol, perpstate.IdxShort),
+		}
+	}
+	return []*perpstate.Position{e.legLocked(user, symbol, perpstate.IdxNet)}
+}
+
+// legPeekLocked returns the leg or nil without creating. Caller holds e.mu
+// (any).
+func (e *Engine) legPeekLocked(user uint64, symbol string, idx uint8) *perpstate.Position {
+	sp := e.symPeekLocked(user, symbol)
+	if sp == nil || int(idx) >= len(sp.legs) {
+		return nil
+	}
+	return sp.legs[idx]
+}
+
+// legsLocked returns the existing legs of (user, symbol) in idx order,
+// including flat ones. Caller holds e.mu (any).
+func (e *Engine) legsLocked(user uint64, symbol string) []*perpstate.Position {
+	return e.symPeekLocked(user, symbol).liveLegs(nil)
+}
+
+// applyFillByIdx dispatches a fill through the right settlement core for the
+// record's position_idx: net positions keep flip semantics, hedge legs clamp
+// and never flip (ADR-0077 §2). The excess is the clamped-off qty a leg could
+// not absorb.
+func applyFillByIdx(p *perpstate.Position, f perpstate.Fill) (perpstate.FillResult, dec.Decimal) {
+	if p.PositionIdx != perpstate.IdxNet {
+		return p.ApplyFillLeg(f)
+	}
+	return p.ApplyFill(f), zero
 }
 
 var zero = dec.FromInt(0)
@@ -426,48 +532,51 @@ func (e *Engine) MMRFuncForView(p perpstate.Position) (perpstate.MMRFunc, bool) 
 	return nil, false
 }
 
-// ApplyFill applies a trade fill to (user, symbol)'s position and routes the
-// cash effects between wallet and position margin (ADR-0068 §4):
+// ApplyFill applies a trade fill to the (user, symbol, idx) leg and routes
+// the cash effects between wallet and position margin (ADR-0068 §4):
 //   - open/increase: initial margin is drawn from Reserved (held at order
 //     time), falling back to Available if under-reserved.
 //   - reduce/close:  released margin returns to Available.
 //   - realized PnL and fee settle in Available.
 //
-// leverage seeds a fresh position. Returns the FillResult for journaling.
-func (e *Engine) ApplyFill(user uint64, symbol string, leverage dec.Decimal, f perpstate.Fill) perpstate.FillResult {
+// leverage seeds a fresh position. excess is the qty a hedge leg clamped off
+// (never-flip, ADR-0077 §2) — the caller must surface it as
+// REDUCE_ONLY_INVARIANT_BREACH (ADR-0081 §2), not drop it.
+func (e *Engine) ApplyFill(user uint64, symbol string, idx uint8, leverage dec.Decimal, f perpstate.Fill) (perpstate.FillResult, dec.Decimal) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	p := e.positionLocked(user, symbol)
+	p := e.legLocked(user, symbol, idx)
 	if p.Leverage.Sign() == 0 {
 		p.Leverage = leverage
 	}
 	sizeBefore, sideBefore := p.Size, p.Side
-	res := p.ApplyFill(f)
+	res, excess := applyFillByIdx(p, f)
 	e.stampRiskVersionLocked(p, sizeBefore, sideBefore)
 	p.Version++
 	e.routeCashLocked(user, res)
 	e.syncIndexesLocked(user, symbol, p)
-	return res
+	return res, excess
 }
 
-// ApplyFillWithSeq applies a fill guarded by the per-(user, symbol) match_seq
-// watermark (ADR-0068 invariant #3): a fill whose seq <= the stored watermark
-// is a replay and is skipped (applied=false); on apply the watermark
-// advances. seq == 0 bypasses the guard (in-process tests / legacy). Guard +
-// apply + advance + cash routing all happen under one lock — no TOCTOU
-// between checking the watermark and mutating the position.
-func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, leverage dec.Decimal, seq uint64, f perpstate.Fill) (perpstate.FillResult, bool) {
+// ApplyFillWithSeq applies a fill guarded by the per-(user, symbol, idx)
+// match_seq watermark (ADR-0068 invariant #3): a fill whose seq <= the stored
+// watermark is a replay and is skipped (applied=false); on apply the
+// watermark advances. seq == 0 bypasses the guard (in-process tests / the
+// second leg of a self-trade). Guard + apply + advance + cash routing all
+// happen under one lock — no TOCTOU between checking the watermark and
+// mutating the position. excess: see ApplyFill.
+func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, idx uint8, leverage dec.Decimal, seq uint64, f perpstate.Fill) (perpstate.FillResult, dec.Decimal, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	p := e.positionLocked(user, symbol)
+	p := e.legLocked(user, symbol, idx)
 	if seq != 0 && seq <= p.LastMatchSeq {
-		return perpstate.FillResult{}, false
+		return perpstate.FillResult{}, zero, false
 	}
 	if p.Leverage.Sign() == 0 {
 		p.Leverage = leverage
 	}
 	sizeBefore, sideBefore := p.Size, p.Side
-	res := p.ApplyFill(f)
+	res, excess := applyFillByIdx(p, f)
 	e.stampRiskVersionLocked(p, sizeBefore, sideBefore)
 	if seq != 0 {
 		p.LastMatchSeq = seq
@@ -475,7 +584,7 @@ func (e *Engine) ApplyFillWithSeq(user uint64, symbol string, leverage dec.Decim
 	p.Version++
 	e.routeCashLocked(user, res)
 	e.syncIndexesLocked(user, symbol, p)
-	return res, true
+	return res, excess, true
 }
 
 // stampRiskVersionLocked pins the position to the symbol's CURRENT effective
@@ -520,27 +629,28 @@ func (e *Engine) routeCashLocked(user uint64, res perpstate.FillResult) {
 	w.Available = w.Available.Add(res.Realized).Sub(res.Fee)
 }
 
-// ApplyFunding settles one funding interval against (user, symbol) at the
-// latest mark (ADR-0068 §7). Returns the signed delta (negative = the
-// position paid). Isolated funding lands in position margin; cross funding
-// settles in the wallet free balance (ADR-0074). No-op (zero) when the
-// position is absent or flat.
+// ApplyFunding settles one funding interval against every live leg of
+// (user, symbol) at the latest mark (ADR-0068 §7). Returns the summed signed
+// delta (negative = the user paid) — per-leg amounts are not netted in the
+// journal path (SettleFundingUser); this legacy entry point only reports the
+// wallet-visible total. Isolated funding lands in position margin; cross
+// funding settles in the wallet free balance (ADR-0074). No-op (zero) when
+// no leg is live.
 func (e *Engine) ApplyFunding(user uint64, symbol string, rate dec.Decimal) dec.Decimal {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return zero
+	total := zero
+	for _, p := range e.legsLocked(user, symbol) {
+		if p.IsFlat() {
+			continue
+		}
+		delta := p.ApplyFunding(e.marks[symbol], rate)
+		e.routeFundingLocked(user, p, delta)
+		p.Version++
+		e.syncIndexesLocked(user, symbol, p)
+		total = total.Add(delta)
 	}
-	p := bySym[symbol]
-	if p == nil || p.IsFlat() {
-		return zero
-	}
-	delta := p.ApplyFunding(e.marks[symbol], rate)
-	e.routeFundingLocked(user, p, delta)
-	p.Version++
-	e.syncIndexesLocked(user, symbol, p)
-	return delta
+	return total
 }
 
 // routeFundingLocked credits/debits a cross position's funding into the
@@ -562,19 +672,37 @@ type FundingResult struct {
 	Position perpstate.Position // post-settlement copy (for the journal)
 }
 
-// SettleFunding applies one funding round to every non-flat position in
-// symbol at the current mark (ADR-0068 §7). The per-position
-// funding_round_seen watermark makes it idempotent: a round_id <= the
-// watermark is skipped (replay / restart safe, ADR-0068 invariant #3).
-// round_id is the funding boundary's unix seconds (monotonic per symbol).
-// Returns the per-position results sorted by user for deterministic journaling.
+// SettleFunding applies one funding round to every non-flat leg in symbol at
+// the current mark (ADR-0068 §7; per-leg, no long/short netting — ADR-0077
+// §5). The per-leg funding_round_seen watermark makes it idempotent: a
+// round_id <= the watermark is skipped (replay / restart safe, ADR-0068
+// invariant #3). round_id is the funding boundary's unix seconds (monotonic
+// per symbol). Returns the per-leg results sorted by (user, idx) for
+// deterministic journaling.
 func (e *Engine) SettleFunding(symbol string, roundID int64, rate dec.Decimal) []FundingResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	mark := e.marks[symbol]
 	var out []FundingResult
 	for user, bySym := range e.positions {
-		p := bySym[symbol]
+		out = e.settleFundingLegsLocked(out, user, symbol, bySym[symbol], roundID, rate)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UserID != out[j].UserID {
+			return out[i].UserID < out[j].UserID
+		}
+		return out[i].Position.PositionIdx < out[j].Position.PositionIdx
+	})
+	return out
+}
+
+// settleFundingLegsLocked settles one round against every live leg of one
+// (user, symbol), appending per-leg results. Caller holds e.mu.
+func (e *Engine) settleFundingLegsLocked(out []FundingResult, user uint64, symbol string, sp *symbolPositions, roundID int64, rate dec.Decimal) []FundingResult {
+	if sp == nil {
+		return out
+	}
+	mark := e.marks[symbol]
+	for _, p := range sp.legs {
 		if p == nil || p.IsFlat() {
 			continue
 		}
@@ -588,11 +716,10 @@ func (e *Engine) SettleFunding(symbol string, roundID int64, rate dec.Decimal) [
 		e.syncIndexesLocked(user, symbol, p)
 		out = append(out, FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
 	return out
 }
 
-// UsersWithPosition returns the users holding a non-flat position in symbol,
+// UsersWithPosition returns the users holding any non-flat leg in symbol,
 // sorted. The service fans funding settlement out across these users, each
 // under its own sequencer (ADR-0068 invariant #1), instead of mutating every
 // position in one bulk pass — so a user's funding and fills stay totally
@@ -603,39 +730,28 @@ func (e *Engine) UsersWithPosition(symbol string) []uint64 {
 	defer e.mu.RUnlock()
 	var out []uint64
 	for user, bySym := range e.positions {
-		if p := bySym[symbol]; p != nil && !p.IsFlat() {
-			out = append(out, user)
+		for _, p := range bySym[symbol].liveLegs(nil) {
+			if !p.IsFlat() {
+				out = append(out, user)
+				break
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 
-// SettleFundingUser settles one funding round against (user, symbol) at the
-// current mark, guarded by the per-position funding_round_seen watermark
-// (ADR-0068 invariant #3: roundID <= seen is a replay and is skipped). Returns
-// the result and whether it applied. The caller MUST run this inside the user's
-// sequencer (invariant #1). Guard + apply + advance are one locked step.
-func (e *Engine) SettleFundingUser(user uint64, symbol string, roundID int64, rate dec.Decimal) (FundingResult, bool) {
+// SettleFundingUser settles one funding round against every live leg of
+// (user, symbol) at the current mark, guarded by the per-leg
+// funding_round_seen watermark (ADR-0068 invariant #3: roundID <= seen is a
+// replay and is skipped). Both hedge legs settle in this single locked step
+// (ADR-0077 §5) so a fill cannot interleave between them. Returns one result
+// per settled leg (empty = nothing applied). The caller MUST run this inside
+// the user's sequencer (invariant #1).
+func (e *Engine) SettleFundingUser(user uint64, symbol string, roundID int64, rate dec.Decimal) []FundingResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return FundingResult{}, false
-	}
-	p := bySym[symbol]
-	if p == nil || p.IsFlat() {
-		return FundingResult{}, false
-	}
-	if roundID <= p.FundingRoundSeen {
-		return FundingResult{}, false
-	}
-	delta := p.ApplyFunding(e.marks[symbol], rate)
-	e.routeFundingLocked(user, p, delta)
-	p.FundingRoundSeen = roundID
-	p.Version++
-	e.syncIndexesLocked(user, symbol, p)
-	return FundingResult{UserID: user, Symbol: symbol, Payment: delta, Position: *p}, true
+	return e.settleFundingLegsLocked(nil, user, symbol, e.symPeekLocked(user, symbol), roundID, rate)
 }
 
 // AddInsurance adjusts the local insurance cache. In a single-instance
@@ -661,11 +777,12 @@ func (e *Engine) InsuranceFund(symbol string) dec.Decimal {
 	return e.insurance[symbol]
 }
 
-// LiquidationCandidate is a position that breached maintenance margin and is
-// up for liquidation (ADR-0068 §8).
+// LiquidationCandidate is a position leg that breached maintenance margin and
+// is up for liquidation (ADR-0068 §8; per-leg in hedge mode, ADR-0077 §4).
 type LiquidationCandidate struct {
 	UserID          uint64
 	Symbol          string
+	PositionIdx     uint8
 	Side            perpstate.Side
 	Size            dec.Decimal
 	Mark            dec.Decimal
@@ -693,15 +810,17 @@ func (e *Engine) LiquidatablePositions(symbol string) []LiquidationCandidate {
 	}
 	var out []LiquidationCandidate
 	for _, entry := range e.liqIndex.crossed(symbol, mark) {
-		bySym := e.positions[entry.userID]
-		if bySym == nil {
-			continue
-		}
-		if cand, ok := e.liquidationCandidateLocked(entry.userID, symbol, bySym[symbol], mark); ok {
+		p := e.legPeekLocked(entry.userID, symbol, entry.positionIdx)
+		if cand, ok := e.liquidationCandidateLocked(entry.userID, symbol, p, mark); ok {
 			out = append(out, cand)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UserID != out[j].UserID {
+			return out[i].UserID < out[j].UserID
+		}
+		return out[i].PositionIdx < out[j].PositionIdx
+	})
 	return out
 }
 
@@ -720,39 +839,31 @@ func (e *Engine) liquidationCandidateLocked(user uint64, symbol string, p *perps
 	}
 	h := pool.Eval(marks)
 	return LiquidationCandidate{
-		UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
+		UserID: user, Symbol: symbol, PositionIdx: p.PositionIdx, Side: p.Side, Size: p.Size,
 		Mark: mark, LiqPrice: p.LiqPrice(mmrOf), BankruptcyPrice: p.BankruptcyPrice(),
 		MaintMarginRate: mmrOf(h.Notional), PositionVersion: p.Version,
 	}, true
 }
 
-// LiquidationCheck re-evaluates a single (user, symbol) position against the
+// LiquidationCheck re-evaluates a single (user, symbol, idx) leg against the
 // maintenance margin rate under the lock, returning the candidate when it still
 // breaches. The service calls this inside the user's sequencer to re-verify
 // before acting (the scan that found it ran lock-free and the position may have
 // moved since — TOCTOU guard, ADR-0068 invariant #1).
-func (e *Engine) LiquidationCheck(user uint64, symbol string) (LiquidationCandidate, bool) {
+func (e *Engine) LiquidationCheck(user uint64, symbol string, idx uint8) (LiquidationCandidate, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return LiquidationCandidate{}, false
-	}
-	return e.liquidationCandidateLocked(user, symbol, bySym[symbol], e.marks[symbol])
+	return e.liquidationCandidateLocked(user, symbol, e.legPeekLocked(user, symbol, idx), e.marks[symbol])
 }
 
 // ReduceToTarget computes ADR-0070's partial-liquidation quantity for a single
-// isolated position using a locked snapshot. The service still re-checks the
+// isolated leg using a locked snapshot. The service still re-checks the
 // candidate inside the user's sequencer; this helper only centralizes the pure
 // pool math so callers do not bypass the CollateralPool boundary.
-func (e *Engine) ReduceToTarget(user uint64, symbol string, buffer dec.Decimal) dec.Decimal {
+func (e *Engine) ReduceToTarget(user uint64, symbol string, idx uint8, buffer dec.Decimal) dec.Decimal {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return zero
-	}
-	p := bySym[symbol]
+	p := e.legPeekLocked(user, symbol, idx)
 	if p == nil || p.IsFlat() || p.Mode == perpstate.MarginCross {
 		return zero
 	}
@@ -770,14 +881,18 @@ func (e *Engine) ReduceToTarget(user uint64, symbol string, buffer dec.Decimal) 
 // correct — the sum across fills equals the single-shot ForceClose equity.
 // Guarded by the same per-(user, symbol) match_seq watermark as ApplyFillWithSeq
 // (replay → applied=false). Caller runs inside the user's sequencer.
-func (e *Engine) ApplyLiquidationFill(user uint64, symbol string, seq uint64, f perpstate.Fill) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+func (e *Engine) ApplyLiquidationFill(user uint64, symbol string, idx uint8, seq uint64, f perpstate.Fill) (res perpstate.FillResult, insuranceDelta, excess dec.Decimal, applied bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	p := e.positionLocked(user, symbol)
+	p := e.legLocked(user, symbol, idx)
 	if seq != 0 && seq <= p.LastMatchSeq {
-		return perpstate.FillResult{}, zero, false
+		return perpstate.FillResult{}, zero, zero, false
 	}
-	res = p.ApplyFill(f)
+	// A hedge leg clamps (never flips); the bankruptcy order is sized to the
+	// leg at dispatch, so excess only appears when the leg shrank in between
+	// (e.g. an ADL task landed first). The caller surfaces it as an invariant
+	// breach (ADR-0081 §2) — it is never absorbed as a flip.
+	res, excess = applyFillByIdx(p, f)
 	if seq != 0 {
 		p.LastMatchSeq = seq
 	}
@@ -786,7 +901,7 @@ func (e *Engine) ApplyLiquidationFill(user uint64, symbol string, seq uint64, f 
 	insuranceDelta = res.MarginReleased.Add(res.Realized).Sub(res.Fee)
 	e.insurance[symbol] = e.insurance[symbol].Add(insuranceDelta)
 	e.syncIndexesLocked(user, symbol, p)
-	return res, insuranceDelta, true
+	return res, insuranceDelta, excess, true
 }
 
 // ApplyPartialLiquidationFill applies a forced reduce that leaves the surviving
@@ -794,16 +909,18 @@ func (e *Engine) ApplyLiquidationFill(user uint64, symbol string, seq uint64, f 
 // user's wallet. That accounting choice is the core ADR-0070 tradeoff: partial
 // liquidation should shrink notional and preserve residual equity for the
 // remaining position; only the configured liquidation fee is moved to insurance.
-func (e *Engine) ApplyPartialLiquidationFill(user uint64, symbol string, seq uint64, f perpstate.Fill, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
+func (e *Engine) ApplyPartialLiquidationFill(user uint64, symbol string, idx uint8, seq uint64, f perpstate.Fill, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, applied bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	p := e.positionLocked(user, symbol)
+	p := e.legLocked(user, symbol, idx)
 	if p.IsFlat() || f.Side != p.Side.Opposite() {
 		return perpstate.FillResult{}, zero, false
 	}
 	if seq != 0 && seq <= p.LastMatchSeq {
 		return perpstate.FillResult{}, zero, false
 	}
+	// closeQty is clamped to the leg, so reducePositionKeepingEquity never
+	// overshoots — partial liquidation cannot flip a net position or a leg.
 	closeQty := dec.Min(f.Qty, p.Size)
 	res = reducePositionKeepingEquity(p, f.Price, closeQty, liqFeeRate)
 	if seq != 0 {
@@ -819,14 +936,10 @@ func (e *Engine) ApplyPartialLiquidationFill(user uint64, symbol string, seq uin
 // BackstopTakeover closes qty internally at price and records the other side on
 // the configured system account. It is intentionally engine-local: once the
 // service escalates here, Match liquidity is no longer part of correctness.
-func (e *Engine) BackstopTakeover(user uint64, symbol string, qty, price dec.Decimal, backstopUser uint64, partial bool, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, ok bool) {
+func (e *Engine) BackstopTakeover(user uint64, symbol string, idx uint8, qty, price dec.Decimal, backstopUser uint64, partial bool, liqFeeRate dec.Decimal) (res perpstate.FillResult, insuranceDelta dec.Decimal, ok bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return perpstate.FillResult{}, zero, false
-	}
-	p := bySym[symbol]
+	p := e.legPeekLocked(user, symbol, idx)
 	if p == nil || p.IsFlat() {
 		return perpstate.FillResult{}, zero, false
 	}
@@ -841,7 +954,9 @@ func (e *Engine) BackstopTakeover(user uint64, symbol string, qty, price dec.Dec
 		res = reducePositionKeepingEquity(p, price, closeQty, liqFeeRate)
 		insuranceDelta = res.Fee
 	} else {
-		res = p.ApplyFill(perpstate.Fill{Side: fillSide, Price: price, Qty: closeQty})
+		// closeQty is clamped to the leg, so this exact-size close cannot
+		// flip a net position or a leg.
+		res, _ = applyFillByIdx(p, perpstate.Fill{Side: fillSide, Price: price, Qty: closeQty})
 		insuranceDelta = res.MarginReleased.Add(res.Realized).Sub(res.Fee)
 	}
 	p.Version++
@@ -853,13 +968,14 @@ func (e *Engine) BackstopTakeover(user uint64, symbol string, qty, price dec.Dec
 	return res, insuranceDelta, true
 }
 
-// ADLCandidate is a profitable opposite-side position that can absorb
-// taken-over inventory. SacrificePerQty is retained for deterministic ranking
-// and stale-profitability checks, but ADR-0073 no longer treats it as a direct
-// insurance-fund credit.
+// ADLCandidate is a profitable opposite-side position leg that can absorb
+// taken-over inventory (per-leg ranking, ADR-0077 §4). SacrificePerQty is
+// retained for deterministic ranking and stale-profitability checks, but
+// ADR-0073 no longer treats it as a direct insurance-fund credit.
 type ADLCandidate struct {
 	UserID          uint64
 	Symbol          string
+	PositionIdx     uint8
 	Side            perpstate.Side
 	Size            dec.Decimal
 	Score           dec.Decimal
@@ -897,67 +1013,69 @@ func (e *Engine) selectAdlCandidates(symbol string, wantSide perpstate.Side, adl
 		if user == excludeUser {
 			continue
 		}
-		p := bySym[symbol]
-		if p == nil || p.IsFlat() || (wantSide != 0 && p.Side != wantSide) {
-			continue
+		for _, p := range bySym[symbol].liveLegs(nil) {
+			if p.IsFlat() || (wantSide != 0 && p.Side != wantSide) {
+				continue
+			}
+			// Cross positions are exempt from ADL v1 (their equity is pool-level;
+			// the margin-based score below has no meaning for them). The
+			// Margin<=0 guard already excludes them — the mode check makes the
+			// rule explicit rather than incidental.
+			if p.Mode == perpstate.MarginCross {
+				continue
+			}
+			upnl := p.UnrealizedPnL(mark)
+			if upnl.Sign() <= 0 || p.Margin.Sign() <= 0 {
+				continue
+			}
+			sacrificePerQty := adlSacrificePerQty(p.Side, mark, adlPrice)
+			if sacrificePerQty.Sign() <= 0 {
+				continue
+			}
+			equity := p.Margin.Add(upnl)
+			if equity.Sign() <= 0 {
+				continue
+			}
+			profitRate := upnl.Div(p.Margin)
+			effLev := p.Notional(mark).Div(equity)
+			out = append(out, ADLCandidate{
+				UserID: user, Symbol: symbol, PositionIdx: p.PositionIdx, Side: p.Side, Size: p.Size,
+				Score: profitRate.Mul(effLev), SacrificePerQty: sacrificePerQty,
+				LastMatchSeq: p.LastMatchSeq, PositionVersion: p.Version,
+			})
 		}
-		// Cross positions are exempt from ADL v1 (their equity is pool-level;
-		// the margin-based score below has no meaning for them). The
-		// Margin<=0 guard already excludes them — the mode check makes the
-		// rule explicit rather than incidental.
-		if p.Mode == perpstate.MarginCross {
-			continue
-		}
-		upnl := p.UnrealizedPnL(mark)
-		if upnl.Sign() <= 0 || p.Margin.Sign() <= 0 {
-			continue
-		}
-		sacrificePerQty := adlSacrificePerQty(p.Side, mark, adlPrice)
-		if sacrificePerQty.Sign() <= 0 {
-			continue
-		}
-		equity := p.Margin.Add(upnl)
-		if equity.Sign() <= 0 {
-			continue
-		}
-		profitRate := upnl.Div(p.Margin)
-		effLev := p.Notional(mark).Div(equity)
-		out = append(out, ADLCandidate{
-			UserID: user, Symbol: symbol, Side: p.Side, Size: p.Size,
-			Score: profitRate.Mul(effLev), SacrificePerQty: sacrificePerQty,
-			LastMatchSeq: p.LastMatchSeq, PositionVersion: p.Version,
-		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if c := out[i].Score.Cmp(out[j].Score); c != 0 {
 			return c > 0
 		}
-		return out[i].UserID < out[j].UserID
+		if out[i].UserID != out[j].UserID {
+			return out[i].UserID < out[j].UserID
+		}
+		return out[i].PositionIdx < out[j].PositionIdx
 	})
 	return out
 }
 
-// ApplyAdlClose force-closes a profitable counterparty at adlPrice. The user
-// receives normal close cash at that price. The returned factQty is the only
-// quantity a RiskPool coordinator may deduct from a TakenOverLot; ADL itself
-// does not credit the insurance fund (ADR-0073).
-func (e *Engine) ApplyAdlClose(user uint64, symbol string, qty, adlPrice dec.Decimal, adlRound uint64) (res perpstate.FillResult, factQty dec.Decimal, applied bool) {
-	return e.ApplyAdlCloseGuarded(user, symbol, qty, adlPrice, 0, 0, 0, adlRound, false)
+// ApplyAdlClose force-closes a profitable counterparty leg at adlPrice. The
+// user receives normal close cash at that price. The returned factQty is the
+// only quantity a RiskPool coordinator may deduct from a TakenOverLot; ADL
+// itself does not credit the insurance fund (ADR-0073).
+func (e *Engine) ApplyAdlClose(user uint64, symbol string, idx uint8, qty, adlPrice dec.Decimal, adlRound uint64) (res perpstate.FillResult, factQty dec.Decimal, applied bool) {
+	return e.ApplyAdlCloseGuarded(user, symbol, idx, qty, adlPrice, 0, 0, 0, adlRound, false)
 }
 
-// ApplyAdlCloseGuarded executes an ADR-0071 coordinator task. expectedSide,
-// expectedPosSeq, and expectedVersion are the shard read-view stamps the
-// coordinator observed. Checking all three is intentional: LastMatchSeq catches
-// fills from Match, while Position.Version also catches local mutations such as
-// funding or an earlier ADL that can leave LastMatchSeq unchanged.
-func (e *Engine) ApplyAdlCloseGuarded(user uint64, symbol string, qty, adlPrice dec.Decimal, expectedSide perpstate.Side, expectedPosSeq, expectedVersion, adlRound uint64, enforceObserved bool) (res perpstate.FillResult, factQty dec.Decimal, applied bool) {
+// ApplyAdlCloseGuarded executes an ADR-0071 coordinator task against one
+// (user, symbol, idx) leg (ADR-0077 §4: the task targets a leg, never the
+// user-symbol aggregate). expectedSide, expectedPosSeq, and expectedVersion
+// are the shard read-view stamps the coordinator observed. Checking all three
+// is intentional: LastMatchSeq catches fills from Match, while
+// Position.Version also catches local mutations such as funding or an earlier
+// ADL that can leave LastMatchSeq unchanged.
+func (e *Engine) ApplyAdlCloseGuarded(user uint64, symbol string, idx uint8, qty, adlPrice dec.Decimal, expectedSide perpstate.Side, expectedPosSeq, expectedVersion, adlRound uint64, enforceObserved bool) (res perpstate.FillResult, factQty dec.Decimal, applied bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return perpstate.FillResult{}, zero, false
-	}
-	p := bySym[symbol]
+	p := e.legPeekLocked(user, symbol, idx)
 	if p == nil || p.IsFlat() || p.Mode == perpstate.MarginCross {
 		return perpstate.FillResult{}, zero, false
 	}
@@ -977,8 +1095,10 @@ func (e *Engine) ApplyAdlCloseGuarded(user uint64, symbol string, qty, adlPrice 
 	if mark.Sign() <= 0 || sacrificePerQty.Sign() <= 0 || p.UnrealizedPnL(mark).Sign() <= 0 {
 		return perpstate.FillResult{}, zero, false
 	}
+	// closeQty is clamped to the leg, so this close cannot flip a net
+	// position or a leg.
 	closeQty := dec.Min(qty, p.Size)
-	res = p.ApplyFill(perpstate.Fill{Side: p.Side.Opposite(), Price: adlPrice, Qty: closeQty})
+	res, _ = applyFillByIdx(p, perpstate.Fill{Side: p.Side.Opposite(), Price: adlPrice, Qty: closeQty})
 	if adlRound != 0 {
 		p.LastAdlRound = adlRound
 	}
@@ -1024,7 +1144,9 @@ func adlSacrificePerQty(side perpstate.Side, mark, adlPrice dec.Decimal) dec.Dec
 }
 
 func (e *Engine) applyBackstopInventoryLocked(user uint64, symbol string, side perpstate.Side, price, qty dec.Decimal) {
-	p := e.positionLocked(user, symbol)
+	// Backstop inventory is always net-keyed (idx 0): the system account does
+	// not participate in hedge mode (ADR-0077 §4).
+	p := e.legLocked(user, symbol, perpstate.IdxNet)
 	// Backstop inventory is a system-risk ledger, not user margin. We therefore
 	// mutate size/entry directly instead of routing IM through a wallet reserve.
 	if p.IsFlat() || p.Side == side {
@@ -1072,14 +1194,10 @@ func (e *Engine) applyBackstopInventoryLocked(user uint64, symbol string, side p
 // The order cancellation + Match dispatch of the bankruptcy order happen in
 // the service layer; this is the settlement once the liquidation fill is
 // known.
-func (e *Engine) ForceClose(user uint64, symbol string, fillPrice dec.Decimal) (insuranceDelta dec.Decimal, ok bool) {
+func (e *Engine) ForceClose(user uint64, symbol string, idx uint8, fillPrice dec.Decimal) (insuranceDelta dec.Decimal, ok bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return zero, false
-	}
-	p := bySym[symbol]
+	p := e.legPeekLocked(user, symbol, idx)
 	if p == nil || p.IsFlat() {
 		return zero, false
 	}
@@ -1101,17 +1219,30 @@ func (e *Engine) ForceClose(user uint64, symbol string, fillPrice dec.Decimal) (
 	return equity, true
 }
 
-// syncIndexesLocked refreshes the derived views after any position mutation:
+// syncIndexesLocked refreshes the derived views after a mutation of one leg:
 // the isolated liq-price index (cross positions are removed, not indexed)
-// and the cross / auto-add membership indexes. Caller holds e.mu.
+// and the cross / auto-add membership indexes. Membership is per
+// (user, symbol) over ALL legs — recomputed from the container, not from the
+// mutated leg alone, or closing one leg would wrongly drop a user whose other
+// leg still qualifies. Caller holds e.mu.
 func (e *Engine) syncIndexesLocked(user uint64, symbol string, p *perpstate.Position) {
 	if e.liqIndex == nil {
 		e.liqIndex = newLiqIndex()
 	}
-	e.liqIndex.upsert(user, symbol, p, e.mmrForLocked(p))
-	setMembership(e.crossUsers, symbol, user, p.Mode == perpstate.MarginCross && !p.IsFlat())
-	setMembership(e.autoAdd, symbol, user,
-		p.AutoAddMargin && p.Mode != perpstate.MarginCross && !p.IsFlat())
+	e.liqIndex.upsert(user, symbol, p.PositionIdx, p, e.mmrForLocked(p))
+	anyCross, anyAutoAdd := false, false
+	for _, leg := range e.legsLocked(user, symbol) {
+		if leg.IsFlat() {
+			continue
+		}
+		if leg.Mode == perpstate.MarginCross {
+			anyCross = true
+		} else if leg.AutoAddMargin {
+			anyAutoAdd = true
+		}
+	}
+	setMembership(e.crossUsers, symbol, user, anyCross)
+	setMembership(e.autoAdd, symbol, user, anyAutoAdd)
 }
 
 // setMembership adds/removes user from a symbol-keyed membership index.
@@ -1141,10 +1272,20 @@ func (e *Engine) rebuildLiquidationIndexLocked() {
 	e.crossUsers = map[string]map[uint64]struct{}{}
 	e.autoAdd = map[string]map[uint64]struct{}{}
 	for user, bySym := range e.positions {
-		for symbol, p := range bySym {
-			setMembership(e.crossUsers, symbol, user, p.Mode == perpstate.MarginCross && !p.IsFlat())
-			setMembership(e.autoAdd, symbol, user,
-				p.AutoAddMargin && p.Mode != perpstate.MarginCross && !p.IsFlat())
+		for symbol, sp := range bySym {
+			anyCross, anyAutoAdd := false, false
+			for _, p := range sp.liveLegs(nil) {
+				if p.IsFlat() {
+					continue
+				}
+				if p.Mode == perpstate.MarginCross {
+					anyCross = true
+				} else if p.AutoAddMargin {
+					anyAutoAdd = true
+				}
+			}
+			setMembership(e.crossUsers, symbol, user, anyCross)
+			setMembership(e.autoAdd, symbol, user, anyAutoAdd)
 		}
 	}
 }
@@ -1160,51 +1301,62 @@ func (e *Engine) WalletOf(user uint64) Wallet {
 	return *w
 }
 
-// PositionOf returns a copy of (user, symbol)'s position and whether it
+// PositionOf returns a copy of the (user, symbol, idx) leg and whether it
 // exists (and is non-flat).
-func (e *Engine) PositionOf(user uint64, symbol string) (perpstate.Position, bool) {
+func (e *Engine) PositionOf(user uint64, symbol string, idx uint8) (perpstate.Position, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return perpstate.Position{}, false
-	}
-	p := bySym[symbol]
+	p := e.legPeekLocked(user, symbol, idx)
 	if p == nil || p.IsFlat() {
 		return perpstate.Position{}, false
 	}
 	return *p, true
 }
 
-// PositionRaw returns a copy of the stored position, including a flat one
-// (size 0, retained for its match_seq watermark). ok=false only when the
-// position was never created. Used to build post-change journal snapshots.
-func (e *Engine) PositionRaw(user uint64, symbol string) (perpstate.Position, bool) {
+// PositionRaw returns a copy of the stored leg, including a flat one (size 0,
+// retained for its match_seq watermark). ok=false only when the leg was never
+// created. Used to build post-change journal snapshots.
+func (e *Engine) PositionRaw(user uint64, symbol string, idx uint8) (perpstate.Position, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	bySym := e.positions[user]
-	if bySym == nil {
-		return perpstate.Position{}, false
-	}
-	p := bySym[symbol]
+	p := e.legPeekLocked(user, symbol, idx)
 	if p == nil {
 		return perpstate.Position{}, false
 	}
 	return *p, true
 }
 
-// PositionsOf returns copies of all of a user's non-flat positions, sorted
-// by symbol for stable output.
+// PositionsOf returns copies of all of a user's non-flat legs, sorted by
+// (symbol, idx) for stable output.
 func (e *Engine) PositionsOf(user uint64) []perpstate.Position {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
 	out := make([]perpstate.Position, 0, len(bySym))
-	for _, p := range bySym {
-		if !p.IsFlat() {
-			out = append(out, *p)
+	for _, sp := range bySym {
+		for _, p := range sp.liveLegs(nil) {
+			if !p.IsFlat() {
+				out = append(out, *p)
+			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Symbol != out[j].Symbol {
+			return out[i].Symbol < out[j].Symbol
+		}
+		return out[i].PositionIdx < out[j].PositionIdx
+	})
 	return out
+}
+
+// PositionModeOf returns the (user, symbol) position mode (ONE_WAY when no
+// container exists — the default).
+func (e *Engine) PositionModeOf(user uint64, symbol string) perpstate.PositionMode {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	sp := e.symPeekLocked(user, symbol)
+	if sp == nil {
+		return perpstate.PositionOneWay
+	}
+	return sp.mode
 }

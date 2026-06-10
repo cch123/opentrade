@@ -374,7 +374,7 @@ func TestStagedRiskPinning(t *testing.T) {
 
 	// Open 1 @100 lev 10 (margin 10) at v1 → position pinned to v1.
 	fill(0, "100")
-	p, _ := eng.PositionRaw(user1, catSym)
+	p, _ := eng.PositionRaw(user1, catSym, 0)
 	if p.RiskConfigVersion != 1 {
 		t.Fatalf("open pin = v%d, want v1", p.RiskConfigVersion)
 	}
@@ -401,7 +401,7 @@ func TestStagedRiskPinning(t *testing.T) {
 	// Size increase (1 @93, configured lev 10 ≤ new cap 16) → the position
 	// adopts v2.
 	fill(1, "93")
-	p, _ = eng.PositionRaw(user1, catSym)
+	p, _ = eng.PositionRaw(user1, catSym, 0)
 	if p.RiskConfigVersion != 2 {
 		t.Fatalf("post-increase pin = v%d, want v2", p.RiskConfigVersion)
 	}
@@ -426,7 +426,7 @@ func TestImmediateRiskOverridesPin(t *testing.T) {
 	svc.HandleTrade(&eventpb.Trade{
 		TradeId: "t1", Symbol: catSym, Price: "100", Qty: "1",
 		TakerUserId: user1, TakerOrderId: oid, TakerSide: eventpb.Side_SIDE_BUY,
-		TakerStatusAfter: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
+		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
 		TakerFilledQtyAfter: "1",
 	}, 1)
 
@@ -466,7 +466,7 @@ func TestProjectRiskTiers(t *testing.T) {
 		svc.HandleTrade(&eventpb.Trade{
 			TradeId: "t" + lev, Symbol: catSym, Price: "100", Qty: "1",
 			TakerUserId: user, TakerOrderId: oid, TakerSide: eventpb.Side_SIDE_BUY,
-			TakerStatusAfter: eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
+			TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
 			TakerFilledQtyAfter: "1",
 		}, 1)
 	}

@@ -64,9 +64,9 @@ func (s *Service) executeCrossLiquidation(user uint64, triggerSymbol string) {
 				continue // no mark to value the close; try the next symbol
 			}
 			notional := mark.Mul(entry.Size)
-			model, cfgVersion := s.riskModelForPosition(user, entry.Symbol)
+			model, cfgVersion := s.riskModelForPosition(user, entry.Symbol, entry.PositionIdx)
 			feeRate := model.EffectiveLiqFeeRate(notional, entry.RiskID)
-			res, fee, okC := s.eng.CrossForceClose(user, entry.Symbol, mark, s.cfg.BackstopAccount, feeRate)
+			res, fee, okC := s.eng.CrossForceClose(user, entry.Symbol, entry.PositionIdx, mark, s.cfg.BackstopAccount, feeRate)
 			if !okC {
 				continue
 			}
@@ -108,8 +108,9 @@ func (s *Service) cancelCrossOrdersFor(user uint64) {
 // account-level — only the liquidation fee moves to insurance here; a final
 // negative balance is settled separately as a deficit event).
 func (s *Service) emitCrossTakeover(user uint64, entry engine.CrossCloseEntry, mark dec.Decimal, res perpstate.FillResult, fee dec.Decimal, model perpstate.RiskModel, cfgVersion uint64) {
-	snap := s.positionSnap(user, entry.Symbol)
-	lotID := s.takeoverLotID(entry.Symbol, 0) + ":cross:" + userIDString(user) + ":" + strconv.FormatUint(snap.GetVersion(), 10)
+	snap := s.positionSnap(user, entry.Symbol, entry.PositionIdx)
+	lotID := s.takeoverLotID(entry.Symbol, 0) + ":cross:" + userIDString(user) + ":" +
+		strconv.Itoa(int(entry.PositionIdx)) + ":" + strconv.FormatUint(snap.GetVersion(), 10)
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_Takeover{Takeover: &eventpb.PerpTakeoverEvent{
@@ -135,7 +136,8 @@ func (s *Service) emitCrossTakeover(user uint64, entry engine.CrossCloseEntry, m
 // emitCrossDeficit journals the insurance fund absorbing a cross account's
 // negative balance after all positions closed (pool bankruptcy). Shape: a
 // PerpLiquidationEvent with closed_qty 0 — the cash leg without a position
-// leg.
+// leg. The snapshot reads idx 0: the deficit is account-cash-scoped, not
+// leg-scoped (every leg is already flat when this fires).
 func (s *Service) emitCrossDeficit(user uint64, symbol string, covered dec.Decimal) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
@@ -145,7 +147,7 @@ func (s *Service) emitCrossDeficit(user uint64, symbol string, covered dec.Decim
 			ClosedQty: "0", RealizedPnl: "0",
 			InsuranceDelta: covered.Neg().String(),
 			Backstop:       true,
-			PositionAfter:  s.positionSnap(user, symbol),
+			PositionAfter:  s.positionSnap(user, symbol, perpstate.IdxNet),
 		}},
 	})
 }

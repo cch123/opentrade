@@ -25,6 +25,7 @@ import (
 type PerpPositionRow struct {
 	UserID      uint64
 	Symbol      string
+	PositionIdx uint8 // ADR-0077 leg key segment
 	Side        int8
 	Size        string
 	EntryPrice  string
@@ -57,6 +58,7 @@ type PerpOrderRow struct {
 	Status       int8
 	FilledQty    string
 	ReduceOnly   bool
+	PositionIdx  uint8 // ADR-0077 order intent
 	RejectReason int8
 	UpdatedAtMs  int64
 }
@@ -68,6 +70,7 @@ type PerpSettlementRow struct {
 	OrderID        uint64
 	TradeID        string
 	Symbol         string
+	PositionIdx    uint8 // ADR-0077
 	FillSide       int8
 	Price          string
 	Qty            string
@@ -83,6 +86,7 @@ type PerpFundingRow struct {
 	PerpSeqID      uint64
 	UserID         uint64
 	Symbol         string
+	PositionIdx    uint8 // ADR-0077 per-leg funding
 	FundingRoundID string
 	FundingRate    string
 	MarkPrice      string
@@ -95,6 +99,7 @@ type PerpLiquidationRow struct {
 	PerpSeqID       uint64
 	UserID          uint64
 	Symbol          string
+	PositionIdx     uint8 // ADR-0077 liquidated leg
 	LiqOrderID      uint64
 	BankruptcyPrice string
 	MarkPrice       string
@@ -112,6 +117,7 @@ type PerpTakeoverLotRow struct {
 	PerpSeqID         uint64
 	UserID            uint64
 	Symbol            string
+	PositionIdx       uint8 // ADR-0077 taken-over leg
 	Side              int8
 	TotalQty          string
 	LeavesQty         string
@@ -129,6 +135,7 @@ type PerpADLRow struct {
 	PerpSeqID    uint64
 	UserID       uint64
 	Symbol       string
+	PositionIdx  uint8 // ADR-0077 reduced leg
 	LotID        string
 	AdlRound     uint64
 	Price        string
@@ -164,6 +171,8 @@ type PerpPositionConfigLogRow struct {
 	UserID          uint64
 	Symbol          string
 	MarginMode      int8
+	PositionMode    int8  // ADR-0077: 1 one-way / 2 hedge
+	PositionIdx     uint8 // echo-provenance leg
 	Leverage        string
 	RiskID          uint32
 	AutoAddMargin   bool
@@ -181,6 +190,7 @@ type PerpMarginAdjustmentRow struct {
 	PerpSeqID       uint64
 	UserID          uint64
 	Symbol          string
+	PositionIdx     uint8 // ADR-0077: the leg whose margin moved
 	Kind            int8
 	Amount          string
 	MarginBefore    string
@@ -201,6 +211,21 @@ type PerpCustomerRiskLimitRow struct {
 	MaxLeverage string
 	Reason      string
 	UpdatedBy   string
+	TsUnixMs    int64
+}
+
+// PerpInvariantBreachRow mirrors `perp_invariant_breaches` (ADR-0077 §2 /
+// ADR-0081 §2: clamped-off reduce-only excess — the manual-repair queue).
+type PerpInvariantBreachRow struct {
+	PerpSeqID   uint64
+	UserID      uint64
+	Symbol      string
+	PositionIdx uint8
+	OrderID     uint64
+	TradeID     string
+	Kind        string
+	ExcessQty   string
+	FillPrice   string
 	TsUnixMs    int64
 }
 
@@ -233,6 +258,7 @@ type PerpBatch struct {
 	ConfigLogs   []PerpPositionConfigLogRow
 	MarginAdjust []PerpMarginAdjustmentRow
 	RiskLimits   []PerpCustomerRiskLimitRow
+	Breaches     []PerpInvariantBreachRow
 }
 
 // IsEmpty reports whether the batch has nothing to write.
@@ -240,7 +266,8 @@ func (b *PerpBatch) IsEmpty() bool {
 	return len(b.Positions) == 0 && len(b.Wallets) == 0 && len(b.Orders) == 0 &&
 		len(b.Settlements) == 0 && len(b.Funding) == 0 && len(b.Liquidations) == 0 &&
 		len(b.TakeoverLots) == 0 && len(b.ADL) == 0 && len(b.RiskPool) == 0 && len(b.Margins) == 0 &&
-		len(b.ConfigLogs) == 0 && len(b.MarginAdjust) == 0 && len(b.RiskLimits) == 0
+		len(b.ConfigLogs) == 0 && len(b.MarginAdjust) == 0 && len(b.RiskLimits) == 0 &&
+		len(b.Breaches) == 0
 }
 
 // PerpJournalWriter is the contract the consumer uses against MySQL. Real impl
@@ -282,6 +309,8 @@ func BuildPerpBatch(events []*eventpb.PerpJournalEvent) PerpBatch {
 			appendPerpMarginAdjustment(&b, p.MarginAdjustment, seq, ts)
 		case *eventpb.PerpJournalEvent_CustomerRiskLimit:
 			appendPerpRiskLimit(&b, p.CustomerRiskLimit, seq, ts)
+		case *eventpb.PerpJournalEvent_InvariantBreach:
+			appendPerpBreach(&b, p.InvariantBreach, seq, ts)
 		}
 	}
 	return b
@@ -294,7 +323,8 @@ func appendPerpOrder(b *PerpBatch, e *eventpb.PerpOrderStatusEvent, ts int64) {
 	b.Orders = append(b.Orders, PerpOrderRow{
 		OrderID: e.GetOrderId(), UserID: e.GetUserId(), Symbol: e.GetSymbol(),
 		Status: int8(e.GetNewStatus()), FilledQty: defaultZero(e.GetFilledQty()),
-		ReduceOnly: e.GetReduceOnly(), RejectReason: int8(e.GetRejectReason()), UpdatedAtMs: ts,
+		ReduceOnly: e.GetReduceOnly(), PositionIdx: uint8(e.GetPositionIdx()),
+		RejectReason: int8(e.GetRejectReason()), UpdatedAtMs: ts,
 	})
 }
 
@@ -304,7 +334,8 @@ func appendPerpSettlement(b *PerpBatch, e *eventpb.PerpSettlementEvent, seq uint
 	}
 	b.Settlements = append(b.Settlements, PerpSettlementRow{
 		PerpSeqID: seq, UserID: e.GetUserId(), OrderID: e.GetOrderId(), TradeID: e.GetTradeId(),
-		Symbol: e.GetSymbol(), FillSide: int8(e.GetFillSide()), Price: e.GetPrice(), Qty: e.GetQty(),
+		Symbol: e.GetSymbol(), PositionIdx: uint8(e.GetPositionAfter().GetPositionIdx()),
+		FillSide: int8(e.GetFillSide()), Price: e.GetPrice(), Qty: e.GetQty(),
 		RealizedPnl: defaultZero(e.GetRealizedPnl()), Fee: defaultZero(e.GetFee()),
 		MarginAdded: defaultZero(e.GetMarginAdded()), MarginReleased: defaultZero(e.GetMarginReleased()),
 		TsUnixMs: ts,
@@ -318,6 +349,7 @@ func appendPerpFunding(b *PerpBatch, e *eventpb.PerpFundingEvent, seq uint64, ts
 	}
 	b.Funding = append(b.Funding, PerpFundingRow{
 		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		PositionIdx:    uint8(e.GetPositionAfter().GetPositionIdx()),
 		FundingRoundID: e.GetFundingRoundId(), FundingRate: e.GetFundingRate(),
 		MarkPrice: e.GetMarkPrice(), Payment: defaultZero(e.GetPayment()), TsUnixMs: ts,
 	})
@@ -329,7 +361,8 @@ func appendPerpLiquidation(b *PerpBatch, e *eventpb.PerpLiquidationEvent, seq ui
 		return
 	}
 	b.Liquidations = append(b.Liquidations, PerpLiquidationRow{
-		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(), LiqOrderID: e.GetLiqOrderId(),
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		PositionIdx: uint8(e.GetPositionAfter().GetPositionIdx()), LiqOrderID: e.GetLiqOrderId(),
 		BankruptcyPrice: e.GetBankruptcyPrice(), MarkPrice: e.GetMarkPrice(), ClosedQty: e.GetClosedQty(),
 		RealizedPnl: defaultZero(e.GetRealizedPnl()), InsuranceDelta: defaultZero(e.GetInsuranceDelta()),
 		AdlQueued: e.GetAdlQueued(), TsUnixMs: ts,
@@ -346,7 +379,8 @@ func appendPerpTakeover(b *PerpBatch, e *eventpb.PerpTakeoverEvent, seq uint64, 
 	// accounting, so preserving the user-facing row here keeps history queries
 	// contiguous until a dedicated takeover ledger is introduced.
 	b.Liquidations = append(b.Liquidations, PerpLiquidationRow{
-		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(), LiqOrderID: e.GetLiqOrderId(),
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		PositionIdx: uint8(e.GetPositionAfter().GetPositionIdx()), LiqOrderID: e.GetLiqOrderId(),
 		BankruptcyPrice: e.GetBankruptcyPrice(), MarkPrice: e.GetMarkPrice(), ClosedQty: e.GetClosedQty(),
 		RealizedPnl: defaultZero(e.GetRealizedPnl()), InsuranceDelta: defaultZero(e.GetInsuranceDelta()),
 		AdlQueued: e.GetAdlQueued(), TsUnixMs: ts,
@@ -359,7 +393,8 @@ func appendPerpTakeover(b *PerpBatch, e *eventpb.PerpTakeoverEvent, seq uint64, 
 	takeoverPrice := firstNonEmpty(e.GetTakeoverPrice(), e.GetBankruptcyPrice())
 	b.TakeoverLots = append(b.TakeoverLots, PerpTakeoverLotRow{
 		LotID: lotID, PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
-		Side: int8(e.GetInventorySide()), TotalQty: defaultZero(takenQty), LeavesQty: defaultZero(takenQty),
+		PositionIdx: uint8(e.GetPositionAfter().GetPositionIdx()),
+		Side:        int8(e.GetInventorySide()), TotalQty: defaultZero(takenQty), LeavesQty: defaultZero(takenQty),
 		TakeoverPrice: defaultZero(takeoverPrice), TriggerMarkPrice: defaultZero(e.GetMarkPrice()),
 		TakenOverBalance:  defaultZero(firstNonEmpty(e.GetTakenOverBalance(), e.GetInsuranceDelta())),
 		WorkingCapitalRef: "takeover:" + lotID, Status: "Init", TsUnixMs: ts,
@@ -373,7 +408,8 @@ func appendPerpADL(b *PerpBatch, e *eventpb.PerpAdlEvent, seq uint64, ts int64) 
 	}
 	factQty := firstNonEmpty(e.GetFactQty(), e.GetClosedQty())
 	b.ADL = append(b.ADL, PerpADLRow{
-		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(), LotID: e.GetLotId(),
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		PositionIdx: uint8(e.GetPositionAfter().GetPositionIdx()), LotID: e.GetLotId(),
 		AdlRound: e.GetAdlRound(), Price: e.GetPrice(),
 		RequestedQty: defaultZero(firstNonEmpty(e.GetRequestedQty(), factQty)),
 		FactQty:      defaultZero(factQty), RealizedPnl: defaultZero(e.GetRealizedPnl()), TsUnixMs: ts,
@@ -420,12 +456,13 @@ func appendPerpPosition(b *PerpBatch, snap *eventpb.PerpPositionSnapshot, seq ui
 		return
 	}
 	b.Positions = append(b.Positions, PerpPositionRow{
-		UserID: snap.GetUserId(), Symbol: snap.GetSymbol(), Side: int8(snap.GetSide()),
+		UserID: snap.GetUserId(), Symbol: snap.GetSymbol(),
+		PositionIdx: uint8(snap.GetPositionIdx()), Side: int8(snap.GetSide()),
 		Size: defaultZero(snap.GetSize()), EntryPrice: defaultZero(snap.GetEntryPrice()),
 		Margin: defaultZero(snap.GetMargin()), Leverage: defaultZero(snap.GetLeverage()),
 		RealizedPnl: defaultZero(snap.GetRealizedPnl()),
 		MarginMode:  int8(snap.GetMarginMode()), RiskID: snap.GetRiskId(),
-		Version: snap.GetVersion(),
+		Version:   snap.GetVersion(),
 		PerpSeqID: seq, UpdatedAtMs: ts,
 	})
 }
@@ -436,8 +473,10 @@ func appendPerpConfigLog(b *PerpBatch, e *eventpb.PerpPositionConfigEvent, seq u
 	}
 	b.ConfigLogs = append(b.ConfigLogs, PerpPositionConfigLogRow{
 		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
-		MarginMode: int8(e.GetMarginMode()), Leverage: defaultZero(e.GetLeverage()),
-		RiskID: e.GetRiskId(), AutoAddMargin: e.GetAutoAddMargin(),
+		MarginMode:   int8(e.GetMarginMode()),
+		PositionMode: int8(e.GetPositionMode()), PositionIdx: uint8(e.GetPositionIdx()),
+		Leverage: defaultZero(e.GetLeverage()),
+		RiskID:   e.GetRiskId(), AutoAddMargin: e.GetAutoAddMargin(),
 		AutoAddMax: defaultZero(e.GetAutoAddMax()), PositionVersion: e.GetPositionVersion(),
 		Reason: e.GetReason(), ClientOpID: e.GetClientOpId(), TsUnixMs: ts,
 	})
@@ -449,10 +488,23 @@ func appendPerpMarginAdjustment(b *PerpBatch, e *eventpb.PerpMarginAdjustmentEve
 	}
 	b.MarginAdjust = append(b.MarginAdjust, PerpMarginAdjustmentRow{
 		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
-		Kind: int8(e.GetKind()), Amount: defaultZero(e.GetAmount()),
+		PositionIdx: uint8(e.GetPositionIdx()),
+		Kind:        int8(e.GetKind()), Amount: defaultZero(e.GetAmount()),
 		MarginBefore: defaultZero(e.GetMarginBefore()), MarginAfter: defaultZero(e.GetMarginAfter()),
 		WalletAfter: defaultZero(e.GetWalletAfter()), PositionVersion: e.GetPositionVersion(),
 		ClientOpID: e.GetClientOpId(), MarkPrice: defaultZero(e.GetMarkPrice()), TsUnixMs: ts,
+	})
+}
+
+func appendPerpBreach(b *PerpBatch, e *eventpb.PerpInvariantBreachEvent, seq uint64, ts int64) {
+	if e == nil {
+		return
+	}
+	b.Breaches = append(b.Breaches, PerpInvariantBreachRow{
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		PositionIdx: uint8(e.GetPositionIdx()), OrderID: e.GetOrderId(), TradeID: e.GetTradeId(),
+		Kind: e.GetKind(), ExcessQty: defaultZero(e.GetExcessQty()),
+		FillPrice: defaultZero(e.GetFillPrice()), TsUnixMs: ts,
 	})
 }
 

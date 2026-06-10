@@ -80,18 +80,18 @@ func TestSnapshot_InFlightLiquidationRoundTrip(t *testing.T) {
 	liqCfg := Config{MaxLeverage: dec.New("100"), MMR: dec.New("0.05"), ProducerID: "p"}
 	svc2, eng2 := restoreInto(engSnap, svcSnap, liqCfg)
 
-	if !svc2.hasLiquidation(liqKey(user1, perpSym)) {
+	if !svc2.hasLiquidation(liqKey(user1, perpSym, 0)) {
 		t.Fatal("in-flight liquidation guard not restored")
 	}
 	if svc2.liquidationFor(bankID) == nil {
 		t.Fatal("bankruptcy order → liquidation mapping not restored")
 	}
-	if _, ok := eng2.PositionOf(user1, perpSym); !ok {
+	if _, ok := eng2.PositionOf(user1, perpSym, 0); !ok {
 		t.Fatal("liquidated position not restored")
 	}
 	// The restored bankruptcy order can still settle to insurance.
 	liqFill(svc2, bankID, "90", "1", 5)
-	if _, ok := eng2.PositionOf(user1, perpSym); ok {
+	if _, ok := eng2.PositionOf(user1, perpSym, 0); ok {
 		t.Fatal("position should close on the post-restore liquidation fill")
 	}
 }

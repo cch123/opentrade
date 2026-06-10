@@ -83,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/perp/positions", s.handlePerpPositions)
 	mux.HandleFunc("GET /v1/perp/margin", s.handlePerpMargin)
 	mux.HandleFunc("POST /v1/perp/margin-mode", s.handlePerpSetMarginMode)
+	mux.HandleFunc("POST /v1/perp/position-mode", s.handlePerpSetPositionMode)
 	mux.HandleFunc("POST /v1/perp/margin/adjust", s.handlePerpAdjustMargin)
 	mux.HandleFunc("POST /v1/perp/auto-add-margin", s.handlePerpSetAutoAdd)
 	mux.HandleFunc("POST /v1/perp/leverage", s.handlePerpSetLeverage)

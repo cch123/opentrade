@@ -23,13 +23,13 @@ func TestEffectiveTierIndex(t *testing.T) {
 		riskID   uint32
 		want     int32
 	}{
-		{"5000", 0, 1},   // auto lowest covering tier
-		{"20000", 0, 2},  // auto second tier
-		{"99999", 0, 3},  // auto open-ended tail
-		{"5000", 2, 2},   // user selected higher tier wins
-		{"20000", 1, 2},  // auto tier higher than selection wins (conservative max)
-		{"5000", 99, 3},  // out-of-range riskID clamps to last tier
-		{"99999", 1, 3},  // auto tail beats low selection
+		{"5000", 0, 1},  // auto lowest covering tier
+		{"20000", 0, 2}, // auto second tier
+		{"99999", 0, 3}, // auto open-ended tail
+		{"5000", 2, 2},  // user selected higher tier wins
+		{"20000", 1, 2}, // auto tier higher than selection wins (conservative max)
+		{"5000", 99, 3}, // out-of-range riskID clamps to last tier
+		{"99999", 1, 3}, // auto tail beats low selection
 	}
 	for _, c := range cases {
 		if got := m.EffectiveTierIndex(d(c.notional), c.riskID); got != c.want {

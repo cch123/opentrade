@@ -34,12 +34,12 @@ func (s *Store) ListPerpPositions(ctx context.Context, userID uint64, symbol str
 		args = append(args, symbol)
 	}
 	q := `
-		SELECT user_id, symbol, side, CAST(size AS CHAR), CAST(entry_price AS CHAR),
+		SELECT user_id, symbol, position_idx, side, CAST(size AS CHAR), CAST(entry_price AS CHAR),
 		       CAST(margin AS CHAR), CAST(leverage AS CHAR), CAST(realized_pnl AS CHAR),
 		       CAST(UNIX_TIMESTAMP(updated_at) * 1000 AS SIGNED)
 		FROM perp_positions
 		WHERE ` + strings.Join(conds, " AND ") + `
-		ORDER BY symbol ASC`
+		ORDER BY symbol ASC, position_idx ASC`
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -51,7 +51,7 @@ func (s *Store) ListPerpPositions(ctx context.Context, userID uint64, symbol str
 	for rows.Next() {
 		var p historypb.PerpPosition
 		var side int8
-		if err := rows.Scan(&p.UserId, &p.Symbol, &side, &p.Size, &p.EntryPrice,
+		if err := rows.Scan(&p.UserId, &p.Symbol, &p.PositionIdx, &side, &p.Size, &p.EntryPrice,
 			&p.Margin, &p.Leverage, &p.RealizedPnl, &p.UpdatedAtUnixMs); err != nil {
 			return nil, err
 		}
@@ -72,7 +72,7 @@ func (s *Store) ListPerpFunding(ctx context.Context, f PerpLedgerFilter, rawCurs
 		return nil, "", err
 	}
 	q := `
-		SELECT perp_seq_id, symbol, funding_round_id, CAST(funding_rate AS CHAR),
+		SELECT perp_seq_id, symbol, position_idx, funding_round_id, CAST(funding_rate AS CHAR),
 		       CAST(mark_price AS CHAR), CAST(payment AS CHAR), ts_unix_ms
 		FROM perp_funding
 		WHERE ` + strings.Join(conds, " AND ") + `
@@ -89,7 +89,7 @@ func (s *Store) ListPerpFunding(ctx context.Context, f PerpLedgerFilter, rawCurs
 	var out []*historypb.PerpFunding
 	for rows.Next() {
 		var r historypb.PerpFunding
-		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.FundingRoundId, &r.FundingRate,
+		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.PositionIdx, &r.FundingRoundId, &r.FundingRate,
 			&r.MarkPrice, &r.Payment, &r.TsUnixMs); err != nil {
 			return nil, "", err
 		}
@@ -122,7 +122,7 @@ func (s *Store) ListPerpLiquidations(ctx context.Context, f PerpLedgerFilter, ra
 		return nil, "", err
 	}
 	q := `
-		SELECT perp_seq_id, symbol, liq_order_id, CAST(bankruptcy_price AS CHAR),
+		SELECT perp_seq_id, symbol, position_idx, liq_order_id, CAST(bankruptcy_price AS CHAR),
 		       CAST(mark_price AS CHAR), CAST(closed_qty AS CHAR), CAST(realized_pnl AS CHAR),
 		       CAST(insurance_delta AS CHAR), adl_queued, ts_unix_ms
 		FROM perp_liquidations
@@ -140,7 +140,7 @@ func (s *Store) ListPerpLiquidations(ctx context.Context, f PerpLedgerFilter, ra
 	var out []*historypb.PerpLiquidation
 	for rows.Next() {
 		var r historypb.PerpLiquidation
-		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.LiqOrderId, &r.BankruptcyPrice,
+		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.PositionIdx, &r.LiqOrderId, &r.BankruptcyPrice,
 			&r.MarkPrice, &r.ClosedQty, &r.RealizedPnl, &r.InsuranceDelta, &r.AdlQueued, &r.TsUnixMs); err != nil {
 			return nil, "", err
 		}
@@ -173,7 +173,7 @@ func (s *Store) ListPerpADL(ctx context.Context, f PerpLedgerFilter, rawCursor s
 		return nil, "", err
 	}
 	q := `
-		SELECT perp_seq_id, symbol, lot_id, adl_round, CAST(price AS CHAR),
+		SELECT perp_seq_id, symbol, position_idx, lot_id, adl_round, CAST(price AS CHAR),
 		       CAST(requested_qty AS CHAR), CAST(fact_qty AS CHAR), CAST(realized_pnl AS CHAR),
 		       ts_unix_ms
 		FROM perp_adl_events
@@ -191,7 +191,7 @@ func (s *Store) ListPerpADL(ctx context.Context, f PerpLedgerFilter, rawCursor s
 	var out []*historypb.PerpADL
 	for rows.Next() {
 		var r historypb.PerpADL
-		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.LotId, &r.AdlRound, &r.Price,
+		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.PositionIdx, &r.LotId, &r.AdlRound, &r.Price,
 			&r.RequestedQty, &r.FactQty, &r.RealizedPnl, &r.TsUnixMs); err != nil {
 			return nil, "", err
 		}
@@ -253,7 +253,7 @@ func (s *Store) ListPerpMarginAdjustments(ctx context.Context, f PerpLedgerFilte
 		return nil, "", err
 	}
 	q := `
-		SELECT perp_seq_id, symbol, kind, CAST(amount AS CHAR),
+		SELECT perp_seq_id, symbol, position_idx, kind, CAST(amount AS CHAR),
 		       CAST(margin_before AS CHAR), CAST(margin_after AS CHAR),
 		       CAST(wallet_after AS CHAR), position_version, client_op_id,
 		       CAST(mark_price AS CHAR), ts_unix_ms
@@ -272,7 +272,7 @@ func (s *Store) ListPerpMarginAdjustments(ctx context.Context, f PerpLedgerFilte
 	var out []*historypb.PerpMarginAdjustment
 	for rows.Next() {
 		var r historypb.PerpMarginAdjustment
-		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.Kind, &r.Amount,
+		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.PositionIdx, &r.Kind, &r.Amount,
 			&r.MarginBefore, &r.MarginAfter, &r.WalletAfter, &r.PositionVersion,
 			&r.ClientOpId, &r.MarkPrice, &r.TsUnixMs); err != nil {
 			return nil, "", err
@@ -307,7 +307,8 @@ func (s *Store) ListPerpConfigLogs(ctx context.Context, f PerpLedgerFilter, rawC
 		return nil, "", err
 	}
 	q := `
-		SELECT perp_seq_id, symbol, margin_mode, CAST(leverage AS CHAR), risk_id,
+		SELECT perp_seq_id, symbol, margin_mode, position_mode, position_idx,
+		       CAST(leverage AS CHAR), risk_id,
 		       auto_add_margin, CAST(auto_add_max AS CHAR), position_version,
 		       reason, client_op_id, ts_unix_ms
 		FROM perp_position_config_logs
@@ -325,7 +326,8 @@ func (s *Store) ListPerpConfigLogs(ctx context.Context, f PerpLedgerFilter, rawC
 	var out []*historypb.PerpConfigLog
 	for rows.Next() {
 		var r historypb.PerpConfigLog
-		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.MarginMode, &r.Leverage, &r.RiskId,
+		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.MarginMode, &r.PositionMode, &r.PositionIdx,
+			&r.Leverage, &r.RiskId,
 			&r.AutoAddMargin, &r.AutoAddMax, &r.PositionVersion,
 			&r.Reason, &r.ClientOpId, &r.TsUnixMs); err != nil {
 			return nil, "", err

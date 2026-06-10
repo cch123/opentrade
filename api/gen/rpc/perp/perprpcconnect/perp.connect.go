@@ -47,6 +47,9 @@ const (
 	// PerpServiceSetMarginModeProcedure is the fully-qualified name of the PerpService's SetMarginMode
 	// RPC.
 	PerpServiceSetMarginModeProcedure = "/opentrade.rpc.perp.PerpService/SetMarginMode"
+	// PerpServiceSetPositionModeProcedure is the fully-qualified name of the PerpService's
+	// SetPositionMode RPC.
+	PerpServiceSetPositionModeProcedure = "/opentrade.rpc.perp.PerpService/SetPositionMode"
 	// PerpServiceAdjustIsolatedMarginProcedure is the fully-qualified name of the PerpService's
 	// AdjustIsolatedMargin RPC.
 	PerpServiceAdjustIsolatedMarginProcedure = "/opentrade.rpc.perp.PerpService/AdjustIsolatedMargin"
@@ -86,6 +89,9 @@ type PerpServiceClient interface {
 	// client_op_id (a repeat returns the first outcome) and run inside the
 	// owning user's sequencer.
 	SetMarginMode(context.Context, *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error)
+	// ADR-0077 §3: ONE_WAY ↔ HEDGE switch; requires every leg flat, no active
+	// orders, no position-bound triggers, no in-flight liquidation.
+	SetPositionMode(context.Context, *connect.Request[perp.SetPositionModeRequest]) (*connect.Response[perp.SetPositionModeResponse], error)
 	AdjustIsolatedMargin(context.Context, *connect.Request[perp.AdjustIsolatedMarginRequest]) (*connect.Response[perp.AdjustIsolatedMarginResponse], error)
 	SetAutoAddMargin(context.Context, *connect.Request[perp.SetAutoAddMarginRequest]) (*connect.Response[perp.SetAutoAddMarginResponse], error)
 	SetPositionLeverage(context.Context, *connect.Request[perp.SetPositionLeverageRequest]) (*connect.Response[perp.SetPositionLeverageResponse], error)
@@ -148,6 +154,12 @@ func NewPerpServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			httpClient,
 			baseURL+PerpServiceSetMarginModeProcedure,
 			connect.WithSchema(perpServiceMethods.ByName("SetMarginMode")),
+			connect.WithClientOptions(opts...),
+		),
+		setPositionMode: connect.NewClient[perp.SetPositionModeRequest, perp.SetPositionModeResponse](
+			httpClient,
+			baseURL+PerpServiceSetPositionModeProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("SetPositionMode")),
 			connect.WithClientOptions(opts...),
 		),
 		adjustIsolatedMargin: connect.NewClient[perp.AdjustIsolatedMarginRequest, perp.AdjustIsolatedMarginResponse](
@@ -215,6 +227,7 @@ type perpServiceClient struct {
 	queryPositions             *connect.Client[perp.QueryPositionsRequest, perp.QueryPositionsResponse]
 	queryMargin                *connect.Client[perp.QueryMarginRequest, perp.QueryMarginResponse]
 	setMarginMode              *connect.Client[perp.SetMarginModeRequest, perp.SetMarginModeResponse]
+	setPositionMode            *connect.Client[perp.SetPositionModeRequest, perp.SetPositionModeResponse]
 	adjustIsolatedMargin       *connect.Client[perp.AdjustIsolatedMarginRequest, perp.AdjustIsolatedMarginResponse]
 	setAutoAddMargin           *connect.Client[perp.SetAutoAddMarginRequest, perp.SetAutoAddMarginResponse]
 	setPositionLeverage        *connect.Client[perp.SetPositionLeverageRequest, perp.SetPositionLeverageResponse]
@@ -254,6 +267,11 @@ func (c *perpServiceClient) QueryMargin(ctx context.Context, req *connect.Reques
 // SetMarginMode calls opentrade.rpc.perp.PerpService.SetMarginMode.
 func (c *perpServiceClient) SetMarginMode(ctx context.Context, req *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error) {
 	return c.setMarginMode.CallUnary(ctx, req)
+}
+
+// SetPositionMode calls opentrade.rpc.perp.PerpService.SetPositionMode.
+func (c *perpServiceClient) SetPositionMode(ctx context.Context, req *connect.Request[perp.SetPositionModeRequest]) (*connect.Response[perp.SetPositionModeResponse], error) {
+	return c.setPositionMode.CallUnary(ctx, req)
 }
 
 // AdjustIsolatedMargin calls opentrade.rpc.perp.PerpService.AdjustIsolatedMargin.
@@ -312,6 +330,9 @@ type PerpServiceHandler interface {
 	// client_op_id (a repeat returns the first outcome) and run inside the
 	// owning user's sequencer.
 	SetMarginMode(context.Context, *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error)
+	// ADR-0077 §3: ONE_WAY ↔ HEDGE switch; requires every leg flat, no active
+	// orders, no position-bound triggers, no in-flight liquidation.
+	SetPositionMode(context.Context, *connect.Request[perp.SetPositionModeRequest]) (*connect.Response[perp.SetPositionModeResponse], error)
 	AdjustIsolatedMargin(context.Context, *connect.Request[perp.AdjustIsolatedMarginRequest]) (*connect.Response[perp.AdjustIsolatedMarginResponse], error)
 	SetAutoAddMargin(context.Context, *connect.Request[perp.SetAutoAddMarginRequest]) (*connect.Response[perp.SetAutoAddMarginResponse], error)
 	SetPositionLeverage(context.Context, *connect.Request[perp.SetPositionLeverageRequest]) (*connect.Response[perp.SetPositionLeverageResponse], error)
@@ -370,6 +391,12 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 		PerpServiceSetMarginModeProcedure,
 		svc.SetMarginMode,
 		connect.WithSchema(perpServiceMethods.ByName("SetMarginMode")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceSetPositionModeHandler := connect.NewUnaryHandler(
+		PerpServiceSetPositionModeProcedure,
+		svc.SetPositionMode,
+		connect.WithSchema(perpServiceMethods.ByName("SetPositionMode")),
 		connect.WithHandlerOptions(opts...),
 	)
 	perpServiceAdjustIsolatedMarginHandler := connect.NewUnaryHandler(
@@ -440,6 +467,8 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 			perpServiceQueryMarginHandler.ServeHTTP(w, r)
 		case PerpServiceSetMarginModeProcedure:
 			perpServiceSetMarginModeHandler.ServeHTTP(w, r)
+		case PerpServiceSetPositionModeProcedure:
+			perpServiceSetPositionModeHandler.ServeHTTP(w, r)
 		case PerpServiceAdjustIsolatedMarginProcedure:
 			perpServiceAdjustIsolatedMarginHandler.ServeHTTP(w, r)
 		case PerpServiceSetAutoAddMarginProcedure:
@@ -489,6 +518,10 @@ func (UnimplementedPerpServiceHandler) QueryMargin(context.Context, *connect.Req
 
 func (UnimplementedPerpServiceHandler) SetMarginMode(context.Context, *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.SetMarginMode is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) SetPositionMode(context.Context, *connect.Request[perp.SetPositionModeRequest]) (*connect.Response[perp.SetPositionModeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.SetPositionMode is not implemented"))
 }
 
 func (UnimplementedPerpServiceHandler) AdjustIsolatedMargin(context.Context, *connect.Request[perp.AdjustIsolatedMarginRequest]) (*connect.Response[perp.AdjustIsolatedMarginResponse], error) {

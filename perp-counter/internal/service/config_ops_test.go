@@ -187,7 +187,7 @@ func TestAutoAdd_RunsBeforeLiquidationArm(t *testing.T) {
 	if len(disp.orders) != ordersBefore {
 		t.Fatal("liquidation order dispatched despite successful auto-add")
 	}
-	p, _ := eng.PositionOf(user1, "BTC-USDT-PERP")
+	p, _ := eng.PositionOf(user1, "BTC-USDT-PERP", 0)
 	if p.Margin.Cmp(dec.New("10")) <= 0 {
 		t.Fatalf("margin not topped up: %s", p.Margin)
 	}

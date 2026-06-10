@@ -31,12 +31,12 @@ func fundingTickEvt(symbol, roundUnixSec, rate, mark string) *eventpb.PerpPriceE
 func openPosition(eng interface {
 	Deposit(uint64, dec.Decimal) dec.Decimal
 	Reserve(uint64, dec.Decimal) bool
-	ApplyFill(uint64, string, dec.Decimal, perpstate.Fill) perpstate.FillResult
+	ApplyFill(uint64, string, uint8, dec.Decimal, perpstate.Fill) (perpstate.FillResult, dec.Decimal)
 }, user uint64, symbol string, side perpstate.Side, price, qty, lev string) {
 	p, q, l := dec.New(price), dec.New(qty), dec.New(lev)
 	eng.Deposit(user, dec.New("100000"))
 	eng.Reserve(user, perpstate.InitMargin(p, q, l))
-	eng.ApplyFill(user, symbol, l, perpstate.Fill{Side: side, Price: p, Qty: q})
+	eng.ApplyFill(user, symbol, 0, l, perpstate.Fill{Side: side, Price: p, Qty: q})
 }
 
 func TestHandleMarkTick_SetsMark(t *testing.T) {
@@ -77,14 +77,14 @@ func TestHandleFundingTick_SettlesBothSidesZeroSum(t *testing.T) {
 	openPosition(eng, user2, perpSym, perpstate.SideSell, "100", "1", "10") // short, margin 10
 	eng.SetMark(perpSym, dec.New("100"))
 
-	p1Before, _ := eng.PositionOf(user1, perpSym)
-	p2Before, _ := eng.PositionOf(user2, perpSym)
+	p1Before, _ := eng.PositionOf(user1, perpSym, 0)
+	p2Before, _ := eng.PositionOf(user2, perpSym, 0)
 	sumBefore := p1Before.Margin.Add(p2Before.Margin)
 
 	svc.HandlePerpPriceEvent(fundingTickEvt(perpSym, "1748505600", "0.01", "100"))
 
-	p1, _ := eng.PositionOf(user1, perpSym)
-	p2, _ := eng.PositionOf(user2, perpSym)
+	p1, _ := eng.PositionOf(user1, perpSym, 0)
+	p2, _ := eng.PositionOf(user2, perpSym, 0)
 	// Zero-sum: one side pays exactly what the other receives.
 	if got := p1.Margin.Add(p2.Margin); got.Cmp(sumBefore) != 0 {
 		t.Fatalf("funding not zero-sum: before=%s after=%s", sumBefore, got)
@@ -98,7 +98,7 @@ func TestHandleFundingTick_SettlesBothSidesZeroSum(t *testing.T) {
 
 	// Idempotent: replaying the same round settles nobody again.
 	svc.HandlePerpPriceEvent(fundingTickEvt(perpSym, "1748505600", "0.01", "100"))
-	p1b, _ := eng.PositionOf(user1, perpSym)
+	p1b, _ := eng.PositionOf(user1, perpSym, 0)
 	if p1b.Margin.Cmp(p1.Margin) != 0 {
 		t.Fatalf("replayed funding round must not re-settle: %s -> %s", p1.Margin, p1b.Margin)
 	}
@@ -111,11 +111,11 @@ func TestHandleFundingTick_MalformedRoundIDSkipped(t *testing.T) {
 	svc, eng, _, jr := newSvc()
 	openPosition(eng, user1, perpSym, perpstate.SideBuy, "100", "1", "10")
 	eng.SetMark(perpSym, dec.New("100"))
-	before, _ := eng.PositionOf(user1, perpSym)
+	before, _ := eng.PositionOf(user1, perpSym, 0)
 	// No ":<seconds>" suffix → cannot guard idempotency → skip.
 	svc.HandlePerpPriceEvent(&eventpb.PerpPriceEvent{Symbol: perpSym, Payload: &eventpb.PerpPriceEvent_Funding{
 		Funding: &eventpb.FundingTick{FundingRoundId: "no-round", FundingRate: "0.01", MarkPrice: "100"}}})
-	after, _ := eng.PositionOf(user1, perpSym)
+	after, _ := eng.PositionOf(user1, perpSym, 0)
 	if before.Margin.Cmp(after.Margin) != 0 {
 		t.Fatal("malformed funding_round_id should be skipped")
 	}

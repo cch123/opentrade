@@ -27,6 +27,7 @@ type TakenOverLot struct {
 	LotID             string
 	UserID            uint64
 	Symbol            string
+	PositionIdx       uint8 // ADR-0077: the liquidated leg (replay must not reduce the wrong leg)
 	Side              perpstate.Side
 	TotalQty          dec.Decimal
 	LeavesQty         dec.Decimal

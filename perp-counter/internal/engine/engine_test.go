@@ -30,13 +30,13 @@ func TestEngine_OpenConsumesReservedMargin(t *testing.T) {
 	eq(t, w.Available, "990", "available after reserve")
 	eq(t, w.Reserved, "10", "reserved after reserve")
 
-	e.ApplyFill(1001, "BTC-USDT-PERP", d("10"),
+	e.ApplyFill(1001, "BTC-USDT-PERP", 0, d("10"),
 		perpstate.Fill{Side: perpstate.SideBuy, Price: d("100"), Qty: d("1"), Fee: d("0")})
 
 	w = e.WalletOf(1001)
 	eq(t, w.Reserved, "0", "reserved consumed into position margin")
 	eq(t, w.Available, "990", "available unchanged (IM came from reserved)")
-	p, ok := e.PositionOf(1001, "BTC-USDT-PERP")
+	p, ok := e.PositionOf(1001, "BTC-USDT-PERP", 0)
 	if !ok {
 		t.Fatal("position should exist")
 	}
@@ -48,16 +48,16 @@ func TestEngine_CloseReleasesMarginAndPnL(t *testing.T) {
 	e := New()
 	e.Deposit(1001, d("1000"))
 	e.Reserve(1001, d("10"))
-	e.ApplyFill(1001, "BTC-USDT-PERP", d("10"),
+	e.ApplyFill(1001, "BTC-USDT-PERP", 0, d("10"),
 		perpstate.Fill{Side: perpstate.SideBuy, Price: d("100"), Qty: d("1"), Fee: d("0")})
 	// Close at 110 → realized +10, release margin 10.
-	e.ApplyFill(1001, "BTC-USDT-PERP", d("10"),
+	e.ApplyFill(1001, "BTC-USDT-PERP", 0, d("10"),
 		perpstate.Fill{Side: perpstate.SideSell, Price: d("110"), Qty: d("1"), Fee: d("0")})
 
 	w := e.WalletOf(1001)
 	eq(t, w.Available, "1010", "available = 990 + released 10 + pnl 10")
 	eq(t, w.Reserved, "0", "no reserved left")
-	if _, ok := e.PositionOf(1001, "BTC-USDT-PERP"); ok {
+	if _, ok := e.PositionOf(1001, "BTC-USDT-PERP", 0); ok {
 		t.Fatal("closed position should be gone")
 	}
 }
@@ -77,7 +77,7 @@ func TestEngine_FeeReducesAvailable(t *testing.T) {
 	e := New()
 	e.Deposit(1001, d("1000"))
 	e.Reserve(1001, d("10"))
-	e.ApplyFill(1001, "BTC-USDT-PERP", d("10"),
+	e.ApplyFill(1001, "BTC-USDT-PERP", 0, d("10"),
 		perpstate.Fill{Side: perpstate.SideBuy, Price: d("100"), Qty: d("1"), Fee: d("0.4")})
 	w := e.WalletOf(1001)
 	eq(t, w.Available, "989.6", "available reduced by fee 0.4")
@@ -88,10 +88,10 @@ func TestEngine_SnapshotRoundTrip(t *testing.T) {
 	e.Deposit(1001, d("1000"))
 	e.Deposit(1002, d("500"))
 	e.Reserve(1001, d("10"))
-	e.ApplyFill(1001, "BTC-USDT-PERP", d("10"),
+	e.ApplyFill(1001, "BTC-USDT-PERP", 0, d("10"),
 		perpstate.Fill{Side: perpstate.SideBuy, Price: d("100"), Qty: d("1"), Fee: d("0")})
 	e.Reserve(1002, d("20"))
-	e.ApplyFill(1002, "ETH-USDT-PERP", d("5"),
+	e.ApplyFill(1002, "ETH-USDT-PERP", 0, d("5"),
 		perpstate.Fill{Side: perpstate.SideSell, Price: d("200"), Qty: d("0.5"), Fee: d("0")})
 	e.SetMark("BTC-USDT-PERP", d("101"))
 	e.SetMark("ETH-USDT-PERP", d("199"))
@@ -117,7 +117,7 @@ func TestEngine_SnapshotRoundTrip(t *testing.T) {
 	// Spot-check a restored value survived serialization.
 	w := e2.WalletOf(1001)
 	eq(t, w.Available, "990", "restored u1 available")
-	p, ok := e2.PositionOf(1002, "ETH-USDT-PERP")
+	p, ok := e2.PositionOf(1002, "ETH-USDT-PERP", 0)
 	if !ok {
 		t.Fatal("restored u2 position missing")
 	}
@@ -135,25 +135,25 @@ func TestEngine_ApplyFillWithSeq_GuardsReplay(t *testing.T) {
 		return perpstate.Fill{Side: perpstate.SideBuy, Price: d("100"), Qty: d("1")}
 	}
 
-	if _, ok := e.ApplyFillWithSeq(1001, "BTC-USDT-PERP", d("10"), 5, buy1()); !ok {
+	if _, _, ok := e.ApplyFillWithSeq(1001, "BTC-USDT-PERP", 0, d("10"), 5, buy1()); !ok {
 		t.Fatal("seq 5 should apply")
 	}
-	p, _ := e.PositionOf(1001, "BTC-USDT-PERP")
+	p, _ := e.PositionOf(1001, "BTC-USDT-PERP", 0)
 	eq(t, p.Size, "1", "size after first apply")
 
-	if _, ok := e.ApplyFillWithSeq(1001, "BTC-USDT-PERP", d("10"), 5, buy1()); ok {
+	if _, _, ok := e.ApplyFillWithSeq(1001, "BTC-USDT-PERP", 0, d("10"), 5, buy1()); ok {
 		t.Fatal("replay of seq 5 must be skipped")
 	}
-	if _, ok := e.ApplyFillWithSeq(1001, "BTC-USDT-PERP", d("10"), 3, buy1()); ok {
+	if _, _, ok := e.ApplyFillWithSeq(1001, "BTC-USDT-PERP", 0, d("10"), 3, buy1()); ok {
 		t.Fatal("older seq 3 must be skipped")
 	}
-	p, _ = e.PositionOf(1001, "BTC-USDT-PERP")
+	p, _ = e.PositionOf(1001, "BTC-USDT-PERP", 0)
 	eq(t, p.Size, "1", "size unchanged after skipped replays")
 
-	if _, ok := e.ApplyFillWithSeq(1001, "BTC-USDT-PERP", d("10"), 6, buy1()); !ok {
+	if _, _, ok := e.ApplyFillWithSeq(1001, "BTC-USDT-PERP", 0, d("10"), 6, buy1()); !ok {
 		t.Fatal("newer seq 6 should apply")
 	}
-	p, _ = e.PositionOf(1001, "BTC-USDT-PERP")
+	p, _ = e.PositionOf(1001, "BTC-USDT-PERP", 0)
 	eq(t, p.Size, "2", "size after seq 6")
 }
 
@@ -161,7 +161,7 @@ func TestEngine_ApplyFillWithSeq_GuardsReplay(t *testing.T) {
 func openPos(e *Engine, user uint64, sym string, side perpstate.Side, price, qty, lev string) {
 	e.Deposit(user, d("100000"))
 	e.Reserve(user, perpstate.InitMargin(d(price), d(qty), d(lev)))
-	e.ApplyFill(user, sym, d(lev), perpstate.Fill{Side: side, Price: d(price), Qty: d(qty)})
+	e.ApplyFill(user, sym, 0, d(lev), perpstate.Fill{Side: side, Price: d(price), Qty: d(qty)})
 }
 
 func TestEngine_SettleFunding(t *testing.T) {
@@ -177,16 +177,16 @@ func TestEngine_SettleFunding(t *testing.T) {
 	}
 	eq(t, res[0].Payment, "-0.01", "u1 (long) pays") // sorted by user: u1 first
 	eq(t, res[1].Payment, "0.01", "u2 (short) receives")
-	p1, _ := e.PositionOf(1001, "BTC-USDT-PERP")
+	p1, _ := e.PositionOf(1001, "BTC-USDT-PERP", 0)
 	eq(t, p1.Margin, "9.99", "u1 margin after funding")
-	p2, _ := e.PositionOf(1002, "BTC-USDT-PERP")
+	p2, _ := e.PositionOf(1002, "BTC-USDT-PERP", 0)
 	eq(t, p2.Margin, "10.01", "u2 margin after funding")
 
 	// Replay same round → skipped, margins unchanged.
 	if res := e.SettleFunding("BTC-USDT-PERP", 1000, d("0.0001")); len(res) != 0 {
 		t.Fatalf("replay round must settle nothing, got %d", len(res))
 	}
-	p1, _ = e.PositionOf(1001, "BTC-USDT-PERP")
+	p1, _ = e.PositionOf(1001, "BTC-USDT-PERP", 0)
 	eq(t, p1.Margin, "9.99", "u1 margin unchanged after replay")
 
 	// New round applies again.
@@ -233,13 +233,13 @@ func TestEngine_LiquidationIndexMatchesFullScanAcrossMutations(t *testing.T) {
 	// Closing to flat must remove the old index key; otherwise later mark gaps
 	// would keep producing a false candidate for a position that no longer
 	// exists.
-	e.ApplyFillWithSeq(1001, symbol, d("10"), 1,
+	e.ApplyFillWithSeq(1001, symbol, 0, d("10"), 1,
 		perpstate.Fill{Side: perpstate.SideSell, Price: d("100"), Qty: d("1")})
 	assertLiquidationIndexMatchesFullScan(t, e, symbol)
 
 	// A flip is the most error-prone update because the position leaves the
 	// long tree and re-enters the short tree under the same (user,symbol).
-	e.ApplyFillWithSeq(1002, symbol, d("20"), 1,
+	e.ApplyFillWithSeq(1002, symbol, 0, d("20"), 1,
 		perpstate.Fill{Side: perpstate.SideSell, Price: d("100"), Qty: d("2")})
 	assertLiquidationIndexMatchesFullScan(t, e, symbol)
 
@@ -247,7 +247,7 @@ func TestEngine_LiquidationIndexMatchesFullScanAcrossMutations(t *testing.T) {
 	e.ApplyFunding(1003, symbol, d("0.01"))
 	assertLiquidationIndexMatchesFullScan(t, e, symbol)
 
-	e.ApplyPartialLiquidationFill(1002, symbol, 2,
+	e.ApplyPartialLiquidationFill(1002, symbol, 0, 2,
 		perpstate.Fill{Side: perpstate.SideBuy, Price: d("95"), Qty: d("0.25")},
 		d("0.001"))
 	assertLiquidationIndexMatchesFullScan(t, e, symbol)
@@ -294,11 +294,18 @@ func fullScanLiquidationsForTest(e *Engine, symbol string, mark dec.Decimal) []L
 	defer e.mu.RUnlock()
 	var out []LiquidationCandidate
 	for user, bySym := range e.positions {
-		if cand, ok := e.liquidationCandidateLocked(user, symbol, bySym[symbol], mark); ok {
-			out = append(out, cand)
+		for _, p := range bySym[symbol].liveLegs(nil) {
+			if cand, ok := e.liquidationCandidateLocked(user, symbol, p, mark); ok {
+				out = append(out, cand)
+			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UserID != out[j].UserID {
+			return out[i].UserID < out[j].UserID
+		}
+		return out[i].PositionIdx < out[j].PositionIdx
+	})
 	return out
 }
 
@@ -315,32 +322,32 @@ func TestEngine_ForceClose(t *testing.T) {
 	// Filled exactly at bankruptcy (90) → zero insurance impact.
 	e := New()
 	openPos(e, 1001, "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10") // margin 10, bankruptcy 90
-	delta, ok := e.ForceClose(1001, "BTC-USDT-PERP", d("90"))
+	delta, ok := e.ForceClose(1001, "BTC-USDT-PERP", 0, d("90"))
 	if !ok {
 		t.Fatal("force close should succeed")
 	}
 	eq(t, delta, "0", "equity at bankruptcy is 0")
 	eq(t, e.InsuranceFund("BTC-USDT-PERP"), "0", "fund unchanged at bankruptcy")
-	if _, exists := e.PositionOf(1001, "BTC-USDT-PERP"); exists {
+	if _, exists := e.PositionOf(1001, "BTC-USDT-PERP", 0); exists {
 		t.Fatal("position should be wiped")
 	}
 
 	// Filled better than bankruptcy (92) → surplus 2 into the fund.
 	e = New()
 	openPos(e, 1001, "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10")
-	delta, _ = e.ForceClose(1001, "BTC-USDT-PERP", d("92")) // realized -8, equity 2
+	delta, _ = e.ForceClose(1001, "BTC-USDT-PERP", 0, d("92")) // realized -8, equity 2
 	eq(t, delta, "2", "surplus to insurance")
 	eq(t, e.InsuranceFund("BTC-USDT-PERP"), "2", "fund grows by surplus")
 
 	// Filled past bankruptcy (88) → deficit 2, fund covers (goes negative).
 	e = New()
 	openPos(e, 1001, "BTC-USDT-PERP", perpstate.SideBuy, "100", "1", "10")
-	delta, _ = e.ForceClose(1001, "BTC-USDT-PERP", d("88")) // realized -12, equity -2
+	delta, _ = e.ForceClose(1001, "BTC-USDT-PERP", 0, d("88")) // realized -12, equity -2
 	eq(t, delta, "-2", "deficit drawn from insurance")
 	eq(t, e.InsuranceFund("BTC-USDT-PERP"), "-2", "fund covers the shortfall")
 
 	// No position → ok=false.
-	if _, ok := e.ForceClose(1002, "BTC-USDT-PERP", d("100")); ok {
+	if _, ok := e.ForceClose(1002, "BTC-USDT-PERP", 0, d("100")); ok {
 		t.Fatal("force close with no position should be ok=false")
 	}
 }

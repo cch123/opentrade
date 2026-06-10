@@ -77,7 +77,7 @@ func TestRiskHandlers_CandidatesAndTask(t *testing.T) {
 	if !taskResp.Applied {
 		t.Fatal("task should apply with matching pos_seq")
 	}
-	if _, ok := eng.PositionOf(winnerUser, "BTC-USDT-PERP"); ok {
+	if _, ok := eng.PositionOf(winnerUser, "BTC-USDT-PERP", 0); ok {
 		t.Fatal("ADL task should close the one-lot winner")
 	}
 }
@@ -89,5 +89,5 @@ func openServerRiskPosition(e *engine.Engine, user uint64, symbol string, side p
 	im := perpstate.InitMargin(p, q, l)
 	e.Deposit(user, im)
 	e.Reserve(user, im)
-	e.ApplyFill(user, symbol, l, perpstate.Fill{Side: side, Price: p, Qty: q})
+	e.ApplyFill(user, symbol, 0, l, perpstate.Fill{Side: side, Price: p, Qty: q})
 }

@@ -148,13 +148,13 @@ func TestHandleTrade_SettlesBothLegs(t *testing.T) {
 	}
 	svc.HandleTrade(tr, 1)
 
-	p1, ok := eng.PositionOf(user1, "BTC-USDT-PERP")
+	p1, ok := eng.PositionOf(user1, "BTC-USDT-PERP", 0)
 	if !ok || p1.Side.String() != "buy" {
 		t.Fatalf("u1 should be long: %+v ok=%v", p1, ok)
 	}
 	eqd(t, p1.Size, "1", "u1 size")
 	eqd(t, p1.Entry, "100", "u1 entry")
-	p2, ok := eng.PositionOf(user2, "BTC-USDT-PERP")
+	p2, ok := eng.PositionOf(user2, "BTC-USDT-PERP", 0)
 	if !ok || p2.Side.String() != "sell" {
 		t.Fatalf("u2 should be short: %+v ok=%v", p2, ok)
 	}
@@ -186,7 +186,7 @@ func TestHandleTrade_ReplayGuarded(t *testing.T) {
 	svc.HandleTrade(tr, 7)
 	svc.HandleTrade(tr, 7) // replay, same seq
 
-	p1, _ := eng.PositionOf(user1, "BTC-USDT-PERP")
+	p1, _ := eng.PositionOf(user1, "BTC-USDT-PERP", 0)
 	eqd(t, p1.Size, "1", "u1 size unchanged by replay")
 }
 
@@ -206,7 +206,7 @@ func TestHandleTrade_SelfTradeAppliesBothLegs(t *testing.T) {
 	svc.HandleTrade(tr, 1)
 	// Buy 1 then sell 1 at the same price nets flat — proving BOTH legs were
 	// applied (if the maker leg were dropped by the guard, u1 would be long 1).
-	if _, ok := eng.PositionOf(user1, "BTC-USDT-PERP"); ok {
+	if _, ok := eng.PositionOf(user1, "BTC-USDT-PERP", 0); ok {
 		t.Fatal("self-trade should net flat (both legs applied)")
 	}
 }
@@ -233,7 +233,7 @@ func TestPlaceOrder_ReduceOnlyHappyPath(t *testing.T) {
 	eng.Deposit(user1, dec.New("1000"))
 	// Existing long 1 @100 (as if already settled from a prior fill).
 	eng.Reserve(user1, dec.New("10"))
-	eng.ApplyFill(user1, "BTC-USDT-PERP", dec.New("10"),
+	eng.ApplyFill(user1, "BTC-USDT-PERP", 0, dec.New("10"),
 		perpstate.Fill{Side: perpstate.SideBuy, Price: dec.New("100"), Qty: dec.New("1")})
 	before := eng.WalletOf(user1)
 
@@ -265,13 +265,13 @@ func TestOrderLifecycle_PartialThenFull(t *testing.T) {
 		}
 	}
 	svc.HandleTrade(trade(1, "1", eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED), 1)
-	p, _ := eng.PositionOf(user1, "BTC-USDT-PERP")
+	p, _ := eng.PositionOf(user1, "BTC-USDT-PERP", 0)
 	eqd(t, p.Size, "1", "size after partial fill")
 	if svc.OrderCount() != 2 {
 		t.Fatalf("both orders still live after partial, have %d", svc.OrderCount())
 	}
 	svc.HandleTrade(trade(2, "2", eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED), 2)
-	p, _ = eng.PositionOf(user1, "BTC-USDT-PERP")
+	p, _ = eng.PositionOf(user1, "BTC-USDT-PERP", 0)
 	eqd(t, p.Size, "2", "size after full fill")
 	if svc.OrderCount() != 0 {
 		t.Fatalf("orders evicted after fill, have %d", svc.OrderCount())

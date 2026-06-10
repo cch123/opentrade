@@ -54,6 +54,9 @@ func (f *fakePerp) AdjustIsolatedMargin(_ context.Context, _ *connect.Request[pe
 func (f *fakePerp) SetAutoAddMargin(_ context.Context, _ *connect.Request[perprpc.SetAutoAddMarginRequest]) (*connect.Response[perprpc.SetAutoAddMarginResponse], error) {
 	return connect.NewResponse(&perprpc.SetAutoAddMarginResponse{Accepted: true}), nil
 }
+func (f *fakePerp) SetPositionMode(_ context.Context, _ *connect.Request[perprpc.SetPositionModeRequest]) (*connect.Response[perprpc.SetPositionModeResponse], error) {
+	return connect.NewResponse(&perprpc.SetPositionModeResponse{Accepted: true}), nil
+}
 func (f *fakePerp) SetPositionLeverage(_ context.Context, _ *connect.Request[perprpc.SetPositionLeverageRequest]) (*connect.Response[perprpc.SetPositionLeverageResponse], error) {
 	return connect.NewResponse(&perprpc.SetPositionLeverageResponse{Accepted: true}), nil
 }

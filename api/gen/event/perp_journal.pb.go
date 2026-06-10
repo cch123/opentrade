@@ -73,6 +73,58 @@ func (PerpMarginMode) EnumDescriptor() ([]byte, []int) {
 	return file_event_perp_journal_proto_rawDescGZIP(), []int{0}
 }
 
+// PerpPositionMode mirrors perpstate.PositionMode on the journal wire
+// (ADR-0077): ONE_WAY = one net position (position_idx 0), HEDGE = dual legs
+// (1 = long, 2 = short).
+type PerpPositionMode int32
+
+const (
+	PerpPositionMode_PERP_POSITION_MODE_UNSPECIFIED PerpPositionMode = 0
+	PerpPositionMode_PERP_POSITION_MODE_ONE_WAY     PerpPositionMode = 1
+	PerpPositionMode_PERP_POSITION_MODE_HEDGE       PerpPositionMode = 2
+)
+
+// Enum value maps for PerpPositionMode.
+var (
+	PerpPositionMode_name = map[int32]string{
+		0: "PERP_POSITION_MODE_UNSPECIFIED",
+		1: "PERP_POSITION_MODE_ONE_WAY",
+		2: "PERP_POSITION_MODE_HEDGE",
+	}
+	PerpPositionMode_value = map[string]int32{
+		"PERP_POSITION_MODE_UNSPECIFIED": 0,
+		"PERP_POSITION_MODE_ONE_WAY":     1,
+		"PERP_POSITION_MODE_HEDGE":       2,
+	}
+)
+
+func (x PerpPositionMode) Enum() *PerpPositionMode {
+	p := new(PerpPositionMode)
+	*p = x
+	return p
+}
+
+func (x PerpPositionMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PerpPositionMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_event_perp_journal_proto_enumTypes[1].Descriptor()
+}
+
+func (PerpPositionMode) Type() protoreflect.EnumType {
+	return &file_event_perp_journal_proto_enumTypes[1]
+}
+
+func (x PerpPositionMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PerpPositionMode.Descriptor instead.
+func (PerpPositionMode) EnumDescriptor() ([]byte, []int) {
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{1}
+}
+
 type PerpMarginEvent_Kind int32
 
 const (
@@ -112,11 +164,11 @@ func (x PerpMarginEvent_Kind) String() string {
 }
 
 func (PerpMarginEvent_Kind) Descriptor() protoreflect.EnumDescriptor {
-	return file_event_perp_journal_proto_enumTypes[1].Descriptor()
+	return file_event_perp_journal_proto_enumTypes[2].Descriptor()
 }
 
 func (PerpMarginEvent_Kind) Type() protoreflect.EnumType {
-	return &file_event_perp_journal_proto_enumTypes[1]
+	return &file_event_perp_journal_proto_enumTypes[2]
 }
 
 func (x PerpMarginEvent_Kind) Number() protoreflect.EnumNumber {
@@ -125,7 +177,7 @@ func (x PerpMarginEvent_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PerpMarginEvent_Kind.Descriptor instead.
 func (PerpMarginEvent_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{4, 0}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{5, 0}
 }
 
 type PerpMarginAdjustmentEvent_Kind int32
@@ -170,11 +222,11 @@ func (x PerpMarginAdjustmentEvent_Kind) String() string {
 }
 
 func (PerpMarginAdjustmentEvent_Kind) Descriptor() protoreflect.EnumDescriptor {
-	return file_event_perp_journal_proto_enumTypes[2].Descriptor()
+	return file_event_perp_journal_proto_enumTypes[3].Descriptor()
 }
 
 func (PerpMarginAdjustmentEvent_Kind) Type() protoreflect.EnumType {
-	return &file_event_perp_journal_proto_enumTypes[2]
+	return &file_event_perp_journal_proto_enumTypes[3]
 }
 
 func (x PerpMarginAdjustmentEvent_Kind) Number() protoreflect.EnumNumber {
@@ -183,7 +235,7 @@ func (x PerpMarginAdjustmentEvent_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PerpMarginAdjustmentEvent_Kind.Descriptor instead.
 func (PerpMarginAdjustmentEvent_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{10, 0}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{11, 0}
 }
 
 // Post-change snapshot of a position, embedded in events so replay/audit
@@ -207,8 +259,12 @@ type PerpPositionSnapshot struct {
 	// ADR-0075 §3 staged pin: the SymbolConfig version whose risk tiers govern
 	// this position (stamped on open/increase). 0 = active version / legacy.
 	RiskConfigVersion uint64 `protobuf:"varint,12,opt,name=risk_config_version,json=riskConfigVersion,proto3" json:"risk_config_version,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// ADR-0077: position key third segment (0 = one-way net, 1 = hedge long
+	// leg, 2 = hedge short leg). Every event embedding this snapshot is thereby
+	// leg-attributed (ADR-0077 §6).
+	PositionIdx   uint32 `protobuf:"varint,13,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PerpPositionSnapshot) Reset() {
@@ -325,6 +381,13 @@ func (x *PerpPositionSnapshot) GetRiskConfigVersion() uint64 {
 	return 0
 }
 
+func (x *PerpPositionSnapshot) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
 type PerpJournalEvent struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Meta      *EventMeta             `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
@@ -342,6 +405,7 @@ type PerpJournalEvent struct {
 	//	*PerpJournalEvent_PositionConfig
 	//	*PerpJournalEvent_MarginAdjustment
 	//	*PerpJournalEvent_CustomerRiskLimit
+	//	*PerpJournalEvent_InvariantBreach
 	Payload       isPerpJournalEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -497,6 +561,15 @@ func (x *PerpJournalEvent) GetCustomerRiskLimit() *PerpCustomerRiskLimitEvent {
 	return nil
 }
 
+func (x *PerpJournalEvent) GetInvariantBreach() *PerpInvariantBreachEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*PerpJournalEvent_InvariantBreach); ok {
+			return x.InvariantBreach
+		}
+	}
+	return nil
+}
+
 type isPerpJournalEvent_Payload interface {
 	isPerpJournalEvent_Payload()
 }
@@ -545,6 +618,10 @@ type PerpJournalEvent_CustomerRiskLimit struct {
 	CustomerRiskLimit *PerpCustomerRiskLimitEvent `protobuf:"bytes,20,opt,name=customer_risk_limit,json=customerRiskLimit,proto3,oneof"` // ADR-0074
 }
 
+type PerpJournalEvent_InvariantBreach struct {
+	InvariantBreach *PerpInvariantBreachEvent `protobuf:"bytes,21,opt,name=invariant_breach,json=invariantBreach,proto3,oneof"` // ADR-0077 §2 / ADR-0081 §2
+}
+
 func (*PerpJournalEvent_OrderStatus) isPerpJournalEvent_Payload() {}
 
 func (*PerpJournalEvent_Settlement) isPerpJournalEvent_Payload() {}
@@ -567,7 +644,12 @@ func (*PerpJournalEvent_MarginAdjustment) isPerpJournalEvent_Payload() {}
 
 func (*PerpJournalEvent_CustomerRiskLimit) isPerpJournalEvent_Payload() {}
 
+func (*PerpJournalEvent_InvariantBreach) isPerpJournalEvent_Payload() {}
+
 // Order lifecycle transition (analogous to counter OrderStatusEvent).
+// position_idx is carried explicitly (no embedded snapshot here): together
+// with the order-store snapshot it is the recovery source for order→leg
+// routing (ADR-0077 §6).
 type PerpOrderStatusEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -578,6 +660,7 @@ type PerpOrderStatusEvent struct {
 	FilledQty     string                 `protobuf:"bytes,6,opt,name=filled_qty,json=filledQty,proto3" json:"filled_qty,omitempty"`
 	ReduceOnly    bool                   `protobuf:"varint,7,opt,name=reduce_only,json=reduceOnly,proto3" json:"reduce_only,omitempty"`
 	RejectReason  RejectReason           `protobuf:"varint,8,opt,name=reject_reason,json=rejectReason,proto3,enum=opentrade.event.RejectReason" json:"reject_reason,omitempty"` // set when new_status = REJECTED
+	PositionIdx   uint32                 `protobuf:"varint,9,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`                                      // ADR-0077 order intent
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -668,6 +751,119 @@ func (x *PerpOrderStatusEvent) GetRejectReason() RejectReason {
 	return RejectReason_REJECT_REASON_UNSPECIFIED
 }
 
+func (x *PerpOrderStatusEvent) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+// REDUCE_ONLY invariant breach (ADR-0077 §2 / ADR-0081 §2 excess path): a
+// close fill exceeded the target leg's size and the excess was NOT absorbed
+// (a hedge leg never flips). The counterparty's execution stands while this
+// side under-settled — alert / manual-repair input, never silently dropped.
+// ADR-0081's close-capacity reservation makes this path converge to
+// unreachable; until then it is the loud last line.
+type PerpInvariantBreachEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	PositionIdx   uint32                 `protobuf:"varint,3,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	OrderId       uint64                 `protobuf:"varint,4,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	TradeId       string                 `protobuf:"bytes,5,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
+	Kind          string                 `protobuf:"bytes,6,opt,name=kind,proto3" json:"kind,omitempty"`                            // "reduce_only_excess"
+	ExcessQty     string                 `protobuf:"bytes,7,opt,name=excess_qty,json=excessQty,proto3" json:"excess_qty,omitempty"` // decimal, the unapplied fill quantity
+	FillPrice     string                 `protobuf:"bytes,8,opt,name=fill_price,json=fillPrice,proto3" json:"fill_price,omitempty"` // decimal
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PerpInvariantBreachEvent) Reset() {
+	*x = PerpInvariantBreachEvent{}
+	mi := &file_event_perp_journal_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PerpInvariantBreachEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PerpInvariantBreachEvent) ProtoMessage() {}
+
+func (x *PerpInvariantBreachEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_event_perp_journal_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PerpInvariantBreachEvent.ProtoReflect.Descriptor instead.
+func (*PerpInvariantBreachEvent) Descriptor() ([]byte, []int) {
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *PerpInvariantBreachEvent) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *PerpInvariantBreachEvent) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *PerpInvariantBreachEvent) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *PerpInvariantBreachEvent) GetOrderId() uint64 {
+	if x != nil {
+		return x.OrderId
+	}
+	return 0
+}
+
+func (x *PerpInvariantBreachEvent) GetTradeId() string {
+	if x != nil {
+		return x.TradeId
+	}
+	return ""
+}
+
+func (x *PerpInvariantBreachEvent) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *PerpInvariantBreachEvent) GetExcessQty() string {
+	if x != nil {
+		return x.ExcessQty
+	}
+	return ""
+}
+
+func (x *PerpInvariantBreachEvent) GetFillPrice() string {
+	if x != nil {
+		return x.FillPrice
+	}
+	return ""
+}
+
 // A fill applied to a position (open / increase / reduce / close / flip).
 // Cash effects mirror perpstate.FillResult.
 type PerpSettlementEvent struct {
@@ -693,7 +889,7 @@ type PerpSettlementEvent struct {
 
 func (x *PerpSettlementEvent) Reset() {
 	*x = PerpSettlementEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[3]
+	mi := &file_event_perp_journal_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -705,7 +901,7 @@ func (x *PerpSettlementEvent) String() string {
 func (*PerpSettlementEvent) ProtoMessage() {}
 
 func (x *PerpSettlementEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[3]
+	mi := &file_event_perp_journal_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -718,7 +914,7 @@ func (x *PerpSettlementEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpSettlementEvent.ProtoReflect.Descriptor instead.
 func (*PerpSettlementEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{3}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *PerpSettlementEvent) GetUserId() uint64 {
@@ -828,7 +1024,7 @@ type PerpMarginEvent struct {
 
 func (x *PerpMarginEvent) Reset() {
 	*x = PerpMarginEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[4]
+	mi := &file_event_perp_journal_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -840,7 +1036,7 @@ func (x *PerpMarginEvent) String() string {
 func (*PerpMarginEvent) ProtoMessage() {}
 
 func (x *PerpMarginEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[4]
+	mi := &file_event_perp_journal_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -853,7 +1049,7 @@ func (x *PerpMarginEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpMarginEvent.ProtoReflect.Descriptor instead.
 func (*PerpMarginEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{4}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PerpMarginEvent) GetUserId() uint64 {
@@ -924,7 +1120,7 @@ type PerpFundingEvent struct {
 
 func (x *PerpFundingEvent) Reset() {
 	*x = PerpFundingEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[5]
+	mi := &file_event_perp_journal_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -936,7 +1132,7 @@ func (x *PerpFundingEvent) String() string {
 func (*PerpFundingEvent) ProtoMessage() {}
 
 func (x *PerpFundingEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[5]
+	mi := &file_event_perp_journal_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -949,7 +1145,7 @@ func (x *PerpFundingEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpFundingEvent.ProtoReflect.Descriptor instead.
 func (*PerpFundingEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{5}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PerpFundingEvent) GetUserId() uint64 {
@@ -1038,7 +1234,7 @@ type PerpLiquidationEvent struct {
 
 func (x *PerpLiquidationEvent) Reset() {
 	*x = PerpLiquidationEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[6]
+	mi := &file_event_perp_journal_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1050,7 +1246,7 @@ func (x *PerpLiquidationEvent) String() string {
 func (*PerpLiquidationEvent) ProtoMessage() {}
 
 func (x *PerpLiquidationEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[6]
+	mi := &file_event_perp_journal_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1063,7 +1259,7 @@ func (x *PerpLiquidationEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpLiquidationEvent.ProtoReflect.Descriptor instead.
 func (*PerpLiquidationEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{6}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PerpLiquidationEvent) GetUserId() uint64 {
@@ -1207,7 +1403,7 @@ type PerpTakeoverEvent struct {
 
 func (x *PerpTakeoverEvent) Reset() {
 	*x = PerpTakeoverEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[7]
+	mi := &file_event_perp_journal_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1219,7 +1415,7 @@ func (x *PerpTakeoverEvent) String() string {
 func (*PerpTakeoverEvent) ProtoMessage() {}
 
 func (x *PerpTakeoverEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[7]
+	mi := &file_event_perp_journal_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1232,7 +1428,7 @@ func (x *PerpTakeoverEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpTakeoverEvent.ProtoReflect.Descriptor instead.
 func (*PerpTakeoverEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{7}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PerpTakeoverEvent) GetUserId() uint64 {
@@ -1412,7 +1608,7 @@ type PerpAdlEvent struct {
 
 func (x *PerpAdlEvent) Reset() {
 	*x = PerpAdlEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[8]
+	mi := &file_event_perp_journal_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1424,7 +1620,7 @@ func (x *PerpAdlEvent) String() string {
 func (*PerpAdlEvent) ProtoMessage() {}
 
 func (x *PerpAdlEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[8]
+	mi := &file_event_perp_journal_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1437,7 +1633,7 @@ func (x *PerpAdlEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpAdlEvent.ProtoReflect.Descriptor instead.
 func (*PerpAdlEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{8}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PerpAdlEvent) GetUserId() uint64 {
@@ -1533,15 +1729,21 @@ type PerpPositionConfigEvent struct {
 	AutoAddMargin   bool                   `protobuf:"varint,6,opt,name=auto_add_margin,json=autoAddMargin,proto3" json:"auto_add_margin,omitempty"`
 	AutoAddMax      string                 `protobuf:"bytes,7,opt,name=auto_add_max,json=autoAddMax,proto3" json:"auto_add_max,omitempty"` // decimal; cap per auto-add event, "0" = uncapped
 	PositionVersion uint64                 `protobuf:"varint,8,opt,name=position_version,json=positionVersion,proto3" json:"position_version,omitempty"`
-	Reason          string                 `protobuf:"bytes,9,opt,name=reason,proto3" json:"reason,omitempty"`                              // which op produced this (set_leverage / set_risk_id / set_margin_mode / set_auto_add)
+	Reason          string                 `protobuf:"bytes,9,opt,name=reason,proto3" json:"reason,omitempty"`                              // which op produced this (set_leverage / set_risk_id / set_margin_mode / set_auto_add / set_position_mode)
 	ClientOpId      string                 `protobuf:"bytes,10,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"` // idempotency key of the user op
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// ADR-0077: the symbol's position mode after this op, and the leg the
+	// echoed per-leg fields describe (margin mode / leverage / risk_id are
+	// uniform across legs per ADR-0077 §7, so the leg attribution is echo
+	// provenance, not a divergence claim).
+	PositionMode  PerpPositionMode `protobuf:"varint,11,opt,name=position_mode,json=positionMode,proto3,enum=opentrade.event.PerpPositionMode" json:"position_mode,omitempty"`
+	PositionIdx   uint32           `protobuf:"varint,12,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PerpPositionConfigEvent) Reset() {
 	*x = PerpPositionConfigEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[9]
+	mi := &file_event_perp_journal_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1553,7 +1755,7 @@ func (x *PerpPositionConfigEvent) String() string {
 func (*PerpPositionConfigEvent) ProtoMessage() {}
 
 func (x *PerpPositionConfigEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[9]
+	mi := &file_event_perp_journal_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1566,7 +1768,7 @@ func (x *PerpPositionConfigEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpPositionConfigEvent.ProtoReflect.Descriptor instead.
 func (*PerpPositionConfigEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{9}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PerpPositionConfigEvent) GetUserId() uint64 {
@@ -1639,6 +1841,20 @@ func (x *PerpPositionConfigEvent) GetClientOpId() string {
 	return ""
 }
 
+func (x *PerpPositionConfigEvent) GetPositionMode() PerpPositionMode {
+	if x != nil {
+		return x.PositionMode
+	}
+	return PerpPositionMode_PERP_POSITION_MODE_UNSPECIFIED
+}
+
+func (x *PerpPositionConfigEvent) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
 // Isolated position margin movement (ADR-0074 §13): manual add/remove, the
 // cash leg of a mode switch, or an automatic top-up. amount is always
 // positive; kind encodes the direction.
@@ -1652,15 +1868,16 @@ type PerpMarginAdjustmentEvent struct {
 	MarginAfter     string                         `protobuf:"bytes,6,opt,name=margin_after,json=marginAfter,proto3" json:"margin_after,omitempty"`    // position margin after
 	WalletAfter     string                         `protobuf:"bytes,7,opt,name=wallet_after,json=walletAfter,proto3" json:"wallet_after,omitempty"`    // wallet free balance after
 	PositionVersion uint64                         `protobuf:"varint,8,opt,name=position_version,json=positionVersion,proto3" json:"position_version,omitempty"`
-	ClientOpId      string                         `protobuf:"bytes,9,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"` // empty for AUTO_ADD (system-initiated)
-	MarkPrice       string                         `protobuf:"bytes,10,opt,name=mark_price,json=markPrice,proto3" json:"mark_price,omitempty"`     // mark at decision time (auto-add / health checks audit)
+	ClientOpId      string                         `protobuf:"bytes,9,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"`    // empty for AUTO_ADD (system-initiated)
+	MarkPrice       string                         `protobuf:"bytes,10,opt,name=mark_price,json=markPrice,proto3" json:"mark_price,omitempty"`        // mark at decision time (auto-add / health checks audit)
+	PositionIdx     uint32                         `protobuf:"varint,11,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"` // ADR-0077: the leg whose margin moved (one event per leg)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PerpMarginAdjustmentEvent) Reset() {
 	*x = PerpMarginAdjustmentEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[10]
+	mi := &file_event_perp_journal_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1672,7 +1889,7 @@ func (x *PerpMarginAdjustmentEvent) String() string {
 func (*PerpMarginAdjustmentEvent) ProtoMessage() {}
 
 func (x *PerpMarginAdjustmentEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[10]
+	mi := &file_event_perp_journal_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1685,7 +1902,7 @@ func (x *PerpMarginAdjustmentEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpMarginAdjustmentEvent.ProtoReflect.Descriptor instead.
 func (*PerpMarginAdjustmentEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{10}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PerpMarginAdjustmentEvent) GetUserId() uint64 {
@@ -1758,6 +1975,13 @@ func (x *PerpMarginAdjustmentEvent) GetMarkPrice() string {
 	return ""
 }
 
+func (x *PerpMarginAdjustmentEvent) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
 // Customer leverage cap change (ADR-0074 §10, admin plane). A symbol-scoped
 // row overrides the user-global row; max_leverage "0" removes the cap.
 type PerpCustomerRiskLimitEvent struct {
@@ -1773,7 +1997,7 @@ type PerpCustomerRiskLimitEvent struct {
 
 func (x *PerpCustomerRiskLimitEvent) Reset() {
 	*x = PerpCustomerRiskLimitEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[11]
+	mi := &file_event_perp_journal_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1785,7 +2009,7 @@ func (x *PerpCustomerRiskLimitEvent) String() string {
 func (*PerpCustomerRiskLimitEvent) ProtoMessage() {}
 
 func (x *PerpCustomerRiskLimitEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[11]
+	mi := &file_event_perp_journal_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1798,7 +2022,7 @@ func (x *PerpCustomerRiskLimitEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerpCustomerRiskLimitEvent.ProtoReflect.Descriptor instead.
 func (*PerpCustomerRiskLimitEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{11}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *PerpCustomerRiskLimitEvent) GetUserId() uint64 {
@@ -1858,7 +2082,7 @@ type RiskPoolSettlementEvent struct {
 
 func (x *RiskPoolSettlementEvent) Reset() {
 	*x = RiskPoolSettlementEvent{}
-	mi := &file_event_perp_journal_proto_msgTypes[12]
+	mi := &file_event_perp_journal_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1870,7 +2094,7 @@ func (x *RiskPoolSettlementEvent) String() string {
 func (*RiskPoolSettlementEvent) ProtoMessage() {}
 
 func (x *RiskPoolSettlementEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_perp_journal_proto_msgTypes[12]
+	mi := &file_event_perp_journal_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1883,7 +2107,7 @@ func (x *RiskPoolSettlementEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RiskPoolSettlementEvent.ProtoReflect.Descriptor instead.
 func (*RiskPoolSettlementEvent) Descriptor() ([]byte, []int) {
-	return file_event_perp_journal_proto_rawDescGZIP(), []int{12}
+	return file_event_perp_journal_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RiskPoolSettlementEvent) GetLotId() string {
@@ -1967,7 +2191,7 @@ var File_event_perp_journal_proto protoreflect.FileDescriptor
 
 const file_event_perp_journal_proto_rawDesc = "" +
 	"\n" +
-	"\x18event/perp_journal.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xa3\x03\n" +
+	"\x18event/perp_journal.proto\x12\x0fopentrade.event\x1a\x12event/common.proto\"\xc6\x03\n" +
 	"\x14PerpPositionSnapshot\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12)\n" +
@@ -1983,7 +2207,8 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	" \x01(\x0e2\x1f.opentrade.event.PerpMarginModeR\n" +
 	"marginMode\x12\x17\n" +
 	"\arisk_id\x18\v \x01(\rR\x06riskId\x12.\n" +
-	"\x13risk_config_version\x18\f \x01(\x04R\x11riskConfigVersion\"\xa9\a\n" +
+	"\x13risk_config_version\x18\f \x01(\x04R\x11riskConfigVersion\x12!\n" +
+	"\fposition_idx\x18\r \x01(\rR\vpositionIdx\"\x81\b\n" +
 	"\x10PerpJournalEvent\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x1e\n" +
 	"\vperp_seq_id\x18\x02 \x01(\x04R\tperpSeqId\x12J\n" +
@@ -2000,8 +2225,9 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x14risk_pool_settlement\x18\x11 \x01(\v2(.opentrade.event.RiskPoolSettlementEventH\x00R\x12riskPoolSettlement\x12S\n" +
 	"\x0fposition_config\x18\x12 \x01(\v2(.opentrade.event.PerpPositionConfigEventH\x00R\x0epositionConfig\x12Y\n" +
 	"\x11margin_adjustment\x18\x13 \x01(\v2*.opentrade.event.PerpMarginAdjustmentEventH\x00R\x10marginAdjustment\x12]\n" +
-	"\x13customer_risk_limit\x18\x14 \x01(\v2+.opentrade.event.PerpCustomerRiskLimitEventH\x00R\x11customerRiskLimitB\t\n" +
-	"\apayload\"\xf0\x02\n" +
+	"\x13customer_risk_limit\x18\x14 \x01(\v2+.opentrade.event.PerpCustomerRiskLimitEventH\x00R\x11customerRiskLimit\x12V\n" +
+	"\x10invariant_breach\x18\x15 \x01(\v2).opentrade.event.PerpInvariantBreachEventH\x00R\x0finvariantBreachB\t\n" +
+	"\apayload\"\x93\x03\n" +
 	"\x14PerpOrderStatusEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +
@@ -2014,7 +2240,19 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"filled_qty\x18\x06 \x01(\tR\tfilledQty\x12\x1f\n" +
 	"\vreduce_only\x18\a \x01(\bR\n" +
 	"reduceOnly\x12B\n" +
-	"\rreject_reason\x18\b \x01(\x0e2\x1d.opentrade.event.RejectReasonR\frejectReason\"\xdb\x03\n" +
+	"\rreject_reason\x18\b \x01(\x0e2\x1d.opentrade.event.RejectReasonR\frejectReason\x12!\n" +
+	"\fposition_idx\x18\t \x01(\rR\vpositionIdx\"\xf6\x01\n" +
+	"\x18PerpInvariantBreachEvent\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12!\n" +
+	"\fposition_idx\x18\x03 \x01(\rR\vpositionIdx\x12\x19\n" +
+	"\border_id\x18\x04 \x01(\x04R\aorderId\x12\x19\n" +
+	"\btrade_id\x18\x05 \x01(\tR\atradeId\x12\x12\n" +
+	"\x04kind\x18\x06 \x01(\tR\x04kind\x12\x1d\n" +
+	"\n" +
+	"excess_qty\x18\a \x01(\tR\texcessQty\x12\x1d\n" +
+	"\n" +
+	"fill_price\x18\b \x01(\tR\tfillPrice\"\xdb\x03\n" +
 	"\x13PerpSettlementEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x19\n" +
@@ -2117,7 +2355,7 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\rrequested_qty\x18\t \x01(\tR\frequestedQty\x12L\n" +
 	"\x0eposition_after\x18\n" +
 	" \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\x12\x19\n" +
-	"\bfact_qty\x18\v \x01(\tR\afactQty\"\xf0\x02\n" +
+	"\bfact_qty\x18\v \x01(\tR\afactQty\"\xdb\x03\n" +
 	"\x17PerpPositionConfigEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12@\n" +
@@ -2132,7 +2370,9 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x06reason\x18\t \x01(\tR\x06reason\x12 \n" +
 	"\fclient_op_id\x18\n" +
 	" \x01(\tR\n" +
-	"clientOpId\"\x93\x04\n" +
+	"clientOpId\x12F\n" +
+	"\rposition_mode\x18\v \x01(\x0e2!.opentrade.event.PerpPositionModeR\fpositionMode\x12!\n" +
+	"\fposition_idx\x18\f \x01(\rR\vpositionIdx\"\xb6\x04\n" +
 	"\x19PerpMarginAdjustmentEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12C\n" +
@@ -2146,7 +2386,8 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"clientOpId\x12\x1d\n" +
 	"\n" +
 	"mark_price\x18\n" +
-	" \x01(\tR\tmarkPrice\"\x90\x01\n" +
+	" \x01(\tR\tmarkPrice\x12!\n" +
+	"\fposition_idx\x18\v \x01(\rR\vpositionIdx\"\x90\x01\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11KIND_ADD_ISOLATED\x10\x01\x12\x18\n" +
@@ -2177,7 +2418,11 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x0ePerpMarginMode\x12 \n" +
 	"\x1cPERP_MARGIN_MODE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19PERP_MARGIN_MODE_ISOLATED\x10\x01\x12\x1a\n" +
-	"\x16PERP_MARGIN_MODE_CROSS\x10\x02B1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
+	"\x16PERP_MARGIN_MODE_CROSS\x10\x02*t\n" +
+	"\x10PerpPositionMode\x12\"\n" +
+	"\x1ePERP_POSITION_MODE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aPERP_POSITION_MODE_ONE_WAY\x10\x01\x12\x1c\n" +
+	"\x18PERP_POSITION_MODE_HEDGE\x10\x02B1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
 var (
 	file_event_perp_journal_proto_rawDescOnce sync.Once
@@ -2191,63 +2436,67 @@ func file_event_perp_journal_proto_rawDescGZIP() []byte {
 	return file_event_perp_journal_proto_rawDescData
 }
 
-var file_event_perp_journal_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_event_perp_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_event_perp_journal_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_event_perp_journal_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_event_perp_journal_proto_goTypes = []any{
 	(PerpMarginMode)(0),                 // 0: opentrade.event.PerpMarginMode
-	(PerpMarginEvent_Kind)(0),           // 1: opentrade.event.PerpMarginEvent.Kind
-	(PerpMarginAdjustmentEvent_Kind)(0), // 2: opentrade.event.PerpMarginAdjustmentEvent.Kind
-	(*PerpPositionSnapshot)(nil),        // 3: opentrade.event.PerpPositionSnapshot
-	(*PerpJournalEvent)(nil),            // 4: opentrade.event.PerpJournalEvent
-	(*PerpOrderStatusEvent)(nil),        // 5: opentrade.event.PerpOrderStatusEvent
-	(*PerpSettlementEvent)(nil),         // 6: opentrade.event.PerpSettlementEvent
-	(*PerpMarginEvent)(nil),             // 7: opentrade.event.PerpMarginEvent
-	(*PerpFundingEvent)(nil),            // 8: opentrade.event.PerpFundingEvent
-	(*PerpLiquidationEvent)(nil),        // 9: opentrade.event.PerpLiquidationEvent
-	(*PerpTakeoverEvent)(nil),           // 10: opentrade.event.PerpTakeoverEvent
-	(*PerpAdlEvent)(nil),                // 11: opentrade.event.PerpAdlEvent
-	(*PerpPositionConfigEvent)(nil),     // 12: opentrade.event.PerpPositionConfigEvent
-	(*PerpMarginAdjustmentEvent)(nil),   // 13: opentrade.event.PerpMarginAdjustmentEvent
-	(*PerpCustomerRiskLimitEvent)(nil),  // 14: opentrade.event.PerpCustomerRiskLimitEvent
-	(*RiskPoolSettlementEvent)(nil),     // 15: opentrade.event.RiskPoolSettlementEvent
-	(Side)(0),                           // 16: opentrade.event.Side
-	(*EventMeta)(nil),                   // 17: opentrade.event.EventMeta
-	(InternalOrderStatus)(0),            // 18: opentrade.event.InternalOrderStatus
-	(RejectReason)(0),                   // 19: opentrade.event.RejectReason
+	(PerpPositionMode)(0),               // 1: opentrade.event.PerpPositionMode
+	(PerpMarginEvent_Kind)(0),           // 2: opentrade.event.PerpMarginEvent.Kind
+	(PerpMarginAdjustmentEvent_Kind)(0), // 3: opentrade.event.PerpMarginAdjustmentEvent.Kind
+	(*PerpPositionSnapshot)(nil),        // 4: opentrade.event.PerpPositionSnapshot
+	(*PerpJournalEvent)(nil),            // 5: opentrade.event.PerpJournalEvent
+	(*PerpOrderStatusEvent)(nil),        // 6: opentrade.event.PerpOrderStatusEvent
+	(*PerpInvariantBreachEvent)(nil),    // 7: opentrade.event.PerpInvariantBreachEvent
+	(*PerpSettlementEvent)(nil),         // 8: opentrade.event.PerpSettlementEvent
+	(*PerpMarginEvent)(nil),             // 9: opentrade.event.PerpMarginEvent
+	(*PerpFundingEvent)(nil),            // 10: opentrade.event.PerpFundingEvent
+	(*PerpLiquidationEvent)(nil),        // 11: opentrade.event.PerpLiquidationEvent
+	(*PerpTakeoverEvent)(nil),           // 12: opentrade.event.PerpTakeoverEvent
+	(*PerpAdlEvent)(nil),                // 13: opentrade.event.PerpAdlEvent
+	(*PerpPositionConfigEvent)(nil),     // 14: opentrade.event.PerpPositionConfigEvent
+	(*PerpMarginAdjustmentEvent)(nil),   // 15: opentrade.event.PerpMarginAdjustmentEvent
+	(*PerpCustomerRiskLimitEvent)(nil),  // 16: opentrade.event.PerpCustomerRiskLimitEvent
+	(*RiskPoolSettlementEvent)(nil),     // 17: opentrade.event.RiskPoolSettlementEvent
+	(Side)(0),                           // 18: opentrade.event.Side
+	(*EventMeta)(nil),                   // 19: opentrade.event.EventMeta
+	(InternalOrderStatus)(0),            // 20: opentrade.event.InternalOrderStatus
+	(RejectReason)(0),                   // 21: opentrade.event.RejectReason
 }
 var file_event_perp_journal_proto_depIdxs = []int32{
-	16, // 0: opentrade.event.PerpPositionSnapshot.side:type_name -> opentrade.event.Side
+	18, // 0: opentrade.event.PerpPositionSnapshot.side:type_name -> opentrade.event.Side
 	0,  // 1: opentrade.event.PerpPositionSnapshot.margin_mode:type_name -> opentrade.event.PerpMarginMode
-	17, // 2: opentrade.event.PerpJournalEvent.meta:type_name -> opentrade.event.EventMeta
-	5,  // 3: opentrade.event.PerpJournalEvent.order_status:type_name -> opentrade.event.PerpOrderStatusEvent
-	6,  // 4: opentrade.event.PerpJournalEvent.settlement:type_name -> opentrade.event.PerpSettlementEvent
-	7,  // 5: opentrade.event.PerpJournalEvent.margin:type_name -> opentrade.event.PerpMarginEvent
-	8,  // 6: opentrade.event.PerpJournalEvent.funding:type_name -> opentrade.event.PerpFundingEvent
-	9,  // 7: opentrade.event.PerpJournalEvent.liquidation:type_name -> opentrade.event.PerpLiquidationEvent
-	11, // 8: opentrade.event.PerpJournalEvent.adl:type_name -> opentrade.event.PerpAdlEvent
-	10, // 9: opentrade.event.PerpJournalEvent.takeover:type_name -> opentrade.event.PerpTakeoverEvent
-	15, // 10: opentrade.event.PerpJournalEvent.risk_pool_settlement:type_name -> opentrade.event.RiskPoolSettlementEvent
-	12, // 11: opentrade.event.PerpJournalEvent.position_config:type_name -> opentrade.event.PerpPositionConfigEvent
-	13, // 12: opentrade.event.PerpJournalEvent.margin_adjustment:type_name -> opentrade.event.PerpMarginAdjustmentEvent
-	14, // 13: opentrade.event.PerpJournalEvent.customer_risk_limit:type_name -> opentrade.event.PerpCustomerRiskLimitEvent
-	18, // 14: opentrade.event.PerpOrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
-	18, // 15: opentrade.event.PerpOrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
-	19, // 16: opentrade.event.PerpOrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
-	16, // 17: opentrade.event.PerpSettlementEvent.fill_side:type_name -> opentrade.event.Side
-	3,  // 18: opentrade.event.PerpSettlementEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	1,  // 19: opentrade.event.PerpMarginEvent.kind:type_name -> opentrade.event.PerpMarginEvent.Kind
-	3,  // 20: opentrade.event.PerpFundingEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	3,  // 21: opentrade.event.PerpLiquidationEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	16, // 22: opentrade.event.PerpTakeoverEvent.inventory_side:type_name -> opentrade.event.Side
-	3,  // 23: opentrade.event.PerpTakeoverEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	3,  // 24: opentrade.event.PerpAdlEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
-	0,  // 25: opentrade.event.PerpPositionConfigEvent.margin_mode:type_name -> opentrade.event.PerpMarginMode
-	2,  // 26: opentrade.event.PerpMarginAdjustmentEvent.kind:type_name -> opentrade.event.PerpMarginAdjustmentEvent.Kind
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	19, // 2: opentrade.event.PerpJournalEvent.meta:type_name -> opentrade.event.EventMeta
+	6,  // 3: opentrade.event.PerpJournalEvent.order_status:type_name -> opentrade.event.PerpOrderStatusEvent
+	8,  // 4: opentrade.event.PerpJournalEvent.settlement:type_name -> opentrade.event.PerpSettlementEvent
+	9,  // 5: opentrade.event.PerpJournalEvent.margin:type_name -> opentrade.event.PerpMarginEvent
+	10, // 6: opentrade.event.PerpJournalEvent.funding:type_name -> opentrade.event.PerpFundingEvent
+	11, // 7: opentrade.event.PerpJournalEvent.liquidation:type_name -> opentrade.event.PerpLiquidationEvent
+	13, // 8: opentrade.event.PerpJournalEvent.adl:type_name -> opentrade.event.PerpAdlEvent
+	12, // 9: opentrade.event.PerpJournalEvent.takeover:type_name -> opentrade.event.PerpTakeoverEvent
+	17, // 10: opentrade.event.PerpJournalEvent.risk_pool_settlement:type_name -> opentrade.event.RiskPoolSettlementEvent
+	14, // 11: opentrade.event.PerpJournalEvent.position_config:type_name -> opentrade.event.PerpPositionConfigEvent
+	15, // 12: opentrade.event.PerpJournalEvent.margin_adjustment:type_name -> opentrade.event.PerpMarginAdjustmentEvent
+	16, // 13: opentrade.event.PerpJournalEvent.customer_risk_limit:type_name -> opentrade.event.PerpCustomerRiskLimitEvent
+	7,  // 14: opentrade.event.PerpJournalEvent.invariant_breach:type_name -> opentrade.event.PerpInvariantBreachEvent
+	20, // 15: opentrade.event.PerpOrderStatusEvent.old_status:type_name -> opentrade.event.InternalOrderStatus
+	20, // 16: opentrade.event.PerpOrderStatusEvent.new_status:type_name -> opentrade.event.InternalOrderStatus
+	21, // 17: opentrade.event.PerpOrderStatusEvent.reject_reason:type_name -> opentrade.event.RejectReason
+	18, // 18: opentrade.event.PerpSettlementEvent.fill_side:type_name -> opentrade.event.Side
+	4,  // 19: opentrade.event.PerpSettlementEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	2,  // 20: opentrade.event.PerpMarginEvent.kind:type_name -> opentrade.event.PerpMarginEvent.Kind
+	4,  // 21: opentrade.event.PerpFundingEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	4,  // 22: opentrade.event.PerpLiquidationEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	18, // 23: opentrade.event.PerpTakeoverEvent.inventory_side:type_name -> opentrade.event.Side
+	4,  // 24: opentrade.event.PerpTakeoverEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	4,  // 25: opentrade.event.PerpAdlEvent.position_after:type_name -> opentrade.event.PerpPositionSnapshot
+	0,  // 26: opentrade.event.PerpPositionConfigEvent.margin_mode:type_name -> opentrade.event.PerpMarginMode
+	1,  // 27: opentrade.event.PerpPositionConfigEvent.position_mode:type_name -> opentrade.event.PerpPositionMode
+	3,  // 28: opentrade.event.PerpMarginAdjustmentEvent.kind:type_name -> opentrade.event.PerpMarginAdjustmentEvent.Kind
+	29, // [29:29] is the sub-list for method output_type
+	29, // [29:29] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_event_perp_journal_proto_init() }
@@ -2268,14 +2517,15 @@ func file_event_perp_journal_proto_init() {
 		(*PerpJournalEvent_PositionConfig)(nil),
 		(*PerpJournalEvent_MarginAdjustment)(nil),
 		(*PerpJournalEvent_CustomerRiskLimit)(nil),
+		(*PerpJournalEvent_InvariantBreach)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_perp_journal_proto_rawDesc), len(file_event_perp_journal_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   13,
+			NumEnums:      4,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

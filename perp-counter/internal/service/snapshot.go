@@ -28,23 +28,24 @@ type Snapshot struct {
 // OrderSnap is one live (non-terminal) order. Terminal orders are evicted, so
 // they never appear here.
 type OrderSnap struct {
-	OrderID    uint64 `json:"order_id"`
-	ClientID   string `json:"client_id"`
-	UserID     uint64 `json:"user_id"`
-	Symbol     string `json:"symbol"`
-	Side       uint8  `json:"side"`
-	Type       int32  `json:"type"`
-	TIF        int32  `json:"tif"`
-	Price      string `json:"price"`
-	Qty        string `json:"qty"`
-	Leverage   string `json:"leverage"`
-	Mode       uint8  `json:"mode,omitempty"` // perpstate.MarginMode (ADR-0074)
-	ReduceOnly bool   `json:"reduce_only"`
-	ReservedIM string `json:"reserved_im"`
-	FilledQty  string `json:"filled_qty"`
-	Status     int32  `json:"status"`
-	CreatedMs  int64  `json:"created_ms"`
-	UpdatedMs  int64  `json:"updated_ms"`
+	OrderID     uint64 `json:"order_id"`
+	ClientID    string `json:"client_id"`
+	UserID      uint64 `json:"user_id"`
+	Symbol      string `json:"symbol"`
+	Side        uint8  `json:"side"`
+	Type        int32  `json:"type"`
+	TIF         int32  `json:"tif"`
+	Price       string `json:"price"`
+	Qty         string `json:"qty"`
+	Leverage    string `json:"leverage"`
+	Mode        uint8  `json:"mode,omitempty"`         // perpstate.MarginMode (ADR-0074)
+	PositionIdx uint8  `json:"position_idx,omitempty"` // ADR-0077 order intent (0 = net)
+	ReduceOnly  bool   `json:"reduce_only"`
+	ReservedIM  string `json:"reserved_im"`
+	FilledQty   string `json:"filled_qty"`
+	Status      int32  `json:"status"`
+	CreatedMs   int64  `json:"created_ms"`
+	UpdatedMs   int64  `json:"updated_ms"`
 
 	// ADR-0075: admission config version (re-stamped on recovery dispatches).
 	ConfigVersion uint64 `json:"config_version,omitempty"`
@@ -53,16 +54,17 @@ type OrderSnap struct {
 // LiqSnap is one in-flight liquidation (bankruptcy order placed, not yet
 // fully filled) so its fills still route to insurance after recovery.
 type LiqSnap struct {
-	UserID     uint64 `json:"user_id"`
-	Symbol     string `json:"symbol"`
-	OrderID    uint64 `json:"order_id"`
-	Mode       uint8  `json:"mode"`
-	Side       uint8  `json:"side"`
-	OrderPrice string `json:"order_price"`
-	Bankruptcy string `json:"bankruptcy"`
-	LiqFeeRate string `json:"liq_fee_rate"`
-	RiskTier   int32  `json:"risk_tier"`
-	Ticks      int    `json:"ticks"`
+	UserID      uint64 `json:"user_id"`
+	Symbol      string `json:"symbol"`
+	PositionIdx uint8  `json:"position_idx,omitempty"` // ADR-0077 leg under liquidation
+	OrderID     uint64 `json:"order_id"`
+	Mode        uint8  `json:"mode"`
+	Side        uint8  `json:"side"`
+	OrderPrice  string `json:"order_price"`
+	Bankruptcy  string `json:"bankruptcy"`
+	LiqFeeRate  string `json:"liq_fee_rate"`
+	RiskTier    int32  `json:"risk_tier"`
+	Ticks       int    `json:"ticks"`
 
 	// ADR-0075 §3 provenance (mirrors the liquidation registry fields).
 	ConfigVersion uint64 `json:"config_version,omitempty"`
@@ -104,15 +106,16 @@ func (s *Service) snapshotLocked() Snapshot {
 			OrderID: o.OrderID, ClientID: o.ClientID, UserID: o.UserID, Symbol: o.Symbol,
 			Side: uint8(o.Side), Type: int32(o.Type), TIF: int32(o.TIF),
 			Price: o.Price.String(), Qty: o.Qty.String(), Leverage: o.Leverage.String(),
-			Mode:       uint8(o.Mode),
-			ReduceOnly: o.ReduceOnly, ReservedIM: o.ReservedIM.String(), FilledQty: o.FilledQty.String(),
+			Mode:        uint8(o.Mode),
+			PositionIdx: o.PositionIdx,
+			ReduceOnly:  o.ReduceOnly, ReservedIM: o.ReservedIM.String(), FilledQty: o.FilledQty.String(),
 			Status: int32(o.Status), CreatedMs: o.CreatedMs, UpdatedMs: o.UpdatedMs,
 			ConfigVersion: o.ConfigVersion,
 		})
 	}
 	for _, liq := range s.liqByOrder {
 		snap.Liquidations = append(snap.Liquidations, LiqSnap{
-			UserID: liq.userID, Symbol: liq.symbol, OrderID: liq.orderID,
+			UserID: liq.userID, Symbol: liq.symbol, PositionIdx: liq.positionIdx, OrderID: liq.orderID,
 			Mode: uint8(liq.mode), Side: uint8(liq.side), OrderPrice: liq.orderPrice.String(),
 			Bankruptcy: liq.bankruptcy.String(), LiqFeeRate: liq.liqFeeRate.String(),
 			RiskTier: liq.tier, Ticks: liq.ticks,
@@ -143,8 +146,9 @@ func (s *Service) Restore(snap Snapshot) {
 			OrderID: os.OrderID, ClientID: os.ClientID, UserID: os.UserID, Symbol: os.Symbol,
 			Side: perpstate.Side(os.Side), Type: eventpb.OrderType(os.Type), TIF: eventpb.TimeInForce(os.TIF),
 			Price: dec.New(os.Price), Qty: dec.New(os.Qty), Leverage: dec.New(os.Leverage),
-			Mode:       perpstate.MarginMode(os.Mode),
-			ReduceOnly: os.ReduceOnly, ReservedIM: dec.New(os.ReservedIM), FilledQty: dec.New(os.FilledQty),
+			Mode:        perpstate.MarginMode(os.Mode),
+			PositionIdx: os.PositionIdx,
+			ReduceOnly:  os.ReduceOnly, ReservedIM: dec.New(os.ReservedIM), FilledQty: dec.New(os.FilledQty),
 			Status: eventpb.InternalOrderStatus(os.Status), CreatedMs: os.CreatedMs, UpdatedMs: os.UpdatedMs,
 			ConfigVersion: os.ConfigVersion,
 		}
@@ -153,7 +157,7 @@ func (s *Service) Restore(snap Snapshot) {
 	s.liqByOrder = make(map[uint64]*liquidation, len(snap.Liquidations))
 	for _, ls := range snap.Liquidations {
 		liq := &liquidation{
-			userID: ls.UserID, symbol: ls.Symbol, orderID: ls.OrderID,
+			userID: ls.UserID, symbol: ls.Symbol, positionIdx: ls.PositionIdx, orderID: ls.OrderID,
 			mode: liquidationMode(ls.Mode), side: perpstate.Side(ls.Side),
 			orderPrice: snapDecimal(ls.OrderPrice), bankruptcy: dec.New(ls.Bankruptcy),
 			liqFeeRate: snapDecimal(ls.LiqFeeRate), tier: ls.RiskTier, ticks: ls.Ticks,
@@ -162,7 +166,7 @@ func (s *Service) Restore(snap Snapshot) {
 		if liq.mode == 0 {
 			liq.mode = liquidationFull
 		}
-		s.liqByKey[liqKey(ls.UserID, ls.Symbol)] = liq
+		s.liqByKey[liqKey(ls.UserID, ls.Symbol, ls.PositionIdx)] = liq
 		s.liqByOrder[ls.OrderID] = liq
 	}
 }

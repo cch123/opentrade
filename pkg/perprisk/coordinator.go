@@ -62,13 +62,16 @@ type BorrowResult struct {
 	SymbolUsed      dec.Decimal
 }
 
-// ADLCandidate is a shard-reported or projection-derived profitable position.
-// PosSeq and PositionVersion are the read-view stamps observed by the
-// coordinator. Execution must reject the task if either stamp, or the observed
-// side, differs by the time the command enters the owning user's sequencer.
+// ADLCandidate is a shard-reported or projection-derived profitable position
+// leg. PositionIdx is the ADR-0077 leg key (0 = net, 1/2 = hedge legs) — the
+// full ADL chain carries it so a task can never reduce the wrong leg. PosSeq
+// and PositionVersion are the read-view stamps observed by the coordinator.
+// Execution must reject the task if either stamp, or the observed side,
+// differs by the time the command enters the owning user's sequencer.
 type ADLCandidate struct {
 	UserID          uint64
 	Symbol          string
+	PositionIdx     uint8
 	Side            perpstate.Side
 	Size            dec.Decimal
 	Score           dec.Decimal
@@ -78,13 +81,15 @@ type ADLCandidate struct {
 }
 
 // ADLTask is the version-stamped command a coordinator may dispatch to a
-// perp-counter shard. The coordinator only decides; the owning shard performs
-// all position mutation after checking the observed position stamps and
-// AdlRound idempotency.
+// perp-counter shard, targeting one (user, symbol, position_idx) leg
+// (ADR-0077 §4). The coordinator only decides; the owning shard performs all
+// position mutation after checking the observed position stamps and AdlRound
+// idempotency.
 type ADLTask struct {
 	LotID           string
 	UserID          uint64
 	Symbol          string
+	PositionIdx     uint8
 	Side            perpstate.Side
 	Qty             dec.Decimal
 	Price           dec.Decimal
@@ -159,6 +164,7 @@ type LotSnap struct {
 	LotID             string    `json:"lot_id"`
 	UserID            uint64    `json:"user_id"`
 	Symbol            string    `json:"symbol"`
+	PositionIdx       uint8     `json:"position_idx,omitempty"` // ADR-0077 leg
 	Side              uint8     `json:"side"`
 	TotalQty          string    `json:"total_qty"`
 	LeavesQty         string    `json:"leaves_qty"`
@@ -192,6 +198,7 @@ type InFlightADLSnap struct {
 	LotID           string `json:"lot_id"`
 	UserID          uint64 `json:"user_id"`
 	Symbol          string `json:"symbol"`
+	PositionIdx     uint8  `json:"position_idx,omitempty"` // ADR-0077 leg
 	Side            uint8  `json:"side"`
 	Qty             string `json:"qty"`
 	Price           string `json:"price"`
@@ -754,7 +761,8 @@ func PlanADL(lot TakenOverLot, price dec.Decimal, adlRound uint64, candidates []
 			continue
 		}
 		tasks = append(tasks, ADLTask{
-			LotID: lot.LotID, UserID: cand.UserID, Symbol: cand.Symbol, Side: cand.Side,
+			LotID: lot.LotID, UserID: cand.UserID, Symbol: cand.Symbol,
+			PositionIdx: cand.PositionIdx, Side: cand.Side,
 			Qty: qty, Price: price, PosSeq: cand.PosSeq,
 			PositionVersion: cand.PositionVersion, AdlRound: adlRound,
 		})
@@ -784,7 +792,8 @@ func (c *Coordinator) Snapshot() Snapshot {
 	sort.Slice(s.Loans, func(i, j int) bool { return s.Loans[i].RefID < s.Loans[j].RefID })
 	for _, lot := range c.lots {
 		s.Lots = append(s.Lots, LotSnap{
-			LotID: lot.LotID, UserID: lot.UserID, Symbol: lot.Symbol, Side: uint8(lot.Side),
+			LotID: lot.LotID, UserID: lot.UserID, Symbol: lot.Symbol,
+			PositionIdx: lot.PositionIdx, Side: uint8(lot.Side),
 			TotalQty: lot.TotalQty.String(), LeavesQty: lot.LeavesQty.String(),
 			TakeoverPrice: lot.TakeoverPrice.String(), TriggerMarkPrice: lot.TriggerMarkPrice.String(),
 			TakenOverBalance: lot.TakenOverBalance.String(), PositionVersion: lot.PositionVersion,
@@ -800,7 +809,8 @@ func (c *Coordinator) Snapshot() Snapshot {
 	sort.Slice(s.Settlements, func(i, j int) bool { return s.Settlements[i].LotID < s.Settlements[j].LotID })
 	for _, task := range c.inFlightADL {
 		s.InFlightADL = append(s.InFlightADL, InFlightADLSnap{
-			LotID: task.LotID, UserID: task.UserID, Symbol: task.Symbol, Side: uint8(task.Side),
+			LotID: task.LotID, UserID: task.UserID, Symbol: task.Symbol,
+			PositionIdx: task.PositionIdx, Side: uint8(task.Side),
 			Qty: task.Qty.String(), Price: task.Price.String(), PosSeq: task.PosSeq,
 			PositionVersion: task.PositionVersion, AdlRound: task.AdlRound,
 		})
@@ -847,7 +857,8 @@ func (c *Coordinator) Restore(s Snapshot) {
 	}
 	for _, l := range s.Lots {
 		c.lots[l.LotID] = TakenOverLot{
-			LotID: l.LotID, UserID: l.UserID, Symbol: l.Symbol, Side: perpstate.Side(l.Side),
+			LotID: l.LotID, UserID: l.UserID, Symbol: l.Symbol,
+			PositionIdx: l.PositionIdx, Side: perpstate.Side(l.Side),
 			TotalQty: dec.New(l.TotalQty), LeavesQty: dec.New(l.LeavesQty),
 			TakeoverPrice: dec.New(l.TakeoverPrice), TriggerMarkPrice: dec.New(l.TriggerMarkPrice),
 			TakenOverBalance: dec.New(l.TakenOverBalance), PositionVersion: l.PositionVersion,
@@ -861,7 +872,8 @@ func (c *Coordinator) Restore(s Snapshot) {
 	}
 	for _, t := range s.InFlightADL {
 		task := ADLTask{
-			LotID: t.LotID, UserID: t.UserID, Symbol: t.Symbol, Side: perpstate.Side(t.Side),
+			LotID: t.LotID, UserID: t.UserID, Symbol: t.Symbol,
+			PositionIdx: t.PositionIdx, Side: perpstate.Side(t.Side),
 			Qty: dec.New(t.Qty), Price: dec.New(t.Price), PosSeq: t.PosSeq,
 			PositionVersion: t.PositionVersion, AdlRound: t.AdlRound,
 		}
@@ -921,8 +933,9 @@ func lotFromTakeoverEvent(t *eventpb.PerpTakeoverEvent, ts int64) (TakenOverLot,
 	}
 	lot, err := NewTakenOverLot(TakenOverLot{
 		LotID: lotID, UserID: t.GetUserId(), Symbol: t.GetSymbol(),
-		Side:     eventSideToPerp(t.GetInventorySide()),
-		TotalQty: qty, LeavesQty: qty, TakeoverPrice: price,
+		PositionIdx: uint8(t.GetPositionAfter().GetPositionIdx()), // ADR-0077 leg provenance
+		Side:        eventSideToPerp(t.GetInventorySide()),
+		TotalQty:    qty, LeavesQty: qty, TakeoverPrice: price,
 		TriggerMarkPrice: mark, TakenOverBalance: balance,
 		PositionVersion: version, Status: LotStatusInit,
 		CreatedUnixMs: ts, UpdatedUnixMs: ts,

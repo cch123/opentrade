@@ -345,6 +345,7 @@ message PerpPosition {
   string leverage = 7;
   string realized_pnl = 8;
   int64 updated_at_unix_ms = 9;
+  uint32 position_idx = 10; // ADR-0077: 0 net / 1 hedge long / 2 hedge short
 }
 
 message ListPerpFundingRequest {
@@ -370,6 +371,7 @@ message PerpFunding {
   string mark_price = 5;
   string payment = 6; // signed; negative = the position paid
   int64 ts_unix_ms = 7;
+  uint32 position_idx = 8; // ADR-0077 per-leg funding
 }
 
 message ListPerpMarginAdjustmentsRequest {
@@ -399,6 +401,7 @@ message PerpMarginAdjustment {
   string client_op_id = 9;
   string mark_price = 10;
   int64 ts_unix_ms = 11;
+  uint32 position_idx = 12; // ADR-0077: the leg whose margin moved
 }
 
 message ListPerpConfigLogsRequest {
@@ -428,6 +431,8 @@ message PerpConfigLog {
   string reason = 9;
   string client_op_id = 10;
   int64 ts_unix_ms = 11;
+  int32 position_mode = 12; // ADR-0077: 1 one-way / 2 hedge
+  uint32 position_idx = 13;
 }
 
 message ListPerpLiquidationsRequest {
@@ -456,6 +461,7 @@ message PerpLiquidation {
   string insurance_delta = 8;
   bool adl_queued = 9;
   int64 ts_unix_ms = 10;
+  uint32 position_idx = 11; // ADR-0077 liquidated leg
 }
 
 message ListPerpADLRequest {
@@ -483,4 +489,5 @@ message PerpADL {
   string fact_qty = 7;
   string realized_pnl = 8;
   int64 ts_unix_ms = 9;
+  uint32 position_idx = 10; // ADR-0077 reduced leg
 }

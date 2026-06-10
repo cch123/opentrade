@@ -50,7 +50,7 @@ func TestSetMarginMode_Matrix(t *testing.T) {
 	w := eng.WalletOf(user1)
 	eqd(t, w.CrossReserved, "0", "cross reservation released on full fill")
 	eqd(t, w.Available, "100", "free balance restored on cross fill")
-	p, _ := eng.PositionOf(user1, btc)
+	p, _ := eng.PositionOf(user1, btc, 0)
 	eqd(t, p.Margin, "0", "cross position margin")
 
 	// Switch back demanding more isolated margin than the free balance.
@@ -112,7 +112,7 @@ func TestCrossOrder_ProportionalReleaseAndCancel(t *testing.T) {
 	w = eng.WalletOf(user1)
 	eqd(t, w.CrossReserved, "0", "reservation cleared on cancel")
 	eqd(t, w.Available, "1000", "free restored on cancel")
-	p, _ := eng.PositionOf(user1, btc)
+	p, _ := eng.PositionOf(user1, btc, 0)
 	eqd(t, p.Size, "1", "position size after partial fill")
 	eqd(t, p.Margin, "0", "cross margin stays zero")
 }
@@ -168,10 +168,10 @@ func TestCrossLiquidation_PartialPoolCloseStopsWhenHealthy(t *testing.T) {
 	svc.HandlePerpPriceEvent(&eventpb.PerpPriceEvent{Symbol: btc,
 		Payload: &eventpb.PerpPriceEvent_Tick{Tick: &eventpb.MarkTick{MarkPrice: "75.4"}}})
 
-	if _, ok := eng.PositionOf(user1, btc); ok {
+	if _, ok := eng.PositionOf(user1, btc, 0); ok {
 		t.Fatal("loss leg must be closed")
 	}
-	if p, ok := eng.PositionOf(user1, eth); !ok || p.Size.Cmp(dec.New("2")) != 0 {
+	if p, ok := eng.PositionOf(user1, eth, 0); !ok || p.Size.Cmp(dec.New("2")) != 0 {
 		t.Fatal("healthy leg must survive")
 	}
 	if h, ok := eng.CrossPoolHealth(user1); !ok || h.Liquidatable() {
@@ -197,7 +197,7 @@ func TestCrossLiquidation_PartialPoolCloseStopsWhenHealthy(t *testing.T) {
 		t.Fatal("no deficit event expected")
 	}
 	// Backstop carries the inventory.
-	if bp, ok := eng.PositionOf(backstopUser, btc); !ok || bp.Size.Cmp(dec.New("10")) != 0 {
+	if bp, ok := eng.PositionOf(backstopUser, btc, 0); !ok || bp.Size.Cmp(dec.New("10")) != 0 {
 		t.Fatalf("backstop inventory: %+v ok=%v", bp, ok)
 	}
 }
@@ -219,7 +219,7 @@ func TestCrossLiquidation_BankruptcySettlesDeficit(t *testing.T) {
 
 	w := eng.WalletOf(user1)
 	eqd(t, w.Available, "0", "bankrupt wallet zeroed")
-	if _, ok := eng.PositionOf(user1, btc); ok {
+	if _, ok := eng.PositionOf(user1, btc, 0); ok {
 		t.Fatal("position must be closed")
 	}
 	// fee 0.85 in, deficit 50.85 out → net -50.

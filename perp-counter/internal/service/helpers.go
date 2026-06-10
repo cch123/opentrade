@@ -7,6 +7,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
+	"github.com/xargin/opentrade/perp-counter/internal/engine"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
@@ -105,11 +106,12 @@ func (s *Service) meta() *eventpb.EventMeta {
 // tier selection. It stays intentionally conservative for flips: if an incoming
 // order could both close and reopen, we size the tier from the submitted order
 // notional because Match, not perp-counter, determines the exact execution mix.
-// The cap itself resolves through the engine's ADR-0074 §10 min-chain
-// (effective tier incl. the position's riskID ∩ admin customer limit).
-func (s *Service) maxLeverageForOrder(user uint64, symbol string, side perpstate.Side, price, qty dec.Decimal) dec.Decimal {
+// The existing-position add-in reads the order's target leg (ADR-0077). The
+// cap itself resolves through the engine's ADR-0074 §10 min-chain (effective
+// tier incl. the symbol's riskID ∩ admin customer limit).
+func (s *Service) maxLeverageForOrder(user uint64, symbol string, idx uint8, side perpstate.Side, price, qty dec.Decimal) dec.Decimal {
 	notional := price.Mul(qty)
-	if pos, ok := s.eng.PositionOf(user, symbol); ok && pos.Side == side {
+	if pos, ok := s.eng.PositionOf(user, symbol, idx); ok && pos.Side == side {
 		mark := s.eng.MarkOf(symbol)
 		if mark.Sign() <= 0 {
 			mark = price
@@ -156,7 +158,9 @@ func (s *Service) emitOrderStatus(o *Order, oldSt, newSt eventpb.InternalOrderSt
 }
 
 // emitOrderStatusReason emits a perp-journal order-status transition, carrying
-// the Match reject reason when the new status is REJECTED / EXPIRED.
+// the Match reject reason when the new status is REJECTED / EXPIRED. The
+// position_idx stamp is the order→leg routing record replay/audit reads
+// (ADR-0077 §6).
 func (s *Service) emitOrderStatusReason(o *Order, oldSt, newSt eventpb.InternalOrderStatus, reason eventpb.RejectReason) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
@@ -164,6 +168,7 @@ func (s *Service) emitOrderStatusReason(o *Order, oldSt, newSt eventpb.InternalO
 			UserId: o.UserID, OrderId: o.OrderID, Symbol: o.Symbol,
 			OldStatus: oldSt, NewStatus: newSt, FilledQty: o.FilledQty.String(),
 			ReduceOnly: o.ReduceOnly, RejectReason: reason,
+			PositionIdx: uint32(o.PositionIdx),
 		}},
 	})
 }
@@ -176,23 +181,41 @@ func (s *Service) emitSettlement(o *Order, t *eventpb.Trade, side perpstate.Side
 			FillSide: toEventSide(side), Price: t.GetPrice(), Qty: t.GetQty(),
 			RealizedPnl: res.Realized.String(), Fee: res.Fee.String(),
 			MarginAdded: res.MarginAdded.String(), MarginReleased: res.MarginReleased.String(),
-			PositionAfter: s.positionSnap(o.UserID, o.Symbol),
+			PositionAfter: s.positionSnap(o.UserID, o.Symbol, o.PositionIdx),
 			// ADR-0075: settle-time version, the row audit reads params from.
 			SymbolConfigVersion: s.activeConfigVersion(o.Symbol),
 		}},
 	})
 }
 
-// positionSnap builds the post-change snapshot, including a flat position
-// (zeros) so consumers always see the resulting state.
-func (s *Service) positionSnap(user uint64, symbol string) *eventpb.PerpPositionSnapshot {
-	p, ok := s.eng.PositionRaw(user, symbol)
+// emitBreachIfAny surfaces a clamped-off close excess as a
+// REDUCE_ONLY_INVARIANT_BREACH (ADR-0077 §2 / ADR-0081 §2): the counterparty's
+// execution stands while this leg under-settled — journal + log, alert /
+// manual-repair input, never silently dropped.
+func (s *Service) emitBreachIfAny(o *Order, t *eventpb.Trade, excess dec.Decimal) {
+	if excess.Sign() <= 0 {
+		return
+	}
+	s.journal.Emit(&eventpb.PerpJournalEvent{
+		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
+		Payload: &eventpb.PerpJournalEvent_InvariantBreach{InvariantBreach: &eventpb.PerpInvariantBreachEvent{
+			UserId: o.UserID, Symbol: o.Symbol, PositionIdx: uint32(o.PositionIdx),
+			OrderId: o.OrderID, TradeId: t.GetTradeId(),
+			Kind: "reduce_only_excess", ExcessQty: excess.String(), FillPrice: t.GetPrice(),
+		}},
+	})
+}
+
+// positionSnap builds the post-change snapshot of one leg, including a flat
+// position (zeros) so consumers always see the resulting state.
+func (s *Service) positionSnap(user uint64, symbol string, idx uint8) *eventpb.PerpPositionSnapshot {
+	p, ok := s.eng.PositionRaw(user, symbol, idx)
 	if !ok {
-		return &eventpb.PerpPositionSnapshot{UserId: user, Symbol: symbol,
+		return &eventpb.PerpPositionSnapshot{UserId: user, Symbol: symbol, PositionIdx: uint32(idx),
 			Size: "0", EntryPrice: "0", Margin: "0", Leverage: "0", RealizedPnl: "0"}
 	}
 	return &eventpb.PerpPositionSnapshot{
-		UserId: p.UserID, Symbol: p.Symbol, Side: toEventSide(p.Side),
+		UserId: p.UserID, Symbol: p.Symbol, PositionIdx: uint32(p.PositionIdx), Side: toEventSide(p.Side),
 		Size: p.Size.String(), EntryPrice: p.Entry.String(), Margin: p.Margin.String(),
 		Leverage: p.Leverage.String(), RealizedPnl: p.Realized.String(), Version: p.Version,
 		MarginMode: toWireMarginMode(p.Mode), RiskId: p.RiskID,
@@ -201,19 +224,15 @@ func (s *Service) positionSnap(user uint64, symbol string) *eventpb.PerpPosition
 }
 
 // resolveOrderLeverage applies ADR-0074 §8's config-first leverage rule for
-// PlaceOrder: an omitted leverage uses the position config; a provided value
-// that differs from the config is a write-through convenience set, allowed
-// only while nothing live depends on the old value (flat position, no
-// orders). Returns the effective leverage + the position's mode and riskID
-// for the admission checks. Caller holds the user's seq lock.
-func (s *Service) resolveOrderLeverage(user uint64, symbol string, reqLev dec.Decimal) (lev dec.Decimal, mode perpstate.MarginMode, riskID uint32, reason string) {
-	rec, _ := s.eng.PositionRaw(user, symbol)
-	mode = rec.Mode
-	if mode == 0 {
-		mode = perpstate.MarginIsolated
-	}
-	riskID = rec.RiskID
-	cfgLev := rec.Leverage
+// PlaceOrder: an omitted leverage uses the symbol config (uniform across
+// legs, ADR-0077 §7); a provided value that differs from the config is a
+// write-through convenience set, allowed only while nothing live depends on
+// the old value (every leg flat, no orders). symCfg is the locked config
+// snapshot PlaceOrder already read. Caller holds the user's seq lock.
+func (s *Service) resolveOrderLeverage(user uint64, symbol string, symCfg engine.SymbolOrderConfig, reqLev dec.Decimal) (lev dec.Decimal, mode perpstate.MarginMode, riskID uint32, reason string) {
+	mode = symCfg.MarginMode
+	riskID = symCfg.RiskID
+	cfgLev := symCfg.Leverage
 	switch {
 	case reqLev.Sign() == 0:
 		if cfgLev.Sign() <= 0 {
@@ -226,7 +245,7 @@ func (s *Service) resolveOrderLeverage(user uint64, symbol string, reqLev dec.De
 		// Config write-through. A live position or resting orders pin the old
 		// leverage — the user must go through SetPositionLeverage (which
 		// resizes margin / re-checks requirements) instead of a side effect.
-		if (!rec.IsFlat() && cfgLev.Sign() > 0) || s.hasActiveOrders(user, symbol) {
+		if (s.eng.SymbolNotionalForCap(user, symbol).Sign() > 0 && cfgLev.Sign() > 0) || s.hasActiveOrders(user, symbol) {
 			return zero, mode, riskID, "leverage_conflict_use_set_leverage"
 		}
 		out := s.eng.SetLeverage(user, symbol, "", reqLev, s.cfg.TargetMarginBuffer)
@@ -236,20 +255,6 @@ func (s *Service) resolveOrderLeverage(user uint64, symbol string, reqLev dec.De
 		s.emitPositionConfig(user, symbol, "place_order", "")
 		return reqLev, mode, riskID, ""
 	}
-}
-
-// positionMarkNotional values the current position at mark (entry when no
-// mark yet) — the §9 tier-cap admission input.
-func (s *Service) positionMarkNotional(user uint64, symbol string) dec.Decimal {
-	p, ok := s.eng.PositionOf(user, symbol)
-	if !ok {
-		return zero
-	}
-	mark := s.eng.MarkOf(symbol)
-	if mark.Sign() <= 0 {
-		mark = p.Entry
-	}
-	return p.Notional(mark)
 }
 
 func (s *Service) reject(req *perprpc.PlaceOrderRequest, reason string) *perprpc.PlaceOrderResponse {

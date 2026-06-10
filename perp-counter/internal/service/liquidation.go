@@ -25,20 +25,22 @@ const (
 )
 
 // liquidation tracks one in-flight forced reduce. The guard belongs to
-// (user,symbol), not only to an order id, because mark ticks can arrive while a
-// Match order is partially filled; the tick counter drives the ADR-0070
+// (user, symbol, position_idx) — per leg in hedge mode (ADR-0077 §4), not
+// only to an order id, because mark ticks can arrive while a Match order is
+// partially filled; the tick counter drives the ADR-0070
 // liquidity-escalation path into the internal backstop.
 type liquidation struct {
-	userID     uint64
-	symbol     string
-	orderID    uint64
-	mode       liquidationMode
-	side       perpstate.Side
-	orderPrice dec.Decimal
-	bankruptcy dec.Decimal
-	liqFeeRate dec.Decimal
-	tier       int32
-	ticks      int
+	userID      uint64
+	symbol      string
+	positionIdx uint8
+	orderID     uint64
+	mode        liquidationMode
+	side        perpstate.Side
+	orderPrice  dec.Decimal
+	bankruptcy  dec.Decimal
+	liqFeeRate  dec.Decimal
+	tier        int32
+	ticks       int
 
 	// ADR-0075 §3 provenance: the SymbolConfig version whose risk tiers
 	// judged this liquidation (the position's pinned/effective version) and
@@ -48,7 +50,9 @@ type liquidation struct {
 	policyID      string
 }
 
-func liqKey(user uint64, symbol string) string { return userIDString(user) + "|" + symbol }
+func liqKey(user uint64, symbol string, idx uint8) string {
+	return userIDString(user) + "|" + symbol + "|" + strconv.Itoa(int(idx))
+}
 
 // scanLiquidations runs on every mark tick: ADR-0072 narrows the read side to a
 // liq-price threshold query, while the later sequencer step still performs the
@@ -61,7 +65,7 @@ func (s *Service) scanLiquidations(symbol string) {
 		if cand.UserID == s.cfg.BackstopAccount {
 			continue // system inventory is managed off-system and must not recurse
 		}
-		if liq := s.liquidationByKey(liqKey(cand.UserID, cand.Symbol)); liq != nil {
+		if liq := s.liquidationByKey(liqKey(cand.UserID, cand.Symbol, cand.PositionIdx)); liq != nil {
 			s.advanceLiquidation(liq)
 			continue
 		}
@@ -69,24 +73,24 @@ func (s *Service) scanLiquidations(symbol string) {
 	}
 }
 
-// beginLiquidation cancels the position's resting orders and dispatches a
+// beginLiquidation cancels the leg's resting orders and dispatches a
 // reduce_only bankruptcy-price order to close it. Runs under the user's
 // sequencer with a TOCTOU re-check because the indexed scan is only a read-side
 // candidate pass.
 func (s *Service) beginLiquidation(cand engine.LiquidationCandidate) {
 	s.seq.do(cand.UserID, func() {
-		key := liqKey(cand.UserID, cand.Symbol)
+		key := liqKey(cand.UserID, cand.Symbol, cand.PositionIdx)
 		if s.hasLiquidation(key) {
 			return // already being liquidated
 		}
-		c, ok := s.eng.LiquidationCheck(cand.UserID, cand.Symbol)
+		c, ok := s.eng.LiquidationCheck(cand.UserID, cand.Symbol, cand.PositionIdx)
 		if !ok {
 			return // moved back above maintenance since the scan
 		}
 		qty := c.Size
 		price := c.BankruptcyPrice
 		mode := liquidationFull
-		if reduceQty := s.eng.ReduceToTarget(c.UserID, c.Symbol, s.cfg.TargetMarginBuffer); reduceQty.Sign() > 0 && reduceQty.Cmp(c.Size) < 0 {
+		if reduceQty := s.eng.ReduceToTarget(c.UserID, c.Symbol, c.PositionIdx, s.cfg.TargetMarginBuffer); reduceQty.Sign() > 0 && reduceQty.Cmp(c.Size) < 0 {
 			// Partial liquidation prefers the smaller close at liq price when it
 			// restores health. If the solver cannot find such a slice, the flow
 			// falls back to full bankruptcy close so liquidation always makes
@@ -95,24 +99,27 @@ func (s *Service) beginLiquidation(cand engine.LiquidationCandidate) {
 			price = c.LiqPrice
 			mode = liquidationPartial
 		}
-		// Cancel resting orders so their IM frees and they don't race the
-		// forced reduce order (IM is released when each OrderCancelled returns).
-		s.cancelOrdersFor(c.UserID, c.Symbol)
+		// Cancel the LEG's resting orders so their IM frees and they don't
+		// race the forced reduce order (IM is released when each
+		// OrderCancelled returns). In hedge mode the sibling leg's orders and
+		// margin are untouched (ADR-0077 §4).
+		s.cancelOrdersForLeg(c.UserID, c.Symbol, c.PositionIdx)
 
 		o := &Order{
 			OrderID: s.nextID(), UserID: c.UserID, Symbol: c.Symbol,
 			Side: c.Side.Opposite(), Type: eventpb.OrderType_ORDER_TYPE_LIMIT,
 			TIF:   eventpb.TimeInForce_TIME_IN_FORCE_GTC,
-			Price: price, Qty: qty, Leverage: zero, ReduceOnly: true,
+			Price: price, Qty: qty, Leverage: zero, PositionIdx: c.PositionIdx, ReduceOnly: true,
 			ReservedIM: zero, FilledQty: zero,
 			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
 			CreatedMs: s.now(), UpdatedMs: s.now(),
 		}
 		notional := c.Mark.Mul(c.Size)
-		model, cfgVersion := s.riskModelForPosition(c.UserID, c.Symbol)
+		model, cfgVersion := s.riskModelForPosition(c.UserID, c.Symbol, c.PositionIdx)
 		o.ConfigVersion = s.activeConfigVersion(c.Symbol)
 		liq := &liquidation{
-			userID: c.UserID, symbol: c.Symbol, orderID: o.OrderID, mode: mode, side: c.Side,
+			userID: c.UserID, symbol: c.Symbol, positionIdx: c.PositionIdx,
+			orderID: o.OrderID, mode: mode, side: c.Side,
 			orderPrice: price, bankruptcy: c.BankruptcyPrice,
 			liqFeeRate: model.LiqFeeRate(notional), tier: model.TierIndex(notional),
 			configVersion: cfgVersion, policyID: s.riskPolicyID(c.Symbol, cfgVersion),
@@ -139,11 +146,16 @@ func (s *Service) beginLiquidation(cand engine.LiquidationCandidate) {
 	})
 }
 
-// cancelOrdersFor dispatches cancels for all of (user, symbol)'s live orders.
-// Caller holds the user's seq lock. The bankruptcy order does not exist yet, so
-// nothing here cancels it.
-func (s *Service) cancelOrdersFor(user uint64, symbol string) {
+// cancelOrdersForLeg dispatches cancels for the live orders targeting one
+// (user, symbol, idx) leg (ADR-0077 §4: liquidating one hedge leg leaves the
+// sibling leg's orders alone; in one-way mode every order has idx 0, so this
+// is the whole symbol). Caller holds the user's seq lock. The bankruptcy
+// order does not exist yet, so nothing here cancels it.
+func (s *Service) cancelOrdersForLeg(user uint64, symbol string, idx uint8) {
 	for _, o := range s.ordersFor(user, symbol) {
+		if o.PositionIdx != idx {
+			continue
+		}
 		if isTerminal(o.Status) || o.Status == eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL {
 			continue
 		}
@@ -191,7 +203,7 @@ func (s *Service) advanceLiquidation(liq *liquidation) {
 // seq lock and has registered liq.
 func (s *Service) backstopRemaining(o *Order, liq *liquidation) {
 	remaining := o.Qty.Sub(o.FilledQty)
-	res, insDelta, ok := s.eng.BackstopTakeover(o.UserID, o.Symbol, remaining, liq.bankruptcy,
+	res, insDelta, ok := s.eng.BackstopTakeover(o.UserID, o.Symbol, o.PositionIdx, remaining, liq.bankruptcy,
 		s.cfg.BackstopAccount, liq.mode == liquidationPartial, liq.liqFeeRate)
 	if !ok {
 		s.finishLiquidation(liq)
@@ -221,16 +233,18 @@ func (s *Service) settleLiquidationFill(o *Order, liq *liquidation, side perpsta
 	var (
 		res      perpstate.FillResult
 		insDelta dec.Decimal
+		excess   dec.Decimal
 		applied  bool
 	)
 	if liq.mode == liquidationPartial {
-		res, insDelta, applied = s.eng.ApplyPartialLiquidationFill(o.UserID, o.Symbol, matchSeq, fill, liq.liqFeeRate)
+		res, insDelta, applied = s.eng.ApplyPartialLiquidationFill(o.UserID, o.Symbol, o.PositionIdx, matchSeq, fill, liq.liqFeeRate)
 	} else {
-		res, insDelta, applied = s.eng.ApplyLiquidationFill(o.UserID, o.Symbol, matchSeq, fill)
+		res, insDelta, excess, applied = s.eng.ApplyLiquidationFill(o.UserID, o.Symbol, o.PositionIdx, matchSeq, fill)
 	}
 	if !applied {
 		return // replay
 	}
+	s.emitBreachIfAny(o, t, excess)
 	old := o.Status
 	// Match is the source of truth for cumulative filled qty/status. The
 	// settlement math is guarded by match_seq, but order lifecycle must still
@@ -250,8 +264,8 @@ func (s *Service) settleLiquidationFill(o *Order, liq *liquidation, side perpsta
 	if o.Status != old {
 		s.emitOrderStatus(o, old, o.Status)
 	}
-	if _, stillOpen := s.eng.PositionOf(o.UserID, o.Symbol); !stillOpen {
-		s.finishLiquidation(liq) // position closed
+	if _, stillOpen := s.eng.PositionOf(o.UserID, o.Symbol, o.PositionIdx); !stillOpen {
+		s.finishLiquidation(liq) // leg closed
 	} else if liq.mode == liquidationPartial && isTerminal(o.Status) {
 		s.finishLiquidation(liq) // re-arm next tick for a fresh health check
 	}
@@ -273,7 +287,7 @@ func (s *Service) emitLiquidation(o *Order, liq *liquidation, t *eventpb.Trade, 
 			Partial:             liq.mode == liquidationPartial,
 			Backstop:            false,
 			RiskTier:            liq.tier,
-			PositionAfter:       s.positionSnap(o.UserID, o.Symbol),
+			PositionAfter:       s.positionSnap(o.UserID, o.Symbol, o.PositionIdx),
 			SymbolConfigVersion: liq.configVersion,
 			RiskPolicyId:        liq.policyID,
 		}},
@@ -283,6 +297,7 @@ func (s *Service) emitLiquidation(o *Order, liq *liquidation, t *eventpb.Trade, 
 func (s *Service) emitTakeover(o *Order, liq *liquidation, qty dec.Decimal, res perpstate.FillResult, insDelta dec.Decimal) {
 	takeoverNotional := qty.Mul(liq.bankruptcy)
 	lotID := s.takeoverLotID(o.Symbol, o.OrderID)
+	snap := s.positionSnap(o.UserID, o.Symbol, o.PositionIdx)
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_Takeover{Takeover: &eventpb.PerpTakeoverEvent{
@@ -293,7 +308,7 @@ func (s *Service) emitTakeover(o *Order, liq *liquidation, qty dec.Decimal, res 
 			TakenOverQty:     qty.String(),
 			TakeoverPrice:    liq.bankruptcy.String(),
 			TakenOverBalance: insDelta.String(),
-			PositionVersion:  s.positionSnap(o.UserID, o.Symbol).GetVersion(),
+			PositionVersion:  snap.GetVersion(),
 			InsuranceDelta:   insDelta.String(),
 			TakeoverNotional: takeoverNotional.String(),
 			BackstopUserId:   s.cfg.BackstopAccount,
@@ -301,7 +316,7 @@ func (s *Service) emitTakeover(o *Order, liq *liquidation, qty dec.Decimal, res 
 			Partial:          liq.mode == liquidationPartial,
 			RiskTier:         liq.tier,
 			AdlQueued:        s.adlQueued(o.Symbol),
-			PositionAfter:    s.positionSnap(o.UserID, o.Symbol),
+			PositionAfter:    snap,
 		}},
 	})
 }
@@ -328,12 +343,13 @@ func (s *Service) adlQueued(symbol string) bool {
 func (s *Service) ExecuteAdlTask(task perprisk.ADLTask) perprisk.ADLTaskResult {
 	result := perprisk.ADLTaskResult{}
 	s.seq.do(task.UserID, func() {
-		res, factQty, ok := s.eng.ApplyAdlCloseGuarded(task.UserID, task.Symbol, task.Qty, task.Price,
+		res, factQty, ok := s.eng.ApplyAdlCloseGuarded(task.UserID, task.Symbol, task.PositionIdx,
+			task.Qty, task.Price,
 			task.Side, task.PosSeq, task.PositionVersion, task.AdlRound, true)
 		if !ok {
 			return
 		}
-		s.emitADL(task.UserID, task.Symbol, task.LotID, task.Price, task.Qty, factQty, res, task.AdlRound)
+		s.emitADL(task.UserID, task.Symbol, task.PositionIdx, task.LotID, task.Price, task.Qty, factQty, res, task.AdlRound)
 		result = perprisk.ADLTaskResult{Applied: true, FactQty: factQty, RealizedPnL: res.Realized}
 	})
 	return result
@@ -341,13 +357,14 @@ func (s *Service) ExecuteAdlTask(task perprisk.ADLTask) perprisk.ADLTaskResult {
 
 // ADLCandidates is the shard-local candidate source for ADR-0071. The external
 // coordinator asks every shard for candidates scoped to one bankruptcy/ADL
-// price, then dispatches version-stamped tasks back to the owning shard.
+// price, then dispatches version-stamped tasks back to the owning shard. Each
+// candidate is one position leg (ADR-0077 §4).
 func (s *Service) ADLCandidates(symbol string, adlPrice dec.Decimal, excludeUser uint64) []perprisk.ADLCandidate {
 	src := s.eng.SelectAnyAdlCandidates(symbol, adlPrice, excludeUser)
 	out := make([]perprisk.ADLCandidate, 0, len(src))
 	for _, c := range src {
 		out = append(out, perprisk.ADLCandidate{
-			UserID: c.UserID, Symbol: c.Symbol, Side: c.Side,
+			UserID: c.UserID, Symbol: c.Symbol, PositionIdx: c.PositionIdx, Side: c.Side,
 			Size: c.Size, Score: c.Score, SacrificePerQty: c.SacrificePerQty,
 			PosSeq: c.LastMatchSeq, PositionVersion: c.PositionVersion,
 		})
@@ -355,7 +372,7 @@ func (s *Service) ADLCandidates(symbol string, adlPrice dec.Decimal, excludeUser
 	return out
 }
 
-func (s *Service) emitADL(user uint64, symbol, lotID string, price, requestedQty, factQty dec.Decimal, res perpstate.FillResult, round uint64) {
+func (s *Service) emitADL(user uint64, symbol string, idx uint8, lotID string, price, requestedQty, factQty dec.Decimal, res perpstate.FillResult, round uint64) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_Adl{Adl: &eventpb.PerpAdlEvent{
@@ -363,7 +380,7 @@ func (s *Service) emitADL(user uint64, symbol, lotID string, price, requestedQty
 			Price: price.String(), RequestedQty: requestedQty.String(), FactQty: factQty.String(),
 			ClosedQty: factQty.String(), RealizedPnl: res.Realized.String(),
 			InsuranceDelta: zero.String(),
-			PositionAfter:  s.positionSnap(user, symbol),
+			PositionAfter:  s.positionSnap(user, symbol, idx),
 		}},
 	})
 }
@@ -406,7 +423,7 @@ func (s *Service) registerLiquidation(key string, orderID uint64, liq *liquidati
 
 func (s *Service) unregisterLiquidation(liq *liquidation) {
 	s.mu.Lock()
-	delete(s.liqByKey, liqKey(liq.userID, liq.symbol))
+	delete(s.liqByKey, liqKey(liq.userID, liq.symbol, liq.positionIdx))
 	delete(s.liqByOrder, liq.orderID)
 	s.mu.Unlock()
 }

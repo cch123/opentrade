@@ -27,6 +27,15 @@ enum PerpMarginMode {
   PERP_MARGIN_MODE_CROSS = 2;
 }
 
+// PerpPositionMode mirrors perpstate.PositionMode on the journal wire
+// (ADR-0077): ONE_WAY = one net position (position_idx 0), HEDGE = dual legs
+// (1 = long, 2 = short).
+enum PerpPositionMode {
+  PERP_POSITION_MODE_UNSPECIFIED = 0;
+  PERP_POSITION_MODE_ONE_WAY = 1;
+  PERP_POSITION_MODE_HEDGE = 2;
+}
+
 // Post-change snapshot of a position, embedded in events so replay/audit
 // needs no cross-referencing (mirrors BalanceSnapshot). Side is unset and
 // size "0" when the position is flat after the change. A cross position
@@ -47,6 +56,10 @@ message PerpPositionSnapshot {
   // ADR-0075 §3 staged pin: the SymbolConfig version whose risk tiers govern
   // this position (stamped on open/increase). 0 = active version / legacy.
   uint64 risk_config_version = 12;
+  // ADR-0077: position key third segment (0 = one-way net, 1 = hedge long
+  // leg, 2 = hedge short leg). Every event embedding this snapshot is thereby
+  // leg-attributed (ADR-0077 §6).
+  uint32 position_idx = 13;
 }
 
 message PerpJournalEvent {
@@ -65,10 +78,14 @@ message PerpJournalEvent {
     PerpPositionConfigEvent   position_config   = 18; // ADR-0074
     PerpMarginAdjustmentEvent margin_adjustment = 19; // ADR-0074
     PerpCustomerRiskLimitEvent customer_risk_limit = 20; // ADR-0074
+    PerpInvariantBreachEvent invariant_breach = 21; // ADR-0077 §2 / ADR-0081 §2
   }
 }
 
 // Order lifecycle transition (analogous to counter OrderStatusEvent).
+// position_idx is carried explicitly (no embedded snapshot here): together
+// with the order-store snapshot it is the recovery source for order→leg
+// routing (ADR-0077 §6).
 message PerpOrderStatusEvent {
   uint64 user_id = 1;
   uint64 order_id = 2;
@@ -78,6 +95,24 @@ message PerpOrderStatusEvent {
   string filled_qty = 6;
   bool reduce_only = 7;
   RejectReason reject_reason = 8; // set when new_status = REJECTED
+  uint32 position_idx = 9;        // ADR-0077 order intent
+}
+
+// REDUCE_ONLY invariant breach (ADR-0077 §2 / ADR-0081 §2 excess path): a
+// close fill exceeded the target leg's size and the excess was NOT absorbed
+// (a hedge leg never flips). The counterparty's execution stands while this
+// side under-settled — alert / manual-repair input, never silently dropped.
+// ADR-0081's close-capacity reservation makes this path converge to
+// unreachable; until then it is the loud last line.
+message PerpInvariantBreachEvent {
+  uint64 user_id = 1;
+  string symbol = 2;
+  uint32 position_idx = 3;
+  uint64 order_id = 4;
+  string trade_id = 5;
+  string kind = 6;       // "reduce_only_excess"
+  string excess_qty = 7; // decimal, the unapplied fill quantity
+  string fill_price = 8; // decimal
 }
 
 // A fill applied to a position (open / increase / reduce / close / flip).
@@ -221,8 +256,14 @@ message PerpPositionConfigEvent {
   bool auto_add_margin = 6;
   string auto_add_max = 7;      // decimal; cap per auto-add event, "0" = uncapped
   uint64 position_version = 8;
-  string reason = 9;            // which op produced this (set_leverage / set_risk_id / set_margin_mode / set_auto_add)
+  string reason = 9;            // which op produced this (set_leverage / set_risk_id / set_margin_mode / set_auto_add / set_position_mode)
   string client_op_id = 10;     // idempotency key of the user op
+  // ADR-0077: the symbol's position mode after this op, and the leg the
+  // echoed per-leg fields describe (margin mode / leverage / risk_id are
+  // uniform across legs per ADR-0077 §7, so the leg attribution is echo
+  // provenance, not a divergence claim).
+  PerpPositionMode position_mode = 11;
+  uint32 position_idx = 12;
 }
 
 // Isolated position margin movement (ADR-0074 §13): manual add/remove, the
@@ -247,6 +288,7 @@ message PerpMarginAdjustmentEvent {
   uint64 position_version = 8;
   string client_op_id = 9;     // empty for AUTO_ADD (system-initiated)
   string mark_price = 10;      // mark at decision time (auto-add / health checks audit)
+  uint32 position_idx = 11;    // ADR-0077: the leg whose margin moved (one event per leg)
 }
 
 // Customer leverage cap change (ADR-0074 §10, admin plane). A symbol-scoped

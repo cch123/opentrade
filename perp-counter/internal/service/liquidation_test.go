@@ -60,7 +60,7 @@ func TestLiquidation_FillAtBankruptcy_InsuranceUnchanged(t *testing.T) {
 
 	liqFill(svc, bankID, "90", "1", 5) // fill exactly at bankruptcy
 
-	if _, ok := eng.PositionOf(user1, perpSym); ok {
+	if _, ok := eng.PositionOf(user1, perpSym, 0); ok {
 		t.Fatal("position should be closed after full liquidation")
 	}
 	if got := eng.InsuranceFund(perpSym); got.Sign() != 0 {
@@ -69,7 +69,7 @@ func TestLiquidation_FillAtBankruptcy_InsuranceUnchanged(t *testing.T) {
 	if jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetLiquidation() != nil }) != 1 {
 		t.Fatal("expected one liquidation journal event")
 	}
-	if svc.hasLiquidation(liqKey(user1, perpSym)) {
+	if svc.hasLiquidation(liqKey(user1, perpSym, 0)) {
 		t.Fatal("liquidation guard should clear once the position is closed")
 	}
 	if svc.OrderCount() != 0 {
@@ -136,10 +136,10 @@ func TestLiquidation_PartialFillThenClose(t *testing.T) {
 		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PARTIALLY_FILLED,
 		TakerFilledQtyAfter: "1",
 	}, 5)
-	if _, ok := eng.PositionOf(user1, perpSym); !ok {
+	if _, ok := eng.PositionOf(user1, perpSym, 0); !ok {
 		t.Fatal("position should still be open after partial liquidation fill")
 	}
-	if !svc.hasLiquidation(liqKey(user1, perpSym)) {
+	if !svc.hasLiquidation(liqKey(user1, perpSym, 0)) {
 		t.Fatal("guard should stay set during a partial liquidation")
 	}
 	// Final fill (incremental qty 1, cumulative 2) closes it; insurance nets 0
@@ -151,7 +151,7 @@ func TestLiquidation_PartialFillThenClose(t *testing.T) {
 		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
 		TakerFilledQtyAfter: "2",
 	}, 6)
-	if _, ok := eng.PositionOf(user1, perpSym); ok {
+	if _, ok := eng.PositionOf(user1, perpSym, 0); ok {
 		t.Fatal("position should be closed after the final fill")
 	}
 	if got := eng.InsuranceFund(perpSym); got.Sign() != 0 {
@@ -187,7 +187,7 @@ func TestLiquidation_PartialReduceToSafe(t *testing.T) {
 		TakerStatusAfter:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_FILLED,
 		TakerFilledQtyAfter: placed.GetQty(),
 	}, 5)
-	pos, ok := eng.PositionOf(user1, perpSym)
+	pos, ok := eng.PositionOf(user1, perpSym, 0)
 	if !ok {
 		t.Fatal("partial liquidation should keep a residual position")
 	}
@@ -197,7 +197,7 @@ func TestLiquidation_PartialReduceToSafe(t *testing.T) {
 	if ratio := pos.MarginRatio(dec.New("94")); ratio.Cmp(dec.New("0.06")) < 0 {
 		t.Fatalf("post-partial margin ratio = %s, want >= 0.06", ratio)
 	}
-	if svc.hasLiquidation(liqKey(user1, perpSym)) {
+	if svc.hasLiquidation(liqKey(user1, perpSym, 0)) {
 		t.Fatal("partial liquidation guard should clear after the partial order is terminal")
 	}
 	foundPartial := false
@@ -219,10 +219,10 @@ func TestLiquidation_BackstopClosesInFlightOrder(t *testing.T) {
 	triggerLiquidation(t, svc, eng, disp)
 
 	svc.HandlePerpPriceEvent(markTickEvt(perpSym, "89"))
-	if _, ok := eng.PositionOf(user1, perpSym); ok {
+	if _, ok := eng.PositionOf(user1, perpSym, 0); ok {
 		t.Fatal("backstop escalation should close the liquidated position")
 	}
-	if pos, ok := eng.PositionOf(backstopUser, perpSym); !ok || pos.Side != perpstate.SideBuy || pos.Size.Sign() <= 0 {
+	if pos, ok := eng.PositionOf(backstopUser, perpSym, 0); !ok || pos.Side != perpstate.SideBuy || pos.Size.Sign() <= 0 {
 		t.Fatalf("backstop inventory not recorded correctly: pos=%+v ok=%v", pos, ok)
 	}
 	if disp.cancels == 0 {
@@ -262,7 +262,7 @@ func TestLiquidation_DeficitDoesNotLocallyCreditFundViaADL(t *testing.T) {
 	if got := eng.InsuranceFund(perpSym); got.Cmp(dec.New("-5")) != 0 {
 		t.Fatalf("liquidation deficit should remain for RiskPool settlement, got fund=%s", got)
 	}
-	if _, ok := eng.PositionOf(user2, perpSym); !ok {
+	if _, ok := eng.PositionOf(user2, perpSym, 0); !ok {
 		t.Fatal("local shard must not ADL a profitable user to credit insurance")
 	}
 	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 0 {
@@ -277,7 +277,7 @@ func TestExecuteAdlTask_RejectsStaleObservedPosition(t *testing.T) {
 	})
 	openPosition(eng, winnerUser, perpSym, perpstate.SideSell, "100", "1", "10")
 	eng.SetMark(perpSym, dec.New("85"))
-	pos, ok := eng.PositionOf(winnerUser, perpSym)
+	pos, ok := eng.PositionOf(winnerUser, perpSym, 0)
 	if !ok {
 		t.Fatal("winner position missing")
 	}
@@ -307,7 +307,7 @@ func TestExecuteAdlTask_RejectsStaleObservedPosition(t *testing.T) {
 	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 0 {
 		t.Fatalf("stale task emitted %d ADL events, want 0", n)
 	}
-	pos, ok = eng.PositionOf(winnerUser, perpSym)
+	pos, ok = eng.PositionOf(winnerUser, perpSym, 0)
 	if !ok {
 		t.Fatal("winner position missing after stale rejections")
 	}
@@ -318,7 +318,7 @@ func TestExecuteAdlTask_RejectsStaleObservedPosition(t *testing.T) {
 	}).Applied {
 		t.Fatal("matching observed-position task should apply")
 	}
-	if _, ok := eng.PositionOf(winnerUser, perpSym); ok {
+	if _, ok := eng.PositionOf(winnerUser, perpSym, 0); ok {
 		t.Fatal("matching ADL task should close the one-lot winner")
 	}
 	if n := jr.count(func(e *eventpb.PerpJournalEvent) bool { return e.GetAdl() != nil }); n != 1 {
@@ -344,7 +344,7 @@ func TestRiskCoordinatorMode_DisablesLocalADLDecision(t *testing.T) {
 	if got := eng.InsuranceFund(perpSym); got.Cmp(dec.New("-5")) != 0 {
 		t.Fatalf("local cache should still fold delta for journal parity, got %s", got)
 	}
-	if _, ok := eng.PositionOf(user2, perpSym); !ok {
+	if _, ok := eng.PositionOf(user2, perpSym, 0); !ok {
 		t.Fatal("external coordinator mode must not run local same-process ADL")
 	}
 	for _, e := range jr.evts {

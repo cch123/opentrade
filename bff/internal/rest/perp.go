@@ -44,6 +44,9 @@ type perpPlaceOrderBody struct {
 	Qty           string `json:"qty"`
 	Leverage      string `json:"leverage"`
 	ReduceOnly    bool   `json:"reduce_only,omitempty"`
+	// ADR-0077 §2 position intent: 0 in one-way mode; 1 (long leg) / 2
+	// (short leg) in hedge mode — perp-counter fail-closes both ways.
+	PositionIdx uint32 `json:"position_idx,omitempty"`
 }
 
 func (s *Server) handlePerpPlaceOrder(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +92,7 @@ func (s *Server) handlePerpPlaceOrder(w http.ResponseWriter, r *http.Request) {
 		Qty:           body.Qty,
 		Leverage:      body.Leverage,
 		ReduceOnly:    body.ReduceOnly,
+		PositionIdx:   body.PositionIdx,
 	}))
 	if err != nil {
 		writeConnectError(w, err)
@@ -147,6 +151,8 @@ func (s *Server) handlePerpPositions(w http.ResponseWriter, r *http.Request) {
 	for _, p := range resp.Msg.Positions {
 		positions = append(positions, map[string]any{
 			"symbol":         p.Symbol,
+			"position_idx":   p.PositionIdx,
+			"position_mode":  perpPositionModeToString(p.PositionMode),
 			"side":           sideToString(p.Side),
 			"size":           p.Size,
 			"entry_price":    p.EntryPrice,
@@ -200,6 +206,13 @@ func perpMarginModeToString(m perprpc.MarginMode) string {
 	return "unspecified"
 }
 
+func perpPositionModeToString(m perprpc.PositionMode) string {
+	if m == perprpc.PositionMode_POSITION_MODE_HEDGE {
+		return "hedge"
+	}
+	return "one_way"
+}
+
 // --- ADR-0074 account / position config surface ---------------------------
 
 type perpMarginModeBody struct {
@@ -250,9 +263,10 @@ func (s *Server) handlePerpSetMarginMode(w http.ResponseWriter, r *http.Request)
 }
 
 type perpAdjustMarginBody struct {
-	Symbol     string `json:"symbol"`
-	Delta      string `json:"delta"` // signed decimal
-	ClientOpID string `json:"client_op_id,omitempty"`
+	Symbol      string `json:"symbol"`
+	Delta       string `json:"delta"`                  // signed decimal
+	PositionIdx uint32 `json:"position_idx,omitempty"` // ADR-0077 §7: per-leg op (1/2 in hedge mode)
+	ClientOpID  string `json:"client_op_id,omitempty"`
 }
 
 func (s *Server) handlePerpAdjustMargin(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +283,8 @@ func (s *Server) handlePerpAdjustMargin(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	resp, err := s.perp.AdjustIsolatedMargin(r.Context(), connect.NewRequest(&perprpc.AdjustIsolatedMarginRequest{
-		UserId: userID, Symbol: body.Symbol, Delta: body.Delta, ClientOpId: body.ClientOpID,
+		UserId: userID, Symbol: body.Symbol, Delta: body.Delta,
+		PositionIdx: body.PositionIdx, ClientOpId: body.ClientOpID,
 	}))
 	if err != nil {
 		writeConnectError(w, err)
@@ -280,6 +295,52 @@ func (s *Server) handlePerpAdjustMargin(w http.ResponseWriter, r *http.Request) 
 		"reject_reason":      resp.Msg.RejectReason,
 		"position_margin":    resp.Msg.PositionMargin,
 		"free_balance_after": resp.Msg.FreeBalanceAfter,
+	})
+}
+
+type perpPositionModeBody struct {
+	Symbol       string `json:"symbol"`
+	PositionMode string `json:"position_mode"` // "one_way" / "hedge"
+	ClientOpID   string `json:"client_op_id,omitempty"`
+}
+
+// handlePerpSetPositionMode is the ADR-0077 §3 ONE_WAY ↔ HEDGE switch:
+// rejected while any leg is non-flat, any order is live, any position-bound
+// trigger is active, or a liquidation is in flight.
+func (s *Server) handlePerpSetPositionMode(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePerp(w) {
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	var body perpPositionModeBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	mode := perprpc.PositionMode_POSITION_MODE_UNSPECIFIED
+	switch body.PositionMode {
+	case "one_way":
+		mode = perprpc.PositionMode_POSITION_MODE_ONE_WAY
+	case "hedge":
+		mode = perprpc.PositionMode_POSITION_MODE_HEDGE
+	default:
+		writeError(w, http.StatusBadRequest, "position_mode must be one_way or hedge")
+		return
+	}
+	resp, err := s.perp.SetPositionMode(r.Context(), connect.NewRequest(&perprpc.SetPositionModeRequest{
+		UserId: userID, Symbol: body.Symbol, TargetMode: mode, ClientOpId: body.ClientOpID,
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted":      resp.Msg.Accepted,
+		"reject_reason": resp.Msg.RejectReason,
+		"position_mode": perpPositionModeToString(resp.Msg.PositionMode),
 	})
 }
 
@@ -402,6 +463,8 @@ func (s *Server) handlePerpPositionConfig(w http.ResponseWriter, r *http.Request
 	for _, c := range resp.Msg.Configs {
 		configs = append(configs, map[string]any{
 			"symbol":                 c.Symbol,
+			"position_idx":           c.PositionIdx,
+			"position_mode":          perpPositionModeToString(c.PositionMode),
 			"margin_mode":            perpMarginModeToString(c.MarginMode),
 			"leverage":               c.Leverage,
 			"risk_id":                c.RiskId,

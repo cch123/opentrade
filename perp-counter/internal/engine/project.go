@@ -41,35 +41,49 @@ func (e *Engine) ProjectRiskTiers(symbol string, candidate perpstate.RiskModel) 
 		},
 	}
 	for user, bySym := range e.positions {
-		p := bySym[symbol]
-		if p == nil || p.IsFlat() {
-			continue
+		legs := bySym[symbol].liveLegs(nil)
+		scanned, affected, liquidatable := false, false, false
+		for _, p := range legs {
+			if p.IsFlat() {
+				continue
+			}
+			scanned = true
+			mark := e.marks[p.Symbol]
+			notional := p.Notional(mark)
+			curModel, _ := e.riskModelForPositionLocked(p)
+			curMMR := curModel.EffectiveMMR(notional, p.RiskID)
+			candMMR := candidate.EffectiveMMR(notional, p.RiskID)
+			if candMMR.Cmp(curMMR) > 0 {
+				affected = true
+			}
+			if mark.Sign() <= 0 {
+				continue // no mark → no health verdict; counted as scanned only
+			}
+			if p.Mode == perpstate.MarginCross {
+				w := e.wallets[user]
+				if w == nil {
+					w = &Wallet{Available: zero, Reserved: zero, CrossReserved: zero}
+				}
+				h := candStd.Eval(perpstate.Cross(w.Available.Add(w.CrossReserved), e.crossPositionsLocked(user)), e.marks)
+				if h.Liquidatable() {
+					liquidatable = true
+				}
+				continue
+			}
+			marks := map[string]dec.Decimal{symbol: mark}
+			if perpstate.Isolated(p).Liquidatable(marks, candidate.EffectiveMMRFunc(p.RiskID)) {
+				liquidatable = true
+			}
 		}
-		out.Scanned++
-		mark := e.marks[p.Symbol]
-		notional := p.Notional(mark)
-		curModel, _ := e.riskModelForPositionLocked(p)
-		curMMR := curModel.EffectiveMMR(notional, p.RiskID)
-		candMMR := candidate.EffectiveMMR(notional, p.RiskID)
-		if candMMR.Cmp(curMMR) > 0 {
+		// Counts stay account-granular (the reprice policy budgets accounts,
+		// not legs): a user with both hedge legs affected counts once.
+		if scanned {
+			out.Scanned++
+		}
+		if affected {
 			out.Affected++
 		}
-		if mark.Sign() <= 0 {
-			continue // no mark → no health verdict; counted as scanned only
-		}
-		if p.Mode == perpstate.MarginCross {
-			w := e.wallets[user]
-			if w == nil {
-				w = &Wallet{Available: zero, Reserved: zero, CrossReserved: zero}
-			}
-			h := candStd.Eval(perpstate.Cross(w.Available.Add(w.CrossReserved), e.crossPositionsLocked(user)), e.marks)
-			if h.Liquidatable() {
-				out.Liquidatable++
-			}
-			continue
-		}
-		marks := map[string]dec.Decimal{symbol: mark}
-		if perpstate.Isolated(p).Liquidatable(marks, candidate.EffectiveMMRFunc(p.RiskID)) {
+		if liquidatable {
 			out.Liquidatable++
 		}
 	}

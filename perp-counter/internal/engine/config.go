@@ -14,20 +14,35 @@ import (
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
+// LegMove is one leg's cash movement inside a multi-leg config op (margin
+// mode switch / leverage resize touch both hedge legs atomically, ADR-0077
+// §7). The service journals one PerpMarginAdjustmentEvent per entry so money
+// movement stays attributable to a single (user, symbol, position_idx).
+type LegMove struct {
+	PositionIdx  uint8
+	Moved        dec.Decimal
+	MarginBefore dec.Decimal
+	MarginAfter  dec.Decimal
+	Version      uint64
+}
+
 // OpOutcome is the cached result of a config / margin operation, keyed by
 // client_op_id (ADR-0074: a repeated op returns the first outcome — the same
-// contract as the AssetHolder transfer cache). Moved is the cash this op
-// transferred between the wallet and position margin (0 for pure config).
+// contract as the AssetHolder transfer cache). Moved is the total cash this
+// op transferred between the wallet and position margin (0 for pure config);
+// LegMoves breaks it down per leg when the op touched more than one.
 type OpOutcome struct {
 	Accepted    bool
 	Reason      string
 	Mode        perpstate.MarginMode
+	PosMode     perpstate.PositionMode
 	Leverage    dec.Decimal
 	RiskID      uint32
 	MarginAfter dec.Decimal
 	FreeAfter   dec.Decimal
 	Moved       dec.Decimal
 	Version     uint64
+	LegMoves    []LegMove
 }
 
 // CachedOp returns the stored outcome for a client_op_id.
@@ -47,29 +62,30 @@ func (e *Engine) cacheOpLocked(opID string, out OpOutcome) OpOutcome {
 }
 
 func (e *Engine) opStateLocked(p *perpstate.Position, w *Wallet, accepted bool, reason string, moved dec.Decimal) OpOutcome {
+	posMode := perpstate.PositionOneWay
+	if sp := e.symPeekLocked(p.UserID, p.Symbol); sp != nil {
+		posMode = sp.mode
+	}
 	return OpOutcome{
 		Accepted: accepted, Reason: reason,
-		Mode: p.Mode, Leverage: p.Leverage, RiskID: p.RiskID,
+		Mode: p.Mode, PosMode: posMode, Leverage: p.Leverage, RiskID: p.RiskID,
 		MarginAfter: p.Margin, FreeAfter: w.Available, Moved: moved, Version: p.Version,
 	}
 }
 
-// AdjustIsolatedMargin moves cash between the wallet free balance and an
-// isolated position's margin (ADR-0074 §6). delta > 0 adds, delta < 0
-// removes. Removal must keep the position above its initial requirement and
-// outside the maintenance band by removeBuffer.
-func (e *Engine) AdjustIsolatedMargin(user uint64, symbol, opID string, delta, removeBuffer dec.Decimal) OpOutcome {
+// AdjustIsolatedMargin moves cash between the wallet free balance and one
+// isolated leg's margin (ADR-0074 §6; per-leg in hedge mode — the only
+// position config op keyed by position_idx, ADR-0077 §7). delta > 0 adds,
+// delta < 0 removes. Removal must keep the leg above its initial requirement
+// and outside the maintenance band by removeBuffer.
+func (e *Engine) AdjustIsolatedMargin(user uint64, symbol string, idx uint8, opID string, delta, removeBuffer dec.Decimal) OpOutcome {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if prev, ok := e.ops[opID]; ok && opID != "" {
 		return prev
 	}
 	w := e.walletLocked(user)
-	bySym := e.positions[user]
-	var p *perpstate.Position
-	if bySym != nil {
-		p = bySym[symbol]
-	}
+	p := e.legPeekLocked(user, symbol, idx)
 	if p == nil || p.IsFlat() {
 		return e.cacheOpLocked(opID, OpOutcome{Accepted: false, Reason: "no_position", FreeAfter: w.Available,
 			MarginAfter: zero, Mode: perpstate.MarginIsolated})
@@ -145,12 +161,14 @@ func (e *Engine) marginHealthSafeLocked(p *perpstate.Position, newMargin, buffer
 	return "", true
 }
 
-// SetLeverage updates the position's configured leverage (ADR-0074 §8). For
-// a live isolated position the margin is resized to the new initial
-// requirement: lowering leverage draws the difference from the free balance,
-// raising leverage releases the surplus when the §6 safety line still holds.
-// For a live cross position only the derived initial requirement changes —
-// the new requirement must still be covered by pool equity.
+// SetLeverage updates the symbol's configured leverage (ADR-0074 §8;
+// per-(user, symbol), uniform across hedge legs — ADR-0077 §7). For each live
+// isolated leg the margin is resized to the new initial requirement: lowering
+// leverage draws the difference from the free balance, raising leverage
+// releases the surplus when the §6 safety line still holds. For live cross
+// legs only the derived initial requirement changes — the new requirement
+// must still be covered by pool equity. All legs validate first; nothing
+// moves on any rejection.
 func (e *Engine) SetLeverage(user uint64, symbol, opID string, lev, removeBuffer dec.Decimal) OpOutcome {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -158,61 +176,98 @@ func (e *Engine) SetLeverage(user uint64, symbol, opID string, lev, removeBuffer
 		return prev
 	}
 	w := e.walletLocked(user)
-	p := e.positionLocked(user, symbol)
+	legs := e.modeLegsLocked(user, symbol)
 	if lev.Sign() <= 0 {
-		return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "invalid_leverage", zero))
+		return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "invalid_leverage", zero))
 	}
-	if maxLev := e.effectiveMaxLeverageLocked(user, symbol, e.notionalForCapLocked(p), p.RiskID); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
-		return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "leverage_exceeds_max", zero))
+	if maxLev := e.effectiveMaxLeverageLocked(user, symbol, e.symbolNotionalForCapLocked(user, symbol), e.riskIDOfLocked(user, symbol)); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
+		return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "leverage_exceeds_max", zero))
 	}
-	if p.IsFlat() {
-		p.Leverage = lev
-		p.Version++
-		return e.cacheOpLocked(opID, e.opStateLocked(p, w, true, "", zero))
+
+	// Plan phase: collect cross candidates and isolated resize targets; all
+	// checks pass before anything mutates (all-or-nothing across legs).
+	type isoResize struct {
+		p        *perpstate.Position
+		targetIM dec.Decimal
 	}
-	if p.Mode == perpstate.MarginCross {
-		cand := *p
-		cand.Leverage = lev
-		h := e.crossCandidateHealthLocked(user, &cand, w.Available)
+	var crossCands []*perpstate.Position
+	var resizes []isoResize
+	totalNeed := zero
+	for _, p := range legs {
+		if p.IsFlat() {
+			continue
+		}
+		if p.Mode == perpstate.MarginCross {
+			cand := *p
+			cand.Leverage = lev
+			crossCands = append(crossCands, &cand)
+			continue
+		}
+		// Isolated resize: target margin is the entry-based initial
+		// requirement at the new leverage (same formula the fills committed).
+		targetIM := p.Entry.Mul(p.Size).Div(lev)
+		switch targetIM.Cmp(p.Margin) {
+		case 1:
+			// Conservative funding check: releases from sibling legs are not
+			// netted against needs — both legs resize in the same direction
+			// under uniform leverage unless margins were manually adjusted.
+			totalNeed = totalNeed.Add(targetIM.Sub(p.Margin))
+		case -1:
+			// The IM floor of this op IS targetIM (the new leverage's
+			// entry-based requirement); only the health line needs checking.
+			if reason, ok := e.marginHealthSafeLocked(p, targetIM, removeBuffer); !ok {
+				return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, reason, zero))
+			}
+		}
+		resizes = append(resizes, isoResize{p: p, targetIM: targetIM})
+	}
+	if len(crossCands) > 0 {
+		h := e.crossCandidatesHealthLocked(user, crossCands, w.Available)
 		if h.Liquidatable() || !h.MeetsInitial(zero) {
-			return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "insufficient_margin", zero))
+			return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "insufficient_margin", zero))
+		}
+	}
+	if w.Available.Cmp(totalNeed) < 0 {
+		return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "insufficient_free_balance", zero))
+	}
+
+	// Apply phase.
+	moved := zero
+	var legMoves []LegMove
+	for _, r := range resizes {
+		before := r.p.Margin
+		delta := r.targetIM.Sub(r.p.Margin)
+		if delta.Sign() != 0 {
+			w.Available = w.Available.Sub(delta) // negative delta credits back
+			moved = moved.Add(delta.Abs())
+		}
+		r.p.Margin = r.targetIM
+		r.p.Leverage = lev
+		r.p.Version++
+		legMoves = append(legMoves, LegMove{
+			PositionIdx: r.p.PositionIdx, Moved: delta.Abs(),
+			MarginBefore: before, MarginAfter: r.p.Margin, Version: r.p.Version,
+		})
+		e.syncIndexesLocked(user, symbol, r.p)
+	}
+	for _, p := range legs {
+		if p.Leverage.Cmp(lev) == 0 {
+			continue
 		}
 		p.Leverage = lev
 		p.Version++
-		return e.cacheOpLocked(opID, e.opStateLocked(p, w, true, "", zero))
+		e.syncIndexesLocked(user, symbol, p)
 	}
-	// Isolated resize: target margin is the entry-based initial requirement
-	// at the new leverage (same formula the fills committed).
-	targetIM := p.Entry.Mul(p.Size).Div(lev)
-	moved := zero
-	switch targetIM.Cmp(p.Margin) {
-	case 1:
-		need := targetIM.Sub(p.Margin)
-		if w.Available.Cmp(need) < 0 {
-			return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "insufficient_free_balance", zero))
-		}
-		w.Available = w.Available.Sub(need)
-		moved = need
-	case -1:
-		// The IM floor of this op IS targetIM (the new leverage's entry-based
-		// requirement); only the health line needs checking.
-		if reason, ok := e.marginHealthSafeLocked(p, targetIM, removeBuffer); !ok {
-			return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, reason, zero))
-		}
-		release := p.Margin.Sub(targetIM)
-		w.Available = w.Available.Add(release)
-		moved = release
-	}
-	p.Margin = targetIM
-	p.Leverage = lev
-	p.Version++
-	e.syncIndexesLocked(user, symbol, p)
-	return e.cacheOpLocked(opID, e.opStateLocked(p, w, true, "", moved))
+	out := e.opStateSymbolLocked(user, symbol, w, true, "", moved)
+	out.LegMoves = legMoves
+	return e.cacheOpLocked(opID, out)
 }
 
-// SetRiskID selects the position's risk-limit tier (ADR-0074 §9).
-// extraNotional is the service-computed open-order notional that must also
-// fit under the selected tier's cap.
+// SetRiskID selects the symbol's risk-limit tier (ADR-0074 §9;
+// per-(user, symbol), uniform across hedge legs — ADR-0077 §7: the tier cap
+// is checked against the GROSS sum of leg notionals). extraNotional is the
+// service-computed open-order notional that must also fit under the selected
+// tier's cap.
 func (e *Engine) SetRiskID(user uint64, symbol, opID string, riskID uint32, extraNotional dec.Decimal) OpOutcome {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -220,45 +275,56 @@ func (e *Engine) SetRiskID(user uint64, symbol, opID string, riskID uint32, extr
 		return prev
 	}
 	w := e.walletLocked(user)
-	p := e.positionLocked(user, symbol)
+	legs := e.modeLegsLocked(user, symbol)
 	activeModel, hasModel := e.riskModelForLocked(symbol)
 	if riskID != 0 {
 		if !hasModel || int(riskID) > activeModel.TierCount() {
-			return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "invalid_risk_id", zero))
+			return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "invalid_risk_id", zero))
 		}
 	}
 	if hasModel {
 		if maxN := activeModel.MaxNotionalFor(riskID); maxN.Sign() > 0 {
-			total := e.notionalForCapLocked(p).Add(extraNotional)
+			total := e.symbolNotionalForCapLocked(user, symbol).Add(extraNotional)
 			if total.Cmp(maxN) > 0 {
-				return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "notional_exceeds_tier_cap", zero))
+				return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "notional_exceeds_tier_cap", zero))
 			}
 		}
 	}
-	if !p.IsFlat() {
-		// A higher tier means a more conservative MMR — the position must not
-		// fall straight into liquidation on the new requirement.
+	// A higher tier means a more conservative MMR — no live leg may fall
+	// straight into liquidation on the new requirement (all-or-nothing).
+	var crossCands []*perpstate.Position
+	for _, p := range legs {
+		if p.IsFlat() {
+			continue
+		}
 		cand := *p
 		cand.RiskID = riskID
 		if cand.Mode == perpstate.MarginCross {
-			h := e.crossCandidateHealthLocked(user, &cand, w.Available)
-			if h.Liquidatable() {
-				return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "unsafe_risk_id", zero))
-			}
+			c := cand
+			crossCands = append(crossCands, &c)
 		} else if hasModel && activeModel.HasMMR() {
 			marks := map[string]dec.Decimal{symbol: e.marks[symbol]}
 			if perpstate.Isolated(&cand).Liquidatable(marks, activeModel.EffectiveMMRFunc(riskID)) {
-				return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "unsafe_risk_id", zero))
+				return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "unsafe_risk_id", zero))
 			}
 		}
 	}
-	p.RiskID = riskID
-	p.Version++
-	e.syncIndexesLocked(user, symbol, p) // liq price shifts with the new MMR
-	return e.cacheOpLocked(opID, e.opStateLocked(p, w, true, "", zero))
+	if len(crossCands) > 0 {
+		h := e.crossCandidatesHealthLocked(user, crossCands, w.Available)
+		if h.Liquidatable() {
+			return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "unsafe_risk_id", zero))
+		}
+	}
+	for _, p := range legs {
+		p.RiskID = riskID
+		p.Version++
+		e.syncIndexesLocked(user, symbol, p) // liq price shifts with the new MMR
+	}
+	return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, true, "", zero))
 }
 
-// SetAutoAdd toggles ADR-0074 §7 auto-add-margin on the position config.
+// SetAutoAdd toggles ADR-0074 §7 auto-add-margin on the symbol's config
+// (uniform across hedge legs — ADR-0077 §7; the top-up itself runs per leg).
 func (e *Engine) SetAutoAdd(user uint64, symbol, opID string, enabled bool, maxAdd dec.Decimal) OpOutcome {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -266,18 +332,50 @@ func (e *Engine) SetAutoAdd(user uint64, symbol, opID string, enabled bool, maxA
 		return prev
 	}
 	w := e.walletLocked(user)
-	p := e.positionLocked(user, symbol)
-	if enabled && p.Mode == perpstate.MarginCross {
-		return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "auto_add_isolated_only", zero))
+	legs := e.modeLegsLocked(user, symbol)
+	if enabled && legs[0].Mode == perpstate.MarginCross {
+		return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "auto_add_isolated_only", zero))
 	}
 	if maxAdd.Sign() < 0 {
-		return e.cacheOpLocked(opID, e.opStateLocked(p, w, false, "invalid_max_add", zero))
+		return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "invalid_max_add", zero))
 	}
-	p.AutoAddMargin = enabled
-	p.AutoAddMax = maxAdd
-	p.Version++
-	e.syncIndexesLocked(user, symbol, p)
-	return e.cacheOpLocked(opID, e.opStateLocked(p, w, true, "", zero))
+	for _, p := range legs {
+		p.AutoAddMargin = enabled
+		p.AutoAddMax = maxAdd
+		p.Version++
+		e.syncIndexesLocked(user, symbol, p)
+	}
+	return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, true, "", zero))
+}
+
+// SetPositionMode is the ADR-0077 §3 engine primitive: the flat-only
+// validation over ALL legs and the mode write happen in one critical section.
+// Service-owned checks (active orders, position-bound triggers, in-flight
+// liquidations) run before this inside the user's sequencer; this re-check
+// makes the engine state transition self-defending regardless.
+func (e *Engine) SetPositionMode(user uint64, symbol, opID string, target perpstate.PositionMode) OpOutcome {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if prev, ok := e.ops[opID]; ok && opID != "" {
+		return prev
+	}
+	w := e.walletLocked(user)
+	sp := e.symLocked(user, symbol)
+	if sp.mode == target {
+		return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, true, "", zero)) // idempotent no-op
+	}
+	for _, p := range sp.legs {
+		if p != nil && !p.IsFlat() {
+			return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, false, "position_not_flat", zero))
+		}
+	}
+	sp.mode = target
+	// Materialize the new mode's legs (flat, config-inheriting): the journal
+	// echo and QueryPositionConfig need a carrier row even before the first
+	// trade, or a mode switch on a never-traded symbol would be invisible to
+	// replay.
+	e.modeLegsLocked(user, symbol)
+	return e.cacheOpLocked(opID, e.opStateSymbolLocked(user, symbol, w, true, "", zero))
 }
 
 // AutoAddUsersWith returns users with an auto-add-enabled live isolated
@@ -294,63 +392,76 @@ func (e *Engine) AutoAddUsersWith(symbol string) []uint64 {
 	return out
 }
 
-// AutoAddMargin runs one ADR-0074 §7 top-up attempt: when the isolated
-// position's health is at or below MMR+triggerBuffer (and the position is
-// not already bankrupt), transfer free balance into position margin up to
-// the MMR+targetBuffer line, bounded by the free balance, the position's
-// AutoAddMax, and maxPerEvent (product cap; 0 = uncapped). Returns the
-// amount moved. fired=false means no transfer happened.
-func (e *Engine) AutoAddMargin(user uint64, symbol string, triggerBuffer, targetBuffer, maxPerEvent dec.Decimal) (OpOutcome, bool) {
+// AutoAddResult is one leg's ADR-0074 §7 top-up outcome (per leg, ADR-0077
+// §7: the toggle is symbol-uniform but each leg's health line fires its own
+// transfer).
+type AutoAddResult struct {
+	PositionIdx  uint8
+	MarginBefore dec.Decimal
+	Out          OpOutcome
+}
+
+// AutoAddMargin runs one ADR-0074 §7 top-up attempt per live leg: when an
+// isolated leg's health is at or below MMR+triggerBuffer (and the leg is not
+// already bankrupt), transfer free balance into the leg margin up to the
+// MMR+targetBuffer line, bounded by the free balance, the leg's AutoAddMax,
+// and maxPerEvent (product cap; 0 = uncapped). Legs are evaluated in idx
+// order under one lock — a transfer to the first leg reduces the free balance
+// the next leg sees. Returns one entry per fired transfer.
+func (e *Engine) AutoAddMargin(user uint64, symbol string, triggerBuffer, targetBuffer, maxPerEvent dec.Decimal) []AutoAddResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	w := e.walletLocked(user)
-	bySym := e.positions[user]
-	var p *perpstate.Position
-	if bySym != nil {
-		p = bySym[symbol]
+	var out []AutoAddResult
+	for _, p := range e.legsLocked(user, symbol) {
+		if p.IsFlat() || p.Mode == perpstate.MarginCross || !p.AutoAddMargin {
+			continue
+		}
+		mark := e.marks[symbol]
+		if mark.Sign() <= 0 {
+			continue
+		}
+		model, hasModel := e.riskModelForPositionLocked(p)
+		if !hasModel {
+			continue
+		}
+		notional := p.Notional(mark)
+		if notional.Sign() == 0 {
+			continue
+		}
+		equity := p.Margin.Add(p.UnrealizedPnL(mark))
+		if equity.Sign() <= 0 {
+			continue // bankrupt: liquidation, not top-up
+		}
+		mmr := model.EffectiveMMR(notional, p.RiskID)
+		if equity.Div(notional).Cmp(mmr.Add(triggerBuffer)) > 0 {
+			continue // healthy
+		}
+		need := mmr.Add(targetBuffer).Mul(notional).Sub(equity)
+		if need.Sign() <= 0 {
+			continue
+		}
+		amount := dec.Min(need, w.Available)
+		if p.AutoAddMax.Sign() > 0 {
+			amount = dec.Min(amount, p.AutoAddMax)
+		}
+		if maxPerEvent.Sign() > 0 {
+			amount = dec.Min(amount, maxPerEvent)
+		}
+		if amount.Sign() <= 0 {
+			continue // no free cash — proceed to liquidation check
+		}
+		before := p.Margin
+		w.Available = w.Available.Sub(amount)
+		p.Margin = p.Margin.Add(amount)
+		p.Version++
+		e.syncIndexesLocked(user, symbol, p)
+		out = append(out, AutoAddResult{
+			PositionIdx: p.PositionIdx, MarginBefore: before,
+			Out: e.opStateLocked(p, w, true, "", amount),
+		})
 	}
-	if p == nil || p.IsFlat() || p.Mode == perpstate.MarginCross || !p.AutoAddMargin {
-		return OpOutcome{}, false
-	}
-	mark := e.marks[symbol]
-	if mark.Sign() <= 0 {
-		return OpOutcome{}, false
-	}
-	model, hasModel := e.riskModelForPositionLocked(p)
-	if !hasModel {
-		return OpOutcome{}, false
-	}
-	notional := p.Notional(mark)
-	if notional.Sign() == 0 {
-		return OpOutcome{}, false
-	}
-	equity := p.Margin.Add(p.UnrealizedPnL(mark))
-	if equity.Sign() <= 0 {
-		return OpOutcome{}, false // bankrupt: liquidation, not top-up
-	}
-	mmr := model.EffectiveMMR(notional, p.RiskID)
-	if equity.Div(notional).Cmp(mmr.Add(triggerBuffer)) > 0 {
-		return OpOutcome{}, false // healthy
-	}
-	need := mmr.Add(targetBuffer).Mul(notional).Sub(equity)
-	if need.Sign() <= 0 {
-		return OpOutcome{}, false
-	}
-	amount := dec.Min(need, w.Available)
-	if p.AutoAddMax.Sign() > 0 {
-		amount = dec.Min(amount, p.AutoAddMax)
-	}
-	if maxPerEvent.Sign() > 0 {
-		amount = dec.Min(amount, maxPerEvent)
-	}
-	if amount.Sign() <= 0 {
-		return OpOutcome{}, false // no free cash — proceed to liquidation check
-	}
-	w.Available = w.Available.Sub(amount)
-	p.Margin = p.Margin.Add(amount)
-	p.Version++
-	e.syncIndexesLocked(user, symbol, p)
-	return e.opStateLocked(p, w, true, "", amount), true
+	return out
 }
 
 // --- customer leverage caps (ADR-0074 §10) ---------------------------------
@@ -456,22 +567,60 @@ func (e *Engine) effectiveMaxLeverageLocked(user uint64, symbol string, notional
 }
 
 // EffectiveMaxLeverage resolves the order-admission leverage cap for
-// (user, symbol) at the candidate notional, using the position's selected
-// riskID when a position record exists (ADR-0074 §8/§10).
+// (user, symbol) at the candidate notional, using the symbol's selected
+// riskID when any leg record exists (ADR-0074 §8/§10; risk_id is uniform
+// across legs per ADR-0077 §7).
 func (e *Engine) EffectiveMaxLeverage(user uint64, symbol string, notional dec.Decimal) dec.Decimal {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	var riskID uint32
-	if bySym := e.positions[user]; bySym != nil {
-		if p := bySym[symbol]; p != nil {
-			riskID = p.RiskID
-		}
-	}
-	return e.effectiveMaxLeverageLocked(user, symbol, notional, riskID)
+	return e.effectiveMaxLeverageLocked(user, symbol, notional, e.riskIDOfLocked(user, symbol))
 }
 
-// notionalForCapLocked values the position for tier-cap / max-leverage
-// selection: mark notional when a mark exists, entry notional otherwise.
+// riskIDOfLocked reads the symbol's uniform risk_id from the first existing
+// leg (0 = auto when no record exists). Caller holds e.mu (any).
+func (e *Engine) riskIDOfLocked(user uint64, symbol string) uint32 {
+	for _, p := range e.legsLocked(user, symbol) {
+		return p.RiskID
+	}
+	return 0
+}
+
+// SymbolOrderConfig is the (user, symbol)-uniform admission config snapshot
+// PlaceOrder reads in one locked step: margin mode / leverage / risk_id are
+// uniform across legs (ADR-0077 §7) and PosMode drives the §2 intent matrix.
+type SymbolOrderConfig struct {
+	MarginMode perpstate.MarginMode
+	Leverage   dec.Decimal
+	RiskID     uint32
+	PosMode    perpstate.PositionMode
+}
+
+// SymbolOrderConfigOf reads the symbol-uniform config from the first existing
+// leg (defaults: isolated, zero leverage, auto risk tier, ONE_WAY).
+func (e *Engine) SymbolOrderConfigOf(user uint64, symbol string) SymbolOrderConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := SymbolOrderConfig{MarginMode: perpstate.MarginIsolated, Leverage: zero}
+	if sp := e.symPeekLocked(user, symbol); sp != nil {
+		out.PosMode = sp.mode
+		for _, p := range sp.liveLegs(nil) {
+			out.MarginMode, out.Leverage, out.RiskID = p.Mode, p.Leverage, p.RiskID
+			break
+		}
+	}
+	return out
+}
+
+// SymbolNotionalForCap is the public read of the symbol's GROSS leg notional
+// sum (tier-cap admission input, ADR-0077 §7).
+func (e *Engine) SymbolNotionalForCap(user uint64, symbol string) dec.Decimal {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.symbolNotionalForCapLocked(user, symbol)
+}
+
+// notionalForCapLocked values one leg for tier-cap / max-leverage selection:
+// mark notional when a mark exists, entry notional otherwise.
 func (e *Engine) notionalForCapLocked(p *perpstate.Position) dec.Decimal {
 	if p.IsFlat() {
 		return zero
@@ -483,12 +632,26 @@ func (e *Engine) notionalForCapLocked(p *perpstate.Position) dec.Decimal {
 	return p.Notional(mark)
 }
 
+// symbolNotionalForCapLocked sums the GROSS leg notionals of (user, symbol)
+// for tier-cap checks (ADR-0077 §7: hedge legs do not net). Caller holds
+// e.mu (any).
+func (e *Engine) symbolNotionalForCapLocked(user uint64, symbol string) dec.Decimal {
+	total := zero
+	for _, p := range e.legsLocked(user, symbol) {
+		total = total.Add(e.notionalForCapLocked(p))
+	}
+	return total
+}
+
 // --- config views -----------------------------------------------------------
 
-// PositionConfigView is the query shape for per-(user, symbol) config
-// (ADR-0074 §13). Effective fields are derived at read time.
+// PositionConfigView is the query shape for per-(user, symbol, idx) config
+// (ADR-0074 §13 + ADR-0077). Effective fields are derived at read time;
+// PosMode is the symbol's position mode (shared by its legs).
 type PositionConfigView struct {
 	Symbol               string
+	PositionIdx          uint8
+	PosMode              perpstate.PositionMode
 	Mode                 perpstate.MarginMode
 	Leverage             dec.Decimal
 	RiskID               uint32
@@ -498,17 +661,18 @@ type PositionConfigView struct {
 	MaxNotional          dec.Decimal
 }
 
-// PositionConfigsOf returns config views for the user's position records
-// (including flat records — config can pre-exist a position), sorted by
-// symbol. symbol "" returns all.
+// PositionConfigsOf returns config views for the user's leg records
+// (including flat records — config can pre-exist a position), one row per
+// existing leg, sorted by (symbol, idx). symbol "" returns all.
 func (e *Engine) PositionConfigsOf(user uint64, symbol string) []PositionConfigView {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	bySym := e.positions[user]
 	var out []PositionConfigView
-	add := func(p *perpstate.Position) {
+	add := func(sp *symbolPositions, p *perpstate.Position) {
 		v := PositionConfigView{
-			Symbol: p.Symbol, Mode: p.Mode, Leverage: p.Leverage, RiskID: p.RiskID,
+			Symbol: p.Symbol, PositionIdx: p.PositionIdx, PosMode: sp.mode,
+			Mode: p.Mode, Leverage: p.Leverage, RiskID: p.RiskID,
 			AutoAddMargin: p.AutoAddMargin, AutoAddMax: p.AutoAddMax,
 			EffectiveMaxLeverage: e.effectiveMaxLeverageLocked(user, p.Symbol, e.notionalForCapLocked(p), p.RiskID),
 			MaxNotional:          zero,
@@ -518,15 +682,25 @@ func (e *Engine) PositionConfigsOf(user uint64, symbol string) []PositionConfigV
 		}
 		out = append(out, v)
 	}
+	addSym := func(sp *symbolPositions) {
+		for _, p := range sp.liveLegs(nil) {
+			add(sp, p)
+		}
+	}
 	if symbol != "" {
-		if p := bySym[symbol]; p != nil {
-			add(p)
+		if sp := bySym[symbol]; sp != nil {
+			addSym(sp)
 		}
 		return out
 	}
-	for _, p := range bySym {
-		add(p)
+	for _, sp := range bySym {
+		addSym(sp)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Symbol != out[j].Symbol {
+			return out[i].Symbol < out[j].Symbol
+		}
+		return out[i].PositionIdx < out[j].PositionIdx
+	})
 	return out
 }

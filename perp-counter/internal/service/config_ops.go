@@ -44,17 +44,16 @@ func (s *Service) SetMarginMode(req *perprpc.SetMarginModeRequest) (*perprpc.Set
 			return
 		}
 		// §5: no live orders may straddle the switch (reduce-only included —
-		// alternatives C: provability over UX) and the position must not be
+		// alternatives C: provability over UX) and no leg may be
 		// mid-liquidation/takeover.
 		if s.hasActiveOrders(user, symbol) {
 			fillModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "active_orders_cancel_first"})
 			return
 		}
-		if s.hasLiquidation(liqKey(user, symbol)) {
+		if s.hasLiquidationAnyLeg(user, symbol) {
 			fillModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "liquidation_in_flight"})
 			return
 		}
-		before, _ := s.eng.PositionRaw(user, symbol)
 		var out engine.OpOutcome
 		if target == perprpc.MarginMode_MARGIN_MODE_CROSS {
 			out = s.eng.SwitchToCross(user, symbol, req.GetClientOpId(), s.cfg.TargetMarginBuffer)
@@ -67,9 +66,14 @@ func (s *Service) SetMarginMode(req *perprpc.SetMarginModeRequest) (*perprpc.Set
 			return
 		}
 		s.emitPositionConfig(user, symbol, "set_margin_mode", req.GetClientOpId())
-		if out.Moved.Sign() > 0 {
-			s.emitMarginAdjustment(user, symbol,
-				eventpb.PerpMarginAdjustmentEvent_KIND_MODE_SWITCH, out, before.Margin, req.GetClientOpId())
+		// One money-movement record per touched leg (ADR-0077 §7: the switch
+		// moves both hedge legs atomically; each leg's cash stays attributable).
+		for _, lm := range out.LegMoves {
+			if lm.Moved.Sign() > 0 {
+				s.emitMarginAdjustmentLeg(user, symbol, lm.PositionIdx,
+					eventpb.PerpMarginAdjustmentEvent_KIND_MODE_SWITCH,
+					lm.Moved, lm.MarginBefore, lm.MarginAfter, out.FreeAfter, lm.Version, req.GetClientOpId())
+			}
 		}
 	})
 	return resp, nil
@@ -104,20 +108,22 @@ func (s *Service) SetPositionLeverage(req *perprpc.SetPositionLeverageRequest) (
 			fillLeverageResp(resp, engine.OpOutcome{Accepted: false, Reason: "active_orders_cancel_first"})
 			return
 		}
-		if s.hasLiquidation(liqKey(user, symbol)) {
+		if s.hasLiquidationAnyLeg(user, symbol) {
 			fillLeverageResp(resp, engine.OpOutcome{Accepted: false, Reason: "liquidation_in_flight"})
 			return
 		}
-		before, _ := s.eng.PositionRaw(user, symbol)
 		out := s.eng.SetLeverage(user, symbol, req.GetClientOpId(), lev, s.cfg.TargetMarginBuffer)
 		fillLeverageResp(resp, out)
 		if !out.Accepted {
 			return
 		}
 		s.emitPositionConfig(user, symbol, "set_leverage", req.GetClientOpId())
-		if out.Moved.Sign() > 0 {
-			s.emitMarginAdjustment(user, symbol,
-				eventpb.PerpMarginAdjustmentEvent_KIND_LEVERAGE_RESIZE, out, before.Margin, req.GetClientOpId())
+		for _, lm := range out.LegMoves {
+			if lm.Moved.Sign() > 0 {
+				s.emitMarginAdjustmentLeg(user, symbol, lm.PositionIdx,
+					eventpb.PerpMarginAdjustmentEvent_KIND_LEVERAGE_RESIZE,
+					lm.Moved, lm.MarginBefore, lm.MarginAfter, out.FreeAfter, lm.Version, req.GetClientOpId())
+			}
 		}
 	})
 	return resp, nil
@@ -135,7 +141,7 @@ func (s *Service) SetRiskId(req *perprpc.SetRiskIdRequest) (*perprpc.SetRiskIdRe
 			resp.Accepted, resp.RejectReason, resp.RiskId = out.Accepted, out.Reason, out.RiskID
 			return
 		}
-		if s.hasLiquidation(liqKey(user, symbol)) {
+		if s.hasLiquidationAnyLeg(user, symbol) {
 			resp.RejectReason = "liquidation_in_flight"
 			return
 		}
@@ -150,7 +156,9 @@ func (s *Service) SetRiskId(req *perprpc.SetRiskIdRequest) (*perprpc.SetRiskIdRe
 	return resp, nil
 }
 
-// AdjustIsolatedMargin handles the §6 manual margin add/remove.
+// AdjustIsolatedMargin handles the §6 manual margin add/remove — the only
+// per-leg config op (ADR-0077 §7): position_idx must be 0 in ONE_WAY mode and
+// 1/2 in HEDGE mode, fail-closed both ways.
 func (s *Service) AdjustIsolatedMargin(req *perprpc.AdjustIsolatedMarginRequest) (*perprpc.AdjustIsolatedMarginResponse, error) {
 	user, symbol := req.GetUserId(), req.GetSymbol()
 	if err := requireUserSymbol(user, symbol); err != nil {
@@ -160,18 +168,26 @@ func (s *Service) AdjustIsolatedMargin(req *perprpc.AdjustIsolatedMarginRequest)
 	if err != nil || delta.Sign() == 0 {
 		return nil, errInvalid("invalid delta")
 	}
+	if req.GetPositionIdx() > uint32(perpstate.IdxShort) {
+		return nil, errInvalid("invalid position_idx")
+	}
+	idx := uint8(req.GetPositionIdx())
 	resp := &perprpc.AdjustIsolatedMarginResponse{}
 	s.seq.do(user, func() {
 		if out, ok := s.eng.CachedOp(req.GetClientOpId()); ok && req.GetClientOpId() != "" {
 			fillAdjustResp(resp, out)
 			return
 		}
-		if s.hasLiquidation(liqKey(user, symbol)) {
+		if reason := validateLegIdx(s.eng.PositionModeOf(user, symbol), idx); reason != "" {
+			fillAdjustResp(resp, engine.OpOutcome{Accepted: false, Reason: reason})
+			return
+		}
+		if s.hasLiquidation(liqKey(user, symbol, idx)) {
 			fillAdjustResp(resp, engine.OpOutcome{Accepted: false, Reason: "liquidation_in_flight"})
 			return
 		}
-		before, _ := s.eng.PositionRaw(user, symbol)
-		out := s.eng.AdjustIsolatedMargin(user, symbol, req.GetClientOpId(), delta, s.cfg.TargetMarginBuffer)
+		before, _ := s.eng.PositionRaw(user, symbol, idx)
+		out := s.eng.AdjustIsolatedMargin(user, symbol, idx, req.GetClientOpId(), delta, s.cfg.TargetMarginBuffer)
 		fillAdjustResp(resp, out)
 		if !out.Accepted {
 			return
@@ -180,9 +196,26 @@ func (s *Service) AdjustIsolatedMargin(req *perprpc.AdjustIsolatedMarginRequest)
 		if delta.Sign() < 0 {
 			kind = eventpb.PerpMarginAdjustmentEvent_KIND_REMOVE_ISOLATED
 		}
-		s.emitMarginAdjustment(user, symbol, kind, out, before.Margin, req.GetClientOpId())
+		s.emitMarginAdjustmentLeg(user, symbol, idx, kind,
+			out.Moved, before.Margin, out.MarginAfter, out.FreeAfter, out.Version, req.GetClientOpId())
 	})
 	return resp, nil
+}
+
+// validateLegIdx is the config-op variant of the ADR-0077 §2 fail-closed
+// rule: a leg-scoped op must name idx 0 in ONE_WAY mode and a hedge leg
+// (1/2) in HEDGE mode.
+func validateLegIdx(mode perpstate.PositionMode, idx uint8) string {
+	if mode == perpstate.PositionHedge {
+		if perpstate.LegSide(idx) == 0 {
+			return "position_idx_required_in_hedge_mode"
+		}
+		return ""
+	}
+	if idx != perpstate.IdxNet {
+		return "position_idx_requires_hedge_mode"
+	}
+	return ""
 }
 
 // SetAutoAddMargin handles the §7 auto-add toggle.
@@ -214,6 +247,61 @@ func (s *Service) SetAutoAddMargin(req *perprpc.SetAutoAddMarginRequest) (*perpr
 	return resp, nil
 }
 
+// SetPositionMode handles the ADR-0077 §3 ONE_WAY ↔ HEDGE switch. The four
+// service-owned guards (active orders / position-bound triggers / in-flight
+// liquidation on any leg) run first inside the user's sequencer; the engine
+// primitive then re-validates flat-only over all legs and writes the mode
+// atomically. No automatic netting or position splitting (§3).
+func (s *Service) SetPositionMode(req *perprpc.SetPositionModeRequest) (*perprpc.SetPositionModeResponse, error) {
+	user, symbol := req.GetUserId(), req.GetSymbol()
+	if err := requireUserSymbol(user, symbol); err != nil {
+		return nil, err
+	}
+	var target perpstate.PositionMode
+	switch req.GetTargetMode() {
+	case perprpc.PositionMode_POSITION_MODE_ONE_WAY:
+		target = perpstate.PositionOneWay
+	case perprpc.PositionMode_POSITION_MODE_HEDGE:
+		target = perpstate.PositionHedge
+	default:
+		return nil, errInvalid("invalid target_mode")
+	}
+	resp := &perprpc.SetPositionModeResponse{}
+	s.seq.do(user, func() {
+		if out, ok := s.eng.CachedOp(req.GetClientOpId()); ok && req.GetClientOpId() != "" {
+			fillPositionModeResp(resp, out)
+			return
+		}
+		if s.hasActiveOrders(user, symbol) {
+			fillPositionModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "active_orders_cancel_first"})
+			return
+		}
+		// ADR-0077 §3 trigger guard via the TriggerChecker seam: a
+		// position-bound trigger is not in the Match book but holds
+		// position_idx semantics; switching under it would orphan it.
+		if s.cfg.Triggers != nil && s.cfg.Triggers.HasActiveTriggers(user, symbol) {
+			fillPositionModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "active_triggers_cancel_first"})
+			return
+		}
+		if s.hasLiquidationAnyLeg(user, symbol) {
+			fillPositionModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "liquidation_in_flight"})
+			return
+		}
+		out := s.eng.SetPositionMode(user, symbol, req.GetClientOpId(), target)
+		fillPositionModeResp(resp, out)
+		if !out.Accepted {
+			return
+		}
+		s.emitPositionConfig(user, symbol, "set_position_mode", req.GetClientOpId())
+	})
+	return resp, nil
+}
+
+func fillPositionModeResp(resp *perprpc.SetPositionModeResponse, out engine.OpOutcome) {
+	resp.Accepted, resp.RejectReason = out.Accepted, out.Reason
+	resp.PositionMode = toWirePositionModeRPC(out.PosMode)
+}
+
 // QueryPositionConfig returns per-(user, symbol) config views (§13).
 func (s *Service) QueryPositionConfig(req *perprpc.QueryPositionConfigRequest) (*perprpc.QueryPositionConfigResponse, error) {
 	if req.GetUserId() == 0 {
@@ -228,6 +316,8 @@ func (s *Service) QueryPositionConfig(req *perprpc.QueryPositionConfigRequest) (
 			AutoAddMargin: v.AutoAddMargin, AutoAddMax: v.AutoAddMax.String(),
 			EffectiveMaxLeverage: v.EffectiveMaxLeverage.String(),
 			MaxNotional:          v.MaxNotional.String(),
+			PositionIdx:          uint32(v.PositionIdx),
+			PositionMode:         toWirePositionModeRPC(v.PosMode),
 		})
 	}
 	return &perprpc.QueryPositionConfigResponse{Configs: out}, nil
@@ -291,26 +381,36 @@ func (s *Service) ListCustomerLeverageLimits(req *perprpc.ListCustomerLeverageLi
 }
 
 // runAutoAdd is the §7 mark-tick pass: for every auto-add-enabled position
-// in symbol, attempt the top-up inside the owning user's sequencer BEFORE
+// leg in symbol, attempt the top-up inside the owning user's sequencer BEFORE
 // the liquidation scan runs (the scan's sequencer re-check then sees the
-// topped-up state). A position already under liquidation is skipped — the
-// §7 ladder never refunds an armed takeover.
+// topped-up state). A user with any leg already under liquidation is skipped
+// — the §7 ladder never refunds an armed takeover.
 func (s *Service) runAutoAdd(symbol string) {
 	for _, user := range s.eng.AutoAddUsersWith(symbol) {
 		s.seq.do(user, func() {
-			if s.hasLiquidation(liqKey(user, symbol)) {
+			if s.hasLiquidationAnyLeg(user, symbol) {
 				return
 			}
-			before, _ := s.eng.PositionRaw(user, symbol)
-			out, fired := s.eng.AutoAddMargin(user, symbol,
-				s.cfg.AutoAddTriggerBuffer, s.cfg.AutoAddTargetBuffer, s.cfg.AutoAddMaxPerEvent)
-			if !fired {
-				return
+			for _, r := range s.eng.AutoAddMargin(user, symbol,
+				s.cfg.AutoAddTriggerBuffer, s.cfg.AutoAddTargetBuffer, s.cfg.AutoAddMaxPerEvent) {
+				s.emitMarginAdjustmentLeg(user, symbol, r.PositionIdx,
+					eventpb.PerpMarginAdjustmentEvent_KIND_AUTO_ADD,
+					r.Out.Moved, r.MarginBefore, r.Out.MarginAfter, r.Out.FreeAfter, r.Out.Version, "")
 			}
-			s.emitMarginAdjustment(user, symbol,
-				eventpb.PerpMarginAdjustmentEvent_KIND_AUTO_ADD, out, before.Margin, "")
 		})
 	}
+}
+
+// hasLiquidationAnyLeg reports whether ANY leg of (user, symbol) is
+// mid-liquidation — symbol-scoped config ops must not race any leg's forced
+// close.
+func (s *Service) hasLiquidationAnyLeg(user uint64, symbol string) bool {
+	for idx := perpstate.IdxNet; idx <= perpstate.IdxShort; idx++ {
+		if s.hasLiquidation(liqKey(user, symbol, idx)) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- shared helpers ----------------------------------------------------------
@@ -348,9 +448,17 @@ func (s *Service) activeOrderNotional(user uint64, symbol string) dec.Decimal {
 	return total
 }
 
-// emitPositionConfig journals the post-op config state (§13).
+// emitPositionConfig journals the post-op config state (§13). The echoed
+// per-leg fields (margin mode / leverage / risk_id) are uniform across legs
+// (ADR-0077 §7); the first existing leg supplies them and position_idx
+// records that provenance. position_mode is the symbol's mode after the op.
 func (s *Service) emitPositionConfig(user uint64, symbol, reason, opID string) {
-	p, ok := s.eng.PositionRaw(user, symbol)
+	views := s.eng.PositionConfigsOf(user, symbol)
+	if len(views) == 0 {
+		return
+	}
+	v := views[0]
+	p, ok := s.eng.PositionRaw(user, symbol, v.PositionIdx)
 	if !ok {
 		return
 	}
@@ -361,22 +469,26 @@ func (s *Service) emitPositionConfig(user uint64, symbol, reason, opID string) {
 			MarginMode: toWireMarginMode(p.Mode), Leverage: p.Leverage.String(),
 			RiskId: p.RiskID, AutoAddMargin: p.AutoAddMargin, AutoAddMax: p.AutoAddMax.String(),
 			PositionVersion: p.Version, Reason: reason, ClientOpId: opID,
+			PositionMode: toWirePositionMode(v.PosMode), PositionIdx: uint32(p.PositionIdx),
 		}},
 	})
 }
 
-// emitMarginAdjustment journals one §6/§7 cash movement between the wallet
-// and a position margin (or the mode-switch cash leg).
-func (s *Service) emitMarginAdjustment(user uint64, symbol string, kind eventpb.PerpMarginAdjustmentEvent_Kind,
-	out engine.OpOutcome, marginBefore dec.Decimal, opID string) {
+// emitMarginAdjustmentLeg journals one §6/§7 cash movement between the wallet
+// and ONE leg's position margin (or the mode-switch cash leg) — money
+// movement stays attributable per (user, symbol, position_idx) (ADR-0077 §6).
+func (s *Service) emitMarginAdjustmentLeg(user uint64, symbol string, idx uint8,
+	kind eventpb.PerpMarginAdjustmentEvent_Kind,
+	moved, marginBefore, marginAfter, walletAfter dec.Decimal, version uint64, opID string) {
 	s.journal.Emit(&eventpb.PerpJournalEvent{
 		Meta: s.meta(), PerpSeqId: s.nextPerpSeq(),
 		Payload: &eventpb.PerpJournalEvent_MarginAdjustment{MarginAdjustment: &eventpb.PerpMarginAdjustmentEvent{
 			UserId: user, Symbol: symbol, Kind: kind,
-			Amount:       out.Moved.String(),
-			MarginBefore: marginBefore.String(), MarginAfter: out.MarginAfter.String(),
-			WalletAfter: out.FreeAfter.String(), PositionVersion: out.Version,
+			Amount:       moved.String(),
+			MarginBefore: marginBefore.String(), MarginAfter: marginAfter.String(),
+			WalletAfter: walletAfter.String(), PositionVersion: version,
 			ClientOpId: opID, MarkPrice: s.eng.MarkOf(symbol).String(),
+			PositionIdx: uint32(idx),
 		}},
 	})
 }
@@ -408,6 +520,22 @@ func toWireMode(m perpstate.MarginMode) perprpc.MarginMode {
 	default:
 		return perprpc.MarginMode_MARGIN_MODE_UNSPECIFIED
 	}
+}
+
+// toWirePositionMode maps to the journal enum (ADR-0077).
+func toWirePositionMode(m perpstate.PositionMode) eventpb.PerpPositionMode {
+	if m == perpstate.PositionHedge {
+		return eventpb.PerpPositionMode_PERP_POSITION_MODE_HEDGE
+	}
+	return eventpb.PerpPositionMode_PERP_POSITION_MODE_ONE_WAY
+}
+
+// toWirePositionModeRPC maps to the rpc enum (ADR-0077).
+func toWirePositionModeRPC(m perpstate.PositionMode) perprpc.PositionMode {
+	if m == perpstate.PositionHedge {
+		return perprpc.PositionMode_POSITION_MODE_HEDGE
+	}
+	return perprpc.PositionMode_POSITION_MODE_ONE_WAY
 }
 
 func fillLeverageResp(resp *perprpc.SetPositionLeverageResponse, out engine.OpOutcome) {

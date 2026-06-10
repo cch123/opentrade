@@ -72,6 +72,58 @@ func (MarginMode) EnumDescriptor() ([]byte, []int) {
 	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{0}
 }
 
+// PositionMode mirrors perpstate.PositionMode (ADR-0077): ONE_WAY = one net
+// position per (user, symbol); HEDGE = independent long/short legs keyed by
+// position_idx (1 = long, 2 = short, Bybit-aligned).
+type PositionMode int32
+
+const (
+	PositionMode_POSITION_MODE_UNSPECIFIED PositionMode = 0
+	PositionMode_POSITION_MODE_ONE_WAY     PositionMode = 1
+	PositionMode_POSITION_MODE_HEDGE       PositionMode = 2
+)
+
+// Enum value maps for PositionMode.
+var (
+	PositionMode_name = map[int32]string{
+		0: "POSITION_MODE_UNSPECIFIED",
+		1: "POSITION_MODE_ONE_WAY",
+		2: "POSITION_MODE_HEDGE",
+	}
+	PositionMode_value = map[string]int32{
+		"POSITION_MODE_UNSPECIFIED": 0,
+		"POSITION_MODE_ONE_WAY":     1,
+		"POSITION_MODE_HEDGE":       2,
+	}
+)
+
+func (x PositionMode) Enum() *PositionMode {
+	p := new(PositionMode)
+	*p = x
+	return p
+}
+
+func (x PositionMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PositionMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_rpc_perp_perp_proto_enumTypes[1].Descriptor()
+}
+
+func (PositionMode) Type() protoreflect.EnumType {
+	return &file_rpc_perp_perp_proto_enumTypes[1]
+}
+
+func (x PositionMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PositionMode.Descriptor instead.
+func (PositionMode) EnumDescriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{1}
+}
+
 type PlaceOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -85,6 +137,10 @@ type PlaceOrderRequest struct {
 	Leverage      string                 `protobuf:"bytes,9,opt,name=leverage,proto3" json:"leverage,omitempty"`                                                            // decimal, e.g. "10"
 	ReduceOnly    bool                   `protobuf:"varint,10,opt,name=reduce_only,json=reduceOnly,proto3" json:"reduce_only,omitempty"`                                    // close-only; never increases a position
 	MarginMode    MarginMode             `protobuf:"varint,11,opt,name=margin_mode,json=marginMode,proto3,enum=opentrade.rpc.perp.MarginMode" json:"margin_mode,omitempty"` // MVP: ISOLATED
+	// ADR-0077 §2 position intent, fail-closed both ways: must be 0 in
+	// ONE_WAY mode; must be 1 (long leg) or 2 (short leg) in HEDGE mode, with
+	// (side, position_idx, reduce_only) agreeing per the admission matrix.
+	PositionIdx   uint32 `protobuf:"varint,12,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -194,6 +250,13 @@ func (x *PlaceOrderRequest) GetMarginMode() MarginMode {
 		return x.MarginMode
 	}
 	return MarginMode_MARGIN_MODE_UNSPECIFIED
+}
+
+func (x *PlaceOrderRequest) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
 }
 
 type PlaceOrderResponse struct {
@@ -681,7 +744,9 @@ type Position struct {
 	RealizedPnl   string                 `protobuf:"bytes,10,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"`
 	LiqPrice      string                 `protobuf:"bytes,11,opt,name=liq_price,json=liqPrice,proto3" json:"liq_price,omitempty"` // isolated only; cross liquidation is pool-level (ADR-0074 §4 rule #6)
 	MarginRatio   string                 `protobuf:"bytes,12,opt,name=margin_ratio,json=marginRatio,proto3" json:"margin_ratio,omitempty"`
-	RiskId        uint32                 `protobuf:"varint,13,opt,name=risk_id,json=riskId,proto3" json:"risk_id,omitempty"` // selected risk tier (0 = auto)
+	RiskId        uint32                 `protobuf:"varint,13,opt,name=risk_id,json=riskId,proto3" json:"risk_id,omitempty"`                                                        // selected risk tier (0 = auto)
+	PositionIdx   uint32                 `protobuf:"varint,14,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`                                         // ADR-0077: 0 = net, 1 = hedge long, 2 = hedge short
+	PositionMode  PositionMode           `protobuf:"varint,15,opt,name=position_mode,json=positionMode,proto3,enum=opentrade.rpc.perp.PositionMode" json:"position_mode,omitempty"` // the symbol's mode this leg belongs to
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -805,6 +870,20 @@ func (x *Position) GetRiskId() uint32 {
 		return x.RiskId
 	}
 	return 0
+}
+
+func (x *Position) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *Position) GetPositionMode() PositionMode {
+	if x != nil {
+		return x.PositionMode
+	}
+	return PositionMode_POSITION_MODE_UNSPECIFIED
 }
 
 type QueryMarginRequest struct {
@@ -1053,7 +1132,7 @@ type SetMarginModeResponse struct {
 	Accepted         bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
 	RejectReason     string                 `protobuf:"bytes,2,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
 	MarginMode       MarginMode             `protobuf:"varint,3,opt,name=margin_mode,json=marginMode,proto3,enum=opentrade.rpc.perp.MarginMode" json:"margin_mode,omitempty"` // post-op mode
-	PositionMargin   string                 `protobuf:"bytes,4,opt,name=position_margin,json=positionMargin,proto3" json:"position_margin,omitempty"`                         // post-op isolated margin ("0" for cross)
+	PositionMargin   string                 `protobuf:"bytes,4,opt,name=position_margin,json=positionMargin,proto3" json:"position_margin,omitempty"`                         // post-op isolated margin (hedge: summed across legs; "0" for cross)
 	FreeBalanceAfter string                 `protobuf:"bytes,5,opt,name=free_balance_after,json=freeBalanceAfter,proto3" json:"free_balance_after,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -1124,19 +1203,150 @@ func (x *SetMarginModeResponse) GetFreeBalanceAfter() string {
 	return ""
 }
 
-type AdjustIsolatedMarginRequest struct {
+type SetPositionModeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	Delta         string                 `protobuf:"bytes,3,opt,name=delta,proto3" json:"delta,omitempty"` // signed decimal: >0 add from free balance, <0 remove to free balance
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // per-(user, symbol); no account-level form (ADR-0077 修订 #1)
+	TargetMode    PositionMode           `protobuf:"varint,3,opt,name=target_mode,json=targetMode,proto3,enum=opentrade.rpc.perp.PositionMode" json:"target_mode,omitempty"`
 	ClientOpId    string                 `protobuf:"bytes,4,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPositionModeRequest) Reset() {
+	*x = SetPositionModeRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPositionModeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPositionModeRequest) ProtoMessage() {}
+
+func (x *SetPositionModeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPositionModeRequest.ProtoReflect.Descriptor instead.
+func (*SetPositionModeRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *SetPositionModeRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *SetPositionModeRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *SetPositionModeRequest) GetTargetMode() PositionMode {
+	if x != nil {
+		return x.TargetMode
+	}
+	return PositionMode_POSITION_MODE_UNSPECIFIED
+}
+
+func (x *SetPositionModeRequest) GetClientOpId() string {
+	if x != nil {
+		return x.ClientOpId
+	}
+	return ""
+}
+
+type SetPositionModeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	RejectReason  string                 `protobuf:"bytes,2,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`                                       // active_orders_cancel_first / active_triggers_cancel_first / liquidation_in_flight / position_not_flat
+	PositionMode  PositionMode           `protobuf:"varint,3,opt,name=position_mode,json=positionMode,proto3,enum=opentrade.rpc.perp.PositionMode" json:"position_mode,omitempty"` // post-op mode
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPositionModeResponse) Reset() {
+	*x = SetPositionModeResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPositionModeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPositionModeResponse) ProtoMessage() {}
+
+func (x *SetPositionModeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPositionModeResponse.ProtoReflect.Descriptor instead.
+func (*SetPositionModeResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *SetPositionModeResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *SetPositionModeResponse) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *SetPositionModeResponse) GetPositionMode() PositionMode {
+	if x != nil {
+		return x.PositionMode
+	}
+	return PositionMode_POSITION_MODE_UNSPECIFIED
+}
+
+type AdjustIsolatedMarginRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	UserId     uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol     string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	Delta      string                 `protobuf:"bytes,3,opt,name=delta,proto3" json:"delta,omitempty"` // signed decimal: >0 add from free balance, <0 remove to free balance
+	ClientOpId string                 `protobuf:"bytes,4,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"`
+	// ADR-0077 §7: the only per-leg config op. Must be 0 in ONE_WAY mode and
+	// 1/2 in HEDGE mode (fail-closed both ways).
+	PositionIdx   uint32 `protobuf:"varint,5,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AdjustIsolatedMarginRequest) Reset() {
 	*x = AdjustIsolatedMarginRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[13]
+	mi := &file_rpc_perp_perp_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1148,7 +1358,7 @@ func (x *AdjustIsolatedMarginRequest) String() string {
 func (*AdjustIsolatedMarginRequest) ProtoMessage() {}
 
 func (x *AdjustIsolatedMarginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[13]
+	mi := &file_rpc_perp_perp_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1161,7 +1371,7 @@ func (x *AdjustIsolatedMarginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdjustIsolatedMarginRequest.ProtoReflect.Descriptor instead.
 func (*AdjustIsolatedMarginRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{13}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AdjustIsolatedMarginRequest) GetUserId() uint64 {
@@ -1192,6 +1402,13 @@ func (x *AdjustIsolatedMarginRequest) GetClientOpId() string {
 	return ""
 }
 
+func (x *AdjustIsolatedMarginRequest) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
 type AdjustIsolatedMarginResponse struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Accepted         bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
@@ -1204,7 +1421,7 @@ type AdjustIsolatedMarginResponse struct {
 
 func (x *AdjustIsolatedMarginResponse) Reset() {
 	*x = AdjustIsolatedMarginResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[14]
+	mi := &file_rpc_perp_perp_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1216,7 +1433,7 @@ func (x *AdjustIsolatedMarginResponse) String() string {
 func (*AdjustIsolatedMarginResponse) ProtoMessage() {}
 
 func (x *AdjustIsolatedMarginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[14]
+	mi := &file_rpc_perp_perp_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1229,7 +1446,7 @@ func (x *AdjustIsolatedMarginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdjustIsolatedMarginResponse.ProtoReflect.Descriptor instead.
 func (*AdjustIsolatedMarginResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{14}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AdjustIsolatedMarginResponse) GetAccepted() bool {
@@ -1273,7 +1490,7 @@ type SetAutoAddMarginRequest struct {
 
 func (x *SetAutoAddMarginRequest) Reset() {
 	*x = SetAutoAddMarginRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[15]
+	mi := &file_rpc_perp_perp_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1285,7 +1502,7 @@ func (x *SetAutoAddMarginRequest) String() string {
 func (*SetAutoAddMarginRequest) ProtoMessage() {}
 
 func (x *SetAutoAddMarginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[15]
+	mi := &file_rpc_perp_perp_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1298,7 +1515,7 @@ func (x *SetAutoAddMarginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetAutoAddMarginRequest.ProtoReflect.Descriptor instead.
 func (*SetAutoAddMarginRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{15}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SetAutoAddMarginRequest) GetUserId() uint64 {
@@ -1346,7 +1563,7 @@ type SetAutoAddMarginResponse struct {
 
 func (x *SetAutoAddMarginResponse) Reset() {
 	*x = SetAutoAddMarginResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[16]
+	mi := &file_rpc_perp_perp_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1358,7 +1575,7 @@ func (x *SetAutoAddMarginResponse) String() string {
 func (*SetAutoAddMarginResponse) ProtoMessage() {}
 
 func (x *SetAutoAddMarginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[16]
+	mi := &file_rpc_perp_perp_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1371,7 +1588,7 @@ func (x *SetAutoAddMarginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetAutoAddMarginResponse.ProtoReflect.Descriptor instead.
 func (*SetAutoAddMarginResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{16}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SetAutoAddMarginResponse) GetAccepted() bool {
@@ -1400,7 +1617,7 @@ type SetPositionLeverageRequest struct {
 
 func (x *SetPositionLeverageRequest) Reset() {
 	*x = SetPositionLeverageRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[17]
+	mi := &file_rpc_perp_perp_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1412,7 +1629,7 @@ func (x *SetPositionLeverageRequest) String() string {
 func (*SetPositionLeverageRequest) ProtoMessage() {}
 
 func (x *SetPositionLeverageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[17]
+	mi := &file_rpc_perp_perp_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1425,7 +1642,7 @@ func (x *SetPositionLeverageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPositionLeverageRequest.ProtoReflect.Descriptor instead.
 func (*SetPositionLeverageRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{17}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SetPositionLeverageRequest) GetUserId() uint64 {
@@ -1469,7 +1686,7 @@ type SetPositionLeverageResponse struct {
 
 func (x *SetPositionLeverageResponse) Reset() {
 	*x = SetPositionLeverageResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[18]
+	mi := &file_rpc_perp_perp_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1481,7 +1698,7 @@ func (x *SetPositionLeverageResponse) String() string {
 func (*SetPositionLeverageResponse) ProtoMessage() {}
 
 func (x *SetPositionLeverageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[18]
+	mi := &file_rpc_perp_perp_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1494,7 +1711,7 @@ func (x *SetPositionLeverageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPositionLeverageResponse.ProtoReflect.Descriptor instead.
 func (*SetPositionLeverageResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{18}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SetPositionLeverageResponse) GetAccepted() bool {
@@ -1544,7 +1761,7 @@ type SetRiskIdRequest struct {
 
 func (x *SetRiskIdRequest) Reset() {
 	*x = SetRiskIdRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[19]
+	mi := &file_rpc_perp_perp_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1556,7 +1773,7 @@ func (x *SetRiskIdRequest) String() string {
 func (*SetRiskIdRequest) ProtoMessage() {}
 
 func (x *SetRiskIdRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[19]
+	mi := &file_rpc_perp_perp_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1569,7 +1786,7 @@ func (x *SetRiskIdRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRiskIdRequest.ProtoReflect.Descriptor instead.
 func (*SetRiskIdRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{19}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SetRiskIdRequest) GetUserId() uint64 {
@@ -1611,7 +1828,7 @@ type SetRiskIdResponse struct {
 
 func (x *SetRiskIdResponse) Reset() {
 	*x = SetRiskIdResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[20]
+	mi := &file_rpc_perp_perp_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1623,7 +1840,7 @@ func (x *SetRiskIdResponse) String() string {
 func (*SetRiskIdResponse) ProtoMessage() {}
 
 func (x *SetRiskIdResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[20]
+	mi := &file_rpc_perp_perp_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1636,7 +1853,7 @@ func (x *SetRiskIdResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRiskIdResponse.ProtoReflect.Descriptor instead.
 func (*SetRiskIdResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{20}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SetRiskIdResponse) GetAccepted() bool {
@@ -1670,7 +1887,7 @@ type QueryPositionConfigRequest struct {
 
 func (x *QueryPositionConfigRequest) Reset() {
 	*x = QueryPositionConfigRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[21]
+	mi := &file_rpc_perp_perp_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1682,7 +1899,7 @@ func (x *QueryPositionConfigRequest) String() string {
 func (*QueryPositionConfigRequest) ProtoMessage() {}
 
 func (x *QueryPositionConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[21]
+	mi := &file_rpc_perp_perp_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1695,7 +1912,7 @@ func (x *QueryPositionConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryPositionConfigRequest.ProtoReflect.Descriptor instead.
 func (*QueryPositionConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{21}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *QueryPositionConfigRequest) GetUserId() uint64 {
@@ -1712,7 +1929,9 @@ func (x *QueryPositionConfigRequest) GetSymbol() string {
 	return ""
 }
 
-// PositionConfig is the per-(user, symbol) view (ADR-0074 glossary). The
+// PositionConfig is the per-(user, symbol, position_idx) view (ADR-0074
+// glossary + ADR-0077: one row per existing leg; margin mode / leverage /
+// risk_id are uniform across a symbol's legs per ADR-0077 §7). The
 // effective_* fields are derived from tier table + customer cap at query time.
 type PositionConfig struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
@@ -1722,15 +1941,17 @@ type PositionConfig struct {
 	RiskId               uint32                 `protobuf:"varint,4,opt,name=risk_id,json=riskId,proto3" json:"risk_id,omitempty"`
 	AutoAddMargin        bool                   `protobuf:"varint,5,opt,name=auto_add_margin,json=autoAddMargin,proto3" json:"auto_add_margin,omitempty"`
 	AutoAddMax           string                 `protobuf:"bytes,6,opt,name=auto_add_max,json=autoAddMax,proto3" json:"auto_add_max,omitempty"`
-	EffectiveMaxLeverage string                 `protobuf:"bytes,7,opt,name=effective_max_leverage,json=effectiveMaxLeverage,proto3" json:"effective_max_leverage,omitempty"` // min(tier cap, customer cap, product default)
-	MaxNotional          string                 `protobuf:"bytes,8,opt,name=max_notional,json=maxNotional,proto3" json:"max_notional,omitempty"`                              // selected risk tier's notional cap ("0" = uncapped)
+	EffectiveMaxLeverage string                 `protobuf:"bytes,7,opt,name=effective_max_leverage,json=effectiveMaxLeverage,proto3" json:"effective_max_leverage,omitempty"`              // min(tier cap, customer cap, product default)
+	MaxNotional          string                 `protobuf:"bytes,8,opt,name=max_notional,json=maxNotional,proto3" json:"max_notional,omitempty"`                                           // selected risk tier's notional cap ("0" = uncapped)
+	PositionIdx          uint32                 `protobuf:"varint,9,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`                                          // ADR-0077
+	PositionMode         PositionMode           `protobuf:"varint,10,opt,name=position_mode,json=positionMode,proto3,enum=opentrade.rpc.perp.PositionMode" json:"position_mode,omitempty"` // the symbol's mode
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
 
 func (x *PositionConfig) Reset() {
 	*x = PositionConfig{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[22]
+	mi := &file_rpc_perp_perp_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1742,7 +1963,7 @@ func (x *PositionConfig) String() string {
 func (*PositionConfig) ProtoMessage() {}
 
 func (x *PositionConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[22]
+	mi := &file_rpc_perp_perp_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1755,7 +1976,7 @@ func (x *PositionConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PositionConfig.ProtoReflect.Descriptor instead.
 func (*PositionConfig) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{22}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PositionConfig) GetSymbol() string {
@@ -1814,6 +2035,20 @@ func (x *PositionConfig) GetMaxNotional() string {
 	return ""
 }
 
+func (x *PositionConfig) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *PositionConfig) GetPositionMode() PositionMode {
+	if x != nil {
+		return x.PositionMode
+	}
+	return PositionMode_POSITION_MODE_UNSPECIFIED
+}
+
 type QueryPositionConfigResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Configs       []*PositionConfig      `protobuf:"bytes,1,rep,name=configs,proto3" json:"configs,omitempty"`
@@ -1823,7 +2058,7 @@ type QueryPositionConfigResponse struct {
 
 func (x *QueryPositionConfigResponse) Reset() {
 	*x = QueryPositionConfigResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[23]
+	mi := &file_rpc_perp_perp_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1835,7 +2070,7 @@ func (x *QueryPositionConfigResponse) String() string {
 func (*QueryPositionConfigResponse) ProtoMessage() {}
 
 func (x *QueryPositionConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[23]
+	mi := &file_rpc_perp_perp_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1848,7 +2083,7 @@ func (x *QueryPositionConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryPositionConfigResponse.ProtoReflect.Descriptor instead.
 func (*QueryPositionConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{23}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *QueryPositionConfigResponse) GetConfigs() []*PositionConfig {
@@ -1867,7 +2102,7 @@ type QueryAccountConfigRequest struct {
 
 func (x *QueryAccountConfigRequest) Reset() {
 	*x = QueryAccountConfigRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[24]
+	mi := &file_rpc_perp_perp_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1879,7 +2114,7 @@ func (x *QueryAccountConfigRequest) String() string {
 func (*QueryAccountConfigRequest) ProtoMessage() {}
 
 func (x *QueryAccountConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[24]
+	mi := &file_rpc_perp_perp_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1892,7 +2127,7 @@ func (x *QueryAccountConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAccountConfigRequest.ProtoReflect.Descriptor instead.
 func (*QueryAccountConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{24}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *QueryAccountConfigRequest) GetUserId() uint64 {
@@ -1917,7 +2152,7 @@ type QueryAccountConfigResponse struct {
 
 func (x *QueryAccountConfigResponse) Reset() {
 	*x = QueryAccountConfigResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[25]
+	mi := &file_rpc_perp_perp_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1929,7 +2164,7 @@ func (x *QueryAccountConfigResponse) String() string {
 func (*QueryAccountConfigResponse) ProtoMessage() {}
 
 func (x *QueryAccountConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[25]
+	mi := &file_rpc_perp_perp_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1942,7 +2177,7 @@ func (x *QueryAccountConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAccountConfigResponse.ProtoReflect.Descriptor instead.
 func (*QueryAccountConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{25}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *QueryAccountConfigResponse) GetSettleAsset() string {
@@ -1987,7 +2222,7 @@ type CustomerLeverageLimit struct {
 
 func (x *CustomerLeverageLimit) Reset() {
 	*x = CustomerLeverageLimit{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[26]
+	mi := &file_rpc_perp_perp_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1999,7 +2234,7 @@ func (x *CustomerLeverageLimit) String() string {
 func (*CustomerLeverageLimit) ProtoMessage() {}
 
 func (x *CustomerLeverageLimit) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[26]
+	mi := &file_rpc_perp_perp_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2012,7 +2247,7 @@ func (x *CustomerLeverageLimit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomerLeverageLimit.ProtoReflect.Descriptor instead.
 func (*CustomerLeverageLimit) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{26}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *CustomerLeverageLimit) GetUserId() uint64 {
@@ -2070,7 +2305,7 @@ type SetCustomerLeverageLimitRequest struct {
 
 func (x *SetCustomerLeverageLimitRequest) Reset() {
 	*x = SetCustomerLeverageLimitRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[27]
+	mi := &file_rpc_perp_perp_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2082,7 +2317,7 @@ func (x *SetCustomerLeverageLimitRequest) String() string {
 func (*SetCustomerLeverageLimitRequest) ProtoMessage() {}
 
 func (x *SetCustomerLeverageLimitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[27]
+	mi := &file_rpc_perp_perp_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2095,7 +2330,7 @@ func (x *SetCustomerLeverageLimitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetCustomerLeverageLimitRequest.ProtoReflect.Descriptor instead.
 func (*SetCustomerLeverageLimitRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{27}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SetCustomerLeverageLimitRequest) GetUserId() uint64 {
@@ -2143,7 +2378,7 @@ type SetCustomerLeverageLimitResponse struct {
 
 func (x *SetCustomerLeverageLimitResponse) Reset() {
 	*x = SetCustomerLeverageLimitResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[28]
+	mi := &file_rpc_perp_perp_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2155,7 +2390,7 @@ func (x *SetCustomerLeverageLimitResponse) String() string {
 func (*SetCustomerLeverageLimitResponse) ProtoMessage() {}
 
 func (x *SetCustomerLeverageLimitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[28]
+	mi := &file_rpc_perp_perp_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2168,7 +2403,7 @@ func (x *SetCustomerLeverageLimitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetCustomerLeverageLimitResponse.ProtoReflect.Descriptor instead.
 func (*SetCustomerLeverageLimitResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{28}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SetCustomerLeverageLimitResponse) GetAccepted() bool {
@@ -2194,7 +2429,7 @@ type ListCustomerLeverageLimitsRequest struct {
 
 func (x *ListCustomerLeverageLimitsRequest) Reset() {
 	*x = ListCustomerLeverageLimitsRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[29]
+	mi := &file_rpc_perp_perp_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2206,7 +2441,7 @@ func (x *ListCustomerLeverageLimitsRequest) String() string {
 func (*ListCustomerLeverageLimitsRequest) ProtoMessage() {}
 
 func (x *ListCustomerLeverageLimitsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[29]
+	mi := &file_rpc_perp_perp_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2219,7 +2454,7 @@ func (x *ListCustomerLeverageLimitsRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ListCustomerLeverageLimitsRequest.ProtoReflect.Descriptor instead.
 func (*ListCustomerLeverageLimitsRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{29}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListCustomerLeverageLimitsRequest) GetUserId() uint64 {
@@ -2238,7 +2473,7 @@ type ListCustomerLeverageLimitsResponse struct {
 
 func (x *ListCustomerLeverageLimitsResponse) Reset() {
 	*x = ListCustomerLeverageLimitsResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[30]
+	mi := &file_rpc_perp_perp_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2250,7 +2485,7 @@ func (x *ListCustomerLeverageLimitsResponse) String() string {
 func (*ListCustomerLeverageLimitsResponse) ProtoMessage() {}
 
 func (x *ListCustomerLeverageLimitsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[30]
+	mi := &file_rpc_perp_perp_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2263,7 +2498,7 @@ func (x *ListCustomerLeverageLimitsResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use ListCustomerLeverageLimitsResponse.ProtoReflect.Descriptor instead.
 func (*ListCustomerLeverageLimitsResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{30}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListCustomerLeverageLimitsResponse) GetLimits() []*CustomerLeverageLimit {
@@ -2287,7 +2522,7 @@ type RiskTierParam struct {
 
 func (x *RiskTierParam) Reset() {
 	*x = RiskTierParam{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[31]
+	mi := &file_rpc_perp_perp_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2299,7 +2534,7 @@ func (x *RiskTierParam) String() string {
 func (*RiskTierParam) ProtoMessage() {}
 
 func (x *RiskTierParam) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[31]
+	mi := &file_rpc_perp_perp_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2312,7 +2547,7 @@ func (x *RiskTierParam) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RiskTierParam.ProtoReflect.Descriptor instead.
 func (*RiskTierParam) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{31}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *RiskTierParam) GetRiskId() uint32 {
@@ -2360,7 +2595,7 @@ type ProjectRiskConfigRequest struct {
 
 func (x *ProjectRiskConfigRequest) Reset() {
 	*x = ProjectRiskConfigRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[32]
+	mi := &file_rpc_perp_perp_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2372,7 +2607,7 @@ func (x *ProjectRiskConfigRequest) String() string {
 func (*ProjectRiskConfigRequest) ProtoMessage() {}
 
 func (x *ProjectRiskConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[32]
+	mi := &file_rpc_perp_perp_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2385,7 +2620,7 @@ func (x *ProjectRiskConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectRiskConfigRequest.ProtoReflect.Descriptor instead.
 func (*ProjectRiskConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{32}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ProjectRiskConfigRequest) GetSymbol() string {
@@ -2418,7 +2653,7 @@ type ProjectRiskConfigResponse struct {
 
 func (x *ProjectRiskConfigResponse) Reset() {
 	*x = ProjectRiskConfigResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[33]
+	mi := &file_rpc_perp_perp_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2430,7 +2665,7 @@ func (x *ProjectRiskConfigResponse) String() string {
 func (*ProjectRiskConfigResponse) ProtoMessage() {}
 
 func (x *ProjectRiskConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[33]
+	mi := &file_rpc_perp_perp_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2443,7 +2678,7 @@ func (x *ProjectRiskConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectRiskConfigResponse.ProtoReflect.Descriptor instead.
 func (*ProjectRiskConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{33}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ProjectRiskConfigResponse) GetAffectedAccounts() uint64 {
@@ -2471,7 +2706,7 @@ var File_rpc_perp_perp_proto protoreflect.FileDescriptor
 
 const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\n" +
-	"\x13rpc/perp/perp.proto\x12\x12opentrade.rpc.perp\x1a\x12event/common.proto\"\xa8\x03\n" +
+	"\x13rpc/perp/perp.proto\x12\x12opentrade.rpc.perp\x1a\x12event/common.proto\"\xcb\x03\n" +
 	"\x11PlaceOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x16\n" +
@@ -2487,7 +2722,8 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	" \x01(\bR\n" +
 	"reduceOnly\x12?\n" +
 	"\vmargin_mode\x18\v \x01(\x0e2\x1e.opentrade.rpc.perp.MarginModeR\n" +
-	"marginMode\"\xc7\x01\n" +
+	"marginMode\x12!\n" +
+	"\fposition_idx\x18\f \x01(\rR\vpositionIdx\"\xc7\x01\n" +
 	"\x12PlaceOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x1a\n" +
@@ -2525,7 +2761,7 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"T\n" +
 	"\x16QueryPositionsResponse\x12:\n" +
-	"\tpositions\x18\x01 \x03(\v2\x1c.opentrade.rpc.perp.PositionR\tpositions\"\xb9\x03\n" +
+	"\tpositions\x18\x01 \x03(\v2\x1c.opentrade.rpc.perp.PositionR\tpositions\"\xa3\x04\n" +
 	"\bPosition\x12\x16\n" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12)\n" +
 	"\x04side\x18\x02 \x01(\x0e2\x15.opentrade.event.SideR\x04side\x12\x12\n" +
@@ -2543,7 +2779,9 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	" \x01(\tR\vrealizedPnl\x12\x1b\n" +
 	"\tliq_price\x18\v \x01(\tR\bliqPrice\x12!\n" +
 	"\fmargin_ratio\x18\f \x01(\tR\vmarginRatio\x12\x17\n" +
-	"\arisk_id\x18\r \x01(\rR\x06riskId\"-\n" +
+	"\arisk_id\x18\r \x01(\rR\x06riskId\x12!\n" +
+	"\fposition_idx\x18\x0e \x01(\rR\vpositionIdx\x12E\n" +
+	"\rposition_mode\x18\x0f \x01(\x0e2 .opentrade.rpc.perp.PositionModeR\fpositionMode\"-\n" +
 	"\x12QueryMarginRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\"\xf8\x03\n" +
 	"\x13QueryMarginResponse\x12\x14\n" +
@@ -2572,13 +2810,25 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\vmargin_mode\x18\x03 \x01(\x0e2\x1e.opentrade.rpc.perp.MarginModeR\n" +
 	"marginMode\x12'\n" +
 	"\x0fposition_margin\x18\x04 \x01(\tR\x0epositionMargin\x12,\n" +
-	"\x12free_balance_after\x18\x05 \x01(\tR\x10freeBalanceAfter\"\x86\x01\n" +
+	"\x12free_balance_after\x18\x05 \x01(\tR\x10freeBalanceAfter\"\xae\x01\n" +
+	"\x16SetPositionModeRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12A\n" +
+	"\vtarget_mode\x18\x03 \x01(\x0e2 .opentrade.rpc.perp.PositionModeR\n" +
+	"targetMode\x12 \n" +
+	"\fclient_op_id\x18\x04 \x01(\tR\n" +
+	"clientOpId\"\xa1\x01\n" +
+	"\x17SetPositionModeResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12#\n" +
+	"\rreject_reason\x18\x02 \x01(\tR\frejectReason\x12E\n" +
+	"\rposition_mode\x18\x03 \x01(\x0e2 .opentrade.rpc.perp.PositionModeR\fpositionMode\"\xa9\x01\n" +
 	"\x1bAdjustIsolatedMarginRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x14\n" +
 	"\x05delta\x18\x03 \x01(\tR\x05delta\x12 \n" +
 	"\fclient_op_id\x18\x04 \x01(\tR\n" +
-	"clientOpId\"\xb6\x01\n" +
+	"clientOpId\x12!\n" +
+	"\fposition_idx\x18\x05 \x01(\rR\vpositionIdx\"\xb6\x01\n" +
 	"\x1cAdjustIsolatedMarginResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12#\n" +
 	"\rreject_reason\x18\x02 \x01(\tR\frejectReason\x12'\n" +
@@ -2618,7 +2868,7 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\arisk_id\x18\x03 \x01(\rR\x06riskId\"M\n" +
 	"\x1aQueryPositionConfigRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
-	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"\xc1\x02\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"\xab\x03\n" +
 	"\x0ePositionConfig\x12\x16\n" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12?\n" +
 	"\vmargin_mode\x18\x02 \x01(\x0e2\x1e.opentrade.rpc.perp.MarginModeR\n" +
@@ -2629,7 +2879,10 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\fauto_add_max\x18\x06 \x01(\tR\n" +
 	"autoAddMax\x124\n" +
 	"\x16effective_max_leverage\x18\a \x01(\tR\x14effectiveMaxLeverage\x12!\n" +
-	"\fmax_notional\x18\b \x01(\tR\vmaxNotional\"[\n" +
+	"\fmax_notional\x18\b \x01(\tR\vmaxNotional\x12!\n" +
+	"\fposition_idx\x18\t \x01(\rR\vpositionIdx\x12E\n" +
+	"\rposition_mode\x18\n" +
+	" \x01(\x0e2 .opentrade.rpc.perp.PositionModeR\fpositionMode\"[\n" +
 	"\x1bQueryPositionConfigResponse\x12<\n" +
 	"\aconfigs\x18\x01 \x03(\v2\".opentrade.rpc.perp.PositionConfigR\aconfigs\"4\n" +
 	"\x19QueryAccountConfigRequest\x12\x17\n" +
@@ -2681,7 +2934,11 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"MarginMode\x12\x1b\n" +
 	"\x17MARGIN_MODE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MARGIN_MODE_ISOLATED\x10\x01\x12\x15\n" +
-	"\x11MARGIN_MODE_CROSS\x10\x022\x87\r\n" +
+	"\x11MARGIN_MODE_CROSS\x10\x02*a\n" +
+	"\fPositionMode\x12\x1d\n" +
+	"\x19POSITION_MODE_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15POSITION_MODE_ONE_WAY\x10\x01\x12\x17\n" +
+	"\x13POSITION_MODE_HEDGE\x10\x022\xf3\r\n" +
 	"\vPerpService\x12[\n" +
 	"\n" +
 	"PlaceOrder\x12%.opentrade.rpc.perp.PlaceOrderRequest\x1a&.opentrade.rpc.perp.PlaceOrderResponse\x12^\n" +
@@ -2690,7 +2947,8 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"QueryOrder\x12%.opentrade.rpc.perp.QueryOrderRequest\x1a&.opentrade.rpc.perp.QueryOrderResponse\x12g\n" +
 	"\x0eQueryPositions\x12).opentrade.rpc.perp.QueryPositionsRequest\x1a*.opentrade.rpc.perp.QueryPositionsResponse\x12^\n" +
 	"\vQueryMargin\x12&.opentrade.rpc.perp.QueryMarginRequest\x1a'.opentrade.rpc.perp.QueryMarginResponse\x12d\n" +
-	"\rSetMarginMode\x12(.opentrade.rpc.perp.SetMarginModeRequest\x1a).opentrade.rpc.perp.SetMarginModeResponse\x12y\n" +
+	"\rSetMarginMode\x12(.opentrade.rpc.perp.SetMarginModeRequest\x1a).opentrade.rpc.perp.SetMarginModeResponse\x12j\n" +
+	"\x0fSetPositionMode\x12*.opentrade.rpc.perp.SetPositionModeRequest\x1a+.opentrade.rpc.perp.SetPositionModeResponse\x12y\n" +
 	"\x14AdjustIsolatedMargin\x12/.opentrade.rpc.perp.AdjustIsolatedMarginRequest\x1a0.opentrade.rpc.perp.AdjustIsolatedMarginResponse\x12m\n" +
 	"\x10SetAutoAddMargin\x12+.opentrade.rpc.perp.SetAutoAddMarginRequest\x1a,.opentrade.rpc.perp.SetAutoAddMarginResponse\x12v\n" +
 	"\x13SetPositionLeverage\x12..opentrade.rpc.perp.SetPositionLeverageRequest\x1a/.opentrade.rpc.perp.SetPositionLeverageResponse\x12X\n" +
@@ -2713,103 +2971,112 @@ func file_rpc_perp_perp_proto_rawDescGZIP() []byte {
 	return file_rpc_perp_perp_proto_rawDescData
 }
 
-var file_rpc_perp_perp_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_rpc_perp_perp_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_rpc_perp_perp_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_rpc_perp_perp_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_rpc_perp_perp_proto_goTypes = []any{
 	(MarginMode)(0),                            // 0: opentrade.rpc.perp.MarginMode
-	(*PlaceOrderRequest)(nil),                  // 1: opentrade.rpc.perp.PlaceOrderRequest
-	(*PlaceOrderResponse)(nil),                 // 2: opentrade.rpc.perp.PlaceOrderResponse
-	(*CancelOrderRequest)(nil),                 // 3: opentrade.rpc.perp.CancelOrderRequest
-	(*CancelOrderResponse)(nil),                // 4: opentrade.rpc.perp.CancelOrderResponse
-	(*QueryOrderRequest)(nil),                  // 5: opentrade.rpc.perp.QueryOrderRequest
-	(*QueryOrderResponse)(nil),                 // 6: opentrade.rpc.perp.QueryOrderResponse
-	(*QueryPositionsRequest)(nil),              // 7: opentrade.rpc.perp.QueryPositionsRequest
-	(*QueryPositionsResponse)(nil),             // 8: opentrade.rpc.perp.QueryPositionsResponse
-	(*Position)(nil),                           // 9: opentrade.rpc.perp.Position
-	(*QueryMarginRequest)(nil),                 // 10: opentrade.rpc.perp.QueryMarginRequest
-	(*QueryMarginResponse)(nil),                // 11: opentrade.rpc.perp.QueryMarginResponse
-	(*SetMarginModeRequest)(nil),               // 12: opentrade.rpc.perp.SetMarginModeRequest
-	(*SetMarginModeResponse)(nil),              // 13: opentrade.rpc.perp.SetMarginModeResponse
-	(*AdjustIsolatedMarginRequest)(nil),        // 14: opentrade.rpc.perp.AdjustIsolatedMarginRequest
-	(*AdjustIsolatedMarginResponse)(nil),       // 15: opentrade.rpc.perp.AdjustIsolatedMarginResponse
-	(*SetAutoAddMarginRequest)(nil),            // 16: opentrade.rpc.perp.SetAutoAddMarginRequest
-	(*SetAutoAddMarginResponse)(nil),           // 17: opentrade.rpc.perp.SetAutoAddMarginResponse
-	(*SetPositionLeverageRequest)(nil),         // 18: opentrade.rpc.perp.SetPositionLeverageRequest
-	(*SetPositionLeverageResponse)(nil),        // 19: opentrade.rpc.perp.SetPositionLeverageResponse
-	(*SetRiskIdRequest)(nil),                   // 20: opentrade.rpc.perp.SetRiskIdRequest
-	(*SetRiskIdResponse)(nil),                  // 21: opentrade.rpc.perp.SetRiskIdResponse
-	(*QueryPositionConfigRequest)(nil),         // 22: opentrade.rpc.perp.QueryPositionConfigRequest
-	(*PositionConfig)(nil),                     // 23: opentrade.rpc.perp.PositionConfig
-	(*QueryPositionConfigResponse)(nil),        // 24: opentrade.rpc.perp.QueryPositionConfigResponse
-	(*QueryAccountConfigRequest)(nil),          // 25: opentrade.rpc.perp.QueryAccountConfigRequest
-	(*QueryAccountConfigResponse)(nil),         // 26: opentrade.rpc.perp.QueryAccountConfigResponse
-	(*CustomerLeverageLimit)(nil),              // 27: opentrade.rpc.perp.CustomerLeverageLimit
-	(*SetCustomerLeverageLimitRequest)(nil),    // 28: opentrade.rpc.perp.SetCustomerLeverageLimitRequest
-	(*SetCustomerLeverageLimitResponse)(nil),   // 29: opentrade.rpc.perp.SetCustomerLeverageLimitResponse
-	(*ListCustomerLeverageLimitsRequest)(nil),  // 30: opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
-	(*ListCustomerLeverageLimitsResponse)(nil), // 31: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
-	(*RiskTierParam)(nil),                      // 32: opentrade.rpc.perp.RiskTierParam
-	(*ProjectRiskConfigRequest)(nil),           // 33: opentrade.rpc.perp.ProjectRiskConfigRequest
-	(*ProjectRiskConfigResponse)(nil),          // 34: opentrade.rpc.perp.ProjectRiskConfigResponse
-	(event.Side)(0),                            // 35: opentrade.event.Side
-	(event.OrderType)(0),                       // 36: opentrade.event.OrderType
-	(event.TimeInForce)(0),                     // 37: opentrade.event.TimeInForce
-	(event.InternalOrderStatus)(0),             // 38: opentrade.event.InternalOrderStatus
+	(PositionMode)(0),                          // 1: opentrade.rpc.perp.PositionMode
+	(*PlaceOrderRequest)(nil),                  // 2: opentrade.rpc.perp.PlaceOrderRequest
+	(*PlaceOrderResponse)(nil),                 // 3: opentrade.rpc.perp.PlaceOrderResponse
+	(*CancelOrderRequest)(nil),                 // 4: opentrade.rpc.perp.CancelOrderRequest
+	(*CancelOrderResponse)(nil),                // 5: opentrade.rpc.perp.CancelOrderResponse
+	(*QueryOrderRequest)(nil),                  // 6: opentrade.rpc.perp.QueryOrderRequest
+	(*QueryOrderResponse)(nil),                 // 7: opentrade.rpc.perp.QueryOrderResponse
+	(*QueryPositionsRequest)(nil),              // 8: opentrade.rpc.perp.QueryPositionsRequest
+	(*QueryPositionsResponse)(nil),             // 9: opentrade.rpc.perp.QueryPositionsResponse
+	(*Position)(nil),                           // 10: opentrade.rpc.perp.Position
+	(*QueryMarginRequest)(nil),                 // 11: opentrade.rpc.perp.QueryMarginRequest
+	(*QueryMarginResponse)(nil),                // 12: opentrade.rpc.perp.QueryMarginResponse
+	(*SetMarginModeRequest)(nil),               // 13: opentrade.rpc.perp.SetMarginModeRequest
+	(*SetMarginModeResponse)(nil),              // 14: opentrade.rpc.perp.SetMarginModeResponse
+	(*SetPositionModeRequest)(nil),             // 15: opentrade.rpc.perp.SetPositionModeRequest
+	(*SetPositionModeResponse)(nil),            // 16: opentrade.rpc.perp.SetPositionModeResponse
+	(*AdjustIsolatedMarginRequest)(nil),        // 17: opentrade.rpc.perp.AdjustIsolatedMarginRequest
+	(*AdjustIsolatedMarginResponse)(nil),       // 18: opentrade.rpc.perp.AdjustIsolatedMarginResponse
+	(*SetAutoAddMarginRequest)(nil),            // 19: opentrade.rpc.perp.SetAutoAddMarginRequest
+	(*SetAutoAddMarginResponse)(nil),           // 20: opentrade.rpc.perp.SetAutoAddMarginResponse
+	(*SetPositionLeverageRequest)(nil),         // 21: opentrade.rpc.perp.SetPositionLeverageRequest
+	(*SetPositionLeverageResponse)(nil),        // 22: opentrade.rpc.perp.SetPositionLeverageResponse
+	(*SetRiskIdRequest)(nil),                   // 23: opentrade.rpc.perp.SetRiskIdRequest
+	(*SetRiskIdResponse)(nil),                  // 24: opentrade.rpc.perp.SetRiskIdResponse
+	(*QueryPositionConfigRequest)(nil),         // 25: opentrade.rpc.perp.QueryPositionConfigRequest
+	(*PositionConfig)(nil),                     // 26: opentrade.rpc.perp.PositionConfig
+	(*QueryPositionConfigResponse)(nil),        // 27: opentrade.rpc.perp.QueryPositionConfigResponse
+	(*QueryAccountConfigRequest)(nil),          // 28: opentrade.rpc.perp.QueryAccountConfigRequest
+	(*QueryAccountConfigResponse)(nil),         // 29: opentrade.rpc.perp.QueryAccountConfigResponse
+	(*CustomerLeverageLimit)(nil),              // 30: opentrade.rpc.perp.CustomerLeverageLimit
+	(*SetCustomerLeverageLimitRequest)(nil),    // 31: opentrade.rpc.perp.SetCustomerLeverageLimitRequest
+	(*SetCustomerLeverageLimitResponse)(nil),   // 32: opentrade.rpc.perp.SetCustomerLeverageLimitResponse
+	(*ListCustomerLeverageLimitsRequest)(nil),  // 33: opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
+	(*ListCustomerLeverageLimitsResponse)(nil), // 34: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
+	(*RiskTierParam)(nil),                      // 35: opentrade.rpc.perp.RiskTierParam
+	(*ProjectRiskConfigRequest)(nil),           // 36: opentrade.rpc.perp.ProjectRiskConfigRequest
+	(*ProjectRiskConfigResponse)(nil),          // 37: opentrade.rpc.perp.ProjectRiskConfigResponse
+	(event.Side)(0),                            // 38: opentrade.event.Side
+	(event.OrderType)(0),                       // 39: opentrade.event.OrderType
+	(event.TimeInForce)(0),                     // 40: opentrade.event.TimeInForce
+	(event.InternalOrderStatus)(0),             // 41: opentrade.event.InternalOrderStatus
 }
 var file_rpc_perp_perp_proto_depIdxs = []int32{
-	35, // 0: opentrade.rpc.perp.PlaceOrderRequest.side:type_name -> opentrade.event.Side
-	36, // 1: opentrade.rpc.perp.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
-	37, // 2: opentrade.rpc.perp.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
+	38, // 0: opentrade.rpc.perp.PlaceOrderRequest.side:type_name -> opentrade.event.Side
+	39, // 1: opentrade.rpc.perp.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
+	40, // 2: opentrade.rpc.perp.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
 	0,  // 3: opentrade.rpc.perp.PlaceOrderRequest.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	35, // 4: opentrade.rpc.perp.QueryOrderResponse.side:type_name -> opentrade.event.Side
-	36, // 5: opentrade.rpc.perp.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
-	37, // 6: opentrade.rpc.perp.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
-	38, // 7: opentrade.rpc.perp.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
-	9,  // 8: opentrade.rpc.perp.QueryPositionsResponse.positions:type_name -> opentrade.rpc.perp.Position
-	35, // 9: opentrade.rpc.perp.Position.side:type_name -> opentrade.event.Side
+	38, // 4: opentrade.rpc.perp.QueryOrderResponse.side:type_name -> opentrade.event.Side
+	39, // 5: opentrade.rpc.perp.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
+	40, // 6: opentrade.rpc.perp.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
+	41, // 7: opentrade.rpc.perp.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
+	10, // 8: opentrade.rpc.perp.QueryPositionsResponse.positions:type_name -> opentrade.rpc.perp.Position
+	38, // 9: opentrade.rpc.perp.Position.side:type_name -> opentrade.event.Side
 	0,  // 10: opentrade.rpc.perp.Position.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	0,  // 11: opentrade.rpc.perp.SetMarginModeRequest.target_mode:type_name -> opentrade.rpc.perp.MarginMode
-	0,  // 12: opentrade.rpc.perp.SetMarginModeResponse.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	0,  // 13: opentrade.rpc.perp.PositionConfig.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	23, // 14: opentrade.rpc.perp.QueryPositionConfigResponse.configs:type_name -> opentrade.rpc.perp.PositionConfig
-	27, // 15: opentrade.rpc.perp.QueryAccountConfigResponse.leverage_limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
-	27, // 16: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse.limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
-	32, // 17: opentrade.rpc.perp.ProjectRiskConfigRequest.risk_tiers:type_name -> opentrade.rpc.perp.RiskTierParam
-	1,  // 18: opentrade.rpc.perp.PerpService.PlaceOrder:input_type -> opentrade.rpc.perp.PlaceOrderRequest
-	3,  // 19: opentrade.rpc.perp.PerpService.CancelOrder:input_type -> opentrade.rpc.perp.CancelOrderRequest
-	5,  // 20: opentrade.rpc.perp.PerpService.QueryOrder:input_type -> opentrade.rpc.perp.QueryOrderRequest
-	7,  // 21: opentrade.rpc.perp.PerpService.QueryPositions:input_type -> opentrade.rpc.perp.QueryPositionsRequest
-	10, // 22: opentrade.rpc.perp.PerpService.QueryMargin:input_type -> opentrade.rpc.perp.QueryMarginRequest
-	12, // 23: opentrade.rpc.perp.PerpService.SetMarginMode:input_type -> opentrade.rpc.perp.SetMarginModeRequest
-	14, // 24: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:input_type -> opentrade.rpc.perp.AdjustIsolatedMarginRequest
-	16, // 25: opentrade.rpc.perp.PerpService.SetAutoAddMargin:input_type -> opentrade.rpc.perp.SetAutoAddMarginRequest
-	18, // 26: opentrade.rpc.perp.PerpService.SetPositionLeverage:input_type -> opentrade.rpc.perp.SetPositionLeverageRequest
-	20, // 27: opentrade.rpc.perp.PerpService.SetRiskId:input_type -> opentrade.rpc.perp.SetRiskIdRequest
-	22, // 28: opentrade.rpc.perp.PerpService.QueryPositionConfig:input_type -> opentrade.rpc.perp.QueryPositionConfigRequest
-	25, // 29: opentrade.rpc.perp.PerpService.QueryAccountConfig:input_type -> opentrade.rpc.perp.QueryAccountConfigRequest
-	28, // 30: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:input_type -> opentrade.rpc.perp.SetCustomerLeverageLimitRequest
-	30, // 31: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:input_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
-	33, // 32: opentrade.rpc.perp.PerpService.ProjectRiskConfig:input_type -> opentrade.rpc.perp.ProjectRiskConfigRequest
-	2,  // 33: opentrade.rpc.perp.PerpService.PlaceOrder:output_type -> opentrade.rpc.perp.PlaceOrderResponse
-	4,  // 34: opentrade.rpc.perp.PerpService.CancelOrder:output_type -> opentrade.rpc.perp.CancelOrderResponse
-	6,  // 35: opentrade.rpc.perp.PerpService.QueryOrder:output_type -> opentrade.rpc.perp.QueryOrderResponse
-	8,  // 36: opentrade.rpc.perp.PerpService.QueryPositions:output_type -> opentrade.rpc.perp.QueryPositionsResponse
-	11, // 37: opentrade.rpc.perp.PerpService.QueryMargin:output_type -> opentrade.rpc.perp.QueryMarginResponse
-	13, // 38: opentrade.rpc.perp.PerpService.SetMarginMode:output_type -> opentrade.rpc.perp.SetMarginModeResponse
-	15, // 39: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:output_type -> opentrade.rpc.perp.AdjustIsolatedMarginResponse
-	17, // 40: opentrade.rpc.perp.PerpService.SetAutoAddMargin:output_type -> opentrade.rpc.perp.SetAutoAddMarginResponse
-	19, // 41: opentrade.rpc.perp.PerpService.SetPositionLeverage:output_type -> opentrade.rpc.perp.SetPositionLeverageResponse
-	21, // 42: opentrade.rpc.perp.PerpService.SetRiskId:output_type -> opentrade.rpc.perp.SetRiskIdResponse
-	24, // 43: opentrade.rpc.perp.PerpService.QueryPositionConfig:output_type -> opentrade.rpc.perp.QueryPositionConfigResponse
-	26, // 44: opentrade.rpc.perp.PerpService.QueryAccountConfig:output_type -> opentrade.rpc.perp.QueryAccountConfigResponse
-	29, // 45: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:output_type -> opentrade.rpc.perp.SetCustomerLeverageLimitResponse
-	31, // 46: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:output_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
-	34, // 47: opentrade.rpc.perp.PerpService.ProjectRiskConfig:output_type -> opentrade.rpc.perp.ProjectRiskConfigResponse
-	33, // [33:48] is the sub-list for method output_type
-	18, // [18:33] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	1,  // 11: opentrade.rpc.perp.Position.position_mode:type_name -> opentrade.rpc.perp.PositionMode
+	0,  // 12: opentrade.rpc.perp.SetMarginModeRequest.target_mode:type_name -> opentrade.rpc.perp.MarginMode
+	0,  // 13: opentrade.rpc.perp.SetMarginModeResponse.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
+	1,  // 14: opentrade.rpc.perp.SetPositionModeRequest.target_mode:type_name -> opentrade.rpc.perp.PositionMode
+	1,  // 15: opentrade.rpc.perp.SetPositionModeResponse.position_mode:type_name -> opentrade.rpc.perp.PositionMode
+	0,  // 16: opentrade.rpc.perp.PositionConfig.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
+	1,  // 17: opentrade.rpc.perp.PositionConfig.position_mode:type_name -> opentrade.rpc.perp.PositionMode
+	26, // 18: opentrade.rpc.perp.QueryPositionConfigResponse.configs:type_name -> opentrade.rpc.perp.PositionConfig
+	30, // 19: opentrade.rpc.perp.QueryAccountConfigResponse.leverage_limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
+	30, // 20: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse.limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
+	35, // 21: opentrade.rpc.perp.ProjectRiskConfigRequest.risk_tiers:type_name -> opentrade.rpc.perp.RiskTierParam
+	2,  // 22: opentrade.rpc.perp.PerpService.PlaceOrder:input_type -> opentrade.rpc.perp.PlaceOrderRequest
+	4,  // 23: opentrade.rpc.perp.PerpService.CancelOrder:input_type -> opentrade.rpc.perp.CancelOrderRequest
+	6,  // 24: opentrade.rpc.perp.PerpService.QueryOrder:input_type -> opentrade.rpc.perp.QueryOrderRequest
+	8,  // 25: opentrade.rpc.perp.PerpService.QueryPositions:input_type -> opentrade.rpc.perp.QueryPositionsRequest
+	11, // 26: opentrade.rpc.perp.PerpService.QueryMargin:input_type -> opentrade.rpc.perp.QueryMarginRequest
+	13, // 27: opentrade.rpc.perp.PerpService.SetMarginMode:input_type -> opentrade.rpc.perp.SetMarginModeRequest
+	15, // 28: opentrade.rpc.perp.PerpService.SetPositionMode:input_type -> opentrade.rpc.perp.SetPositionModeRequest
+	17, // 29: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:input_type -> opentrade.rpc.perp.AdjustIsolatedMarginRequest
+	19, // 30: opentrade.rpc.perp.PerpService.SetAutoAddMargin:input_type -> opentrade.rpc.perp.SetAutoAddMarginRequest
+	21, // 31: opentrade.rpc.perp.PerpService.SetPositionLeverage:input_type -> opentrade.rpc.perp.SetPositionLeverageRequest
+	23, // 32: opentrade.rpc.perp.PerpService.SetRiskId:input_type -> opentrade.rpc.perp.SetRiskIdRequest
+	25, // 33: opentrade.rpc.perp.PerpService.QueryPositionConfig:input_type -> opentrade.rpc.perp.QueryPositionConfigRequest
+	28, // 34: opentrade.rpc.perp.PerpService.QueryAccountConfig:input_type -> opentrade.rpc.perp.QueryAccountConfigRequest
+	31, // 35: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:input_type -> opentrade.rpc.perp.SetCustomerLeverageLimitRequest
+	33, // 36: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:input_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
+	36, // 37: opentrade.rpc.perp.PerpService.ProjectRiskConfig:input_type -> opentrade.rpc.perp.ProjectRiskConfigRequest
+	3,  // 38: opentrade.rpc.perp.PerpService.PlaceOrder:output_type -> opentrade.rpc.perp.PlaceOrderResponse
+	5,  // 39: opentrade.rpc.perp.PerpService.CancelOrder:output_type -> opentrade.rpc.perp.CancelOrderResponse
+	7,  // 40: opentrade.rpc.perp.PerpService.QueryOrder:output_type -> opentrade.rpc.perp.QueryOrderResponse
+	9,  // 41: opentrade.rpc.perp.PerpService.QueryPositions:output_type -> opentrade.rpc.perp.QueryPositionsResponse
+	12, // 42: opentrade.rpc.perp.PerpService.QueryMargin:output_type -> opentrade.rpc.perp.QueryMarginResponse
+	14, // 43: opentrade.rpc.perp.PerpService.SetMarginMode:output_type -> opentrade.rpc.perp.SetMarginModeResponse
+	16, // 44: opentrade.rpc.perp.PerpService.SetPositionMode:output_type -> opentrade.rpc.perp.SetPositionModeResponse
+	18, // 45: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:output_type -> opentrade.rpc.perp.AdjustIsolatedMarginResponse
+	20, // 46: opentrade.rpc.perp.PerpService.SetAutoAddMargin:output_type -> opentrade.rpc.perp.SetAutoAddMarginResponse
+	22, // 47: opentrade.rpc.perp.PerpService.SetPositionLeverage:output_type -> opentrade.rpc.perp.SetPositionLeverageResponse
+	24, // 48: opentrade.rpc.perp.PerpService.SetRiskId:output_type -> opentrade.rpc.perp.SetRiskIdResponse
+	27, // 49: opentrade.rpc.perp.PerpService.QueryPositionConfig:output_type -> opentrade.rpc.perp.QueryPositionConfigResponse
+	29, // 50: opentrade.rpc.perp.PerpService.QueryAccountConfig:output_type -> opentrade.rpc.perp.QueryAccountConfigResponse
+	32, // 51: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:output_type -> opentrade.rpc.perp.SetCustomerLeverageLimitResponse
+	34, // 52: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:output_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
+	37, // 53: opentrade.rpc.perp.PerpService.ProjectRiskConfig:output_type -> opentrade.rpc.perp.ProjectRiskConfigResponse
+	38, // [38:54] is the sub-list for method output_type
+	22, // [22:38] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_rpc_perp_perp_proto_init() }
@@ -2822,8 +3089,8 @@ func file_rpc_perp_perp_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_perp_perp_proto_rawDesc), len(file_rpc_perp_perp_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   34,
+			NumEnums:      2,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

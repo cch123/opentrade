@@ -15,7 +15,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	eng := engine.New()
 	eng.Deposit(1001, dec.New("1000"))
 	eng.Reserve(1001, dec.New("10"))
-	eng.ApplyFill(1001, "BTC-USDT-PERP", dec.New("10"),
+	eng.ApplyFill(1001, "BTC-USDT-PERP", 0, dec.New("10"),
 		perpstate.Fill{Side: perpstate.SideBuy, Price: dec.New("100"), Qty: dec.New("1")})
 	eng.SetMark("BTC-USDT-PERP", dec.New("101"))
 	eng.AddInsurance("BTC-USDT-PERP", dec.New("5"))
@@ -52,7 +52,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	// Engine half restores to an equivalent position + insurance.
 	eng2 := engine.New()
 	eng2.Restore(got.Engine)
-	p, okPos := eng2.PositionOf(1001, "BTC-USDT-PERP")
+	p, okPos := eng2.PositionOf(1001, "BTC-USDT-PERP", 0)
 	if !okPos || p.Size.String() != "1" || p.Entry.String() != "100" {
 		t.Fatalf("restored position wrong: %+v ok=%v", p, okPos)
 	}

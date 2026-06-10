@@ -81,15 +81,15 @@ func (s *Service) riskModelForOrder(symbol string) perpstate.RiskModel {
 	return perpstate.RiskModel{}
 }
 
-// riskModelForPosition resolves the model judging (user, symbol)'s existing
-// position — pinned-version-aware — plus the resolved version for journal
-// stamping. Legacy mode: flag model, version 0.
-func (s *Service) riskModelForPosition(user uint64, symbol string) (perpstate.RiskModel, uint64) {
+// riskModelForPosition resolves the model judging the (user, symbol, idx)
+// leg's existing position — pinned-version-aware — plus the resolved version
+// for journal stamping. Legacy mode: flag model, version 0.
+func (s *Service) riskModelForPosition(user uint64, symbol string, idx uint8) (perpstate.RiskModel, uint64) {
 	if s.catalog == nil {
 		return s.risk, 0
 	}
 	var pinned uint64
-	if p, ok := s.eng.PositionRaw(user, symbol); ok {
+	if p, ok := s.eng.PositionRaw(user, symbol, idx); ok {
 		pinned = p.RiskConfigVersion
 	}
 	if m, ver, ok := s.resolveRisk(symbol, pinned); ok {
