@@ -92,6 +92,9 @@ message PerpSettlementEvent {
   string margin_added = 14;     // IM committed (open/increase)
   string margin_released = 15;  // margin returned to wallet (reduce/close)
   PerpPositionSnapshot position_after = 20;
+  // ADR-0075: the SymbolConfig version active when this fill settled — the
+  // version replay/audit must read fee / precision params from.
+  uint64 symbol_config_version = 21;
 }
 
 // Futures-wallet margin balance change.
@@ -121,6 +124,9 @@ message PerpFundingEvent {
   string mark_price = 5;
   string payment = 6;          // signed margin delta (negative = position paid)
   PerpPositionSnapshot position_after = 10;
+  // ADR-0075: the SymbolConfig version whose funding params produced this
+  // round's rate (propagated from FundingTick.config_version).
+  uint64 symbol_config_version = 11;
 }
 
 // Liquidation of a position (ADR-0068 §8).
@@ -138,6 +144,14 @@ message PerpLiquidationEvent {
   bool partial = 11;           // ADR-0070: reduce-to-safe rather than full takeover
   bool backstop = 12;          // ADR-0070: internally matched to the system backstop
   int32 risk_tier = 13;        // 1-based selected risk tier, 0 when scalar fallback was used
+  // ADR-0075 §3: the SymbolConfig version whose risk tiers judged this
+  // liquidation — under staged risk application this is the position's
+  // pinned (effective) version, which may trail the symbol's active version.
+  uint64 symbol_config_version = 14;
+  // Set when symbol_config_version was forced onto existing positions by a
+  // risk_reprice_policy (ADR-0075 §3: every historical liquidation must be
+  // explainable from its recorded version + policy).
+  string risk_policy_id = 15;
 }
 
 // Backstop takeover of a liquidated position (ADR-0073). This is separate from
@@ -166,6 +180,9 @@ message PerpTakeoverEvent {
   string takeover_price = 18;
   string taken_over_balance = 19;
   uint64 position_version = 20;
+  // ADR-0075 §3: risk-version provenance, mirrors PerpLiquidationEvent.
+  uint64 symbol_config_version = 21;
+  string risk_policy_id = 22;
 }
 
 // ADL forced close of a profitable counterparty (ADR-0073). The event describes

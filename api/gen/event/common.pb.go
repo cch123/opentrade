@@ -263,7 +263,15 @@ const (
 	RejectReason_REJECT_REASON_SYMBOL_NOT_TRADING   RejectReason = 5
 	RejectReason_REJECT_REASON_DUPLICATE_ORDER_ID   RejectReason = 6
 	RejectReason_REJECT_REASON_FOK_NOT_FILLED       RejectReason = 7
-	RejectReason_REJECT_REASON_INTERNAL             RejectReason = 99
+	// ADR-0075 §1 config_version handshake outcomes: the order's stamped
+	// symbol_config_version vs Match's local catalog cache.
+	RejectReason_REJECT_REASON_CONFIG_VERSION_TOO_NEW RejectReason = 8  // local cache older than the order's version
+	RejectReason_REJECT_REASON_STALE_ORDER_CONFIG     RejectReason = 9  // order admitted under an outdated version
+	RejectReason_REJECT_REASON_UNKNOWN_SYMBOL_CONFIG  RejectReason = 10 // symbol absent from the local catalog cache (fail-closed)
+	// ADR-0075 §2: the symbol's status machine forbids this operation (e.g.
+	// a plain order in POST_ONLY, any new order in CANCEL_ONLY).
+	RejectReason_REJECT_REASON_SYMBOL_STATUS_FORBIDS RejectReason = 11
+	RejectReason_REJECT_REASON_INTERNAL              RejectReason = 99
 )
 
 // Enum value maps for RejectReason.
@@ -277,18 +285,26 @@ var (
 		5:  "REJECT_REASON_SYMBOL_NOT_TRADING",
 		6:  "REJECT_REASON_DUPLICATE_ORDER_ID",
 		7:  "REJECT_REASON_FOK_NOT_FILLED",
+		8:  "REJECT_REASON_CONFIG_VERSION_TOO_NEW",
+		9:  "REJECT_REASON_STALE_ORDER_CONFIG",
+		10: "REJECT_REASON_UNKNOWN_SYMBOL_CONFIG",
+		11: "REJECT_REASON_SYMBOL_STATUS_FORBIDS",
 		99: "REJECT_REASON_INTERNAL",
 	}
 	RejectReason_value = map[string]int32{
-		"REJECT_REASON_UNSPECIFIED":          0,
-		"REJECT_REASON_INVALID_PRICE_TICK":   1,
-		"REJECT_REASON_INVALID_LOT_SIZE":     2,
-		"REJECT_REASON_POST_ONLY_WOULD_TAKE": 3,
-		"REJECT_REASON_SELF_TRADE_PREVENTED": 4,
-		"REJECT_REASON_SYMBOL_NOT_TRADING":   5,
-		"REJECT_REASON_DUPLICATE_ORDER_ID":   6,
-		"REJECT_REASON_FOK_NOT_FILLED":       7,
-		"REJECT_REASON_INTERNAL":             99,
+		"REJECT_REASON_UNSPECIFIED":            0,
+		"REJECT_REASON_INVALID_PRICE_TICK":     1,
+		"REJECT_REASON_INVALID_LOT_SIZE":       2,
+		"REJECT_REASON_POST_ONLY_WOULD_TAKE":   3,
+		"REJECT_REASON_SELF_TRADE_PREVENTED":   4,
+		"REJECT_REASON_SYMBOL_NOT_TRADING":     5,
+		"REJECT_REASON_DUPLICATE_ORDER_ID":     6,
+		"REJECT_REASON_FOK_NOT_FILLED":         7,
+		"REJECT_REASON_CONFIG_VERSION_TOO_NEW": 8,
+		"REJECT_REASON_STALE_ORDER_CONFIG":     9,
+		"REJECT_REASON_UNKNOWN_SYMBOL_CONFIG":  10,
+		"REJECT_REASON_SYMBOL_STATUS_FORBIDS":  11,
+		"REJECT_REASON_INTERNAL":               99,
 	}
 )
 
@@ -497,7 +513,7 @@ const file_event_common_proto_rawDesc = "" +
 	"$INTERNAL_ORDER_STATUS_PENDING_CANCEL\x10\x05\x12\"\n" +
 	"\x1eINTERNAL_ORDER_STATUS_CANCELED\x10\x06\x12\"\n" +
 	"\x1eINTERNAL_ORDER_STATUS_REJECTED\x10\a\x12!\n" +
-	"\x1dINTERNAL_ORDER_STATUS_EXPIRED\x10\b*\xd1\x02\n" +
+	"\x1dINTERNAL_ORDER_STATUS_EXPIRED\x10\b*\xf3\x03\n" +
 	"\fRejectReason\x12\x1d\n" +
 	"\x19REJECT_REASON_UNSPECIFIED\x10\x00\x12$\n" +
 	" REJECT_REASON_INVALID_PRICE_TICK\x10\x01\x12\"\n" +
@@ -506,7 +522,12 @@ const file_event_common_proto_rawDesc = "" +
 	"\"REJECT_REASON_SELF_TRADE_PREVENTED\x10\x04\x12$\n" +
 	" REJECT_REASON_SYMBOL_NOT_TRADING\x10\x05\x12$\n" +
 	" REJECT_REASON_DUPLICATE_ORDER_ID\x10\x06\x12 \n" +
-	"\x1cREJECT_REASON_FOK_NOT_FILLED\x10\a\x12\x1a\n" +
+	"\x1cREJECT_REASON_FOK_NOT_FILLED\x10\a\x12(\n" +
+	"$REJECT_REASON_CONFIG_VERSION_TOO_NEW\x10\b\x12$\n" +
+	" REJECT_REASON_STALE_ORDER_CONFIG\x10\t\x12'\n" +
+	"#REJECT_REASON_UNKNOWN_SYMBOL_CONFIG\x10\n" +
+	"\x12'\n" +
+	"#REJECT_REASON_SYMBOL_STATUS_FORBIDS\x10\v\x12\x1a\n" +
 	"\x16REJECT_REASON_INTERNAL\x10c*\xed\x02\n" +
 	"\x10PerpSymbolStatus\x12\"\n" +
 	"\x1ePERP_SYMBOL_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +

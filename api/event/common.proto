@@ -56,6 +56,14 @@ enum RejectReason {
   REJECT_REASON_SYMBOL_NOT_TRADING = 5;
   REJECT_REASON_DUPLICATE_ORDER_ID = 6;
   REJECT_REASON_FOK_NOT_FILLED = 7;
+  // ADR-0075 §1 config_version handshake outcomes: the order's stamped
+  // symbol_config_version vs Match's local catalog cache.
+  REJECT_REASON_CONFIG_VERSION_TOO_NEW = 8;  // local cache older than the order's version
+  REJECT_REASON_STALE_ORDER_CONFIG = 9;      // order admitted under an outdated version
+  REJECT_REASON_UNKNOWN_SYMBOL_CONFIG = 10;  // symbol absent from the local catalog cache (fail-closed)
+  // ADR-0075 §2: the symbol's status machine forbids this operation (e.g.
+  // a plain order in POST_ONLY, any new order in CANCEL_ONLY).
+  REJECT_REASON_SYMBOL_STATUS_FORBIDS = 11;
   REJECT_REASON_INTERNAL = 99;
 }
 

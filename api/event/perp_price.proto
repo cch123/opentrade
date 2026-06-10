@@ -34,6 +34,9 @@ message MarkTick {
   int64 ts_unix_ms = 4;
   bool index_stale = 5;     // true when index uses frozen last-good value; consumers must not liquidate
   bool index_degraded = 6;  // true when quorum is met only by self-referential sources; alert but keep trading
+  // ADR-0075: the SymbolConfig version whose pricing params (index sources /
+  // mark formula) produced this tick. 0 = flag-driven legacy runtime.
+  uint64 config_version = 7;
 }
 
 message FundingTick {
@@ -41,4 +44,7 @@ message FundingTick {
   string funding_rate = 2;     // settled rate for this round
   string mark_price = 3;       // mark at the boundary
   int64 ts_unix_ms = 4;
+  // ADR-0075: the SymbolConfig version whose funding params (interval /
+  // interest / cap / floor / clamp) produced this round's rate. 0 = legacy.
+  uint64 config_version = 5;
 }

@@ -674,8 +674,11 @@ type PerpSettlementEvent struct {
 	MarginAdded    string                 `protobuf:"bytes,14,opt,name=margin_added,json=marginAdded,proto3" json:"margin_added,omitempty"`          // IM committed (open/increase)
 	MarginReleased string                 `protobuf:"bytes,15,opt,name=margin_released,json=marginReleased,proto3" json:"margin_released,omitempty"` // margin returned to wallet (reduce/close)
 	PositionAfter  *PerpPositionSnapshot  `protobuf:"bytes,20,opt,name=position_after,json=positionAfter,proto3" json:"position_after,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// ADR-0075: the SymbolConfig version active when this fill settled — the
+	// version replay/audit must read fee / precision params from.
+	SymbolConfigVersion uint64 `protobuf:"varint,21,opt,name=symbol_config_version,json=symbolConfigVersion,proto3" json:"symbol_config_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PerpSettlementEvent) Reset() {
@@ -792,6 +795,13 @@ func (x *PerpSettlementEvent) GetPositionAfter() *PerpPositionSnapshot {
 	return nil
 }
 
+func (x *PerpSettlementEvent) GetSymbolConfigVersion() uint64 {
+	if x != nil {
+		return x.SymbolConfigVersion
+	}
+	return 0
+}
+
 // Futures-wallet margin balance change.
 type PerpMarginEvent struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -895,8 +905,11 @@ type PerpFundingEvent struct {
 	MarkPrice      string                 `protobuf:"bytes,5,opt,name=mark_price,json=markPrice,proto3" json:"mark_price,omitempty"`
 	Payment        string                 `protobuf:"bytes,6,opt,name=payment,proto3" json:"payment,omitempty"` // signed margin delta (negative = position paid)
 	PositionAfter  *PerpPositionSnapshot  `protobuf:"bytes,10,opt,name=position_after,json=positionAfter,proto3" json:"position_after,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// ADR-0075: the SymbolConfig version whose funding params produced this
+	// round's rate (propagated from FundingTick.config_version).
+	SymbolConfigVersion uint64 `protobuf:"varint,11,opt,name=symbol_config_version,json=symbolConfigVersion,proto3" json:"symbol_config_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PerpFundingEvent) Reset() {
@@ -978,6 +991,13 @@ func (x *PerpFundingEvent) GetPositionAfter() *PerpPositionSnapshot {
 	return nil
 }
 
+func (x *PerpFundingEvent) GetSymbolConfigVersion() uint64 {
+	if x != nil {
+		return x.SymbolConfigVersion
+	}
+	return 0
+}
+
 // Liquidation of a position (ADR-0068 §8).
 type PerpLiquidationEvent struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -994,8 +1014,16 @@ type PerpLiquidationEvent struct {
 	Partial         bool                   `protobuf:"varint,11,opt,name=partial,proto3" json:"partial,omitempty"`                   // ADR-0070: reduce-to-safe rather than full takeover
 	Backstop        bool                   `protobuf:"varint,12,opt,name=backstop,proto3" json:"backstop,omitempty"`                 // ADR-0070: internally matched to the system backstop
 	RiskTier        int32                  `protobuf:"varint,13,opt,name=risk_tier,json=riskTier,proto3" json:"risk_tier,omitempty"` // 1-based selected risk tier, 0 when scalar fallback was used
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// ADR-0075 §3: the SymbolConfig version whose risk tiers judged this
+	// liquidation — under staged risk application this is the position's
+	// pinned (effective) version, which may trail the symbol's active version.
+	SymbolConfigVersion uint64 `protobuf:"varint,14,opt,name=symbol_config_version,json=symbolConfigVersion,proto3" json:"symbol_config_version,omitempty"`
+	// Set when symbol_config_version was forced onto existing positions by a
+	// risk_reprice_policy (ADR-0075 §3: every historical liquidation must be
+	// explainable from its recorded version + policy).
+	RiskPolicyId  string `protobuf:"bytes,15,opt,name=risk_policy_id,json=riskPolicyId,proto3" json:"risk_policy_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PerpLiquidationEvent) Reset() {
@@ -1119,6 +1147,20 @@ func (x *PerpLiquidationEvent) GetRiskTier() int32 {
 	return 0
 }
 
+func (x *PerpLiquidationEvent) GetSymbolConfigVersion() uint64 {
+	if x != nil {
+		return x.SymbolConfigVersion
+	}
+	return 0
+}
+
+func (x *PerpLiquidationEvent) GetRiskPolicyId() string {
+	if x != nil {
+		return x.RiskPolicyId
+	}
+	return ""
+}
+
 // Backstop takeover of a liquidated position (ADR-0073). This is separate from
 // PerpLiquidationEvent because takeover creates a coordinator-owned
 // TakenOverLot. insurance_delta is retained for old readers but is no longer an
@@ -1146,8 +1188,11 @@ type PerpTakeoverEvent struct {
 	TakeoverPrice    string                 `protobuf:"bytes,18,opt,name=takeover_price,json=takeoverPrice,proto3" json:"takeover_price,omitempty"`
 	TakenOverBalance string                 `protobuf:"bytes,19,opt,name=taken_over_balance,json=takenOverBalance,proto3" json:"taken_over_balance,omitempty"`
 	PositionVersion  uint64                 `protobuf:"varint,20,opt,name=position_version,json=positionVersion,proto3" json:"position_version,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// ADR-0075 §3: risk-version provenance, mirrors PerpLiquidationEvent.
+	SymbolConfigVersion uint64 `protobuf:"varint,21,opt,name=symbol_config_version,json=symbolConfigVersion,proto3" json:"symbol_config_version,omitempty"`
+	RiskPolicyId        string `protobuf:"bytes,22,opt,name=risk_policy_id,json=riskPolicyId,proto3" json:"risk_policy_id,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PerpTakeoverEvent) Reset() {
@@ -1318,6 +1363,20 @@ func (x *PerpTakeoverEvent) GetPositionVersion() uint64 {
 		return x.PositionVersion
 	}
 	return 0
+}
+
+func (x *PerpTakeoverEvent) GetSymbolConfigVersion() uint64 {
+	if x != nil {
+		return x.SymbolConfigVersion
+	}
+	return 0
+}
+
+func (x *PerpTakeoverEvent) GetRiskPolicyId() string {
+	if x != nil {
+		return x.RiskPolicyId
+	}
+	return ""
 }
 
 // ADL forced close of a profitable counterparty (ADR-0073). The event describes
@@ -1944,7 +2003,7 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"filled_qty\x18\x06 \x01(\tR\tfilledQty\x12\x1f\n" +
 	"\vreduce_only\x18\a \x01(\bR\n" +
 	"reduceOnly\x12B\n" +
-	"\rreject_reason\x18\b \x01(\x0e2\x1d.opentrade.event.RejectReasonR\frejectReason\"\xa7\x03\n" +
+	"\rreject_reason\x18\b \x01(\x0e2\x1d.opentrade.event.RejectReasonR\frejectReason\"\xdb\x03\n" +
 	"\x13PerpSettlementEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x19\n" +
@@ -1958,7 +2017,8 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x03fee\x18\r \x01(\tR\x03fee\x12!\n" +
 	"\fmargin_added\x18\x0e \x01(\tR\vmarginAdded\x12'\n" +
 	"\x0fmargin_released\x18\x0f \x01(\tR\x0emarginReleased\x12L\n" +
-	"\x0eposition_after\x18\x14 \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\"\xe9\x02\n" +
+	"\x0eposition_after\x18\x14 \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\x122\n" +
+	"\x15symbol_config_version\x18\x15 \x01(\x04R\x13symbolConfigVersion\"\xe9\x02\n" +
 	"\x0fPerpMarginEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x129\n" +
 	"\x04kind\x18\x02 \x01(\x0e2%.opentrade.event.PerpMarginEvent.KindR\x04kind\x12\x14\n" +
@@ -1972,7 +2032,7 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x10KIND_TRANSFER_IN\x10\x01\x12\x15\n" +
 	"\x11KIND_TRANSFER_OUT\x10\x02\x12\x10\n" +
 	"\fKIND_RESERVE\x10\x03\x12\x10\n" +
-	"\fKIND_RELEASE\x10\x04\"\x97\x02\n" +
+	"\fKIND_RELEASE\x10\x04\"\xcb\x02\n" +
 	"\x10PerpFundingEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12(\n" +
@@ -1982,7 +2042,8 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"mark_price\x18\x05 \x01(\tR\tmarkPrice\x12\x18\n" +
 	"\apayment\x18\x06 \x01(\tR\apayment\x12L\n" +
 	"\x0eposition_after\x18\n" +
-	" \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\"\xde\x03\n" +
+	" \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\x122\n" +
+	"\x15symbol_config_version\x18\v \x01(\x04R\x13symbolConfigVersion\"\xb8\x04\n" +
 	"\x14PerpLiquidationEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12 \n" +
@@ -2001,7 +2062,9 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	" \x01(\v2%.opentrade.event.PerpPositionSnapshotR\rpositionAfter\x12\x18\n" +
 	"\apartial\x18\v \x01(\bR\apartial\x12\x1a\n" +
 	"\bbackstop\x18\f \x01(\bR\bbackstop\x12\x1b\n" +
-	"\trisk_tier\x18\r \x01(\x05R\briskTier\"\x91\x06\n" +
+	"\trisk_tier\x18\r \x01(\x05R\briskTier\x122\n" +
+	"\x15symbol_config_version\x18\x0e \x01(\x04R\x13symbolConfigVersion\x12$\n" +
+	"\x0erisk_policy_id\x18\x0f \x01(\tR\friskPolicyId\"\xeb\x06\n" +
 	"\x11PerpTakeoverEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12 \n" +
@@ -2027,7 +2090,9 @@ const file_event_perp_journal_proto_rawDesc = "" +
 	"\x0etaken_over_qty\x18\x11 \x01(\tR\ftakenOverQty\x12%\n" +
 	"\x0etakeover_price\x18\x12 \x01(\tR\rtakeoverPrice\x12,\n" +
 	"\x12taken_over_balance\x18\x13 \x01(\tR\x10takenOverBalance\x12)\n" +
-	"\x10position_version\x18\x14 \x01(\x04R\x0fpositionVersion\"\x82\x03\n" +
+	"\x10position_version\x18\x14 \x01(\x04R\x0fpositionVersion\x122\n" +
+	"\x15symbol_config_version\x18\x15 \x01(\x04R\x13symbolConfigVersion\x12$\n" +
+	"\x0erisk_policy_id\x18\x16 \x01(\tR\friskPolicyId\"\x82\x03\n" +
 	"\fPerpAdlEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x1b\n" +

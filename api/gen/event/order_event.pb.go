@@ -137,9 +137,16 @@ type OrderPlaced struct {
 	// means: market buy that consumes ask-side liquidity until at most this
 	// many quote units have been spent. Mutually exclusive with qty for
 	// market buy. Ignored for every other shape.
-	QuoteQty      string `protobuf:"bytes,11,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	QuoteQty string `protobuf:"bytes,11,opt,name=quote_qty,json=quoteQty,proto3" json:"quote_qty,omitempty"`
+	// ADR-0075 §1: the perp SymbolConfig version perp-counter admitted this
+	// order under. Match cross-validates it against its own catalog cache and
+	// rejects on any mismatch (CONFIG_VERSION_TOO_NEW / STALE_ORDER_CONFIG /
+	// UNKNOWN_SYMBOL_CONFIG) so the two services never mix config versions
+	// inside one order's lifecycle. 0 = spot order (no perp catalog entry) —
+	// Match skips the handshake.
+	SymbolConfigVersion uint64 `protobuf:"varint,12,opt,name=symbol_config_version,json=symbolConfigVersion,proto3" json:"symbol_config_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *OrderPlaced) Reset() {
@@ -249,6 +256,13 @@ func (x *OrderPlaced) GetQuoteQty() string {
 	return ""
 }
 
+func (x *OrderPlaced) GetSymbolConfigVersion() uint64 {
+	if x != nil {
+		return x.SymbolConfigVersion
+	}
+	return 0
+}
+
 type OrderCancel struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -321,7 +335,7 @@ const file_event_order_event_proto_rawDesc = "" +
 	"\x06placed\x18\n" +
 	" \x01(\v2\x1c.opentrade.event.OrderPlacedH\x00R\x06placed\x126\n" +
 	"\x06cancel\x18\v \x01(\v2\x1c.opentrade.event.OrderCancelH\x00R\x06cancelB\t\n" +
-	"\apayload\"\xfb\x02\n" +
+	"\apayload\"\xaf\x03\n" +
 	"\vOrderPlaced\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12&\n" +
@@ -336,7 +350,8 @@ const file_event_order_event_proto_rawDesc = "" +
 	"\n" +
 	"freeze_cap\x18\n" +
 	" \x01(\tR\tfreezeCap\x12\x1b\n" +
-	"\tquote_qty\x18\v \x01(\tR\bquoteQty\"Y\n" +
+	"\tquote_qty\x18\v \x01(\tR\bquoteQty\x122\n" +
+	"\x15symbol_config_version\x18\f \x01(\x04R\x13symbolConfigVersion\"Y\n" +
 	"\vOrderCancel\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x16\n" +

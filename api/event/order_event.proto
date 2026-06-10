@@ -43,6 +43,14 @@ message OrderPlaced {
   // many quote units have been spent. Mutually exclusive with qty for
   // market buy. Ignored for every other shape.
   string quote_qty = 11;
+
+  // ADR-0075 §1: the perp SymbolConfig version perp-counter admitted this
+  // order under. Match cross-validates it against its own catalog cache and
+  // rejects on any mismatch (CONFIG_VERSION_TOO_NEW / STALE_ORDER_CONFIG /
+  // UNKNOWN_SYMBOL_CONFIG) so the two services never mix config versions
+  // inside one order's lifecycle. 0 = spot order (no perp catalog entry) —
+  // Match skips the handshake.
+  uint64 symbol_config_version = 12;
 }
 
 message OrderCancel {

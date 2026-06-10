@@ -127,6 +127,9 @@ type MarkTick struct {
 	TsUnixMs      int64                  `protobuf:"varint,4,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
 	IndexStale    bool                   `protobuf:"varint,5,opt,name=index_stale,json=indexStale,proto3" json:"index_stale,omitempty"`          // true when index uses frozen last-good value; consumers must not liquidate
 	IndexDegraded bool                   `protobuf:"varint,6,opt,name=index_degraded,json=indexDegraded,proto3" json:"index_degraded,omitempty"` // true when quorum is met only by self-referential sources; alert but keep trading
+	// ADR-0075: the SymbolConfig version whose pricing params (index sources /
+	// mark formula) produced this tick. 0 = flag-driven legacy runtime.
+	ConfigVersion uint64 `protobuf:"varint,7,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -203,14 +206,24 @@ func (x *MarkTick) GetIndexDegraded() bool {
 	return false
 }
 
+func (x *MarkTick) GetConfigVersion() uint64 {
+	if x != nil {
+		return x.ConfigVersion
+	}
+	return 0
+}
+
 type FundingTick struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	FundingRoundId string                 `protobuf:"bytes,1,opt,name=funding_round_id,json=fundingRoundId,proto3" json:"funding_round_id,omitempty"` // e.g. "BTC-USDT-PERP:1748505600"; idempotency key
 	FundingRate    string                 `protobuf:"bytes,2,opt,name=funding_rate,json=fundingRate,proto3" json:"funding_rate,omitempty"`            // settled rate for this round
 	MarkPrice      string                 `protobuf:"bytes,3,opt,name=mark_price,json=markPrice,proto3" json:"mark_price,omitempty"`                  // mark at the boundary
 	TsUnixMs       int64                  `protobuf:"varint,4,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// ADR-0075: the SymbolConfig version whose funding params (interval /
+	// interest / cap / floor / clamp) produced this round's rate. 0 = legacy.
+	ConfigVersion uint64 `protobuf:"varint,5,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *FundingTick) Reset() {
@@ -271,6 +284,13 @@ func (x *FundingTick) GetTsUnixMs() int64 {
 	return 0
 }
 
+func (x *FundingTick) GetConfigVersion() uint64 {
+	if x != nil {
+		return x.ConfigVersion
+	}
+	return 0
+}
+
 var File_event_perp_price_proto protoreflect.FileDescriptor
 
 const file_event_perp_price_proto_rawDesc = "" +
@@ -282,7 +302,7 @@ const file_event_perp_price_proto_rawDesc = "" +
 	"\x04tick\x18\n" +
 	" \x01(\v2\x19.opentrade.event.MarkTickH\x00R\x04tick\x128\n" +
 	"\afunding\x18\v \x01(\v2\x1c.opentrade.event.FundingTickH\x00R\afundingB\t\n" +
-	"\apayload\"\xd3\x01\n" +
+	"\apayload\"\xfa\x01\n" +
 	"\bMarkTick\x12\x1d\n" +
 	"\n" +
 	"mark_price\x18\x01 \x01(\tR\tmarkPrice\x12\x1f\n" +
@@ -293,14 +313,16 @@ const file_event_perp_price_proto_rawDesc = "" +
 	"ts_unix_ms\x18\x04 \x01(\x03R\btsUnixMs\x12\x1f\n" +
 	"\vindex_stale\x18\x05 \x01(\bR\n" +
 	"indexStale\x12%\n" +
-	"\x0eindex_degraded\x18\x06 \x01(\bR\rindexDegraded\"\x97\x01\n" +
+	"\x0eindex_degraded\x18\x06 \x01(\bR\rindexDegraded\x12%\n" +
+	"\x0econfig_version\x18\a \x01(\x04R\rconfigVersion\"\xbe\x01\n" +
 	"\vFundingTick\x12(\n" +
 	"\x10funding_round_id\x18\x01 \x01(\tR\x0efundingRoundId\x12!\n" +
 	"\ffunding_rate\x18\x02 \x01(\tR\vfundingRate\x12\x1d\n" +
 	"\n" +
 	"mark_price\x18\x03 \x01(\tR\tmarkPrice\x12\x1c\n" +
 	"\n" +
-	"ts_unix_ms\x18\x04 \x01(\x03R\btsUnixMsB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
+	"ts_unix_ms\x18\x04 \x01(\x03R\btsUnixMs\x12%\n" +
+	"\x0econfig_version\x18\x05 \x01(\x04R\rconfigVersionB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
 var (
 	file_event_perp_price_proto_rawDescOnce sync.Once
