@@ -128,6 +128,17 @@ func (c *PerpPrivateConsumer) ownsUser(userID uint64) bool {
 }
 
 // perpUserIDOf extracts the owning user from any perp-journal payload.
+// Every payload carrying a user_id is routed to that user's private stream —
+// including InvariantBreach: it is the user's own under-settled reduce-only
+// close fill (perp_journal.proto: "alert / manual-repair input, never
+// silently dropped"), and without it the client cannot explain a fill the
+// position never absorbed. System-level RiskPoolSettlement has no user and
+// returns 0 (not user-routed).
+//
+// A missing case here falls through to 0 and dispatch silently drops the
+// event; TestPerpUserIDOf_OneofExhaustive enforces the rule by reflection
+// over the payload oneof, so adding a payload type without extending this
+// switch fails the tests.
 func perpUserIDOf(evt *eventpb.PerpJournalEvent) uint64 {
 	if evt == nil {
 		return 0
@@ -173,10 +184,17 @@ func perpUserIDOf(evt *eventpb.PerpJournalEvent) uint64 {
 		if p.CustomerRiskLimit != nil {
 			return p.CustomerRiskLimit.UserId
 		}
+	case *eventpb.PerpJournalEvent_InvariantBreach:
+		if p.InvariantBreach != nil {
+			return p.InvariantBreach.UserId
+		}
 	case *eventpb.PerpJournalEvent_CustomerFee:
 		if p.CustomerFee != nil {
 			return p.CustomerFee.UserId
 		}
+	case *eventpb.PerpJournalEvent_RiskPoolSettlement:
+		// System-level: no user attribution, never user-routed.
+		return 0
 	}
 	return 0
 }
