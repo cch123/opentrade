@@ -1,6 +1,6 @@
 # ADR-0083: Match 原生 protected market order
 
-- 状态: **Proposed**（2026-05-31 起草；2026-06-10 实施前评审修订，见文末修订记录）
+- 状态: **Accepted / Implemented**（2026-05-31 起草；2026-06-10 实施前评审修订（见文末修订记录）并实现，commit b841405）
 - 日期: 2026-05-31
 - 决策者: xargin, Codex
 - 相关 ADR: 0035（MARKET 单服务端原生支持）、0041（Counter reservations）、0055（Match 作为 orderbook 权威）、0074（perp 保证金模式）、0080（订单准入风控与价格保护）
