@@ -56,6 +56,20 @@ _(none)_
 
 ## Fixed
 
+### 2026-06-10
+
+- **journal catch-up 重建的 market-buy-by-quote 订单退化成零量限价单** — `FreezeEvent` 没有 `quote_qty` / `slippage_bps` 字段，跨 snapshot/journal catch-up 边界的 ADR-0035 市价买单（按 quote 预算）被 `applyFreezeEvent` 重建后 `QuoteQty=0 ∧ Qty=0`：catch-up 结束后的 LIVE 成交走 `settleTaker` 的限价买分支（Price=0），`FrozenQuoteDelta=0` 冻结永不消耗，且 `statusAfterFill` 在首笔部分成交就判 FILLED（`filledAfter ≥ Qty(0)`）。
+  - 状态：fixed
+  - commit: [`4c6d6b4`](../../commit/4c6d6b4)
+  - 根因：FreezeEvent 的字段集是限价单时代定的，ADR-0035/0083 给 Order 加的形状字段（`QuoteQty` / `SlippageBps`）只进了 `OrderPlaced`，没进 counter-journal 的 `FreezeEvent`，重建路径丢形状。
+  - 修法：`FreezeEvent` 增加 `quote_qty`(13) / `slippage_bps`(14)，`BuildPlaceOrderEvents` 透传，`applyFreezeEvent` 还原；settlement 与 terminal unfreeze 依赖的 `IsMarketBuyByQuote` / `IsMarketBuyByBase` 谓词在重建后成立。附单测 `TestApplyFreezeEvent_MarketBuyByQuoteThenLiveSettlement` / `TestApplyFreezeEvent_RestoresProtectedMarketBuyShape`。
+
+- **journal 回放的 FrozenSpent 用 match price 重算，价格改善的 taker 买单回放后 terminal unfreeze 可把 Frozen 打成负数** — `accumulateFrozenSpent` 对买方限价单按 `evt.Price × evt.Qty` 重算消耗，但 `evt.Price` 是撮合价；LIVE 路径 (`ApplyPartySettlement`) 累计的是 `|FrozenQuoteDelta|` = 委托价 × qty。价格改善成交回放后 `FrozenSpent` 偏小，terminal 释放 `FrozenAmount − FrozenSpent` 超过实际仍冻结的量 → `UnfreezeOnTerminal` 报 "frozen would be negative"。另外 market-buy-by-quote 分支读的是 `delta_quote`（available 侧增量，该形状恒为 0），回放从不累计 FrozenSpent，属同一处的并发缺陷。
+  - 状态：fixed
+  - commit: [`4c6d6b4`](../../commit/4c6d6b4)
+  - 根因：回放侧自己重算消耗公式，与 LIVE 路径的事实数据二次推导不一致；`SettlementEvent` 本来就带 `unfreeze_base` / `unfreeze_quote`（= `|FrozenBaseDelta|` / `|FrozenQuoteDelta|`，event sourcing 的权威值），不该重算。
+  - 修法：`accumulateFrozenSpent` 改为直接累加事件的 `unfreeze_base` + `unfreeze_quote`，对全部订单形状统一成立。附 replay-vs-live 等价性单测 `TestApplySettlementEvent_PriceImprovedTakerMatchesLivePath`（含 terminal unfreeze 不为负的断言）。
+
 ### 2026-04-19
 
 - **match book 里找不到 order 的 cancel 被静默丢弃，counter 永远停在 PENDING_CANCEL** — counter/match 状态分叉（dev 多次重启 / 快照丢失）后，counter 的 cancel 请求打到 match 找不到订单，match 直接 `return` 不 emit，counter 的 in-flight cancel 永远没有回包，`unfreezeResidual` 永远不执行，frozen 资金卡死。之前只能人工 force-cancel 或清状态。
