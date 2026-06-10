@@ -240,3 +240,110 @@ func perpLedgerConds(f PerpLedgerFilter, rawCursor string) ([]string, []any, err
 	}
 	return conds, args, nil
 }
+
+// ListPerpMarginAdjustments pages a user's isolated-margin movements
+// (ADR-0074 §6/§7), newest first.
+func (s *Store) ListPerpMarginAdjustments(ctx context.Context, f PerpLedgerFilter, rawCursor string, limit int) ([]*historypb.PerpMarginAdjustment, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	limit = clampLimit(limit)
+
+	conds, args, err := perpLedgerConds(f, rawCursor)
+	if err != nil {
+		return nil, "", err
+	}
+	q := `
+		SELECT perp_seq_id, symbol, kind, CAST(amount AS CHAR),
+		       CAST(margin_before AS CHAR), CAST(margin_after AS CHAR),
+		       CAST(wallet_after AS CHAR), position_version, client_op_id,
+		       CAST(mark_price AS CHAR), ts_unix_ms
+		FROM perp_margin_adjustments
+		WHERE ` + strings.Join(conds, " AND ") + `
+		ORDER BY ts_unix_ms DESC, perp_seq_id DESC
+		LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	var out []*historypb.PerpMarginAdjustment
+	for rows.Next() {
+		var r historypb.PerpMarginAdjustment
+		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.Kind, &r.Amount,
+			&r.MarginBefore, &r.MarginAfter, &r.WalletAfter, &r.PositionVersion,
+			&r.ClientOpId, &r.MarkPrice, &r.TsUnixMs); err != nil {
+			return nil, "", err
+		}
+		out = append(out, &r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		out = out[:limit]
+		next, err = cursor.Encode(cursor.PerpLedgerCursor{Ts: last.TsUnixMs, PerpSeqID: last.PerpSeqId})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return out, next, nil
+}
+
+// ListPerpConfigLogs pages a user's position-config change history
+// (ADR-0074 §13), newest first.
+func (s *Store) ListPerpConfigLogs(ctx context.Context, f PerpLedgerFilter, rawCursor string, limit int) ([]*historypb.PerpConfigLog, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	limit = clampLimit(limit)
+
+	conds, args, err := perpLedgerConds(f, rawCursor)
+	if err != nil {
+		return nil, "", err
+	}
+	q := `
+		SELECT perp_seq_id, symbol, margin_mode, CAST(leverage AS CHAR), risk_id,
+		       auto_add_margin, CAST(auto_add_max AS CHAR), position_version,
+		       reason, client_op_id, ts_unix_ms
+		FROM perp_position_config_logs
+		WHERE ` + strings.Join(conds, " AND ") + `
+		ORDER BY ts_unix_ms DESC, perp_seq_id DESC
+		LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	var out []*historypb.PerpConfigLog
+	for rows.Next() {
+		var r historypb.PerpConfigLog
+		if err := rows.Scan(&r.PerpSeqId, &r.Symbol, &r.MarginMode, &r.Leverage, &r.RiskId,
+			&r.AutoAddMargin, &r.AutoAddMax, &r.PositionVersion,
+			&r.Reason, &r.ClientOpId, &r.TsUnixMs); err != nil {
+			return nil, "", err
+		}
+		out = append(out, &r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		out = out[:limit]
+		next, err = cursor.Encode(cursor.PerpLedgerCursor{Ts: last.TsUnixMs, PerpSeqID: last.PerpSeqId})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return out, next, nil
+}

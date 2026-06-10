@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	historypb "github.com/xargin/opentrade/api/gen/rpc/history"
 	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
 	"github.com/xargin/opentrade/pkg/auth"
 )
@@ -197,4 +198,293 @@ func perpMarginModeToString(m perprpc.MarginMode) string {
 		return "cross"
 	}
 	return "unspecified"
+}
+
+// --- ADR-0074 account / position config surface ---------------------------
+
+type perpMarginModeBody struct {
+	Symbol       string `json:"symbol"`
+	MarginMode   string `json:"margin_mode"`             // "isolated" / "cross"
+	TargetMargin string `json:"target_margin,omitempty"` // cross→isolated only
+	ClientOpID   string `json:"client_op_id,omitempty"`
+}
+
+func (s *Server) handlePerpSetMarginMode(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePerp(w) {
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	var body perpMarginModeBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	mode := perprpc.MarginMode_MARGIN_MODE_UNSPECIFIED
+	switch body.MarginMode {
+	case "isolated":
+		mode = perprpc.MarginMode_MARGIN_MODE_ISOLATED
+	case "cross":
+		mode = perprpc.MarginMode_MARGIN_MODE_CROSS
+	default:
+		writeError(w, http.StatusBadRequest, "margin_mode must be isolated or cross")
+		return
+	}
+	resp, err := s.perp.SetMarginMode(r.Context(), connect.NewRequest(&perprpc.SetMarginModeRequest{
+		UserId: userID, Symbol: body.Symbol, TargetMode: mode,
+		TargetMargin: body.TargetMargin, ClientOpId: body.ClientOpID,
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted":           resp.Msg.Accepted,
+		"reject_reason":      resp.Msg.RejectReason,
+		"margin_mode":        perpMarginModeToString(resp.Msg.MarginMode),
+		"position_margin":    resp.Msg.PositionMargin,
+		"free_balance_after": resp.Msg.FreeBalanceAfter,
+	})
+}
+
+type perpAdjustMarginBody struct {
+	Symbol     string `json:"symbol"`
+	Delta      string `json:"delta"` // signed decimal
+	ClientOpID string `json:"client_op_id,omitempty"`
+}
+
+func (s *Server) handlePerpAdjustMargin(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePerp(w) {
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	var body perpAdjustMarginBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp, err := s.perp.AdjustIsolatedMargin(r.Context(), connect.NewRequest(&perprpc.AdjustIsolatedMarginRequest{
+		UserId: userID, Symbol: body.Symbol, Delta: body.Delta, ClientOpId: body.ClientOpID,
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted":           resp.Msg.Accepted,
+		"reject_reason":      resp.Msg.RejectReason,
+		"position_margin":    resp.Msg.PositionMargin,
+		"free_balance_after": resp.Msg.FreeBalanceAfter,
+	})
+}
+
+type perpAutoAddBody struct {
+	Symbol         string `json:"symbol"`
+	Enabled        bool   `json:"enabled"`
+	MaxAddPerEvent string `json:"max_add_per_event,omitempty"`
+	ClientOpID     string `json:"client_op_id,omitempty"`
+}
+
+func (s *Server) handlePerpSetAutoAdd(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePerp(w) {
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	var body perpAutoAddBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp, err := s.perp.SetAutoAddMargin(r.Context(), connect.NewRequest(&perprpc.SetAutoAddMarginRequest{
+		UserId: userID, Symbol: body.Symbol, Enabled: body.Enabled,
+		MaxAddPerEvent: body.MaxAddPerEvent, ClientOpId: body.ClientOpID,
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted": resp.Msg.Accepted, "reject_reason": resp.Msg.RejectReason,
+	})
+}
+
+type perpLeverageBody struct {
+	Symbol     string `json:"symbol"`
+	Leverage   string `json:"leverage"`
+	ClientOpID string `json:"client_op_id,omitempty"`
+}
+
+func (s *Server) handlePerpSetLeverage(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePerp(w) {
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	var body perpLeverageBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp, err := s.perp.SetPositionLeverage(r.Context(), connect.NewRequest(&perprpc.SetPositionLeverageRequest{
+		UserId: userID, Symbol: body.Symbol, Leverage: body.Leverage, ClientOpId: body.ClientOpID,
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted":           resp.Msg.Accepted,
+		"reject_reason":      resp.Msg.RejectReason,
+		"leverage":           resp.Msg.Leverage,
+		"position_margin":    resp.Msg.PositionMargin,
+		"free_balance_after": resp.Msg.FreeBalanceAfter,
+	})
+}
+
+type perpRiskIDBody struct {
+	Symbol     string `json:"symbol"`
+	RiskID     uint32 `json:"risk_id"`
+	ClientOpID string `json:"client_op_id,omitempty"`
+}
+
+func (s *Server) handlePerpSetRiskID(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePerp(w) {
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	var body perpRiskIDBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp, err := s.perp.SetRiskId(r.Context(), connect.NewRequest(&perprpc.SetRiskIdRequest{
+		UserId: userID, Symbol: body.Symbol, RiskId: body.RiskID, ClientOpId: body.ClientOpID,
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted": resp.Msg.Accepted, "reject_reason": resp.Msg.RejectReason,
+		"risk_id": resp.Msg.RiskId,
+	})
+}
+
+func (s *Server) handlePerpPositionConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePerp(w) {
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	resp, err := s.perp.QueryPositionConfig(r.Context(), connect.NewRequest(&perprpc.QueryPositionConfigRequest{
+		UserId: userID, Symbol: r.URL.Query().Get("symbol"),
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	configs := make([]map[string]any, 0, len(resp.Msg.Configs))
+	for _, c := range resp.Msg.Configs {
+		configs = append(configs, map[string]any{
+			"symbol":                 c.Symbol,
+			"margin_mode":            perpMarginModeToString(c.MarginMode),
+			"leverage":               c.Leverage,
+			"risk_id":                c.RiskId,
+			"auto_add_margin":        c.AutoAddMargin,
+			"auto_add_max":           c.AutoAddMax,
+			"effective_max_leverage": c.EffectiveMaxLeverage,
+			"max_notional":           c.MaxNotional,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"configs": configs})
+}
+
+func (s *Server) handlePerpAccountConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePerp(w) {
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	resp, err := s.perp.QueryAccountConfig(r.Context(), connect.NewRequest(&perprpc.QueryAccountConfigRequest{UserId: userID}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	limits := make([]map[string]any, 0, len(resp.Msg.LeverageLimits))
+	for _, l := range resp.Msg.LeverageLimits {
+		limits = append(limits, map[string]any{
+			"symbol": l.Symbol, "max_leverage": l.MaxLeverage, "reason": l.Reason,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settle_asset":    resp.Msg.SettleAsset,
+		"risk_model":      resp.Msg.RiskModel,
+		"cross_pool_id":   resp.Msg.CrossPoolId,
+		"leverage_limits": limits,
+	})
+}
+
+func (s *Server) handlePerpMarginAdjustments(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeError(w, http.StatusServiceUnavailable, "history service not configured")
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	resp, err := s.history.ListPerpMarginAdjustments(r.Context(), connect.NewRequest(&historypb.ListPerpMarginAdjustmentsRequest{
+		UserId: userID, Symbol: q.Get("symbol"),
+		SinceMs: parseInt64Query(q.Get("since_ms")), UntilMs: parseInt64Query(q.Get("until_ms")),
+		Cursor: q.Get("cursor"), Limit: parseInt32Query(q.Get("limit")),
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"adjustments": resp.Msg.Adjustments, "next_cursor": resp.Msg.NextCursor,
+	})
+}
+
+func (s *Server) handlePerpConfigLogs(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeError(w, http.StatusServiceUnavailable, "history service not configured")
+		return
+	}
+	userID, ok := perpUserID(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	resp, err := s.history.ListPerpConfigLogs(r.Context(), connect.NewRequest(&historypb.ListPerpConfigLogsRequest{
+		UserId: userID, Symbol: q.Get("symbol"),
+		SinceMs: parseInt64Query(q.Get("since_ms")), UntilMs: parseInt64Query(q.Get("until_ms")),
+		Cursor: q.Get("cursor"), Limit: parseInt32Query(q.Get("limit")),
+	}))
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"logs": resp.Msg.Logs, "next_cursor": resp.Msg.NextCursor,
+	})
 }

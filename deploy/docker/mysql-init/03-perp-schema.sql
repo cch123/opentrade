@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS perp_positions (
     margin        DECIMAL(36, 18) NOT NULL DEFAULT 0,
     leverage      DECIMAL(36, 18) NOT NULL DEFAULT 0,
     realized_pnl  DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    margin_mode   TINYINT         NOT NULL DEFAULT 1, -- 1 isolated / 2 cross (ADR-0074)
+    risk_id       INT UNSIGNED    NOT NULL DEFAULT 0, -- selected risk tier, 0 = auto
     version       BIGINT UNSIGNED NOT NULL DEFAULT 0,
     perp_seq_id   BIGINT UNSIGNED NOT NULL,
     updated_at    DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -176,4 +178,57 @@ CREATE TABLE IF NOT EXISTS perp_margin_logs (
     ts_unix_ms      BIGINT          NOT NULL,
     PRIMARY KEY (user_id, perp_seq_id),
     KEY idx_ref (ref_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ADR-0074: append-only position config change history (mode switch /
+-- leverage / risk_id / auto-add). The current config is the row with the
+-- highest perp_seq_id per (user, symbol).
+CREATE TABLE IF NOT EXISTS perp_position_config_logs (
+    perp_seq_id      BIGINT UNSIGNED NOT NULL,
+    user_id          BIGINT UNSIGNED NOT NULL,
+    symbol           VARCHAR(32)     NOT NULL,
+    margin_mode      TINYINT         NOT NULL DEFAULT 1,
+    leverage         DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    risk_id          INT UNSIGNED    NOT NULL DEFAULT 0,
+    auto_add_margin  TINYINT(1)      NOT NULL DEFAULT 0,
+    auto_add_max     DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    position_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    reason           VARCHAR(64)     NOT NULL DEFAULT '',
+    client_op_id     VARCHAR(64)     NOT NULL DEFAULT '',
+    ts_unix_ms       BIGINT          NOT NULL,
+    PRIMARY KEY (perp_seq_id),
+    KEY idx_user_symbol (user_id, symbol, perp_seq_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ADR-0074 §6/§7: append-only isolated-margin movement ledger (manual
+-- add/remove, mode-switch cash leg, auto-add, leverage resize).
+CREATE TABLE IF NOT EXISTS perp_margin_adjustments (
+    perp_seq_id      BIGINT UNSIGNED NOT NULL,
+    user_id          BIGINT UNSIGNED NOT NULL,
+    symbol           VARCHAR(32)     NOT NULL,
+    kind             TINYINT         NOT NULL, -- PerpMarginAdjustmentEvent.Kind
+    amount           DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    margin_before    DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    margin_after     DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    wallet_after     DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    position_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    client_op_id     VARCHAR(64)     NOT NULL DEFAULT '',
+    mark_price       DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    ts_unix_ms       BIGINT          NOT NULL,
+    PRIMARY KEY (perp_seq_id),
+    KEY idx_user_symbol (user_id, symbol, perp_seq_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ADR-0074 §10: append-only admin leverage-cap audit (max_leverage 0 = cap
+-- removed). The effective cap is the latest row per (user_id, symbol).
+CREATE TABLE IF NOT EXISTS perp_customer_risk_limits (
+    perp_seq_id  BIGINT UNSIGNED NOT NULL,
+    user_id      BIGINT UNSIGNED NOT NULL,
+    symbol       VARCHAR(32)     NOT NULL DEFAULT '',
+    max_leverage DECIMAL(36, 18) NOT NULL DEFAULT 0,
+    reason       VARCHAR(255)    NOT NULL DEFAULT '',
+    updated_by   VARCHAR(64)     NOT NULL DEFAULT '',
+    ts_unix_ms   BIGINT          NOT NULL,
+    PRIMARY KEY (perp_seq_id),
+    KEY idx_user (user_id, symbol, perp_seq_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

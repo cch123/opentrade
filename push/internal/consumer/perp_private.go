@@ -161,6 +161,18 @@ func perpUserIDOf(evt *eventpb.PerpJournalEvent) uint64 {
 		if p.Adl != nil {
 			return p.Adl.UserId
 		}
+	case *eventpb.PerpJournalEvent_PositionConfig:
+		if p.PositionConfig != nil {
+			return p.PositionConfig.UserId
+		}
+	case *eventpb.PerpJournalEvent_MarginAdjustment:
+		if p.MarginAdjustment != nil {
+			return p.MarginAdjustment.UserId
+		}
+	case *eventpb.PerpJournalEvent_CustomerRiskLimit:
+		if p.CustomerRiskLimit != nil {
+			return p.CustomerRiskLimit.UserId
+		}
 	}
 	return 0
 }

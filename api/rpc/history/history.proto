@@ -63,6 +63,16 @@ service HistoryService {
   // ListPerpADL pages a user's ADL forced-close events, newest first by ts.
   rpc ListPerpADL(ListPerpADLRequest) returns (ListPerpADLResponse);
 
+  // ListPerpMarginAdjustments pages a user's isolated-margin movements
+  // (manual add/remove, mode-switch cash leg, auto-add, leverage resize —
+  // ADR-0074 §6/§7), newest first by ts.
+  rpc ListPerpMarginAdjustments(ListPerpMarginAdjustmentsRequest) returns (ListPerpMarginAdjustmentsResponse);
+
+  // ListPerpConfigLogs pages a user's position-config change history
+  // (margin mode / leverage / risk_id / auto-add, ADR-0074 §13), newest
+  // first by ts.
+  rpc ListPerpConfigLogs(ListPerpConfigLogsRequest) returns (ListPerpConfigLogsResponse);
+
   // GetTrigger returns one trigger by id from the long-term
   // projection (ADR-0047). Use this for looking up a trigger after
   // it has aged out of the trigger service's in-memory terminal
@@ -360,6 +370,64 @@ message PerpFunding {
   string mark_price = 5;
   string payment = 6; // signed; negative = the position paid
   int64 ts_unix_ms = 7;
+}
+
+message ListPerpMarginAdjustmentsRequest {
+  uint64 user_id = 1;
+  string symbol = 2; // "" = any
+  int64 since_ms = 3;
+  int64 until_ms = 4;
+  string cursor = 5;
+  int32 limit = 6;
+}
+
+message ListPerpMarginAdjustmentsResponse {
+  repeated PerpMarginAdjustment adjustments = 1;
+  string next_cursor = 2;
+}
+
+// PerpMarginAdjustment mirrors the `perp_margin_adjustments` projection row.
+message PerpMarginAdjustment {
+  uint64 perp_seq_id = 1;
+  string symbol = 2;
+  int32 kind = 3;            // PerpMarginAdjustmentEvent.Kind
+  string amount = 4;
+  string margin_before = 5;
+  string margin_after = 6;
+  string wallet_after = 7;
+  uint64 position_version = 8;
+  string client_op_id = 9;
+  string mark_price = 10;
+  int64 ts_unix_ms = 11;
+}
+
+message ListPerpConfigLogsRequest {
+  uint64 user_id = 1;
+  string symbol = 2; // "" = any
+  int64 since_ms = 3;
+  int64 until_ms = 4;
+  string cursor = 5;
+  int32 limit = 6;
+}
+
+message ListPerpConfigLogsResponse {
+  repeated PerpConfigLog logs = 1;
+  string next_cursor = 2;
+}
+
+// PerpConfigLog mirrors the `perp_position_config_logs` projection row.
+message PerpConfigLog {
+  uint64 perp_seq_id = 1;
+  string symbol = 2;
+  int32 margin_mode = 3;     // 1 isolated / 2 cross
+  string leverage = 4;
+  uint32 risk_id = 5;
+  bool auto_add_margin = 6;
+  string auto_add_max = 7;
+  uint64 position_version = 8;
+  string reason = 9;
+  string client_op_id = 10;
+  int64 ts_unix_ms = 11;
 }
 
 message ListPerpLiquidationsRequest {

@@ -56,6 +56,12 @@ const (
 	// HistoryServiceListPerpADLProcedure is the fully-qualified name of the HistoryService's
 	// ListPerpADL RPC.
 	HistoryServiceListPerpADLProcedure = "/opentrade.rpc.history.HistoryService/ListPerpADL"
+	// HistoryServiceListPerpMarginAdjustmentsProcedure is the fully-qualified name of the
+	// HistoryService's ListPerpMarginAdjustments RPC.
+	HistoryServiceListPerpMarginAdjustmentsProcedure = "/opentrade.rpc.history.HistoryService/ListPerpMarginAdjustments"
+	// HistoryServiceListPerpConfigLogsProcedure is the fully-qualified name of the HistoryService's
+	// ListPerpConfigLogs RPC.
+	HistoryServiceListPerpConfigLogsProcedure = "/opentrade.rpc.history.HistoryService/ListPerpConfigLogs"
 	// HistoryServiceGetTriggerProcedure is the fully-qualified name of the HistoryService's GetTrigger
 	// RPC.
 	HistoryServiceGetTriggerProcedure = "/opentrade.rpc.history.HistoryService/GetTrigger"
@@ -86,6 +92,14 @@ type HistoryServiceClient interface {
 	ListPerpLiquidations(context.Context, *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error)
 	// ListPerpADL pages a user's ADL forced-close events, newest first by ts.
 	ListPerpADL(context.Context, *connect.Request[history.ListPerpADLRequest]) (*connect.Response[history.ListPerpADLResponse], error)
+	// ListPerpMarginAdjustments pages a user's isolated-margin movements
+	// (manual add/remove, mode-switch cash leg, auto-add, leverage resize —
+	// ADR-0074 §6/§7), newest first by ts.
+	ListPerpMarginAdjustments(context.Context, *connect.Request[history.ListPerpMarginAdjustmentsRequest]) (*connect.Response[history.ListPerpMarginAdjustmentsResponse], error)
+	// ListPerpConfigLogs pages a user's position-config change history
+	// (margin mode / leverage / risk_id / auto-add, ADR-0074 §13), newest
+	// first by ts.
+	ListPerpConfigLogs(context.Context, *connect.Request[history.ListPerpConfigLogsRequest]) (*connect.Response[history.ListPerpConfigLogsResponse], error)
 	// GetTrigger returns one trigger by id from the long-term
 	// projection (ADR-0047). Use this for looking up a trigger after
 	// it has aged out of the trigger service's in-memory terminal
@@ -157,6 +171,18 @@ func NewHistoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(historyServiceMethods.ByName("ListPerpADL")),
 			connect.WithClientOptions(opts...),
 		),
+		listPerpMarginAdjustments: connect.NewClient[history.ListPerpMarginAdjustmentsRequest, history.ListPerpMarginAdjustmentsResponse](
+			httpClient,
+			baseURL+HistoryServiceListPerpMarginAdjustmentsProcedure,
+			connect.WithSchema(historyServiceMethods.ByName("ListPerpMarginAdjustments")),
+			connect.WithClientOptions(opts...),
+		),
+		listPerpConfigLogs: connect.NewClient[history.ListPerpConfigLogsRequest, history.ListPerpConfigLogsResponse](
+			httpClient,
+			baseURL+HistoryServiceListPerpConfigLogsProcedure,
+			connect.WithSchema(historyServiceMethods.ByName("ListPerpConfigLogs")),
+			connect.WithClientOptions(opts...),
+		),
 		getTrigger: connect.NewClient[history.GetTriggerRequest, history.GetTriggerResponse](
 			httpClient,
 			baseURL+HistoryServiceGetTriggerProcedure,
@@ -174,16 +200,18 @@ func NewHistoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // historyServiceClient implements HistoryServiceClient.
 type historyServiceClient struct {
-	getOrder             *connect.Client[history.GetOrderRequest, history.GetOrderResponse]
-	listOrders           *connect.Client[history.ListOrdersRequest, history.ListOrdersResponse]
-	listTrades           *connect.Client[history.ListTradesRequest, history.ListTradesResponse]
-	listAccountLogs      *connect.Client[history.ListAccountLogsRequest, history.ListAccountLogsResponse]
-	listPerpPositions    *connect.Client[history.ListPerpPositionsRequest, history.ListPerpPositionsResponse]
-	listPerpFunding      *connect.Client[history.ListPerpFundingRequest, history.ListPerpFundingResponse]
-	listPerpLiquidations *connect.Client[history.ListPerpLiquidationsRequest, history.ListPerpLiquidationsResponse]
-	listPerpADL          *connect.Client[history.ListPerpADLRequest, history.ListPerpADLResponse]
-	getTrigger           *connect.Client[history.GetTriggerRequest, history.GetTriggerResponse]
-	listTriggers         *connect.Client[history.ListTriggersRequest, history.ListTriggersResponse]
+	getOrder                  *connect.Client[history.GetOrderRequest, history.GetOrderResponse]
+	listOrders                *connect.Client[history.ListOrdersRequest, history.ListOrdersResponse]
+	listTrades                *connect.Client[history.ListTradesRequest, history.ListTradesResponse]
+	listAccountLogs           *connect.Client[history.ListAccountLogsRequest, history.ListAccountLogsResponse]
+	listPerpPositions         *connect.Client[history.ListPerpPositionsRequest, history.ListPerpPositionsResponse]
+	listPerpFunding           *connect.Client[history.ListPerpFundingRequest, history.ListPerpFundingResponse]
+	listPerpLiquidations      *connect.Client[history.ListPerpLiquidationsRequest, history.ListPerpLiquidationsResponse]
+	listPerpADL               *connect.Client[history.ListPerpADLRequest, history.ListPerpADLResponse]
+	listPerpMarginAdjustments *connect.Client[history.ListPerpMarginAdjustmentsRequest, history.ListPerpMarginAdjustmentsResponse]
+	listPerpConfigLogs        *connect.Client[history.ListPerpConfigLogsRequest, history.ListPerpConfigLogsResponse]
+	getTrigger                *connect.Client[history.GetTriggerRequest, history.GetTriggerResponse]
+	listTriggers              *connect.Client[history.ListTriggersRequest, history.ListTriggersResponse]
 }
 
 // GetOrder calls opentrade.rpc.history.HistoryService.GetOrder.
@@ -226,6 +254,16 @@ func (c *historyServiceClient) ListPerpADL(ctx context.Context, req *connect.Req
 	return c.listPerpADL.CallUnary(ctx, req)
 }
 
+// ListPerpMarginAdjustments calls opentrade.rpc.history.HistoryService.ListPerpMarginAdjustments.
+func (c *historyServiceClient) ListPerpMarginAdjustments(ctx context.Context, req *connect.Request[history.ListPerpMarginAdjustmentsRequest]) (*connect.Response[history.ListPerpMarginAdjustmentsResponse], error) {
+	return c.listPerpMarginAdjustments.CallUnary(ctx, req)
+}
+
+// ListPerpConfigLogs calls opentrade.rpc.history.HistoryService.ListPerpConfigLogs.
+func (c *historyServiceClient) ListPerpConfigLogs(ctx context.Context, req *connect.Request[history.ListPerpConfigLogsRequest]) (*connect.Response[history.ListPerpConfigLogsResponse], error) {
+	return c.listPerpConfigLogs.CallUnary(ctx, req)
+}
+
 // GetTrigger calls opentrade.rpc.history.HistoryService.GetTrigger.
 func (c *historyServiceClient) GetTrigger(ctx context.Context, req *connect.Request[history.GetTriggerRequest]) (*connect.Response[history.GetTriggerResponse], error) {
 	return c.getTrigger.CallUnary(ctx, req)
@@ -258,6 +296,14 @@ type HistoryServiceHandler interface {
 	ListPerpLiquidations(context.Context, *connect.Request[history.ListPerpLiquidationsRequest]) (*connect.Response[history.ListPerpLiquidationsResponse], error)
 	// ListPerpADL pages a user's ADL forced-close events, newest first by ts.
 	ListPerpADL(context.Context, *connect.Request[history.ListPerpADLRequest]) (*connect.Response[history.ListPerpADLResponse], error)
+	// ListPerpMarginAdjustments pages a user's isolated-margin movements
+	// (manual add/remove, mode-switch cash leg, auto-add, leverage resize —
+	// ADR-0074 §6/§7), newest first by ts.
+	ListPerpMarginAdjustments(context.Context, *connect.Request[history.ListPerpMarginAdjustmentsRequest]) (*connect.Response[history.ListPerpMarginAdjustmentsResponse], error)
+	// ListPerpConfigLogs pages a user's position-config change history
+	// (margin mode / leverage / risk_id / auto-add, ADR-0074 §13), newest
+	// first by ts.
+	ListPerpConfigLogs(context.Context, *connect.Request[history.ListPerpConfigLogsRequest]) (*connect.Response[history.ListPerpConfigLogsResponse], error)
 	// GetTrigger returns one trigger by id from the long-term
 	// projection (ADR-0047). Use this for looking up a trigger after
 	// it has aged out of the trigger service's in-memory terminal
@@ -325,6 +371,18 @@ func NewHistoryServiceHandler(svc HistoryServiceHandler, opts ...connect.Handler
 		connect.WithSchema(historyServiceMethods.ByName("ListPerpADL")),
 		connect.WithHandlerOptions(opts...),
 	)
+	historyServiceListPerpMarginAdjustmentsHandler := connect.NewUnaryHandler(
+		HistoryServiceListPerpMarginAdjustmentsProcedure,
+		svc.ListPerpMarginAdjustments,
+		connect.WithSchema(historyServiceMethods.ByName("ListPerpMarginAdjustments")),
+		connect.WithHandlerOptions(opts...),
+	)
+	historyServiceListPerpConfigLogsHandler := connect.NewUnaryHandler(
+		HistoryServiceListPerpConfigLogsProcedure,
+		svc.ListPerpConfigLogs,
+		connect.WithSchema(historyServiceMethods.ByName("ListPerpConfigLogs")),
+		connect.WithHandlerOptions(opts...),
+	)
 	historyServiceGetTriggerHandler := connect.NewUnaryHandler(
 		HistoryServiceGetTriggerProcedure,
 		svc.GetTrigger,
@@ -355,6 +413,10 @@ func NewHistoryServiceHandler(svc HistoryServiceHandler, opts ...connect.Handler
 			historyServiceListPerpLiquidationsHandler.ServeHTTP(w, r)
 		case HistoryServiceListPerpADLProcedure:
 			historyServiceListPerpADLHandler.ServeHTTP(w, r)
+		case HistoryServiceListPerpMarginAdjustmentsProcedure:
+			historyServiceListPerpMarginAdjustmentsHandler.ServeHTTP(w, r)
+		case HistoryServiceListPerpConfigLogsProcedure:
+			historyServiceListPerpConfigLogsHandler.ServeHTTP(w, r)
 		case HistoryServiceGetTriggerProcedure:
 			historyServiceGetTriggerHandler.ServeHTTP(w, r)
 		case HistoryServiceListTriggersProcedure:
@@ -398,6 +460,14 @@ func (UnimplementedHistoryServiceHandler) ListPerpLiquidations(context.Context, 
 
 func (UnimplementedHistoryServiceHandler) ListPerpADL(context.Context, *connect.Request[history.ListPerpADLRequest]) (*connect.Response[history.ListPerpADLResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListPerpADL is not implemented"))
+}
+
+func (UnimplementedHistoryServiceHandler) ListPerpMarginAdjustments(context.Context, *connect.Request[history.ListPerpMarginAdjustmentsRequest]) (*connect.Response[history.ListPerpMarginAdjustmentsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListPerpMarginAdjustments is not implemented"))
+}
+
+func (UnimplementedHistoryServiceHandler) ListPerpConfigLogs(context.Context, *connect.Request[history.ListPerpConfigLogsRequest]) (*connect.Response[history.ListPerpConfigLogsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.history.HistoryService.ListPerpConfigLogs is not implemented"))
 }
 
 func (UnimplementedHistoryServiceHandler) GetTrigger(context.Context, *connect.Request[history.GetTriggerRequest]) (*connect.Response[history.GetTriggerResponse], error) {

@@ -31,6 +31,8 @@ type PerpPositionRow struct {
 	Margin      string
 	Leverage    string
 	RealizedPnl string
+	MarginMode  int8
+	RiskID      uint32
 	Version     uint64
 	PerpSeqID   uint64
 	UpdatedAtMs int64
@@ -153,6 +155,55 @@ type RiskPoolSettlementRow struct {
 	TsUnixMs            int64
 }
 
+// PerpPositionConfigLogRow mirrors `perp_position_config_logs` (ADR-0074:
+// append-only mode / leverage / risk_id / auto-add change history; the
+// current config is the row with the highest perp_seq_id, and the live view
+// is queryable from perp-counter directly).
+type PerpPositionConfigLogRow struct {
+	PerpSeqID       uint64
+	UserID          uint64
+	Symbol          string
+	MarginMode      int8
+	Leverage        string
+	RiskID          uint32
+	AutoAddMargin   bool
+	AutoAddMax      string
+	PositionVersion uint64
+	Reason          string
+	ClientOpID      string
+	TsUnixMs        int64
+}
+
+// PerpMarginAdjustmentRow mirrors `perp_margin_adjustments` (ADR-0074 §6/§7:
+// append-only isolated-margin movements — manual add/remove, mode-switch
+// cash leg, auto-add, leverage resize).
+type PerpMarginAdjustmentRow struct {
+	PerpSeqID       uint64
+	UserID          uint64
+	Symbol          string
+	Kind            int8
+	Amount          string
+	MarginBefore    string
+	MarginAfter     string
+	WalletAfter     string
+	PositionVersion uint64
+	ClientOpID      string
+	MarkPrice       string
+	TsUnixMs        int64
+}
+
+// PerpCustomerRiskLimitRow mirrors `perp_customer_risk_limits` (ADR-0074 §10:
+// append-only admin leverage-cap audit; max_leverage 0 records a removal).
+type PerpCustomerRiskLimitRow struct {
+	PerpSeqID   uint64
+	UserID      uint64
+	Symbol      string
+	MaxLeverage string
+	Reason      string
+	UpdatedBy   string
+	TsUnixMs    int64
+}
+
 // PerpMarginRow mirrors `perp_margin_logs` (append-only wallet balance changes).
 type PerpMarginRow struct {
 	PerpSeqID      uint64
@@ -179,13 +230,17 @@ type PerpBatch struct {
 	ADL          []PerpADLRow
 	RiskPool     []RiskPoolSettlementRow
 	Margins      []PerpMarginRow
+	ConfigLogs   []PerpPositionConfigLogRow
+	MarginAdjust []PerpMarginAdjustmentRow
+	RiskLimits   []PerpCustomerRiskLimitRow
 }
 
 // IsEmpty reports whether the batch has nothing to write.
 func (b *PerpBatch) IsEmpty() bool {
 	return len(b.Positions) == 0 && len(b.Wallets) == 0 && len(b.Orders) == 0 &&
 		len(b.Settlements) == 0 && len(b.Funding) == 0 && len(b.Liquidations) == 0 &&
-		len(b.TakeoverLots) == 0 && len(b.ADL) == 0 && len(b.RiskPool) == 0 && len(b.Margins) == 0
+		len(b.TakeoverLots) == 0 && len(b.ADL) == 0 && len(b.RiskPool) == 0 && len(b.Margins) == 0 &&
+		len(b.ConfigLogs) == 0 && len(b.MarginAdjust) == 0 && len(b.RiskLimits) == 0
 }
 
 // PerpJournalWriter is the contract the consumer uses against MySQL. Real impl
@@ -221,6 +276,12 @@ func BuildPerpBatch(events []*eventpb.PerpJournalEvent) PerpBatch {
 			appendPerpADL(&b, p.Adl, seq, ts)
 		case *eventpb.PerpJournalEvent_RiskPoolSettlement:
 			appendRiskPoolSettlement(&b, p.RiskPoolSettlement, seq, ts)
+		case *eventpb.PerpJournalEvent_PositionConfig:
+			appendPerpConfigLog(&b, p.PositionConfig, seq, ts)
+		case *eventpb.PerpJournalEvent_MarginAdjustment:
+			appendPerpMarginAdjustment(&b, p.MarginAdjustment, seq, ts)
+		case *eventpb.PerpJournalEvent_CustomerRiskLimit:
+			appendPerpRiskLimit(&b, p.CustomerRiskLimit, seq, ts)
 		}
 	}
 	return b
@@ -362,7 +423,46 @@ func appendPerpPosition(b *PerpBatch, snap *eventpb.PerpPositionSnapshot, seq ui
 		UserID: snap.GetUserId(), Symbol: snap.GetSymbol(), Side: int8(snap.GetSide()),
 		Size: defaultZero(snap.GetSize()), EntryPrice: defaultZero(snap.GetEntryPrice()),
 		Margin: defaultZero(snap.GetMargin()), Leverage: defaultZero(snap.GetLeverage()),
-		RealizedPnl: defaultZero(snap.GetRealizedPnl()), Version: snap.GetVersion(),
+		RealizedPnl: defaultZero(snap.GetRealizedPnl()),
+		MarginMode:  int8(snap.GetMarginMode()), RiskID: snap.GetRiskId(),
+		Version: snap.GetVersion(),
 		PerpSeqID: seq, UpdatedAtMs: ts,
+	})
+}
+
+func appendPerpConfigLog(b *PerpBatch, e *eventpb.PerpPositionConfigEvent, seq uint64, ts int64) {
+	if e == nil {
+		return
+	}
+	b.ConfigLogs = append(b.ConfigLogs, PerpPositionConfigLogRow{
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		MarginMode: int8(e.GetMarginMode()), Leverage: defaultZero(e.GetLeverage()),
+		RiskID: e.GetRiskId(), AutoAddMargin: e.GetAutoAddMargin(),
+		AutoAddMax: defaultZero(e.GetAutoAddMax()), PositionVersion: e.GetPositionVersion(),
+		Reason: e.GetReason(), ClientOpID: e.GetClientOpId(), TsUnixMs: ts,
+	})
+}
+
+func appendPerpMarginAdjustment(b *PerpBatch, e *eventpb.PerpMarginAdjustmentEvent, seq uint64, ts int64) {
+	if e == nil {
+		return
+	}
+	b.MarginAdjust = append(b.MarginAdjust, PerpMarginAdjustmentRow{
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		Kind: int8(e.GetKind()), Amount: defaultZero(e.GetAmount()),
+		MarginBefore: defaultZero(e.GetMarginBefore()), MarginAfter: defaultZero(e.GetMarginAfter()),
+		WalletAfter: defaultZero(e.GetWalletAfter()), PositionVersion: e.GetPositionVersion(),
+		ClientOpID: e.GetClientOpId(), MarkPrice: defaultZero(e.GetMarkPrice()), TsUnixMs: ts,
+	})
+}
+
+func appendPerpRiskLimit(b *PerpBatch, e *eventpb.PerpCustomerRiskLimitEvent, seq uint64, ts int64) {
+	if e == nil {
+		return
+	}
+	b.RiskLimits = append(b.RiskLimits, PerpCustomerRiskLimitRow{
+		PerpSeqID: seq, UserID: e.GetUserId(), Symbol: e.GetSymbol(),
+		MaxLeverage: defaultZero(e.GetMaxLeverage()), Reason: e.GetReason(),
+		UpdatedBy: e.GetUpdatedBy(), TsUnixMs: ts,
 	})
 }

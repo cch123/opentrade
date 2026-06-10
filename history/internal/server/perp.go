@@ -67,3 +67,31 @@ func (s *Server) ListPerpADL(ctx context.Context, req *connect.Request[historypb
 	}
 	return connect.NewResponse(&historypb.ListPerpADLResponse{Adl: rows, NextCursor: next}), nil
 }
+
+func (s *Server) ListPerpMarginAdjustments(ctx context.Context, req *connect.Request[historypb.ListPerpMarginAdjustmentsRequest]) (*connect.Response[historypb.ListPerpMarginAdjustmentsResponse], error) {
+	m := req.Msg
+	if m.GetUserId() == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
+	}
+	rows, next, err := s.store.ListPerpMarginAdjustments(ctx, mysqlstore.PerpLedgerFilter{
+		UserID: m.UserId, Symbol: m.Symbol, SinceMs: m.SinceMs, UntilMs: m.UntilMs,
+	}, m.Cursor, int(m.Limit))
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return connect.NewResponse(&historypb.ListPerpMarginAdjustmentsResponse{Adjustments: rows, NextCursor: next}), nil
+}
+
+func (s *Server) ListPerpConfigLogs(ctx context.Context, req *connect.Request[historypb.ListPerpConfigLogsRequest]) (*connect.Response[historypb.ListPerpConfigLogsResponse], error) {
+	m := req.Msg
+	if m.GetUserId() == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id required"))
+	}
+	rows, next, err := s.store.ListPerpConfigLogs(ctx, mysqlstore.PerpLedgerFilter{
+		UserID: m.UserId, Symbol: m.Symbol, SinceMs: m.SinceMs, UntilMs: m.UntilMs,
+	}, m.Cursor, int(m.Limit))
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return connect.NewResponse(&historypb.ListPerpConfigLogsResponse{Logs: rows, NextCursor: next}), nil
+}
