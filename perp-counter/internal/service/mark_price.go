@@ -85,10 +85,16 @@ func (s *Service) emitFunding(symbol, roundIDStr string, rate dec.Decimal, res e
 	})
 }
 
-// onMarkTick is the per-mark-tick liquidation trigger (ADR-0068 §8). The
-// execution flow (scan → cancel orders → bankruptcy order → insurance) is wired
-// in liquidation.go.
-func (s *Service) onMarkTick(symbol string) { s.scanLiquidations(symbol) }
+// onMarkTick is the per-mark-tick risk pass (ADR-0068 §8 / ADR-0074 §7):
+// auto-add tops distressed isolated positions up FIRST, then the liquidation
+// scan runs — its per-user sequencer re-check sees the topped-up state, so a
+// saved position never gets a stale forced close. The execution flow
+// (scan → cancel orders → bankruptcy order → insurance) is wired in
+// liquidation.go.
+func (s *Service) onMarkTick(symbol string) {
+	s.runAutoAdd(symbol)
+	s.scanLiquidations(symbol)
+}
 
 // parseFundingRound extracts the unix-seconds round id from a funding_round_id
 // of the form "<symbol>:<seconds>" (mark_price.proto). ok=false on a malformed

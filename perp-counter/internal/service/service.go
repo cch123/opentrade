@@ -78,6 +78,14 @@ type Config struct {
 	// liquidation math, but ADL is only executed from version-stamped lot tasks.
 	RiskCoordinatorEnabled bool
 
+	// ADR-0074 §7 auto-add-margin product knobs. The trigger line is
+	// MMR+AutoAddTriggerBuffer, the top-up target is MMR+AutoAddTargetBuffer,
+	// and AutoAddMaxPerEvent caps a single transfer platform-wide (0 =
+	// uncapped). Zero buffers get conservative defaults in New.
+	AutoAddTriggerBuffer dec.Decimal
+	AutoAddTargetBuffer  dec.Decimal
+	AutoAddMaxPerEvent   dec.Decimal
+
 	Clock func() time.Time // nil → time.Now
 }
 
@@ -125,6 +133,12 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	}
 	if cfg.BackstopAfterTicks <= 0 {
 		cfg.BackstopAfterTicks = 2
+	}
+	if cfg.AutoAddTriggerBuffer.Sign() <= 0 {
+		cfg.AutoAddTriggerBuffer = dec.New("0.005")
+	}
+	if cfg.AutoAddTargetBuffer.Sign() <= 0 {
+		cfg.AutoAddTargetBuffer = dec.Max(dec.New("0.01"), cfg.AutoAddTriggerBuffer)
 	}
 	svc := &Service{
 		eng: eng, dispatch: dispatch, journal: journal, cfg: cfg,

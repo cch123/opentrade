@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"strconv"
 	"sync"
 
@@ -38,6 +39,10 @@ func (s *userSeq) do(user uint64, fn func()) {
 func userIDString(user uint64) string {
 	return strconv.FormatUint(user, 10)
 }
+
+// errInvalid wraps an invalid-argument message (mapped to CodeInvalidArgument
+// at the Connect server).
+func errInvalid(msg string) error { return errors.New(msg) }
 
 // --- order store (guarded by s.mu; ops run inside seq.do) -------------------
 
@@ -100,6 +105,8 @@ func (s *Service) meta() *eventpb.EventMeta {
 // tier selection. It stays intentionally conservative for flips: if an incoming
 // order could both close and reopen, we size the tier from the submitted order
 // notional because Match, not perp-counter, determines the exact execution mix.
+// The cap itself resolves through the engine's ADR-0074 §10 min-chain
+// (effective tier incl. the position's riskID ∩ admin customer limit).
 func (s *Service) maxLeverageForOrder(user uint64, symbol string, side perpstate.Side, price, qty dec.Decimal) dec.Decimal {
 	notional := price.Mul(qty)
 	if pos, ok := s.eng.PositionOf(user, symbol); ok && pos.Side == side {
@@ -109,7 +116,7 @@ func (s *Service) maxLeverageForOrder(user uint64, symbol string, side perpstate
 		}
 		notional = notional.Add(pos.Notional(mark))
 	}
-	return s.risk.MaxLeverage(notional)
+	return s.eng.EffectiveMaxLeverage(user, symbol, notional)
 }
 
 // placedOrderEvent builds the order-event Match consumes for a new order
