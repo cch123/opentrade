@@ -1,6 +1,6 @@
 # ADR-0070: perp 强平进阶 —— 阶梯风险限额 + 部分强平 + 兜底接管 + ADL 自动执行
 
-- 状态: **Proposed**（2026-05-30 起草；从 [ADR-0068](./0068-usdt-linear-perp.md) 开放问题"阶梯杠杆 / 部分强平 / 完整 ADL 自动执行"提升为独立 ADR）
+- 状态: **Accepted / Implemented**（2026-05-30 起草；2026-05-30 落地 commit 66ba014 —— 阶梯风险限额（`pkg/perpstate/risk.go` RiskTier/MMRFunc）+ 部分强平（ReduceToTarget）+ 兜底接管（BackstopTakeover）+ ADL 自动执行（SelectAdlCandidates/ApplyAdlClose）四项全部实现；多 shard 保险基金 / 强平扫描索引 / 接管库存结算的后续展开见 ADR-0071 / 0072 / 0073。原从 [ADR-0068](./0068-usdt-linear-perp.md) 开放问题"阶梯杠杆 / 部分强平 / 完整 ADL 自动执行"提升为独立 ADR）
 - 日期: 2026-05-30
 - 决策者: xargin, Claude
 - 相关 ADR: 0068（USDT 线性 perp，§6 SymbolConfig、§8 强平、§9 保险基金/ADL、§备选方案 C/D）、0041（Reservation 前置 IM）、0048（snapshot 绑 offset + 幂等水位）、0055（Match 直出 orderbook）、0056（SymbolConfig via MySQL）、0018（UserSequencer）、0031（cold-standby HA）

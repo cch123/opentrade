@@ -1,6 +1,6 @@
 # ADR-0064: Counter 启动时主动触发 on-demand snapshot（消除本地 catch-up 启动延迟）
 
-- 状态: Proposed(v2 — 2026-04-23 /plan-eng-review 后修正 no-op commit 断言 → sentinel produce,补 epoch 校验、WaitAppliedTo 并发模型、fallback 安全点、metric 粒度)
+- 状态: Accepted（M1a–M4 全部落地,per-milestone commit id 见"分阶段落地"表,收口 commit 955b6e6 撤销 legacy 启动模式用户面选项；v2 — 2026-04-23 /plan-eng-review 后修正 no-op commit 断言 → sentinel produce,补 epoch 校验、WaitAppliedTo 并发模型、fallback 安全点、metric 粒度）
 - 日期: 2026-04-23
 - 决策者: xargin, Claude
 - 相关 ADR: 0017(Kafka transactional.id)、0048(snapshot + offset 原子绑定)、0058(Counter 虚拟分片 + 实例锁 / fence)、0060(Counter 消费异步化 + catch-up 协议,本 ADR supersede 其 §4.2 recovery 主路径)、0061(trade-dump snapshot pipeline,本 ADR 复用其 shadow engine 能力)、0062(OrderEvictedEvent tag 51 保留,本 ADR 用 tag 52)

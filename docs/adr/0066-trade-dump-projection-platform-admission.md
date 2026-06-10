@@ -1,6 +1,6 @@
 # ADR-0066: trade-dump 角色定位与状态投影平台准入规则
 
-- 状态: Proposed
+- 状态: Accepted（准入规则已生效 —— 共享快照核心落地 commit ec0341a（`pkg/snapshot` producer-owned core），§4 框架修订 commit b5f13d7；首个按本规则收编的项目 ADR-0067 trigger snapshot 已全部落地，"准入清单"表为现行判别依据）
 - 日期: 2026-04-26
 - 决策者: xargin, Claude
 - 相关 ADR: 0001（Kafka SoT）、0008（trade-dump sidecar）、0023（trade-dump batching）、0028（trade-dump journal projection）、0040（trigger service）、0042（trigger HA cold standby）、0047（trigger long-term history）、0049（snapshot proto/json）、0050（per-symbol order-event topic）、0055（Match orderbook authority）、0058（Counter vshard）、0059 §A.5.5（撮合输出 dispatch）、0060（Counter 异步消费 + TECheckpoint）、0061（trade-dump snapshot pipeline）、0064（Counter 启动 on-demand snapshot RPC）、0065（Asset funding MySQL authority）
