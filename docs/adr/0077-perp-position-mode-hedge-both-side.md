@@ -1,6 +1,6 @@
 # ADR-0077: perp 持仓模式 —— one-way / hedge both-side position
 
-- 状态: **Accepted**（2026-05-31 起草；2026-06-10 实现前设计修订并接受，修订内容见「设计修订记录」）
+- 状态: **Accepted / Implemented**（2026-05-31 起草；2026-06-10 实现前设计修订并接受，修订内容见「设计修订记录」；2026-06-10 实现落地，commit e452399 —— perpstate 算法 / engine 三段键存储 / service 准入与结算 / proto / perprisk 链路 / trade-dump+history+BFF 投影，全仓测试通过）
 - 日期: 2026-05-31（修订 2026-06-10）
 - 决策者: xargin, Codex
 - 相关 ADR: 0068（perp 仓位模型）、0070（强平进阶）、0071（跨 shard ADL）、0073（TakenOverLot）、0074（账户与保证金模式）、0078（订单/持仓产品 API，TP/SL 绑定持仓）、0081（reduce_only 结算加固）
