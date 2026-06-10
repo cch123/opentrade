@@ -1,7 +1,6 @@
 // Package server is the Connect-Go entry point into perp-counter
-// (ADR-0068). The read paths (QueryPositions / QueryMargin) are wired to the
-// engine; the write paths (PlaceOrder / CancelOrder) return Unimplemented
-// until the Match dispatch + per-user sequencer land in M3.
+// (ADR-0068 / ADR-0074): order + cancel + queries, the account/position
+// config surface, and the admin customer-leverage plane.
 package server
 
 import (
@@ -19,21 +18,20 @@ import (
 	"github.com/xargin/opentrade/pkg/perpstate"
 )
 
-// Server satisfies perprpcconnect.PerpServiceHandler. The embedded
-// Unimplemented handler covers the ADR-0074 config RPCs until their service
-// paths land; each is replaced by a real handler in the wiring milestone.
+// Server satisfies perprpcconnect.PerpServiceHandler.
 type Server struct {
-	perprpcconnect.UnimplementedPerpServiceHandler
-
 	eng        *engine.Engine
 	svc        *service.Service
-	defaultMMR dec.Decimal // maintenance margin rate for derived liq/ratio (M6: per-symbol)
+	defaultMMR dec.Decimal // fallback maintenance margin rate when no risk model is installed
 }
 
-// New wires a Server. A zero defaultMMR disables the derived liq-price field.
+// New wires a Server. A zero defaultMMR disables the derived liq-price field
+// when the engine has no risk model either.
 func New(eng *engine.Engine, svc *service.Service, defaultMMR dec.Decimal) *Server {
 	return &Server{eng: eng, svc: svc, defaultMMR: defaultMMR}
 }
+
+var _ perprpcconnect.PerpServiceHandler = (*Server)(nil)
 
 func (s *Server) PlaceOrder(_ context.Context, req *connect.Request[perprpc.PlaceOrderRequest]) (*connect.Response[perprpc.PlaceOrderResponse], error) {
 	resp, err := s.svc.PlaceOrder(req.Msg)
@@ -103,12 +101,15 @@ func (s *Server) QueryMargin(_ context.Context, req *connect.Request[perprpc.Que
 		isoMargin = isoMargin.Add(p.Margin)
 		isoUPnL = isoUPnL.Add(u)
 	}
-	// Derived availability (ADR-0074 §2). Cross requirements are zero until
-	// the cross pool evaluation is wired through the engine (M6 fills these
-	// from StandardRisk); the formulas below already follow the final shape.
+	// Derived availability (ADR-0074 §2): ledger buckets above, requirement /
+	// available_* fields computed from the cross pool risk model here.
 	zero := dec.FromInt(0)
 	crossIM := zero
 	crossMM := zero
+	if h, ok := s.eng.CrossPoolHealth(user); ok {
+		crossIM = h.InitialRequirement
+		crossMM = h.MaintenanceRequirement
+	}
 	availTrade := w.Available.Add(dec.Min(crossUPnL, zero)).Sub(crossIM)
 	availWithdraw := dec.Min(w.Available, availTrade)
 	if availWithdraw.Sign() < 0 {
@@ -117,7 +118,7 @@ func (s *Server) QueryMargin(_ context.Context, req *connect.Request[perprpc.Que
 	return connect.NewResponse(&perprpc.QueryMarginResponse{
 		Asset:                    "USDT",
 		FreeBalance:              w.Available.String(),
-		OrderMarginReserved:      w.Reserved.String(),
+		OrderMarginReserved:      w.Reserved.Add(w.CrossReserved).String(),
 		IsolatedMarginLocked:     isoMargin.String(),
 		IsolatedUnrealizedPnl:    isoUPnL.String(),
 		CrossUnrealizedPnl:       crossUPnL.String(),
@@ -126,6 +127,80 @@ func (s *Server) QueryMargin(_ context.Context, req *connect.Request[perprpc.Que
 		AvailableToTrade:         availTrade.String(),
 		AvailableToWithdraw:      availWithdraw.String(),
 	}), nil
+}
+
+// --- ADR-0074 config surface --------------------------------------------
+
+func (s *Server) SetMarginMode(_ context.Context, req *connect.Request[perprpc.SetMarginModeRequest]) (*connect.Response[perprpc.SetMarginModeResponse], error) {
+	resp, err := s.svc.SetMarginMode(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) AdjustIsolatedMargin(_ context.Context, req *connect.Request[perprpc.AdjustIsolatedMarginRequest]) (*connect.Response[perprpc.AdjustIsolatedMarginResponse], error) {
+	resp, err := s.svc.AdjustIsolatedMargin(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) SetAutoAddMargin(_ context.Context, req *connect.Request[perprpc.SetAutoAddMarginRequest]) (*connect.Response[perprpc.SetAutoAddMarginResponse], error) {
+	resp, err := s.svc.SetAutoAddMargin(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) SetPositionLeverage(_ context.Context, req *connect.Request[perprpc.SetPositionLeverageRequest]) (*connect.Response[perprpc.SetPositionLeverageResponse], error) {
+	resp, err := s.svc.SetPositionLeverage(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) SetRiskId(_ context.Context, req *connect.Request[perprpc.SetRiskIdRequest]) (*connect.Response[perprpc.SetRiskIdResponse], error) {
+	resp, err := s.svc.SetRiskId(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) QueryPositionConfig(_ context.Context, req *connect.Request[perprpc.QueryPositionConfigRequest]) (*connect.Response[perprpc.QueryPositionConfigResponse], error) {
+	resp, err := s.svc.QueryPositionConfig(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) QueryAccountConfig(_ context.Context, req *connect.Request[perprpc.QueryAccountConfigRequest]) (*connect.Response[perprpc.QueryAccountConfigResponse], error) {
+	resp, err := s.svc.QueryAccountConfig(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) SetCustomerLeverageLimit(_ context.Context, req *connect.Request[perprpc.SetCustomerLeverageLimitRequest]) (*connect.Response[perprpc.SetCustomerLeverageLimitResponse], error) {
+	resp, err := s.svc.SetCustomerLeverageLimit(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) ListCustomerLeverageLimits(_ context.Context, req *connect.Request[perprpc.ListCustomerLeverageLimitsRequest]) (*connect.Response[perprpc.ListCustomerLeverageLimitsResponse], error) {
+	resp, err := s.svc.ListCustomerLeverageLimits(req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // positionView projects a position into the wire type, computing the
@@ -142,13 +217,23 @@ func (s *Server) positionView(p *perpstate.Position) *perprpc.Position {
 		MarginMode:  toWireMode(p.Mode),
 		MarkPrice:   mark.String(),
 		RealizedPnl: p.Realized.String(),
+		RiskId:      p.RiskID,
 	}
 	if mark.Sign() > 0 {
 		v.UnrealizedPnl = p.UnrealizedPnL(mark).String()
-		v.MarginRatio = p.MarginRatio(mark).String()
 	}
-	if s.defaultMMR.Sign() > 0 {
-		v.LiqPrice = p.LiqPrice(perpstate.ConstantMMR(s.defaultMMR)).String()
+	// Per-position ratio / liq price are isolated concepts; a cross
+	// position's health lives in the account pool (QueryMargin carries the
+	// pool requirements, ADR-0074 §4 rule #6).
+	if p.Mode != perpstate.MarginCross {
+		if mark.Sign() > 0 {
+			v.MarginRatio = p.MarginRatio(mark).String()
+		}
+		if mmrOf, ok := s.eng.MMRFuncFor(p.RiskID); ok {
+			v.LiqPrice = p.LiqPrice(mmrOf).String()
+		} else if s.defaultMMR.Sign() > 0 {
+			v.LiqPrice = p.LiqPrice(perpstate.ConstantMMR(s.defaultMMR)).String()
+		}
 	}
 	return v
 }

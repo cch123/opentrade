@@ -58,6 +58,9 @@ type Config struct {
 	RiskTiers          string
 	LiqFeeRate         string
 	TargetMarginBuffer string
+	AutoAddTrigger     string
+	AutoAddTarget      string
+	AutoAddMaxPerEvent string
 	BackstopAccount    uint64
 	BackstopAfterTicks int
 	VShardCount        int
@@ -91,12 +94,15 @@ type Config struct {
 // deps are the parsed, process-lifetime dependencies passed to each primary
 // cycle.
 type deps struct {
-	mmr          dec.Decimal
-	maxLev       dec.Decimal
-	liqFeeRate   dec.Decimal
-	targetBuffer dec.Decimal
-	riskTiers    []perpstate.RiskTier
-	idg          *idgen.Generator
+	mmr            dec.Decimal
+	maxLev         dec.Decimal
+	liqFeeRate     dec.Decimal
+	targetBuffer   dec.Decimal
+	autoAddTrigger dec.Decimal
+	autoAddTarget  dec.Decimal
+	autoAddMax     dec.Decimal
+	riskTiers      []perpstate.RiskTier
+	idg            *idgen.Generator
 }
 
 func main() {
@@ -124,6 +130,18 @@ func main() {
 	if err != nil {
 		logger.Fatal("invalid --target-margin-buffer", zap.Error(err))
 	}
+	autoAddTrigger, err := dec.Parse(cfg.AutoAddTrigger)
+	if err != nil {
+		logger.Fatal("invalid --auto-add-trigger-buffer", zap.Error(err))
+	}
+	autoAddTarget, err := dec.Parse(cfg.AutoAddTarget)
+	if err != nil {
+		logger.Fatal("invalid --auto-add-target-buffer", zap.Error(err))
+	}
+	autoAddMax, err := dec.Parse(cfg.AutoAddMaxPerEvent)
+	if err != nil {
+		logger.Fatal("invalid --auto-add-max-per-event", zap.Error(err))
+	}
 	riskTiers, err := parseRiskTiers(cfg.RiskTiers)
 	if err != nil {
 		logger.Fatal("invalid --risk-tiers", zap.Error(err))
@@ -135,7 +153,9 @@ func main() {
 	if err != nil {
 		logger.Fatal("idgen", zap.Error(err))
 	}
-	d := deps{mmr: mmr, maxLev: maxLev, liqFeeRate: liqFeeRate, targetBuffer: targetBuffer, riskTiers: riskTiers, idg: idg}
+	d := deps{mmr: mmr, maxLev: maxLev, liqFeeRate: liqFeeRate, targetBuffer: targetBuffer,
+		autoAddTrigger: autoAddTrigger, autoAddTarget: autoAddTarget, autoAddMax: autoAddMax,
+		riskTiers: riskTiers, idg: idg}
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -269,6 +289,8 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		LiquidationFeeRate: d.liqFeeRate, TargetMarginBuffer: d.targetBuffer,
 		BackstopAccount: cfg.BackstopAccount, BackstopAfterTicks: cfg.BackstopAfterTicks,
 		RiskCoordinatorEnabled: cfg.RiskCoordinator,
+		AutoAddTriggerBuffer:   d.autoAddTrigger, AutoAddTargetBuffer: d.autoAddTarget,
+		AutoAddMaxPerEvent: d.autoAddMax,
 	})
 	if restored != nil {
 		svc.Restore(restored.Service)
@@ -442,6 +464,9 @@ func parseFlags() Config {
 		"ADR-0070 risk tiers as cap:mmr:max_leverage:liq_fee_rate CSV; cap=0 means open-ended")
 	flag.StringVar(&cfg.LiqFeeRate, "liq-fee-rate", "0", "fallback liquidation fee rate credited to insurance")
 	flag.StringVar(&cfg.TargetMarginBuffer, "target-margin-buffer", "0", "partial liquidation target buffer added above tier MMR")
+	flag.StringVar(&cfg.AutoAddTrigger, "auto-add-trigger-buffer", "0", "ADR-0074 auto-add fires at MMR+buffer ratio (0 = service default 0.005)")
+	flag.StringVar(&cfg.AutoAddTarget, "auto-add-target-buffer", "0", "ADR-0074 auto-add tops margin up to MMR+buffer ratio (0 = service default 0.01)")
+	flag.StringVar(&cfg.AutoAddMaxPerEvent, "auto-add-max-per-event", "0", "platform cap per auto-add transfer (0 = uncapped)")
 	flag.Uint64Var(&cfg.BackstopAccount, "backstop-account", 0, "system user id that receives internal backstop inventory")
 	flag.IntVar(&cfg.BackstopAfterTicks, "backstop-after-ticks", 2, "mark ticks to wait before escalating an in-flight liquidation to backstop")
 	flag.IntVar(&cfg.VShardCount, "vshard-count", 1, "perp-counter user vshard count; values >1 require --risk-coordinator-enabled (ADR-0071)")

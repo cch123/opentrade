@@ -320,6 +320,17 @@ func (e *Engine) mmrForLocked(p *perpstate.Position) perpstate.MMRFunc {
 	return e.risk.EffectiveMMRFunc(p.RiskID)
 }
 
+// MMRFuncFor exposes the effective MMR resolver for a riskID — query views
+// (liq price display) resolve through the same tier math as liquidation.
+func (e *Engine) MMRFuncFor(riskID uint32) (perpstate.MMRFunc, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if !e.riskSet || !e.risk.HasMMR() {
+		return nil, false
+	}
+	return e.risk.EffectiveMMRFunc(riskID), true
+}
+
 // ApplyFill applies a trade fill to (user, symbol)'s position and routes the
 // cash effects between wallet and position margin (ADR-0068 §4):
 //   - open/increase: initial margin is drawn from Reserved (held at order
