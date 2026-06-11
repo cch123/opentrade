@@ -272,6 +272,9 @@ BlockTrade(block_trade_id, symbol, price, qty,
 - perp-counter 分片后：block trade 升级为 ADR-0071 模式的跨 shard 版本戳协调。
 - RFQ/审批流产品化（block trade 的用户侧入口）；行情延迟公布策略。
 - batch `atomic=true`；amend fast-path。
+- batch 固定成本摊销：整批一次 sequencer 进入 + 整批单 Kafka 事务派发（协议不变，纯实现优化；与 ADR-0085 现货侧同批处理）。
+- batch amend：镜像 ADR-0085 未来工作项（做市商梯子改价场景），per-item best-effort
+  套用 §2 amend 状态机；与 WS order entry 同期立项。
 - swap/transfer position（依赖子账户 ADR）。
 
 ## 参考 (References)

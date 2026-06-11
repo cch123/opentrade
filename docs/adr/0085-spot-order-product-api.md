@@ -160,6 +160,12 @@ ADR-0014 已否决（orderbook in-place modify 复杂度、优先级语义争议
 ## 未来工作
 
 - batch 固定成本摊销：整批一次 sequencer 进入 + 整批单 Kafka 事务派发（协议不变，纯实现优化；与 ADR-0078 侧同批处理）。
+- **batch amend（BatchAmendOrders）**：批量操作里对做市商最有价值的一项——盘口平移时
+  的梯子整体改价（OKX/Bybit 均提供，OKX 还放在 WS 交易通道上），本 ADR 与 ADR-0078
+  目前都只做了 batch place / batch cancel。语义无需新决策：per-item best-effort，
+  每个子项独立走 §2 的 conservative amend 状态机（子项已有在途 amend 时拒绝
+  `amend_in_progress`），单批上限同 20。其价值依附于做市商接入通道，建议与
+  WS order entry 一起立项，优先级排序：WS order entry → 派发事务摊销 → batch-amend。
 - Match 终态 order-id 环（ADR-0078 未来工作项）：关闭事件驱动续单的重放二次成交残余窗口，现货 perp 共享。
 - pre-check / 现货 OTC（block trade）：按 §4 的触发条件另行立项。
 - atomic batch：如产品确需，限同 user + 同 symbol + 小批量，sequencer 内预校验全部冻结。
