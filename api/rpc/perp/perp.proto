@@ -23,6 +23,24 @@ service PerpService {
   rpc QueryPositions(QueryPositionsRequest) returns (QueryPositionsResponse);
   rpc QueryMargin(QueryMarginRequest) returns (QueryMarginResponse);
 
+  // ADR-0078 §2: cancel + new amend (conservative mode). The new order id is
+  // pre-allocated and returned synchronously; the replacement order is
+  // dispatched only after the old order reaches a terminal status.
+  rpc AmendOrder(AmendOrderRequest) returns (AmendOrderResponse);
+  // ADR-0078 §3: best-effort per-item batches. batch_id is a correlation /
+  // audit key (echoed verbatim); idempotency rides each item's
+  // client_order_id dedup.
+  rpc BatchPlaceOrders(BatchPlaceOrdersRequest) returns (BatchPlaceOrdersResponse);
+  rpc BatchCancelOrders(BatchCancelOrdersRequest) returns (BatchCancelOrdersResponse);
+  // ADR-0078 §3: cancel every active order, optionally scoped to one symbol.
+  rpc CancelAllOrders(CancelAllOrdersRequest) returns (CancelAllOrdersResponse);
+  // ADR-0078 §4: dry-run the PlaceOrder admission (no reservation, no
+  // leverage write-through). An estimate, not a lock.
+  rpc PreCheckOrder(PreCheckOrderRequest) returns (PreCheckOrderResponse);
+  // ADR-0078 §5: conservative two-phase close-all. Idempotent on
+  // client_op_id — a repeat returns the in-flight/most-recent state.
+  rpc CloseAllPositions(CloseAllPositionsRequest) returns (CloseAllPositionsResponse);
+
   // ADR-0074 account / position config surface. Mutations are idempotent on
   // client_op_id (a repeat returns the first outcome) and run inside the
   // owning user's sequencer.
@@ -54,6 +72,15 @@ service PerpService {
   // outright. admin-gateway fans this out across perp shards before letting
   // an IMMEDIATE tightening publish through.
   rpc ProjectRiskConfig(ProjectRiskConfigRequest) returns (ProjectRiskConfigResponse);
+
+  // ADR-0078 §7 admin plane: force add/sub a position leg with mandatory
+  // audit fields. Reuses the fill-settlement math but journals a dedicated
+  // PerpAdminPositionAdjustmentEvent — never a trade row or fee.
+  rpc ForceAdjustPosition(ForceAdjustPositionRequest) returns (ForceAdjustPositionResponse);
+  // ADR-0078 §8 admin plane: bilateral off-book block trade. Both legs admit
+  // and settle inside both users' sequencers (ordered locking) — all-or-
+  // nothing. Idempotent on block_trade_id.
+  rpc BlockTrade(BlockTradeRequest) returns (BlockTradeResponse);
 }
 
 // MarginMode mirrors perpstate.MarginMode (ADR-0068 §3.1 / ADR-0074).
@@ -110,6 +137,187 @@ message CancelOrderRequest {
 message CancelOrderResponse {
   uint64 order_id = 1;
   bool accepted = 2;
+  // ADR-0078 §3: set when accepted=false so batch / cancel-all per-item
+  // results are self-explanatory (not_found / already_terminal /
+  // liquidation_owned / symbol_not_cancelable / close_all_in_progress /
+  // dispatch_failed).
+  string reject_reason = 3;
+}
+
+// --- ADR-0078 §2 amend -----------------------------------------------------
+
+message AmendOrderRequest {
+  uint64 user_id = 1;
+  uint64 order_id = 2;   // live LIMIT order to amend
+  string new_price = 3;  // decimal > 0
+  // decimal > 0: the NEW TOTAL intent qty (Bybit-aligned). The replacement
+  // order's qty is new_qty - old.filled_qty at the old order's terminal
+  // point; <= 0 ends the amend ALREADY_FILLED with no new order.
+  string new_qty = 4;
+}
+
+message AmendOrderResponse {
+  bool accepted = 1;
+  // not_found / market_order_not_amendable / amend_in_progress /
+  // liquidation_owned / qty_not_above_filled / invalid_price ...
+  string reject_reason = 2;
+  uint64 old_order_id = 3;
+  // Pre-allocated replacement order id (the replay-convergence anchor,
+  // ADR-0078 修订 #6). The replacement is dispatched under this id after
+  // the old order reaches terminal; track it via order events / query.
+  uint64 new_order_id = 4;
+  int64 received_ts_unix_ms = 5;
+}
+
+// --- ADR-0078 §3 batch + cancel-all -----------------------------------------
+
+message BatchPlaceOrdersRequest {
+  uint64 user_id = 1;
+  string batch_id = 2;                  // correlation/audit key, echoed
+  // Per-item full PlaceOrder shape. Item user_id must be 0 or equal the
+  // header user_id (fail-closed otherwise). Max 20 items.
+  repeated PlaceOrderRequest items = 3;
+}
+
+message BatchPlaceOrdersResponse {
+  string batch_id = 1;
+  repeated PlaceOrderResponse items = 2; // index-aligned with the request
+}
+
+message BatchCancelOrdersRequest {
+  uint64 user_id = 1;
+  string batch_id = 2;
+  repeated uint64 order_ids = 3;        // max 20
+}
+
+message BatchCancelOrdersResponse {
+  string batch_id = 1;
+  repeated CancelOrderResponse items = 2; // index-aligned
+}
+
+message CancelAllOrdersRequest {
+  uint64 user_id = 1;
+  string symbol = 2;                    // empty = all symbols
+}
+
+message CancelAllOrdersResponse {
+  repeated CancelOrderResponse items = 1; // one per targeted active order
+}
+
+// --- ADR-0078 §4 pre-check ---------------------------------------------------
+
+message PreCheckOrderRequest {
+  PlaceOrderRequest order = 1;
+}
+
+// PreCheckOrderResponse is an estimate from the SAME admission path
+// PlaceOrder runs, in dry-run mode (no reservation, no leverage
+// write-through). price_protection is deferred until ADR-0080 lands.
+message PreCheckOrderResponse {
+  bool would_accept = 1;
+  string reject_reason = 2;
+  string required_initial_margin = 3; // decimal; "0" for reduce-only
+  string fee_buffer = 4;              // ADR-0079 §4 taker-rate buffer
+  string effective_leverage = 5;
+  MarginMode margin_mode = 6;
+  uint32 risk_id = 7;
+  // Estimate of the largest additional qty admissible at this price /
+  // leverage given current available balance — NOT a guarantee.
+  string max_open_qty = 8;
+  uint64 config_version = 9;          // SymbolConfig version evaluated against
+}
+
+// --- ADR-0078 §5 close-all ----------------------------------------------------
+
+enum CloseAllPhase {
+  CLOSE_ALL_PHASE_UNSPECIFIED = 0;
+  CLOSE_ALL_PHASE_CANCELING = 1;        // waiting for in-scope orders to go terminal
+  CLOSE_ALL_PHASE_PLACING = 2;          // close orders dispatched, not yet terminal
+  CLOSE_ALL_PHASE_DONE = 3;
+  CLOSE_ALL_PHASE_DONE_WITH_ERRORS = 4; // some legs failed to place (see legs)
+}
+
+message CloseAllPositionsRequest {
+  uint64 user_id = 1;
+  string symbol = 2;       // empty = every symbol with a position or active order
+  // Protected-market collar for the close orders (ADR-0083), (0, 10000].
+  uint32 slippage_bps = 3;
+  string client_op_id = 4; // idempotency key; a repeat returns current state
+}
+
+message CloseAllLeg {
+  string symbol = 1;
+  uint32 position_idx = 2;
+  uint64 order_id = 3;      // pre-allocated close order id (0 = skipped leg)
+  string qty = 4;           // decimal sized at placement; "" before PLACING
+  string reject_reason = 5; // per-leg placement failure (liquidation_in_flight, ...)
+}
+
+message CloseAllPositionsResponse {
+  bool accepted = 1;
+  string reject_reason = 2; // liquidation_in_flight / close_all_in_progress / no_scope ...
+  string close_all_id = 3;  // = client_op_id
+  CloseAllPhase phase = 4;
+  repeated CloseAllLeg legs = 5; // known per-leg state (empty while CANCELING)
+}
+
+// --- ADR-0078 §7 admin force adjust -------------------------------------------
+
+message ForceAdjustPositionRequest {
+  uint64 user_id = 1;
+  string symbol = 2;
+  uint32 position_idx = 3;             // ADR-0077 leg addressing (0 / 1 / 2)
+  bool sub = 4;                        // false = ADD (increase), true = SUB (decrease)
+  // ADD: required — flat leg takes this side, non-flat leg must match it.
+  // SUB: ignored (derived as the close side of the existing leg).
+  opentrade.event.Side side = 5;
+  string qty = 6;                      // decimal > 0; SUB must be <= leg size (no flip)
+  string price = 7;                    // decimal > 0, admin-specified execution price
+  string reason = 8;                   // mandatory audit fields (ADR-0078 §7)
+  string ticket = 9;
+  string operator = 10;
+  string client_op_id = 11;            // idempotency key
+}
+
+message ForceAdjustPositionResponse {
+  bool accepted = 1;
+  string reject_reason = 2;
+  string position_size = 3;            // post-op leg view
+  string entry_price = 4;
+  string margin = 5;
+  string realized_pnl = 6;             // booked by a SUB ("0" for ADD)
+  string free_balance_after = 7;
+}
+
+// --- ADR-0078 §8 block trade ---------------------------------------------------
+
+message BlockTradeLeg {
+  uint64 user_id = 1;
+  uint32 position_idx = 2;
+  // reduce_only legs validate against the existing opposite leg (qty <=
+  // leg size) and reserve no IM; non-reduce-only legs run the full margin
+  // admission at the block price.
+  bool reduce_only = 3;
+}
+
+message BlockTradeRequest {
+  string block_trade_id = 1;           // idempotency key (required)
+  string symbol = 2;
+  string price = 3;                    // decimal; must sit within mark ± band
+  string qty = 4;                      // decimal > 0
+  BlockTradeLeg buyer = 5;
+  BlockTradeLeg seller = 6;
+  string reason = 7;                   // audit fields
+  string ticket = 8;
+  string operator = 9;
+}
+
+message BlockTradeResponse {
+  bool accepted = 1;
+  // same_user / no_mark / price_out_of_band / "buyer: <admission reason>" /
+  // "seller: <admission reason>" — any leg failure rejects the whole trade.
+  string reject_reason = 2;
+  string trade_id = 3;                 // "block-<block_trade_id>" on success
 }
 
 message QueryOrderRequest {

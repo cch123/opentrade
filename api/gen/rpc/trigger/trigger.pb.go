@@ -113,6 +113,11 @@ const (
 	// is full (ADR-0054). Terminal; reservation (if any) was released. Named
 	// after Binance's equivalent spot-filter status.
 	TriggerStatus_TRIGGER_STATUS_EXPIRED_IN_MATCH TriggerStatus = 6
+	// EXPIRED_POSITION_GONE: a perp position-bound trigger fired but the
+	// bound position no longer exists / no longer matches the close side, so
+	// perp-counter's reduce-only admission rejected the inner order
+	// (ADR-0078 §6). Terminal; the trigger never reverse-opens.
+	TriggerStatus_TRIGGER_STATUS_EXPIRED_POSITION_GONE TriggerStatus = 7
 )
 
 // Enum value maps for TriggerStatus.
@@ -125,15 +130,17 @@ var (
 		4: "TRIGGER_STATUS_REJECTED",
 		5: "TRIGGER_STATUS_EXPIRED",
 		6: "TRIGGER_STATUS_EXPIRED_IN_MATCH",
+		7: "TRIGGER_STATUS_EXPIRED_POSITION_GONE",
 	}
 	TriggerStatus_value = map[string]int32{
-		"TRIGGER_STATUS_UNSPECIFIED":      0,
-		"TRIGGER_STATUS_PENDING":          1,
-		"TRIGGER_STATUS_TRIGGERED":        2,
-		"TRIGGER_STATUS_CANCELED":         3,
-		"TRIGGER_STATUS_REJECTED":         4,
-		"TRIGGER_STATUS_EXPIRED":          5,
-		"TRIGGER_STATUS_EXPIRED_IN_MATCH": 6,
+		"TRIGGER_STATUS_UNSPECIFIED":           0,
+		"TRIGGER_STATUS_PENDING":               1,
+		"TRIGGER_STATUS_TRIGGERED":             2,
+		"TRIGGER_STATUS_CANCELED":              3,
+		"TRIGGER_STATUS_REJECTED":              4,
+		"TRIGGER_STATUS_EXPIRED":               5,
+		"TRIGGER_STATUS_EXPIRED_IN_MATCH":      6,
+		"TRIGGER_STATUS_EXPIRED_POSITION_GONE": 7,
 	}
 )
 
@@ -188,8 +195,25 @@ type PlaceTriggerRequest struct {
 	// tracking from the first observed price".
 	TrailingDeltaBps int32  `protobuf:"varint,12,opt,name=trailing_delta_bps,json=trailingDeltaBps,proto3" json:"trailing_delta_bps,omitempty"`
 	ActivationPrice  string `protobuf:"bytes,13,opt,name=activation_price,json=activationPrice,proto3" json:"activation_price,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// --- ADR-0078 §6 perp position binding -----------------------------------
+	// perp=true marks a position-bound perp trigger: symbol is a perp symbol,
+	// the trigger basis is MARK PRICE (perp-price topic, not PublicTrade), and
+	// the fired inner order goes to perp-counter as reduce_only=true on
+	// position_idx with client_order_id="trig-<id>". quote_qty is forbidden;
+	// qty is required. side stays the CLOSING order side (the bound position's
+	// side is its opposite — validated by the admission matrix at fire time).
+	Perp bool `protobuf:"varint,14,opt,name=perp,proto3" json:"perp,omitempty"`
+	// ADR-0077 leg addressing: 0 in one-way mode, 1/2 in hedge mode. Validated
+	// fail-closed by perp-counter when the trigger fires.
+	PositionIdx uint32 `protobuf:"varint,15,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	// Recorded for audit / product parity; V1 semantics are empty because a
+	// reduce-only perp order reserves no IM (ADR-0078 修订 #7).
+	CloseOnTrigger bool `protobuf:"varint,16,opt,name=close_on_trigger,json=closeOnTrigger,proto3" json:"close_on_trigger,omitempty"`
+	// MARKET variants only: protected-market collar forwarded to the inner
+	// order (ADR-0083). 0 = plain market.
+	SlippageBps   uint32 `protobuf:"varint,17,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PlaceTriggerRequest) Reset() {
@@ -311,6 +335,34 @@ func (x *PlaceTriggerRequest) GetActivationPrice() string {
 		return x.ActivationPrice
 	}
 	return ""
+}
+
+func (x *PlaceTriggerRequest) GetPerp() bool {
+	if x != nil {
+		return x.Perp
+	}
+	return false
+}
+
+func (x *PlaceTriggerRequest) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *PlaceTriggerRequest) GetCloseOnTrigger() bool {
+	if x != nil {
+		return x.CloseOnTrigger
+	}
+	return false
+}
+
+func (x *PlaceTriggerRequest) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
+	}
+	return 0
 }
 
 type PlaceTriggerResponse struct {
@@ -716,8 +768,13 @@ type Trigger struct {
 	ActivationPrice   string `protobuf:"bytes,20,opt,name=activation_price,json=activationPrice,proto3" json:"activation_price,omitempty"`       // 0 = start tracking immediately
 	TrailingWatermark string `protobuf:"bytes,21,opt,name=trailing_watermark,json=trailingWatermark,proto3" json:"trailing_watermark,omitempty"` // current max (sell) / min (buy)
 	TrailingActive    bool   `protobuf:"varint,22,opt,name=trailing_active,json=trailingActive,proto3" json:"trailing_active,omitempty"`         // true once activation_price crossed
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// ADR-0078 §6 perp position binding (mirrors PlaceTriggerRequest).
+	Perp           bool   `protobuf:"varint,23,opt,name=perp,proto3" json:"perp,omitempty"`
+	PositionIdx    uint32 `protobuf:"varint,24,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	CloseOnTrigger bool   `protobuf:"varint,25,opt,name=close_on_trigger,json=closeOnTrigger,proto3" json:"close_on_trigger,omitempty"`
+	SlippageBps    uint32 `protobuf:"varint,26,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Trigger) Reset() {
@@ -904,6 +961,130 @@ func (x *Trigger) GetTrailingActive() bool {
 	return false
 }
 
+func (x *Trigger) GetPerp() bool {
+	if x != nil {
+		return x.Perp
+	}
+	return false
+}
+
+func (x *Trigger) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *Trigger) GetCloseOnTrigger() bool {
+	if x != nil {
+		return x.CloseOnTrigger
+	}
+	return false
+}
+
+func (x *Trigger) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
+	}
+	return 0
+}
+
+type CountActiveTriggersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CountActiveTriggersRequest) Reset() {
+	*x = CountActiveTriggersRequest{}
+	mi := &file_rpc_trigger_trigger_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CountActiveTriggersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CountActiveTriggersRequest) ProtoMessage() {}
+
+func (x *CountActiveTriggersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_trigger_trigger_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CountActiveTriggersRequest.ProtoReflect.Descriptor instead.
+func (*CountActiveTriggersRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_trigger_trigger_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *CountActiveTriggersRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *CountActiveTriggersRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+type CountActiveTriggersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Count         uint32                 `protobuf:"varint,1,opt,name=count,proto3" json:"count,omitempty"` // PENDING triggers for (user_id, symbol)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CountActiveTriggersResponse) Reset() {
+	*x = CountActiveTriggersResponse{}
+	mi := &file_rpc_trigger_trigger_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CountActiveTriggersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CountActiveTriggersResponse) ProtoMessage() {}
+
+func (x *CountActiveTriggersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_trigger_trigger_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CountActiveTriggersResponse.ProtoReflect.Descriptor instead.
+func (*CountActiveTriggersResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_trigger_trigger_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CountActiveTriggersResponse) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
 type PlaceOCORequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	UserId      uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -918,7 +1099,7 @@ type PlaceOCORequest struct {
 
 func (x *PlaceOCORequest) Reset() {
 	*x = PlaceOCORequest{}
-	mi := &file_rpc_trigger_trigger_proto_msgTypes[9]
+	mi := &file_rpc_trigger_trigger_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -930,7 +1111,7 @@ func (x *PlaceOCORequest) String() string {
 func (*PlaceOCORequest) ProtoMessage() {}
 
 func (x *PlaceOCORequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_trigger_trigger_proto_msgTypes[9]
+	mi := &file_rpc_trigger_trigger_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -943,7 +1124,7 @@ func (x *PlaceOCORequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlaceOCORequest.ProtoReflect.Descriptor instead.
 func (*PlaceOCORequest) Descriptor() ([]byte, []int) {
-	return file_rpc_trigger_trigger_proto_rawDescGZIP(), []int{9}
+	return file_rpc_trigger_trigger_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PlaceOCORequest) GetUserId() uint64 {
@@ -981,7 +1162,7 @@ type PlaceOCOResponse struct {
 
 func (x *PlaceOCOResponse) Reset() {
 	*x = PlaceOCOResponse{}
-	mi := &file_rpc_trigger_trigger_proto_msgTypes[10]
+	mi := &file_rpc_trigger_trigger_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -993,7 +1174,7 @@ func (x *PlaceOCOResponse) String() string {
 func (*PlaceOCOResponse) ProtoMessage() {}
 
 func (x *PlaceOCOResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_trigger_trigger_proto_msgTypes[10]
+	mi := &file_rpc_trigger_trigger_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1006,7 +1187,7 @@ func (x *PlaceOCOResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlaceOCOResponse.ProtoReflect.Descriptor instead.
 func (*PlaceOCOResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_trigger_trigger_proto_rawDescGZIP(), []int{10}
+	return file_rpc_trigger_trigger_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *PlaceOCOResponse) GetOcoGroupId() string {
@@ -1041,7 +1222,7 @@ var File_rpc_trigger_trigger_proto protoreflect.FileDescriptor
 
 const file_rpc_trigger_trigger_proto_rawDesc = "" +
 	"\n" +
-	"\x19rpc/trigger/trigger.proto\x12\x15opentrade.rpc.trigger\x1a\x12event/common.proto\"\xfa\x03\n" +
+	"\x19rpc/trigger/trigger.proto\x12\x15opentrade.rpc.trigger\x1a\x12event/common.proto\"\xfe\x04\n" +
 	"\x13PlaceTriggerRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12*\n" +
 	"\x11client_trigger_id\x18\x02 \x01(\tR\x0fclientTriggerId\x12\x16\n" +
@@ -1058,7 +1239,11 @@ const file_rpc_trigger_trigger_proto_rawDesc = "" +
 	" \x01(\x0e2\x1c.opentrade.event.TimeInForceR\x03tif\x12+\n" +
 	"\x12expires_at_unix_ms\x18\v \x01(\x03R\x0fexpiresAtUnixMs\x12,\n" +
 	"\x12trailing_delta_bps\x18\f \x01(\x05R\x10trailingDeltaBps\x12)\n" +
-	"\x10activation_price\x18\r \x01(\tR\x0factivationPrice\"\xaf\x01\n" +
+	"\x10activation_price\x18\r \x01(\tR\x0factivationPrice\x12\x12\n" +
+	"\x04perp\x18\x0e \x01(\bR\x04perp\x12!\n" +
+	"\fposition_idx\x18\x0f \x01(\rR\vpositionIdx\x12(\n" +
+	"\x10close_on_trigger\x18\x10 \x01(\bR\x0ecloseOnTrigger\x12!\n" +
+	"\fslippage_bps\x18\x11 \x01(\rR\vslippageBps\"\xaf\x01\n" +
 	"\x14PlaceTriggerResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12<\n" +
 	"\x06status\x18\x02 \x01(\x0e2$.opentrade.rpc.trigger.TriggerStatusR\x06status\x12\x1a\n" +
@@ -1080,7 +1265,7 @@ const file_rpc_trigger_trigger_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12)\n" +
 	"\x10include_inactive\x18\x02 \x01(\bR\x0fincludeInactive\"R\n" +
 	"\x14ListTriggersResponse\x12:\n" +
-	"\btriggers\x18\x01 \x03(\v2\x1e.opentrade.rpc.trigger.TriggerR\btriggers\"\xe1\x06\n" +
+	"\btriggers\x18\x01 \x03(\v2\x1e.opentrade.rpc.trigger.TriggerR\btriggers\"\xe5\a\n" +
 	"\aTrigger\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12*\n" +
 	"\x11client_trigger_id\x18\x02 \x01(\tR\x0fclientTriggerId\x12\x17\n" +
@@ -1107,7 +1292,16 @@ const file_rpc_trigger_trigger_proto_rawDesc = "" +
 	"\x12trailing_delta_bps\x18\x13 \x01(\x05R\x10trailingDeltaBps\x12)\n" +
 	"\x10activation_price\x18\x14 \x01(\tR\x0factivationPrice\x12-\n" +
 	"\x12trailing_watermark\x18\x15 \x01(\tR\x11trailingWatermark\x12'\n" +
-	"\x0ftrailing_active\x18\x16 \x01(\bR\x0etrailingActive\"\x8e\x01\n" +
+	"\x0ftrailing_active\x18\x16 \x01(\bR\x0etrailingActive\x12\x12\n" +
+	"\x04perp\x18\x17 \x01(\bR\x04perp\x12!\n" +
+	"\fposition_idx\x18\x18 \x01(\rR\vpositionIdx\x12(\n" +
+	"\x10close_on_trigger\x18\x19 \x01(\bR\x0ecloseOnTrigger\x12!\n" +
+	"\fslippage_bps\x18\x1a \x01(\rR\vslippageBps\"M\n" +
+	"\x1aCountActiveTriggersRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"3\n" +
+	"\x1bCountActiveTriggersResponse\x12\x14\n" +
+	"\x05count\x18\x01 \x01(\rR\x05count\"\x8e\x01\n" +
 	"\x0fPlaceOCORequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\"\n" +
 	"\rclient_oco_id\x18\x02 \x01(\tR\vclientOcoId\x12>\n" +
@@ -1124,7 +1318,7 @@ const file_rpc_trigger_trigger_proto_rawDesc = "" +
 	"\x1cTRIGGER_TYPE_STOP_LOSS_LIMIT\x10\x02\x12\x1c\n" +
 	"\x18TRIGGER_TYPE_TAKE_PROFIT\x10\x03\x12\"\n" +
 	"\x1eTRIGGER_TYPE_TAKE_PROFIT_LIMIT\x10\x04\x12#\n" +
-	"\x1fTRIGGER_TYPE_TRAILING_STOP_LOSS\x10\x05*\xe4\x01\n" +
+	"\x1fTRIGGER_TYPE_TRAILING_STOP_LOSS\x10\x05*\x8e\x02\n" +
 	"\rTriggerStatus\x12\x1e\n" +
 	"\x1aTRIGGER_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16TRIGGER_STATUS_PENDING\x10\x01\x12\x1c\n" +
@@ -1132,13 +1326,15 @@ const file_rpc_trigger_trigger_proto_rawDesc = "" +
 	"\x17TRIGGER_STATUS_CANCELED\x10\x03\x12\x1b\n" +
 	"\x17TRIGGER_STATUS_REJECTED\x10\x04\x12\x1a\n" +
 	"\x16TRIGGER_STATUS_EXPIRED\x10\x05\x12#\n" +
-	"\x1fTRIGGER_STATUS_EXPIRED_IN_MATCH\x10\x062\x94\x04\n" +
+	"\x1fTRIGGER_STATUS_EXPIRED_IN_MATCH\x10\x06\x12(\n" +
+	"$TRIGGER_STATUS_EXPIRED_POSITION_GONE\x10\a2\x92\x05\n" +
 	"\x0eTriggerService\x12g\n" +
 	"\fPlaceTrigger\x12*.opentrade.rpc.trigger.PlaceTriggerRequest\x1a+.opentrade.rpc.trigger.PlaceTriggerResponse\x12j\n" +
 	"\rCancelTrigger\x12+.opentrade.rpc.trigger.CancelTriggerRequest\x1a,.opentrade.rpc.trigger.CancelTriggerResponse\x12g\n" +
 	"\fQueryTrigger\x12*.opentrade.rpc.trigger.QueryTriggerRequest\x1a+.opentrade.rpc.trigger.QueryTriggerResponse\x12g\n" +
 	"\fListTriggers\x12*.opentrade.rpc.trigger.ListTriggersRequest\x1a+.opentrade.rpc.trigger.ListTriggersResponse\x12[\n" +
-	"\bPlaceOCO\x12&.opentrade.rpc.trigger.PlaceOCORequest\x1a'.opentrade.rpc.trigger.PlaceOCOResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/trigger;triggerrpcb\x06proto3"
+	"\bPlaceOCO\x12&.opentrade.rpc.trigger.PlaceOCORequest\x1a'.opentrade.rpc.trigger.PlaceOCOResponse\x12|\n" +
+	"\x13CountActiveTriggers\x121.opentrade.rpc.trigger.CountActiveTriggersRequest\x1a2.opentrade.rpc.trigger.CountActiveTriggersResponseB<Z:github.com/xargin/opentrade/api/gen/rpc/trigger;triggerrpcb\x06proto3"
 
 var (
 	file_rpc_trigger_trigger_proto_rawDescOnce sync.Once
@@ -1153,35 +1349,37 @@ func file_rpc_trigger_trigger_proto_rawDescGZIP() []byte {
 }
 
 var file_rpc_trigger_trigger_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_rpc_trigger_trigger_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_rpc_trigger_trigger_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_rpc_trigger_trigger_proto_goTypes = []any{
-	(TriggerType)(0),              // 0: opentrade.rpc.trigger.TriggerType
-	(TriggerStatus)(0),            // 1: opentrade.rpc.trigger.TriggerStatus
-	(*PlaceTriggerRequest)(nil),   // 2: opentrade.rpc.trigger.PlaceTriggerRequest
-	(*PlaceTriggerResponse)(nil),  // 3: opentrade.rpc.trigger.PlaceTriggerResponse
-	(*CancelTriggerRequest)(nil),  // 4: opentrade.rpc.trigger.CancelTriggerRequest
-	(*CancelTriggerResponse)(nil), // 5: opentrade.rpc.trigger.CancelTriggerResponse
-	(*QueryTriggerRequest)(nil),   // 6: opentrade.rpc.trigger.QueryTriggerRequest
-	(*QueryTriggerResponse)(nil),  // 7: opentrade.rpc.trigger.QueryTriggerResponse
-	(*ListTriggersRequest)(nil),   // 8: opentrade.rpc.trigger.ListTriggersRequest
-	(*ListTriggersResponse)(nil),  // 9: opentrade.rpc.trigger.ListTriggersResponse
-	(*Trigger)(nil),               // 10: opentrade.rpc.trigger.Trigger
-	(*PlaceOCORequest)(nil),       // 11: opentrade.rpc.trigger.PlaceOCORequest
-	(*PlaceOCOResponse)(nil),      // 12: opentrade.rpc.trigger.PlaceOCOResponse
-	(event.Side)(0),               // 13: opentrade.event.Side
-	(event.TimeInForce)(0),        // 14: opentrade.event.TimeInForce
+	(TriggerType)(0),                    // 0: opentrade.rpc.trigger.TriggerType
+	(TriggerStatus)(0),                  // 1: opentrade.rpc.trigger.TriggerStatus
+	(*PlaceTriggerRequest)(nil),         // 2: opentrade.rpc.trigger.PlaceTriggerRequest
+	(*PlaceTriggerResponse)(nil),        // 3: opentrade.rpc.trigger.PlaceTriggerResponse
+	(*CancelTriggerRequest)(nil),        // 4: opentrade.rpc.trigger.CancelTriggerRequest
+	(*CancelTriggerResponse)(nil),       // 5: opentrade.rpc.trigger.CancelTriggerResponse
+	(*QueryTriggerRequest)(nil),         // 6: opentrade.rpc.trigger.QueryTriggerRequest
+	(*QueryTriggerResponse)(nil),        // 7: opentrade.rpc.trigger.QueryTriggerResponse
+	(*ListTriggersRequest)(nil),         // 8: opentrade.rpc.trigger.ListTriggersRequest
+	(*ListTriggersResponse)(nil),        // 9: opentrade.rpc.trigger.ListTriggersResponse
+	(*Trigger)(nil),                     // 10: opentrade.rpc.trigger.Trigger
+	(*CountActiveTriggersRequest)(nil),  // 11: opentrade.rpc.trigger.CountActiveTriggersRequest
+	(*CountActiveTriggersResponse)(nil), // 12: opentrade.rpc.trigger.CountActiveTriggersResponse
+	(*PlaceOCORequest)(nil),             // 13: opentrade.rpc.trigger.PlaceOCORequest
+	(*PlaceOCOResponse)(nil),            // 14: opentrade.rpc.trigger.PlaceOCOResponse
+	(event.Side)(0),                     // 15: opentrade.event.Side
+	(event.TimeInForce)(0),              // 16: opentrade.event.TimeInForce
 }
 var file_rpc_trigger_trigger_proto_depIdxs = []int32{
-	13, // 0: opentrade.rpc.trigger.PlaceTriggerRequest.side:type_name -> opentrade.event.Side
+	15, // 0: opentrade.rpc.trigger.PlaceTriggerRequest.side:type_name -> opentrade.event.Side
 	0,  // 1: opentrade.rpc.trigger.PlaceTriggerRequest.type:type_name -> opentrade.rpc.trigger.TriggerType
-	14, // 2: opentrade.rpc.trigger.PlaceTriggerRequest.tif:type_name -> opentrade.event.TimeInForce
+	16, // 2: opentrade.rpc.trigger.PlaceTriggerRequest.tif:type_name -> opentrade.event.TimeInForce
 	1,  // 3: opentrade.rpc.trigger.PlaceTriggerResponse.status:type_name -> opentrade.rpc.trigger.TriggerStatus
 	1,  // 4: opentrade.rpc.trigger.CancelTriggerResponse.status:type_name -> opentrade.rpc.trigger.TriggerStatus
 	10, // 5: opentrade.rpc.trigger.QueryTriggerResponse.trigger:type_name -> opentrade.rpc.trigger.Trigger
 	10, // 6: opentrade.rpc.trigger.ListTriggersResponse.triggers:type_name -> opentrade.rpc.trigger.Trigger
-	13, // 7: opentrade.rpc.trigger.Trigger.side:type_name -> opentrade.event.Side
+	15, // 7: opentrade.rpc.trigger.Trigger.side:type_name -> opentrade.event.Side
 	0,  // 8: opentrade.rpc.trigger.Trigger.type:type_name -> opentrade.rpc.trigger.TriggerType
-	14, // 9: opentrade.rpc.trigger.Trigger.tif:type_name -> opentrade.event.TimeInForce
+	16, // 9: opentrade.rpc.trigger.Trigger.tif:type_name -> opentrade.event.TimeInForce
 	1,  // 10: opentrade.rpc.trigger.Trigger.status:type_name -> opentrade.rpc.trigger.TriggerStatus
 	2,  // 11: opentrade.rpc.trigger.PlaceOCORequest.legs:type_name -> opentrade.rpc.trigger.PlaceTriggerRequest
 	3,  // 12: opentrade.rpc.trigger.PlaceOCOResponse.legs:type_name -> opentrade.rpc.trigger.PlaceTriggerResponse
@@ -1189,14 +1387,16 @@ var file_rpc_trigger_trigger_proto_depIdxs = []int32{
 	4,  // 14: opentrade.rpc.trigger.TriggerService.CancelTrigger:input_type -> opentrade.rpc.trigger.CancelTriggerRequest
 	6,  // 15: opentrade.rpc.trigger.TriggerService.QueryTrigger:input_type -> opentrade.rpc.trigger.QueryTriggerRequest
 	8,  // 16: opentrade.rpc.trigger.TriggerService.ListTriggers:input_type -> opentrade.rpc.trigger.ListTriggersRequest
-	11, // 17: opentrade.rpc.trigger.TriggerService.PlaceOCO:input_type -> opentrade.rpc.trigger.PlaceOCORequest
-	3,  // 18: opentrade.rpc.trigger.TriggerService.PlaceTrigger:output_type -> opentrade.rpc.trigger.PlaceTriggerResponse
-	5,  // 19: opentrade.rpc.trigger.TriggerService.CancelTrigger:output_type -> opentrade.rpc.trigger.CancelTriggerResponse
-	7,  // 20: opentrade.rpc.trigger.TriggerService.QueryTrigger:output_type -> opentrade.rpc.trigger.QueryTriggerResponse
-	9,  // 21: opentrade.rpc.trigger.TriggerService.ListTriggers:output_type -> opentrade.rpc.trigger.ListTriggersResponse
-	12, // 22: opentrade.rpc.trigger.TriggerService.PlaceOCO:output_type -> opentrade.rpc.trigger.PlaceOCOResponse
-	18, // [18:23] is the sub-list for method output_type
-	13, // [13:18] is the sub-list for method input_type
+	13, // 17: opentrade.rpc.trigger.TriggerService.PlaceOCO:input_type -> opentrade.rpc.trigger.PlaceOCORequest
+	11, // 18: opentrade.rpc.trigger.TriggerService.CountActiveTriggers:input_type -> opentrade.rpc.trigger.CountActiveTriggersRequest
+	3,  // 19: opentrade.rpc.trigger.TriggerService.PlaceTrigger:output_type -> opentrade.rpc.trigger.PlaceTriggerResponse
+	5,  // 20: opentrade.rpc.trigger.TriggerService.CancelTrigger:output_type -> opentrade.rpc.trigger.CancelTriggerResponse
+	7,  // 21: opentrade.rpc.trigger.TriggerService.QueryTrigger:output_type -> opentrade.rpc.trigger.QueryTriggerResponse
+	9,  // 22: opentrade.rpc.trigger.TriggerService.ListTriggers:output_type -> opentrade.rpc.trigger.ListTriggersResponse
+	14, // 23: opentrade.rpc.trigger.TriggerService.PlaceOCO:output_type -> opentrade.rpc.trigger.PlaceOCOResponse
+	12, // 24: opentrade.rpc.trigger.TriggerService.CountActiveTriggers:output_type -> opentrade.rpc.trigger.CountActiveTriggersResponse
+	19, // [19:25] is the sub-list for method output_type
+	13, // [13:19] is the sub-list for method input_type
 	13, // [13:13] is the sub-list for extension type_name
 	13, // [13:13] is the sub-list for extension extendee
 	0,  // [0:13] is the sub-list for field type_name
@@ -1213,7 +1413,7 @@ func file_rpc_trigger_trigger_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_trigger_trigger_proto_rawDesc), len(file_rpc_trigger_trigger_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

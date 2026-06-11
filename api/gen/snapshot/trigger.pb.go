@@ -42,8 +42,13 @@ type TriggerSnapshot struct {
 	// legacy snapshots (trigger self-produced) — caller falls back to
 	// AtStart for catch-up.
 	TriggerEventOffsets map[int32]int64 `protobuf:"bytes,7,rep,name=trigger_event_offsets,json=triggerEventOffsets,proto3" json:"trigger_event_offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// perp_price_offsets is partition → next-to-consume on the perp-price
+	// topic — the second price feed perp position-bound triggers fire off
+	// (ADR-0078 §6). Travels with `offsets` so a restored trigger seeks both
+	// consumers (ADR-0048).
+	PerpPriceOffsets map[int32]int64 `protobuf:"bytes,8,rep,name=perp_price_offsets,json=perpPriceOffsets,proto3" json:"perp_price_offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TriggerSnapshot) Reset() {
@@ -125,6 +130,13 @@ func (x *TriggerSnapshot) GetTriggerEventOffsets() map[int32]int64 {
 	return nil
 }
 
+func (x *TriggerSnapshot) GetPerpPriceOffsets() map[int32]int64 {
+	if x != nil {
+		return x.PerpPriceOffsets
+	}
+	return nil
+}
+
 type TriggerRecord struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Id              uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -150,8 +162,13 @@ type TriggerRecord struct {
 	ActivationPrice   string `protobuf:"bytes,20,opt,name=activation_price,json=activationPrice,proto3" json:"activation_price,omitempty"`
 	TrailingWatermark string `protobuf:"bytes,21,opt,name=trailing_watermark,json=trailingWatermark,proto3" json:"trailing_watermark,omitempty"`
 	TrailingActive    bool   `protobuf:"varint,22,opt,name=trailing_active,json=trailingActive,proto3" json:"trailing_active,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// ADR-0078 §6 perp position binding.
+	Perp           bool   `protobuf:"varint,23,opt,name=perp,proto3" json:"perp,omitempty"`
+	PositionIdx    uint32 `protobuf:"varint,24,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	CloseOnTrigger bool   `protobuf:"varint,25,opt,name=close_on_trigger,json=closeOnTrigger,proto3" json:"close_on_trigger,omitempty"`
+	SlippageBps    uint32 `protobuf:"varint,26,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TriggerRecord) Reset() {
@@ -338,11 +355,39 @@ func (x *TriggerRecord) GetTrailingActive() bool {
 	return false
 }
 
+func (x *TriggerRecord) GetPerp() bool {
+	if x != nil {
+		return x.Perp
+	}
+	return false
+}
+
+func (x *TriggerRecord) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *TriggerRecord) GetCloseOnTrigger() bool {
+	if x != nil {
+		return x.CloseOnTrigger
+	}
+	return false
+}
+
+func (x *TriggerRecord) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
+	}
+	return 0
+}
+
 var File_snapshot_trigger_proto protoreflect.FileDescriptor
 
 const file_snapshot_trigger_proto_rawDesc = "" +
 	"\n" +
-	"\x16snapshot/trigger.proto\x12\x12opentrade.snapshot\"\xa5\x05\n" +
+	"\x16snapshot/trigger.proto\x12\x12opentrade.snapshot\"\xd3\x06\n" +
 	"\x0fTriggerSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x1e\n" +
 	"\vtaken_at_ms\x18\x02 \x01(\x03R\ttakenAtMs\x12J\n" +
@@ -350,7 +395,8 @@ const file_snapshot_trigger_proto_rawDesc = "" +
 	"\apending\x18\x04 \x03(\v2!.opentrade.snapshot.TriggerRecordR\apending\x12?\n" +
 	"\tterminals\x18\x05 \x03(\v2!.opentrade.snapshot.TriggerRecordR\tterminals\x12X\n" +
 	"\roco_by_client\x18\x06 \x03(\v24.opentrade.snapshot.TriggerSnapshot.OcoByClientEntryR\vocoByClient\x12p\n" +
-	"\x15trigger_event_offsets\x18\a \x03(\v2<.opentrade.snapshot.TriggerSnapshot.TriggerEventOffsetsEntryR\x13triggerEventOffsets\x1a:\n" +
+	"\x15trigger_event_offsets\x18\a \x03(\v2<.opentrade.snapshot.TriggerSnapshot.TriggerEventOffsetsEntryR\x13triggerEventOffsets\x12g\n" +
+	"\x12perp_price_offsets\x18\b \x03(\v29.opentrade.snapshot.TriggerSnapshot.PerpPriceOffsetsEntryR\x10perpPriceOffsets\x1a:\n" +
 	"\fOffsetsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a>\n" +
@@ -359,7 +405,10 @@ const file_snapshot_trigger_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aF\n" +
 	"\x18TriggerEventOffsetsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xcd\x05\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1aC\n" +
+	"\x15PerpPriceOffsetsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xd1\x06\n" +
 	"\rTriggerRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12*\n" +
 	"\x11client_trigger_id\x18\x02 \x01(\tR\x0fclientTriggerId\x12\x17\n" +
@@ -386,7 +435,11 @@ const file_snapshot_trigger_proto_rawDesc = "" +
 	"\x12trailing_delta_bps\x18\x13 \x01(\x05R\x10trailingDeltaBps\x12)\n" +
 	"\x10activation_price\x18\x14 \x01(\tR\x0factivationPrice\x12-\n" +
 	"\x12trailing_watermark\x18\x15 \x01(\tR\x11trailingWatermark\x12'\n" +
-	"\x0ftrailing_active\x18\x16 \x01(\bR\x0etrailingActiveB7Z5github.com/xargin/opentrade/api/gen/snapshot;snapshotb\x06proto3"
+	"\x0ftrailing_active\x18\x16 \x01(\bR\x0etrailingActive\x12\x12\n" +
+	"\x04perp\x18\x17 \x01(\bR\x04perp\x12!\n" +
+	"\fposition_idx\x18\x18 \x01(\rR\vpositionIdx\x12(\n" +
+	"\x10close_on_trigger\x18\x19 \x01(\bR\x0ecloseOnTrigger\x12!\n" +
+	"\fslippage_bps\x18\x1a \x01(\rR\vslippageBpsB7Z5github.com/xargin/opentrade/api/gen/snapshot;snapshotb\x06proto3"
 
 var (
 	file_snapshot_trigger_proto_rawDescOnce sync.Once
@@ -400,13 +453,14 @@ func file_snapshot_trigger_proto_rawDescGZIP() []byte {
 	return file_snapshot_trigger_proto_rawDescData
 }
 
-var file_snapshot_trigger_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_snapshot_trigger_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_snapshot_trigger_proto_goTypes = []any{
 	(*TriggerSnapshot)(nil), // 0: opentrade.snapshot.TriggerSnapshot
 	(*TriggerRecord)(nil),   // 1: opentrade.snapshot.TriggerRecord
 	nil,                     // 2: opentrade.snapshot.TriggerSnapshot.OffsetsEntry
 	nil,                     // 3: opentrade.snapshot.TriggerSnapshot.OcoByClientEntry
 	nil,                     // 4: opentrade.snapshot.TriggerSnapshot.TriggerEventOffsetsEntry
+	nil,                     // 5: opentrade.snapshot.TriggerSnapshot.PerpPriceOffsetsEntry
 }
 var file_snapshot_trigger_proto_depIdxs = []int32{
 	2, // 0: opentrade.snapshot.TriggerSnapshot.offsets:type_name -> opentrade.snapshot.TriggerSnapshot.OffsetsEntry
@@ -414,11 +468,12 @@ var file_snapshot_trigger_proto_depIdxs = []int32{
 	1, // 2: opentrade.snapshot.TriggerSnapshot.terminals:type_name -> opentrade.snapshot.TriggerRecord
 	3, // 3: opentrade.snapshot.TriggerSnapshot.oco_by_client:type_name -> opentrade.snapshot.TriggerSnapshot.OcoByClientEntry
 	4, // 4: opentrade.snapshot.TriggerSnapshot.trigger_event_offsets:type_name -> opentrade.snapshot.TriggerSnapshot.TriggerEventOffsetsEntry
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	5, // 5: opentrade.snapshot.TriggerSnapshot.perp_price_offsets:type_name -> opentrade.snapshot.TriggerSnapshot.PerpPriceOffsetsEntry
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_snapshot_trigger_proto_init() }
@@ -432,7 +487,7 @@ func file_snapshot_trigger_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snapshot_trigger_proto_rawDesc), len(file_snapshot_trigger_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

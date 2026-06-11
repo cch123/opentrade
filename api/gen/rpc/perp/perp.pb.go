@@ -124,6 +124,61 @@ func (PositionMode) EnumDescriptor() ([]byte, []int) {
 	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{1}
 }
 
+type CloseAllPhase int32
+
+const (
+	CloseAllPhase_CLOSE_ALL_PHASE_UNSPECIFIED      CloseAllPhase = 0
+	CloseAllPhase_CLOSE_ALL_PHASE_CANCELING        CloseAllPhase = 1 // waiting for in-scope orders to go terminal
+	CloseAllPhase_CLOSE_ALL_PHASE_PLACING          CloseAllPhase = 2 // close orders dispatched, not yet terminal
+	CloseAllPhase_CLOSE_ALL_PHASE_DONE             CloseAllPhase = 3
+	CloseAllPhase_CLOSE_ALL_PHASE_DONE_WITH_ERRORS CloseAllPhase = 4 // some legs failed to place (see legs)
+)
+
+// Enum value maps for CloseAllPhase.
+var (
+	CloseAllPhase_name = map[int32]string{
+		0: "CLOSE_ALL_PHASE_UNSPECIFIED",
+		1: "CLOSE_ALL_PHASE_CANCELING",
+		2: "CLOSE_ALL_PHASE_PLACING",
+		3: "CLOSE_ALL_PHASE_DONE",
+		4: "CLOSE_ALL_PHASE_DONE_WITH_ERRORS",
+	}
+	CloseAllPhase_value = map[string]int32{
+		"CLOSE_ALL_PHASE_UNSPECIFIED":      0,
+		"CLOSE_ALL_PHASE_CANCELING":        1,
+		"CLOSE_ALL_PHASE_PLACING":          2,
+		"CLOSE_ALL_PHASE_DONE":             3,
+		"CLOSE_ALL_PHASE_DONE_WITH_ERRORS": 4,
+	}
+)
+
+func (x CloseAllPhase) Enum() *CloseAllPhase {
+	p := new(CloseAllPhase)
+	*p = x
+	return p
+}
+
+func (x CloseAllPhase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CloseAllPhase) Descriptor() protoreflect.EnumDescriptor {
+	return file_rpc_perp_perp_proto_enumTypes[2].Descriptor()
+}
+
+func (CloseAllPhase) Type() protoreflect.EnumType {
+	return &file_rpc_perp_perp_proto_enumTypes[2]
+}
+
+func (x CloseAllPhase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CloseAllPhase.Descriptor instead.
+func (CloseAllPhase) EnumDescriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{2}
+}
+
 type PlaceOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -399,9 +454,14 @@ func (x *CancelOrderRequest) GetOrderId() uint64 {
 }
 
 type CancelOrderResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OrderId       uint64                 `protobuf:"varint,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
-	Accepted      bool                   `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	OrderId  uint64                 `protobuf:"varint,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Accepted bool                   `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	// ADR-0078 §3: set when accepted=false so batch / cancel-all per-item
+	// results are self-explanatory (not_found / already_terminal /
+	// liquidation_owned / symbol_not_cancelable / close_all_in_progress /
+	// dispatch_failed).
+	RejectReason  string `protobuf:"bytes,3,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -450,6 +510,1316 @@ func (x *CancelOrderResponse) GetAccepted() bool {
 	return false
 }
 
+func (x *CancelOrderResponse) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+type AmendOrderRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	UserId   uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrderId  uint64                 `protobuf:"varint,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`   // live LIMIT order to amend
+	NewPrice string                 `protobuf:"bytes,3,opt,name=new_price,json=newPrice,proto3" json:"new_price,omitempty"` // decimal > 0
+	// decimal > 0: the NEW TOTAL intent qty (Bybit-aligned). The replacement
+	// order's qty is new_qty - old.filled_qty at the old order's terminal
+	// point; <= 0 ends the amend ALREADY_FILLED with no new order.
+	NewQty        string `protobuf:"bytes,4,opt,name=new_qty,json=newQty,proto3" json:"new_qty,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AmendOrderRequest) Reset() {
+	*x = AmendOrderRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AmendOrderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AmendOrderRequest) ProtoMessage() {}
+
+func (x *AmendOrderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AmendOrderRequest.ProtoReflect.Descriptor instead.
+func (*AmendOrderRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AmendOrderRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *AmendOrderRequest) GetOrderId() uint64 {
+	if x != nil {
+		return x.OrderId
+	}
+	return 0
+}
+
+func (x *AmendOrderRequest) GetNewPrice() string {
+	if x != nil {
+		return x.NewPrice
+	}
+	return ""
+}
+
+func (x *AmendOrderRequest) GetNewQty() string {
+	if x != nil {
+		return x.NewQty
+	}
+	return ""
+}
+
+type AmendOrderResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Accepted bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	// not_found / market_order_not_amendable / amend_in_progress /
+	// liquidation_owned / qty_not_above_filled / invalid_price ...
+	RejectReason string `protobuf:"bytes,2,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
+	OldOrderId   uint64 `protobuf:"varint,3,opt,name=old_order_id,json=oldOrderId,proto3" json:"old_order_id,omitempty"`
+	// Pre-allocated replacement order id (the replay-convergence anchor,
+	// ADR-0078 修订 #6). The replacement is dispatched under this id after
+	// the old order reaches terminal; track it via order events / query.
+	NewOrderId       uint64 `protobuf:"varint,4,opt,name=new_order_id,json=newOrderId,proto3" json:"new_order_id,omitempty"`
+	ReceivedTsUnixMs int64  `protobuf:"varint,5,opt,name=received_ts_unix_ms,json=receivedTsUnixMs,proto3" json:"received_ts_unix_ms,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *AmendOrderResponse) Reset() {
+	*x = AmendOrderResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AmendOrderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AmendOrderResponse) ProtoMessage() {}
+
+func (x *AmendOrderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AmendOrderResponse.ProtoReflect.Descriptor instead.
+func (*AmendOrderResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *AmendOrderResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *AmendOrderResponse) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *AmendOrderResponse) GetOldOrderId() uint64 {
+	if x != nil {
+		return x.OldOrderId
+	}
+	return 0
+}
+
+func (x *AmendOrderResponse) GetNewOrderId() uint64 {
+	if x != nil {
+		return x.NewOrderId
+	}
+	return 0
+}
+
+func (x *AmendOrderResponse) GetReceivedTsUnixMs() int64 {
+	if x != nil {
+		return x.ReceivedTsUnixMs
+	}
+	return 0
+}
+
+type BatchPlaceOrdersRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	UserId  uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	BatchId string                 `protobuf:"bytes,2,opt,name=batch_id,json=batchId,proto3" json:"batch_id,omitempty"` // correlation/audit key, echoed
+	// Per-item full PlaceOrder shape. Item user_id must be 0 or equal the
+	// header user_id (fail-closed otherwise). Max 20 items.
+	Items         []*PlaceOrderRequest `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchPlaceOrdersRequest) Reset() {
+	*x = BatchPlaceOrdersRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchPlaceOrdersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchPlaceOrdersRequest) ProtoMessage() {}
+
+func (x *BatchPlaceOrdersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchPlaceOrdersRequest.ProtoReflect.Descriptor instead.
+func (*BatchPlaceOrdersRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *BatchPlaceOrdersRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *BatchPlaceOrdersRequest) GetBatchId() string {
+	if x != nil {
+		return x.BatchId
+	}
+	return ""
+}
+
+func (x *BatchPlaceOrdersRequest) GetItems() []*PlaceOrderRequest {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type BatchPlaceOrdersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BatchId       string                 `protobuf:"bytes,1,opt,name=batch_id,json=batchId,proto3" json:"batch_id,omitempty"`
+	Items         []*PlaceOrderResponse  `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"` // index-aligned with the request
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchPlaceOrdersResponse) Reset() {
+	*x = BatchPlaceOrdersResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchPlaceOrdersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchPlaceOrdersResponse) ProtoMessage() {}
+
+func (x *BatchPlaceOrdersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchPlaceOrdersResponse.ProtoReflect.Descriptor instead.
+func (*BatchPlaceOrdersResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *BatchPlaceOrdersResponse) GetBatchId() string {
+	if x != nil {
+		return x.BatchId
+	}
+	return ""
+}
+
+func (x *BatchPlaceOrdersResponse) GetItems() []*PlaceOrderResponse {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type BatchCancelOrdersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	BatchId       string                 `protobuf:"bytes,2,opt,name=batch_id,json=batchId,proto3" json:"batch_id,omitempty"`
+	OrderIds      []uint64               `protobuf:"varint,3,rep,packed,name=order_ids,json=orderIds,proto3" json:"order_ids,omitempty"` // max 20
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchCancelOrdersRequest) Reset() {
+	*x = BatchCancelOrdersRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchCancelOrdersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchCancelOrdersRequest) ProtoMessage() {}
+
+func (x *BatchCancelOrdersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchCancelOrdersRequest.ProtoReflect.Descriptor instead.
+func (*BatchCancelOrdersRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *BatchCancelOrdersRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *BatchCancelOrdersRequest) GetBatchId() string {
+	if x != nil {
+		return x.BatchId
+	}
+	return ""
+}
+
+func (x *BatchCancelOrdersRequest) GetOrderIds() []uint64 {
+	if x != nil {
+		return x.OrderIds
+	}
+	return nil
+}
+
+type BatchCancelOrdersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BatchId       string                 `protobuf:"bytes,1,opt,name=batch_id,json=batchId,proto3" json:"batch_id,omitempty"`
+	Items         []*CancelOrderResponse `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"` // index-aligned
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchCancelOrdersResponse) Reset() {
+	*x = BatchCancelOrdersResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchCancelOrdersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchCancelOrdersResponse) ProtoMessage() {}
+
+func (x *BatchCancelOrdersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchCancelOrdersResponse.ProtoReflect.Descriptor instead.
+func (*BatchCancelOrdersResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *BatchCancelOrdersResponse) GetBatchId() string {
+	if x != nil {
+		return x.BatchId
+	}
+	return ""
+}
+
+func (x *BatchCancelOrdersResponse) GetItems() []*CancelOrderResponse {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type CancelAllOrdersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // empty = all symbols
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelAllOrdersRequest) Reset() {
+	*x = CancelAllOrdersRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelAllOrdersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelAllOrdersRequest) ProtoMessage() {}
+
+func (x *CancelAllOrdersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelAllOrdersRequest.ProtoReflect.Descriptor instead.
+func (*CancelAllOrdersRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CancelAllOrdersRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *CancelAllOrdersRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+type CancelAllOrdersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*CancelOrderResponse `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"` // one per targeted active order
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelAllOrdersResponse) Reset() {
+	*x = CancelAllOrdersResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelAllOrdersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelAllOrdersResponse) ProtoMessage() {}
+
+func (x *CancelAllOrdersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelAllOrdersResponse.ProtoReflect.Descriptor instead.
+func (*CancelAllOrdersResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *CancelAllOrdersResponse) GetItems() []*CancelOrderResponse {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type PreCheckOrderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Order         *PlaceOrderRequest     `protobuf:"bytes,1,opt,name=order,proto3" json:"order,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PreCheckOrderRequest) Reset() {
+	*x = PreCheckOrderRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreCheckOrderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreCheckOrderRequest) ProtoMessage() {}
+
+func (x *PreCheckOrderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreCheckOrderRequest.ProtoReflect.Descriptor instead.
+func (*PreCheckOrderRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *PreCheckOrderRequest) GetOrder() *PlaceOrderRequest {
+	if x != nil {
+		return x.Order
+	}
+	return nil
+}
+
+// PreCheckOrderResponse is an estimate from the SAME admission path
+// PlaceOrder runs, in dry-run mode (no reservation, no leverage
+// write-through). price_protection is deferred until ADR-0080 lands.
+type PreCheckOrderResponse struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	WouldAccept           bool                   `protobuf:"varint,1,opt,name=would_accept,json=wouldAccept,proto3" json:"would_accept,omitempty"`
+	RejectReason          string                 `protobuf:"bytes,2,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
+	RequiredInitialMargin string                 `protobuf:"bytes,3,opt,name=required_initial_margin,json=requiredInitialMargin,proto3" json:"required_initial_margin,omitempty"` // decimal; "0" for reduce-only
+	FeeBuffer             string                 `protobuf:"bytes,4,opt,name=fee_buffer,json=feeBuffer,proto3" json:"fee_buffer,omitempty"`                                       // ADR-0079 §4 taker-rate buffer
+	EffectiveLeverage     string                 `protobuf:"bytes,5,opt,name=effective_leverage,json=effectiveLeverage,proto3" json:"effective_leverage,omitempty"`
+	MarginMode            MarginMode             `protobuf:"varint,6,opt,name=margin_mode,json=marginMode,proto3,enum=opentrade.rpc.perp.MarginMode" json:"margin_mode,omitempty"`
+	RiskId                uint32                 `protobuf:"varint,7,opt,name=risk_id,json=riskId,proto3" json:"risk_id,omitempty"`
+	// Estimate of the largest additional qty admissible at this price /
+	// leverage given current available balance — NOT a guarantee.
+	MaxOpenQty    string `protobuf:"bytes,8,opt,name=max_open_qty,json=maxOpenQty,proto3" json:"max_open_qty,omitempty"`
+	ConfigVersion uint64 `protobuf:"varint,9,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"` // SymbolConfig version evaluated against
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PreCheckOrderResponse) Reset() {
+	*x = PreCheckOrderResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreCheckOrderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreCheckOrderResponse) ProtoMessage() {}
+
+func (x *PreCheckOrderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreCheckOrderResponse.ProtoReflect.Descriptor instead.
+func (*PreCheckOrderResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *PreCheckOrderResponse) GetWouldAccept() bool {
+	if x != nil {
+		return x.WouldAccept
+	}
+	return false
+}
+
+func (x *PreCheckOrderResponse) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *PreCheckOrderResponse) GetRequiredInitialMargin() string {
+	if x != nil {
+		return x.RequiredInitialMargin
+	}
+	return ""
+}
+
+func (x *PreCheckOrderResponse) GetFeeBuffer() string {
+	if x != nil {
+		return x.FeeBuffer
+	}
+	return ""
+}
+
+func (x *PreCheckOrderResponse) GetEffectiveLeverage() string {
+	if x != nil {
+		return x.EffectiveLeverage
+	}
+	return ""
+}
+
+func (x *PreCheckOrderResponse) GetMarginMode() MarginMode {
+	if x != nil {
+		return x.MarginMode
+	}
+	return MarginMode_MARGIN_MODE_UNSPECIFIED
+}
+
+func (x *PreCheckOrderResponse) GetRiskId() uint32 {
+	if x != nil {
+		return x.RiskId
+	}
+	return 0
+}
+
+func (x *PreCheckOrderResponse) GetMaxOpenQty() string {
+	if x != nil {
+		return x.MaxOpenQty
+	}
+	return ""
+}
+
+func (x *PreCheckOrderResponse) GetConfigVersion() uint64 {
+	if x != nil {
+		return x.ConfigVersion
+	}
+	return 0
+}
+
+type CloseAllPositionsRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // empty = every symbol with a position or active order
+	// Protected-market collar for the close orders (ADR-0083), (0, 10000].
+	SlippageBps   uint32 `protobuf:"varint,3,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"`
+	ClientOpId    string `protobuf:"bytes,4,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"` // idempotency key; a repeat returns current state
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloseAllPositionsRequest) Reset() {
+	*x = CloseAllPositionsRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloseAllPositionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloseAllPositionsRequest) ProtoMessage() {}
+
+func (x *CloseAllPositionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloseAllPositionsRequest.ProtoReflect.Descriptor instead.
+func (*CloseAllPositionsRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *CloseAllPositionsRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *CloseAllPositionsRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *CloseAllPositionsRequest) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
+	}
+	return 0
+}
+
+func (x *CloseAllPositionsRequest) GetClientOpId() string {
+	if x != nil {
+		return x.ClientOpId
+	}
+	return ""
+}
+
+type CloseAllLeg struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Symbol        string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	PositionIdx   uint32                 `protobuf:"varint,2,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	OrderId       uint64                 `protobuf:"varint,3,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`               // pre-allocated close order id (0 = skipped leg)
+	Qty           string                 `protobuf:"bytes,4,opt,name=qty,proto3" json:"qty,omitempty"`                                       // decimal sized at placement; "" before PLACING
+	RejectReason  string                 `protobuf:"bytes,5,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"` // per-leg placement failure (liquidation_in_flight, ...)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloseAllLeg) Reset() {
+	*x = CloseAllLeg{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloseAllLeg) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloseAllLeg) ProtoMessage() {}
+
+func (x *CloseAllLeg) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloseAllLeg.ProtoReflect.Descriptor instead.
+func (*CloseAllLeg) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *CloseAllLeg) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *CloseAllLeg) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *CloseAllLeg) GetOrderId() uint64 {
+	if x != nil {
+		return x.OrderId
+	}
+	return 0
+}
+
+func (x *CloseAllLeg) GetQty() string {
+	if x != nil {
+		return x.Qty
+	}
+	return ""
+}
+
+func (x *CloseAllLeg) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+type CloseAllPositionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	RejectReason  string                 `protobuf:"bytes,2,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"` // liquidation_in_flight / close_all_in_progress / no_scope ...
+	CloseAllId    string                 `protobuf:"bytes,3,opt,name=close_all_id,json=closeAllId,proto3" json:"close_all_id,omitempty"`     // = client_op_id
+	Phase         CloseAllPhase          `protobuf:"varint,4,opt,name=phase,proto3,enum=opentrade.rpc.perp.CloseAllPhase" json:"phase,omitempty"`
+	Legs          []*CloseAllLeg         `protobuf:"bytes,5,rep,name=legs,proto3" json:"legs,omitempty"` // known per-leg state (empty while CANCELING)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloseAllPositionsResponse) Reset() {
+	*x = CloseAllPositionsResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloseAllPositionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloseAllPositionsResponse) ProtoMessage() {}
+
+func (x *CloseAllPositionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloseAllPositionsResponse.ProtoReflect.Descriptor instead.
+func (*CloseAllPositionsResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *CloseAllPositionsResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *CloseAllPositionsResponse) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *CloseAllPositionsResponse) GetCloseAllId() string {
+	if x != nil {
+		return x.CloseAllId
+	}
+	return ""
+}
+
+func (x *CloseAllPositionsResponse) GetPhase() CloseAllPhase {
+	if x != nil {
+		return x.Phase
+	}
+	return CloseAllPhase_CLOSE_ALL_PHASE_UNSPECIFIED
+}
+
+func (x *CloseAllPositionsResponse) GetLegs() []*CloseAllLeg {
+	if x != nil {
+		return x.Legs
+	}
+	return nil
+}
+
+type ForceAdjustPositionRequest struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	UserId      uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Symbol      string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	PositionIdx uint32                 `protobuf:"varint,3,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"` // ADR-0077 leg addressing (0 / 1 / 2)
+	Sub         bool                   `protobuf:"varint,4,opt,name=sub,proto3" json:"sub,omitempty"`                                    // false = ADD (increase), true = SUB (decrease)
+	// ADD: required — flat leg takes this side, non-flat leg must match it.
+	// SUB: ignored (derived as the close side of the existing leg).
+	Side          event.Side `protobuf:"varint,5,opt,name=side,proto3,enum=opentrade.event.Side" json:"side,omitempty"`
+	Qty           string     `protobuf:"bytes,6,opt,name=qty,proto3" json:"qty,omitempty"`       // decimal > 0; SUB must be <= leg size (no flip)
+	Price         string     `protobuf:"bytes,7,opt,name=price,proto3" json:"price,omitempty"`   // decimal > 0, admin-specified execution price
+	Reason        string     `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"` // mandatory audit fields (ADR-0078 §7)
+	Ticket        string     `protobuf:"bytes,9,opt,name=ticket,proto3" json:"ticket,omitempty"`
+	Operator      string     `protobuf:"bytes,10,opt,name=operator,proto3" json:"operator,omitempty"`
+	ClientOpId    string     `protobuf:"bytes,11,opt,name=client_op_id,json=clientOpId,proto3" json:"client_op_id,omitempty"` // idempotency key
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForceAdjustPositionRequest) Reset() {
+	*x = ForceAdjustPositionRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForceAdjustPositionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForceAdjustPositionRequest) ProtoMessage() {}
+
+func (x *ForceAdjustPositionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForceAdjustPositionRequest.ProtoReflect.Descriptor instead.
+func (*ForceAdjustPositionRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ForceAdjustPositionRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ForceAdjustPositionRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionRequest) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *ForceAdjustPositionRequest) GetSub() bool {
+	if x != nil {
+		return x.Sub
+	}
+	return false
+}
+
+func (x *ForceAdjustPositionRequest) GetSide() event.Side {
+	if x != nil {
+		return x.Side
+	}
+	return event.Side(0)
+}
+
+func (x *ForceAdjustPositionRequest) GetQty() string {
+	if x != nil {
+		return x.Qty
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionRequest) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionRequest) GetTicket() string {
+	if x != nil {
+		return x.Ticket
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionRequest) GetOperator() string {
+	if x != nil {
+		return x.Operator
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionRequest) GetClientOpId() string {
+	if x != nil {
+		return x.ClientOpId
+	}
+	return ""
+}
+
+type ForceAdjustPositionResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Accepted         bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	RejectReason     string                 `protobuf:"bytes,2,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
+	PositionSize     string                 `protobuf:"bytes,3,opt,name=position_size,json=positionSize,proto3" json:"position_size,omitempty"` // post-op leg view
+	EntryPrice       string                 `protobuf:"bytes,4,opt,name=entry_price,json=entryPrice,proto3" json:"entry_price,omitempty"`
+	Margin           string                 `protobuf:"bytes,5,opt,name=margin,proto3" json:"margin,omitempty"`
+	RealizedPnl      string                 `protobuf:"bytes,6,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"` // booked by a SUB ("0" for ADD)
+	FreeBalanceAfter string                 `protobuf:"bytes,7,opt,name=free_balance_after,json=freeBalanceAfter,proto3" json:"free_balance_after,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ForceAdjustPositionResponse) Reset() {
+	*x = ForceAdjustPositionResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForceAdjustPositionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForceAdjustPositionResponse) ProtoMessage() {}
+
+func (x *ForceAdjustPositionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForceAdjustPositionResponse.ProtoReflect.Descriptor instead.
+func (*ForceAdjustPositionResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ForceAdjustPositionResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *ForceAdjustPositionResponse) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionResponse) GetPositionSize() string {
+	if x != nil {
+		return x.PositionSize
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionResponse) GetEntryPrice() string {
+	if x != nil {
+		return x.EntryPrice
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionResponse) GetMargin() string {
+	if x != nil {
+		return x.Margin
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionResponse) GetRealizedPnl() string {
+	if x != nil {
+		return x.RealizedPnl
+	}
+	return ""
+}
+
+func (x *ForceAdjustPositionResponse) GetFreeBalanceAfter() string {
+	if x != nil {
+		return x.FreeBalanceAfter
+	}
+	return ""
+}
+
+type BlockTradeLeg struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	UserId      uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	PositionIdx uint32                 `protobuf:"varint,2,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	// reduce_only legs validate against the existing opposite leg (qty <=
+	// leg size) and reserve no IM; non-reduce-only legs run the full margin
+	// admission at the block price.
+	ReduceOnly    bool `protobuf:"varint,3,opt,name=reduce_only,json=reduceOnly,proto3" json:"reduce_only,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlockTradeLeg) Reset() {
+	*x = BlockTradeLeg{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlockTradeLeg) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlockTradeLeg) ProtoMessage() {}
+
+func (x *BlockTradeLeg) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlockTradeLeg.ProtoReflect.Descriptor instead.
+func (*BlockTradeLeg) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *BlockTradeLeg) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *BlockTradeLeg) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *BlockTradeLeg) GetReduceOnly() bool {
+	if x != nil {
+		return x.ReduceOnly
+	}
+	return false
+}
+
+type BlockTradeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BlockTradeId  string                 `protobuf:"bytes,1,opt,name=block_trade_id,json=blockTradeId,proto3" json:"block_trade_id,omitempty"` // idempotency key (required)
+	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	Price         string                 `protobuf:"bytes,3,opt,name=price,proto3" json:"price,omitempty"` // decimal; must sit within mark ± band
+	Qty           string                 `protobuf:"bytes,4,opt,name=qty,proto3" json:"qty,omitempty"`     // decimal > 0
+	Buyer         *BlockTradeLeg         `protobuf:"bytes,5,opt,name=buyer,proto3" json:"buyer,omitempty"`
+	Seller        *BlockTradeLeg         `protobuf:"bytes,6,opt,name=seller,proto3" json:"seller,omitempty"`
+	Reason        string                 `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"` // audit fields
+	Ticket        string                 `protobuf:"bytes,8,opt,name=ticket,proto3" json:"ticket,omitempty"`
+	Operator      string                 `protobuf:"bytes,9,opt,name=operator,proto3" json:"operator,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlockTradeRequest) Reset() {
+	*x = BlockTradeRequest{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlockTradeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlockTradeRequest) ProtoMessage() {}
+
+func (x *BlockTradeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlockTradeRequest.ProtoReflect.Descriptor instead.
+func (*BlockTradeRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *BlockTradeRequest) GetBlockTradeId() string {
+	if x != nil {
+		return x.BlockTradeId
+	}
+	return ""
+}
+
+func (x *BlockTradeRequest) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *BlockTradeRequest) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *BlockTradeRequest) GetQty() string {
+	if x != nil {
+		return x.Qty
+	}
+	return ""
+}
+
+func (x *BlockTradeRequest) GetBuyer() *BlockTradeLeg {
+	if x != nil {
+		return x.Buyer
+	}
+	return nil
+}
+
+func (x *BlockTradeRequest) GetSeller() *BlockTradeLeg {
+	if x != nil {
+		return x.Seller
+	}
+	return nil
+}
+
+func (x *BlockTradeRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *BlockTradeRequest) GetTicket() string {
+	if x != nil {
+		return x.Ticket
+	}
+	return ""
+}
+
+func (x *BlockTradeRequest) GetOperator() string {
+	if x != nil {
+		return x.Operator
+	}
+	return ""
+}
+
+type BlockTradeResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Accepted bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	// same_user / no_mark / price_out_of_band / "buyer: <admission reason>" /
+	// "seller: <admission reason>" — any leg failure rejects the whole trade.
+	RejectReason  string `protobuf:"bytes,2,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
+	TradeId       string `protobuf:"bytes,3,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"` // "block-<block_trade_id>" on success
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlockTradeResponse) Reset() {
+	*x = BlockTradeResponse{}
+	mi := &file_rpc_perp_perp_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlockTradeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlockTradeResponse) ProtoMessage() {}
+
+func (x *BlockTradeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_perp_perp_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlockTradeResponse.ProtoReflect.Descriptor instead.
+func (*BlockTradeResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *BlockTradeResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *BlockTradeResponse) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *BlockTradeResponse) GetTradeId() string {
+	if x != nil {
+		return x.TradeId
+	}
+	return ""
+}
+
 type QueryOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -460,7 +1830,7 @@ type QueryOrderRequest struct {
 
 func (x *QueryOrderRequest) Reset() {
 	*x = QueryOrderRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[4]
+	mi := &file_rpc_perp_perp_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -472,7 +1842,7 @@ func (x *QueryOrderRequest) String() string {
 func (*QueryOrderRequest) ProtoMessage() {}
 
 func (x *QueryOrderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[4]
+	mi := &file_rpc_perp_perp_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -485,7 +1855,7 @@ func (x *QueryOrderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryOrderRequest.ProtoReflect.Descriptor instead.
 func (*QueryOrderRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{4}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *QueryOrderRequest) GetUserId() uint64 {
@@ -523,7 +1893,7 @@ type QueryOrderResponse struct {
 
 func (x *QueryOrderResponse) Reset() {
 	*x = QueryOrderResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[5]
+	mi := &file_rpc_perp_perp_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -535,7 +1905,7 @@ func (x *QueryOrderResponse) String() string {
 func (*QueryOrderResponse) ProtoMessage() {}
 
 func (x *QueryOrderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[5]
+	mi := &file_rpc_perp_perp_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -548,7 +1918,7 @@ func (x *QueryOrderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryOrderResponse.ProtoReflect.Descriptor instead.
 func (*QueryOrderResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{5}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *QueryOrderResponse) GetOrderId() uint64 {
@@ -652,7 +2022,7 @@ type QueryPositionsRequest struct {
 
 func (x *QueryPositionsRequest) Reset() {
 	*x = QueryPositionsRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[6]
+	mi := &file_rpc_perp_perp_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -664,7 +2034,7 @@ func (x *QueryPositionsRequest) String() string {
 func (*QueryPositionsRequest) ProtoMessage() {}
 
 func (x *QueryPositionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[6]
+	mi := &file_rpc_perp_perp_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -677,7 +2047,7 @@ func (x *QueryPositionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryPositionsRequest.ProtoReflect.Descriptor instead.
 func (*QueryPositionsRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{6}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *QueryPositionsRequest) GetUserId() uint64 {
@@ -703,7 +2073,7 @@ type QueryPositionsResponse struct {
 
 func (x *QueryPositionsResponse) Reset() {
 	*x = QueryPositionsResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[7]
+	mi := &file_rpc_perp_perp_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -715,7 +2085,7 @@ func (x *QueryPositionsResponse) String() string {
 func (*QueryPositionsResponse) ProtoMessage() {}
 
 func (x *QueryPositionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[7]
+	mi := &file_rpc_perp_perp_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -728,7 +2098,7 @@ func (x *QueryPositionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryPositionsResponse.ProtoReflect.Descriptor instead.
 func (*QueryPositionsResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{7}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *QueryPositionsResponse) GetPositions() []*Position {
@@ -764,7 +2134,7 @@ type Position struct {
 
 func (x *Position) Reset() {
 	*x = Position{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[8]
+	mi := &file_rpc_perp_perp_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -776,7 +2146,7 @@ func (x *Position) String() string {
 func (*Position) ProtoMessage() {}
 
 func (x *Position) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[8]
+	mi := &file_rpc_perp_perp_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -789,7 +2159,7 @@ func (x *Position) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Position.ProtoReflect.Descriptor instead.
 func (*Position) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{8}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *Position) GetSymbol() string {
@@ -906,7 +2276,7 @@ type QueryMarginRequest struct {
 
 func (x *QueryMarginRequest) Reset() {
 	*x = QueryMarginRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[9]
+	mi := &file_rpc_perp_perp_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -918,7 +2288,7 @@ func (x *QueryMarginRequest) String() string {
 func (*QueryMarginRequest) ProtoMessage() {}
 
 func (x *QueryMarginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[9]
+	mi := &file_rpc_perp_perp_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -931,7 +2301,7 @@ func (x *QueryMarginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryMarginRequest.ProtoReflect.Descriptor instead.
 func (*QueryMarginRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{9}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *QueryMarginRequest) GetUserId() uint64 {
@@ -964,7 +2334,7 @@ type QueryMarginResponse struct {
 
 func (x *QueryMarginResponse) Reset() {
 	*x = QueryMarginResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[10]
+	mi := &file_rpc_perp_perp_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -976,7 +2346,7 @@ func (x *QueryMarginResponse) String() string {
 func (*QueryMarginResponse) ProtoMessage() {}
 
 func (x *QueryMarginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[10]
+	mi := &file_rpc_perp_perp_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -989,7 +2359,7 @@ func (x *QueryMarginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryMarginResponse.ProtoReflect.Descriptor instead.
 func (*QueryMarginResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{10}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *QueryMarginResponse) GetAsset() string {
@@ -1075,7 +2445,7 @@ type SetMarginModeRequest struct {
 
 func (x *SetMarginModeRequest) Reset() {
 	*x = SetMarginModeRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[11]
+	mi := &file_rpc_perp_perp_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1087,7 +2457,7 @@ func (x *SetMarginModeRequest) String() string {
 func (*SetMarginModeRequest) ProtoMessage() {}
 
 func (x *SetMarginModeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[11]
+	mi := &file_rpc_perp_perp_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1100,7 +2470,7 @@ func (x *SetMarginModeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMarginModeRequest.ProtoReflect.Descriptor instead.
 func (*SetMarginModeRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{11}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SetMarginModeRequest) GetUserId() uint64 {
@@ -1151,7 +2521,7 @@ type SetMarginModeResponse struct {
 
 func (x *SetMarginModeResponse) Reset() {
 	*x = SetMarginModeResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[12]
+	mi := &file_rpc_perp_perp_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1163,7 +2533,7 @@ func (x *SetMarginModeResponse) String() string {
 func (*SetMarginModeResponse) ProtoMessage() {}
 
 func (x *SetMarginModeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[12]
+	mi := &file_rpc_perp_perp_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1176,7 +2546,7 @@ func (x *SetMarginModeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMarginModeResponse.ProtoReflect.Descriptor instead.
 func (*SetMarginModeResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{12}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SetMarginModeResponse) GetAccepted() bool {
@@ -1226,7 +2596,7 @@ type SetPositionModeRequest struct {
 
 func (x *SetPositionModeRequest) Reset() {
 	*x = SetPositionModeRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[13]
+	mi := &file_rpc_perp_perp_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1238,7 +2608,7 @@ func (x *SetPositionModeRequest) String() string {
 func (*SetPositionModeRequest) ProtoMessage() {}
 
 func (x *SetPositionModeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[13]
+	mi := &file_rpc_perp_perp_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1251,7 +2621,7 @@ func (x *SetPositionModeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPositionModeRequest.ProtoReflect.Descriptor instead.
 func (*SetPositionModeRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{13}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SetPositionModeRequest) GetUserId() uint64 {
@@ -1293,7 +2663,7 @@ type SetPositionModeResponse struct {
 
 func (x *SetPositionModeResponse) Reset() {
 	*x = SetPositionModeResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[14]
+	mi := &file_rpc_perp_perp_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1305,7 +2675,7 @@ func (x *SetPositionModeResponse) String() string {
 func (*SetPositionModeResponse) ProtoMessage() {}
 
 func (x *SetPositionModeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[14]
+	mi := &file_rpc_perp_perp_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1318,7 +2688,7 @@ func (x *SetPositionModeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPositionModeResponse.ProtoReflect.Descriptor instead.
 func (*SetPositionModeResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{14}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SetPositionModeResponse) GetAccepted() bool {
@@ -1357,7 +2727,7 @@ type AdjustIsolatedMarginRequest struct {
 
 func (x *AdjustIsolatedMarginRequest) Reset() {
 	*x = AdjustIsolatedMarginRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[15]
+	mi := &file_rpc_perp_perp_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1369,7 +2739,7 @@ func (x *AdjustIsolatedMarginRequest) String() string {
 func (*AdjustIsolatedMarginRequest) ProtoMessage() {}
 
 func (x *AdjustIsolatedMarginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[15]
+	mi := &file_rpc_perp_perp_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1382,7 +2752,7 @@ func (x *AdjustIsolatedMarginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdjustIsolatedMarginRequest.ProtoReflect.Descriptor instead.
 func (*AdjustIsolatedMarginRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{15}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *AdjustIsolatedMarginRequest) GetUserId() uint64 {
@@ -1432,7 +2802,7 @@ type AdjustIsolatedMarginResponse struct {
 
 func (x *AdjustIsolatedMarginResponse) Reset() {
 	*x = AdjustIsolatedMarginResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[16]
+	mi := &file_rpc_perp_perp_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1444,7 +2814,7 @@ func (x *AdjustIsolatedMarginResponse) String() string {
 func (*AdjustIsolatedMarginResponse) ProtoMessage() {}
 
 func (x *AdjustIsolatedMarginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[16]
+	mi := &file_rpc_perp_perp_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1457,7 +2827,7 @@ func (x *AdjustIsolatedMarginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdjustIsolatedMarginResponse.ProtoReflect.Descriptor instead.
 func (*AdjustIsolatedMarginResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{16}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *AdjustIsolatedMarginResponse) GetAccepted() bool {
@@ -1501,7 +2871,7 @@ type SetAutoAddMarginRequest struct {
 
 func (x *SetAutoAddMarginRequest) Reset() {
 	*x = SetAutoAddMarginRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[17]
+	mi := &file_rpc_perp_perp_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1513,7 +2883,7 @@ func (x *SetAutoAddMarginRequest) String() string {
 func (*SetAutoAddMarginRequest) ProtoMessage() {}
 
 func (x *SetAutoAddMarginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[17]
+	mi := &file_rpc_perp_perp_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1526,7 +2896,7 @@ func (x *SetAutoAddMarginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetAutoAddMarginRequest.ProtoReflect.Descriptor instead.
 func (*SetAutoAddMarginRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{17}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *SetAutoAddMarginRequest) GetUserId() uint64 {
@@ -1574,7 +2944,7 @@ type SetAutoAddMarginResponse struct {
 
 func (x *SetAutoAddMarginResponse) Reset() {
 	*x = SetAutoAddMarginResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[18]
+	mi := &file_rpc_perp_perp_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1586,7 +2956,7 @@ func (x *SetAutoAddMarginResponse) String() string {
 func (*SetAutoAddMarginResponse) ProtoMessage() {}
 
 func (x *SetAutoAddMarginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[18]
+	mi := &file_rpc_perp_perp_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1599,7 +2969,7 @@ func (x *SetAutoAddMarginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetAutoAddMarginResponse.ProtoReflect.Descriptor instead.
 func (*SetAutoAddMarginResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{18}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SetAutoAddMarginResponse) GetAccepted() bool {
@@ -1628,7 +2998,7 @@ type SetPositionLeverageRequest struct {
 
 func (x *SetPositionLeverageRequest) Reset() {
 	*x = SetPositionLeverageRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[19]
+	mi := &file_rpc_perp_perp_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1640,7 +3010,7 @@ func (x *SetPositionLeverageRequest) String() string {
 func (*SetPositionLeverageRequest) ProtoMessage() {}
 
 func (x *SetPositionLeverageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[19]
+	mi := &file_rpc_perp_perp_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1653,7 +3023,7 @@ func (x *SetPositionLeverageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPositionLeverageRequest.ProtoReflect.Descriptor instead.
 func (*SetPositionLeverageRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{19}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SetPositionLeverageRequest) GetUserId() uint64 {
@@ -1697,7 +3067,7 @@ type SetPositionLeverageResponse struct {
 
 func (x *SetPositionLeverageResponse) Reset() {
 	*x = SetPositionLeverageResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[20]
+	mi := &file_rpc_perp_perp_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1709,7 +3079,7 @@ func (x *SetPositionLeverageResponse) String() string {
 func (*SetPositionLeverageResponse) ProtoMessage() {}
 
 func (x *SetPositionLeverageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[20]
+	mi := &file_rpc_perp_perp_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1722,7 +3092,7 @@ func (x *SetPositionLeverageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPositionLeverageResponse.ProtoReflect.Descriptor instead.
 func (*SetPositionLeverageResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{20}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *SetPositionLeverageResponse) GetAccepted() bool {
@@ -1772,7 +3142,7 @@ type SetRiskIdRequest struct {
 
 func (x *SetRiskIdRequest) Reset() {
 	*x = SetRiskIdRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[21]
+	mi := &file_rpc_perp_perp_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1784,7 +3154,7 @@ func (x *SetRiskIdRequest) String() string {
 func (*SetRiskIdRequest) ProtoMessage() {}
 
 func (x *SetRiskIdRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[21]
+	mi := &file_rpc_perp_perp_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1797,7 +3167,7 @@ func (x *SetRiskIdRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRiskIdRequest.ProtoReflect.Descriptor instead.
 func (*SetRiskIdRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{21}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *SetRiskIdRequest) GetUserId() uint64 {
@@ -1839,7 +3209,7 @@ type SetRiskIdResponse struct {
 
 func (x *SetRiskIdResponse) Reset() {
 	*x = SetRiskIdResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[22]
+	mi := &file_rpc_perp_perp_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1851,7 +3221,7 @@ func (x *SetRiskIdResponse) String() string {
 func (*SetRiskIdResponse) ProtoMessage() {}
 
 func (x *SetRiskIdResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[22]
+	mi := &file_rpc_perp_perp_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1864,7 +3234,7 @@ func (x *SetRiskIdResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRiskIdResponse.ProtoReflect.Descriptor instead.
 func (*SetRiskIdResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{22}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *SetRiskIdResponse) GetAccepted() bool {
@@ -1898,7 +3268,7 @@ type QueryPositionConfigRequest struct {
 
 func (x *QueryPositionConfigRequest) Reset() {
 	*x = QueryPositionConfigRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[23]
+	mi := &file_rpc_perp_perp_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1910,7 +3280,7 @@ func (x *QueryPositionConfigRequest) String() string {
 func (*QueryPositionConfigRequest) ProtoMessage() {}
 
 func (x *QueryPositionConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[23]
+	mi := &file_rpc_perp_perp_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1923,7 +3293,7 @@ func (x *QueryPositionConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryPositionConfigRequest.ProtoReflect.Descriptor instead.
 func (*QueryPositionConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{23}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *QueryPositionConfigRequest) GetUserId() uint64 {
@@ -1962,7 +3332,7 @@ type PositionConfig struct {
 
 func (x *PositionConfig) Reset() {
 	*x = PositionConfig{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[24]
+	mi := &file_rpc_perp_perp_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1974,7 +3344,7 @@ func (x *PositionConfig) String() string {
 func (*PositionConfig) ProtoMessage() {}
 
 func (x *PositionConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[24]
+	mi := &file_rpc_perp_perp_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1987,7 +3357,7 @@ func (x *PositionConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PositionConfig.ProtoReflect.Descriptor instead.
 func (*PositionConfig) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{24}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *PositionConfig) GetSymbol() string {
@@ -2069,7 +3439,7 @@ type QueryPositionConfigResponse struct {
 
 func (x *QueryPositionConfigResponse) Reset() {
 	*x = QueryPositionConfigResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[25]
+	mi := &file_rpc_perp_perp_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2081,7 +3451,7 @@ func (x *QueryPositionConfigResponse) String() string {
 func (*QueryPositionConfigResponse) ProtoMessage() {}
 
 func (x *QueryPositionConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[25]
+	mi := &file_rpc_perp_perp_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2094,7 +3464,7 @@ func (x *QueryPositionConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryPositionConfigResponse.ProtoReflect.Descriptor instead.
 func (*QueryPositionConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{25}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *QueryPositionConfigResponse) GetConfigs() []*PositionConfig {
@@ -2113,7 +3483,7 @@ type QueryAccountConfigRequest struct {
 
 func (x *QueryAccountConfigRequest) Reset() {
 	*x = QueryAccountConfigRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[26]
+	mi := &file_rpc_perp_perp_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2125,7 +3495,7 @@ func (x *QueryAccountConfigRequest) String() string {
 func (*QueryAccountConfigRequest) ProtoMessage() {}
 
 func (x *QueryAccountConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[26]
+	mi := &file_rpc_perp_perp_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2138,7 +3508,7 @@ func (x *QueryAccountConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAccountConfigRequest.ProtoReflect.Descriptor instead.
 func (*QueryAccountConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{26}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *QueryAccountConfigRequest) GetUserId() uint64 {
@@ -2163,7 +3533,7 @@ type QueryAccountConfigResponse struct {
 
 func (x *QueryAccountConfigResponse) Reset() {
 	*x = QueryAccountConfigResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[27]
+	mi := &file_rpc_perp_perp_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2175,7 +3545,7 @@ func (x *QueryAccountConfigResponse) String() string {
 func (*QueryAccountConfigResponse) ProtoMessage() {}
 
 func (x *QueryAccountConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[27]
+	mi := &file_rpc_perp_perp_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2188,7 +3558,7 @@ func (x *QueryAccountConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAccountConfigResponse.ProtoReflect.Descriptor instead.
 func (*QueryAccountConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{27}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *QueryAccountConfigResponse) GetSettleAsset() string {
@@ -2233,7 +3603,7 @@ type CustomerLeverageLimit struct {
 
 func (x *CustomerLeverageLimit) Reset() {
 	*x = CustomerLeverageLimit{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[28]
+	mi := &file_rpc_perp_perp_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2245,7 +3615,7 @@ func (x *CustomerLeverageLimit) String() string {
 func (*CustomerLeverageLimit) ProtoMessage() {}
 
 func (x *CustomerLeverageLimit) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[28]
+	mi := &file_rpc_perp_perp_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2258,7 +3628,7 @@ func (x *CustomerLeverageLimit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomerLeverageLimit.ProtoReflect.Descriptor instead.
 func (*CustomerLeverageLimit) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{28}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *CustomerLeverageLimit) GetUserId() uint64 {
@@ -2316,7 +3686,7 @@ type SetCustomerLeverageLimitRequest struct {
 
 func (x *SetCustomerLeverageLimitRequest) Reset() {
 	*x = SetCustomerLeverageLimitRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[29]
+	mi := &file_rpc_perp_perp_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2328,7 +3698,7 @@ func (x *SetCustomerLeverageLimitRequest) String() string {
 func (*SetCustomerLeverageLimitRequest) ProtoMessage() {}
 
 func (x *SetCustomerLeverageLimitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[29]
+	mi := &file_rpc_perp_perp_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2341,7 +3711,7 @@ func (x *SetCustomerLeverageLimitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetCustomerLeverageLimitRequest.ProtoReflect.Descriptor instead.
 func (*SetCustomerLeverageLimitRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{29}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *SetCustomerLeverageLimitRequest) GetUserId() uint64 {
@@ -2389,7 +3759,7 @@ type SetCustomerLeverageLimitResponse struct {
 
 func (x *SetCustomerLeverageLimitResponse) Reset() {
 	*x = SetCustomerLeverageLimitResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[30]
+	mi := &file_rpc_perp_perp_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2401,7 +3771,7 @@ func (x *SetCustomerLeverageLimitResponse) String() string {
 func (*SetCustomerLeverageLimitResponse) ProtoMessage() {}
 
 func (x *SetCustomerLeverageLimitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[30]
+	mi := &file_rpc_perp_perp_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2414,7 +3784,7 @@ func (x *SetCustomerLeverageLimitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetCustomerLeverageLimitResponse.ProtoReflect.Descriptor instead.
 func (*SetCustomerLeverageLimitResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{30}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *SetCustomerLeverageLimitResponse) GetAccepted() bool {
@@ -2440,7 +3810,7 @@ type ListCustomerLeverageLimitsRequest struct {
 
 func (x *ListCustomerLeverageLimitsRequest) Reset() {
 	*x = ListCustomerLeverageLimitsRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[31]
+	mi := &file_rpc_perp_perp_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2452,7 +3822,7 @@ func (x *ListCustomerLeverageLimitsRequest) String() string {
 func (*ListCustomerLeverageLimitsRequest) ProtoMessage() {}
 
 func (x *ListCustomerLeverageLimitsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[31]
+	mi := &file_rpc_perp_perp_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2465,7 +3835,7 @@ func (x *ListCustomerLeverageLimitsRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ListCustomerLeverageLimitsRequest.ProtoReflect.Descriptor instead.
 func (*ListCustomerLeverageLimitsRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{31}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ListCustomerLeverageLimitsRequest) GetUserId() uint64 {
@@ -2484,7 +3854,7 @@ type ListCustomerLeverageLimitsResponse struct {
 
 func (x *ListCustomerLeverageLimitsResponse) Reset() {
 	*x = ListCustomerLeverageLimitsResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[32]
+	mi := &file_rpc_perp_perp_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2496,7 +3866,7 @@ func (x *ListCustomerLeverageLimitsResponse) String() string {
 func (*ListCustomerLeverageLimitsResponse) ProtoMessage() {}
 
 func (x *ListCustomerLeverageLimitsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[32]
+	mi := &file_rpc_perp_perp_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2509,7 +3879,7 @@ func (x *ListCustomerLeverageLimitsResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use ListCustomerLeverageLimitsResponse.ProtoReflect.Descriptor instead.
 func (*ListCustomerLeverageLimitsResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{32}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ListCustomerLeverageLimitsResponse) GetLimits() []*CustomerLeverageLimit {
@@ -2535,7 +3905,7 @@ type CustomerFeeRate struct {
 
 func (x *CustomerFeeRate) Reset() {
 	*x = CustomerFeeRate{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[33]
+	mi := &file_rpc_perp_perp_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2547,7 +3917,7 @@ func (x *CustomerFeeRate) String() string {
 func (*CustomerFeeRate) ProtoMessage() {}
 
 func (x *CustomerFeeRate) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[33]
+	mi := &file_rpc_perp_perp_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2560,7 +3930,7 @@ func (x *CustomerFeeRate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomerFeeRate.ProtoReflect.Descriptor instead.
 func (*CustomerFeeRate) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{33}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *CustomerFeeRate) GetUserId() uint64 {
@@ -2634,7 +4004,7 @@ type SetCustomerFeeRateRequest struct {
 
 func (x *SetCustomerFeeRateRequest) Reset() {
 	*x = SetCustomerFeeRateRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[34]
+	mi := &file_rpc_perp_perp_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2646,7 +4016,7 @@ func (x *SetCustomerFeeRateRequest) String() string {
 func (*SetCustomerFeeRateRequest) ProtoMessage() {}
 
 func (x *SetCustomerFeeRateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[34]
+	mi := &file_rpc_perp_perp_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2659,7 +4029,7 @@ func (x *SetCustomerFeeRateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetCustomerFeeRateRequest.ProtoReflect.Descriptor instead.
 func (*SetCustomerFeeRateRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{34}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *SetCustomerFeeRateRequest) GetUserId() uint64 {
@@ -2721,7 +4091,7 @@ type SetCustomerFeeRateResponse struct {
 
 func (x *SetCustomerFeeRateResponse) Reset() {
 	*x = SetCustomerFeeRateResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[35]
+	mi := &file_rpc_perp_perp_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2733,7 +4103,7 @@ func (x *SetCustomerFeeRateResponse) String() string {
 func (*SetCustomerFeeRateResponse) ProtoMessage() {}
 
 func (x *SetCustomerFeeRateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[35]
+	mi := &file_rpc_perp_perp_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2746,7 +4116,7 @@ func (x *SetCustomerFeeRateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetCustomerFeeRateResponse.ProtoReflect.Descriptor instead.
 func (*SetCustomerFeeRateResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{35}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *SetCustomerFeeRateResponse) GetAccepted() bool {
@@ -2772,7 +4142,7 @@ type ListCustomerFeeRatesRequest struct {
 
 func (x *ListCustomerFeeRatesRequest) Reset() {
 	*x = ListCustomerFeeRatesRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[36]
+	mi := &file_rpc_perp_perp_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2784,7 +4154,7 @@ func (x *ListCustomerFeeRatesRequest) String() string {
 func (*ListCustomerFeeRatesRequest) ProtoMessage() {}
 
 func (x *ListCustomerFeeRatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[36]
+	mi := &file_rpc_perp_perp_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2797,7 +4167,7 @@ func (x *ListCustomerFeeRatesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCustomerFeeRatesRequest.ProtoReflect.Descriptor instead.
 func (*ListCustomerFeeRatesRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{36}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ListCustomerFeeRatesRequest) GetUserId() uint64 {
@@ -2816,7 +4186,7 @@ type ListCustomerFeeRatesResponse struct {
 
 func (x *ListCustomerFeeRatesResponse) Reset() {
 	*x = ListCustomerFeeRatesResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[37]
+	mi := &file_rpc_perp_perp_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2828,7 +4198,7 @@ func (x *ListCustomerFeeRatesResponse) String() string {
 func (*ListCustomerFeeRatesResponse) ProtoMessage() {}
 
 func (x *ListCustomerFeeRatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[37]
+	mi := &file_rpc_perp_perp_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2841,7 +4211,7 @@ func (x *ListCustomerFeeRatesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCustomerFeeRatesResponse.ProtoReflect.Descriptor instead.
 func (*ListCustomerFeeRatesResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{37}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ListCustomerFeeRatesResponse) GetFeeRates() []*CustomerFeeRate {
@@ -2865,7 +4235,7 @@ type RiskTierParam struct {
 
 func (x *RiskTierParam) Reset() {
 	*x = RiskTierParam{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[38]
+	mi := &file_rpc_perp_perp_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2877,7 +4247,7 @@ func (x *RiskTierParam) String() string {
 func (*RiskTierParam) ProtoMessage() {}
 
 func (x *RiskTierParam) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[38]
+	mi := &file_rpc_perp_perp_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2890,7 +4260,7 @@ func (x *RiskTierParam) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RiskTierParam.ProtoReflect.Descriptor instead.
 func (*RiskTierParam) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{38}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *RiskTierParam) GetRiskId() uint32 {
@@ -2938,7 +4308,7 @@ type ProjectRiskConfigRequest struct {
 
 func (x *ProjectRiskConfigRequest) Reset() {
 	*x = ProjectRiskConfigRequest{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[39]
+	mi := &file_rpc_perp_perp_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2950,7 +4320,7 @@ func (x *ProjectRiskConfigRequest) String() string {
 func (*ProjectRiskConfigRequest) ProtoMessage() {}
 
 func (x *ProjectRiskConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[39]
+	mi := &file_rpc_perp_perp_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2963,7 +4333,7 @@ func (x *ProjectRiskConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectRiskConfigRequest.ProtoReflect.Descriptor instead.
 func (*ProjectRiskConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{39}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ProjectRiskConfigRequest) GetSymbol() string {
@@ -2996,7 +4366,7 @@ type ProjectRiskConfigResponse struct {
 
 func (x *ProjectRiskConfigResponse) Reset() {
 	*x = ProjectRiskConfigResponse{}
-	mi := &file_rpc_perp_perp_proto_msgTypes[40]
+	mi := &file_rpc_perp_perp_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3008,7 +4378,7 @@ func (x *ProjectRiskConfigResponse) String() string {
 func (*ProjectRiskConfigResponse) ProtoMessage() {}
 
 func (x *ProjectRiskConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rpc_perp_perp_proto_msgTypes[40]
+	mi := &file_rpc_perp_perp_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3021,7 +4391,7 @@ func (x *ProjectRiskConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectRiskConfigResponse.ProtoReflect.Descriptor instead.
 func (*ProjectRiskConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{40}
+	return file_rpc_perp_perp_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ProjectRiskConfigResponse) GetAffectedAccounts() uint64 {
@@ -3076,10 +4446,119 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\x13received_ts_unix_ms\x18\x05 \x01(\x03R\x10receivedTsUnixMs\"H\n" +
 	"\x12CancelOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
-	"\border_id\x18\x02 \x01(\x04R\aorderId\"L\n" +
+	"\border_id\x18\x02 \x01(\x04R\aorderId\"q\n" +
 	"\x13CancelOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x04R\aorderId\x12\x1a\n" +
-	"\baccepted\x18\x02 \x01(\bR\baccepted\"G\n" +
+	"\baccepted\x18\x02 \x01(\bR\baccepted\x12#\n" +
+	"\rreject_reason\x18\x03 \x01(\tR\frejectReason\"}\n" +
+	"\x11AmendOrderRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
+	"\border_id\x18\x02 \x01(\x04R\aorderId\x12\x1b\n" +
+	"\tnew_price\x18\x03 \x01(\tR\bnewPrice\x12\x17\n" +
+	"\anew_qty\x18\x04 \x01(\tR\x06newQty\"\xc8\x01\n" +
+	"\x12AmendOrderResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12#\n" +
+	"\rreject_reason\x18\x02 \x01(\tR\frejectReason\x12 \n" +
+	"\fold_order_id\x18\x03 \x01(\x04R\n" +
+	"oldOrderId\x12 \n" +
+	"\fnew_order_id\x18\x04 \x01(\x04R\n" +
+	"newOrderId\x12-\n" +
+	"\x13received_ts_unix_ms\x18\x05 \x01(\x03R\x10receivedTsUnixMs\"\x8a\x01\n" +
+	"\x17BatchPlaceOrdersRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
+	"\bbatch_id\x18\x02 \x01(\tR\abatchId\x12;\n" +
+	"\x05items\x18\x03 \x03(\v2%.opentrade.rpc.perp.PlaceOrderRequestR\x05items\"s\n" +
+	"\x18BatchPlaceOrdersResponse\x12\x19\n" +
+	"\bbatch_id\x18\x01 \x01(\tR\abatchId\x12<\n" +
+	"\x05items\x18\x02 \x03(\v2&.opentrade.rpc.perp.PlaceOrderResponseR\x05items\"k\n" +
+	"\x18BatchCancelOrdersRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
+	"\bbatch_id\x18\x02 \x01(\tR\abatchId\x12\x1b\n" +
+	"\torder_ids\x18\x03 \x03(\x04R\borderIds\"u\n" +
+	"\x19BatchCancelOrdersResponse\x12\x19\n" +
+	"\bbatch_id\x18\x01 \x01(\tR\abatchId\x12=\n" +
+	"\x05items\x18\x02 \x03(\v2'.opentrade.rpc.perp.CancelOrderResponseR\x05items\"I\n" +
+	"\x16CancelAllOrdersRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\"X\n" +
+	"\x17CancelAllOrdersResponse\x12=\n" +
+	"\x05items\x18\x01 \x03(\v2'.opentrade.rpc.perp.CancelOrderResponseR\x05items\"S\n" +
+	"\x14PreCheckOrderRequest\x12;\n" +
+	"\x05order\x18\x01 \x01(\v2%.opentrade.rpc.perp.PlaceOrderRequestR\x05order\"\x88\x03\n" +
+	"\x15PreCheckOrderResponse\x12!\n" +
+	"\fwould_accept\x18\x01 \x01(\bR\vwouldAccept\x12#\n" +
+	"\rreject_reason\x18\x02 \x01(\tR\frejectReason\x126\n" +
+	"\x17required_initial_margin\x18\x03 \x01(\tR\x15requiredInitialMargin\x12\x1d\n" +
+	"\n" +
+	"fee_buffer\x18\x04 \x01(\tR\tfeeBuffer\x12-\n" +
+	"\x12effective_leverage\x18\x05 \x01(\tR\x11effectiveLeverage\x12?\n" +
+	"\vmargin_mode\x18\x06 \x01(\x0e2\x1e.opentrade.rpc.perp.MarginModeR\n" +
+	"marginMode\x12\x17\n" +
+	"\arisk_id\x18\a \x01(\rR\x06riskId\x12 \n" +
+	"\fmax_open_qty\x18\b \x01(\tR\n" +
+	"maxOpenQty\x12%\n" +
+	"\x0econfig_version\x18\t \x01(\x04R\rconfigVersion\"\x90\x01\n" +
+	"\x18CloseAllPositionsRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12!\n" +
+	"\fslippage_bps\x18\x03 \x01(\rR\vslippageBps\x12 \n" +
+	"\fclient_op_id\x18\x04 \x01(\tR\n" +
+	"clientOpId\"\x9a\x01\n" +
+	"\vCloseAllLeg\x12\x16\n" +
+	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12!\n" +
+	"\fposition_idx\x18\x02 \x01(\rR\vpositionIdx\x12\x19\n" +
+	"\border_id\x18\x03 \x01(\x04R\aorderId\x12\x10\n" +
+	"\x03qty\x18\x04 \x01(\tR\x03qty\x12#\n" +
+	"\rreject_reason\x18\x05 \x01(\tR\frejectReason\"\xec\x01\n" +
+	"\x19CloseAllPositionsResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12#\n" +
+	"\rreject_reason\x18\x02 \x01(\tR\frejectReason\x12 \n" +
+	"\fclose_all_id\x18\x03 \x01(\tR\n" +
+	"closeAllId\x127\n" +
+	"\x05phase\x18\x04 \x01(\x0e2!.opentrade.rpc.perp.CloseAllPhaseR\x05phase\x123\n" +
+	"\x04legs\x18\x05 \x03(\v2\x1f.opentrade.rpc.perp.CloseAllLegR\x04legs\"\xc3\x02\n" +
+	"\x1aForceAdjustPositionRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12!\n" +
+	"\fposition_idx\x18\x03 \x01(\rR\vpositionIdx\x12\x10\n" +
+	"\x03sub\x18\x04 \x01(\bR\x03sub\x12)\n" +
+	"\x04side\x18\x05 \x01(\x0e2\x15.opentrade.event.SideR\x04side\x12\x10\n" +
+	"\x03qty\x18\x06 \x01(\tR\x03qty\x12\x14\n" +
+	"\x05price\x18\a \x01(\tR\x05price\x12\x16\n" +
+	"\x06reason\x18\b \x01(\tR\x06reason\x12\x16\n" +
+	"\x06ticket\x18\t \x01(\tR\x06ticket\x12\x1a\n" +
+	"\boperator\x18\n" +
+	" \x01(\tR\boperator\x12 \n" +
+	"\fclient_op_id\x18\v \x01(\tR\n" +
+	"clientOpId\"\x8d\x02\n" +
+	"\x1bForceAdjustPositionResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12#\n" +
+	"\rreject_reason\x18\x02 \x01(\tR\frejectReason\x12#\n" +
+	"\rposition_size\x18\x03 \x01(\tR\fpositionSize\x12\x1f\n" +
+	"\ventry_price\x18\x04 \x01(\tR\n" +
+	"entryPrice\x12\x16\n" +
+	"\x06margin\x18\x05 \x01(\tR\x06margin\x12!\n" +
+	"\frealized_pnl\x18\x06 \x01(\tR\vrealizedPnl\x12,\n" +
+	"\x12free_balance_after\x18\a \x01(\tR\x10freeBalanceAfter\"l\n" +
+	"\rBlockTradeLeg\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12!\n" +
+	"\fposition_idx\x18\x02 \x01(\rR\vpositionIdx\x12\x1f\n" +
+	"\vreduce_only\x18\x03 \x01(\bR\n" +
+	"reduceOnly\"\xb9\x02\n" +
+	"\x11BlockTradeRequest\x12$\n" +
+	"\x0eblock_trade_id\x18\x01 \x01(\tR\fblockTradeId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x14\n" +
+	"\x05price\x18\x03 \x01(\tR\x05price\x12\x10\n" +
+	"\x03qty\x18\x04 \x01(\tR\x03qty\x127\n" +
+	"\x05buyer\x18\x05 \x01(\v2!.opentrade.rpc.perp.BlockTradeLegR\x05buyer\x129\n" +
+	"\x06seller\x18\x06 \x01(\v2!.opentrade.rpc.perp.BlockTradeLegR\x06seller\x12\x16\n" +
+	"\x06reason\x18\a \x01(\tR\x06reason\x12\x16\n" +
+	"\x06ticket\x18\b \x01(\tR\x06ticket\x12\x1a\n" +
+	"\boperator\x18\t \x01(\tR\boperator\"p\n" +
+	"\x12BlockTradeResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12#\n" +
+	"\rreject_reason\x18\x02 \x01(\tR\frejectReason\x12\x19\n" +
+	"\btrade_id\x18\x03 \x01(\tR\atradeId\"G\n" +
 	"\x11QueryOrderRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\x04R\aorderId\"\x85\x04\n" +
@@ -3308,7 +4787,13 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\fPositionMode\x12\x1d\n" +
 	"\x19POSITION_MODE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15POSITION_MODE_ONE_WAY\x10\x01\x12\x17\n" +
-	"\x13POSITION_MODE_HEDGE\x10\x022\xe3\x0f\n" +
+	"\x13POSITION_MODE_HEDGE\x10\x02*\xac\x01\n" +
+	"\rCloseAllPhase\x12\x1f\n" +
+	"\x1bCLOSE_ALL_PHASE_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19CLOSE_ALL_PHASE_CANCELING\x10\x01\x12\x1b\n" +
+	"\x17CLOSE_ALL_PHASE_PLACING\x10\x02\x12\x18\n" +
+	"\x14CLOSE_ALL_PHASE_DONE\x10\x03\x12$\n" +
+	" CLOSE_ALL_PHASE_DONE_WITH_ERRORS\x10\x042\xba\x16\n" +
 	"\vPerpService\x12[\n" +
 	"\n" +
 	"PlaceOrder\x12%.opentrade.rpc.perp.PlaceOrderRequest\x1a&.opentrade.rpc.perp.PlaceOrderResponse\x12^\n" +
@@ -3316,7 +4801,14 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\n" +
 	"QueryOrder\x12%.opentrade.rpc.perp.QueryOrderRequest\x1a&.opentrade.rpc.perp.QueryOrderResponse\x12g\n" +
 	"\x0eQueryPositions\x12).opentrade.rpc.perp.QueryPositionsRequest\x1a*.opentrade.rpc.perp.QueryPositionsResponse\x12^\n" +
-	"\vQueryMargin\x12&.opentrade.rpc.perp.QueryMarginRequest\x1a'.opentrade.rpc.perp.QueryMarginResponse\x12d\n" +
+	"\vQueryMargin\x12&.opentrade.rpc.perp.QueryMarginRequest\x1a'.opentrade.rpc.perp.QueryMarginResponse\x12[\n" +
+	"\n" +
+	"AmendOrder\x12%.opentrade.rpc.perp.AmendOrderRequest\x1a&.opentrade.rpc.perp.AmendOrderResponse\x12m\n" +
+	"\x10BatchPlaceOrders\x12+.opentrade.rpc.perp.BatchPlaceOrdersRequest\x1a,.opentrade.rpc.perp.BatchPlaceOrdersResponse\x12p\n" +
+	"\x11BatchCancelOrders\x12,.opentrade.rpc.perp.BatchCancelOrdersRequest\x1a-.opentrade.rpc.perp.BatchCancelOrdersResponse\x12j\n" +
+	"\x0fCancelAllOrders\x12*.opentrade.rpc.perp.CancelAllOrdersRequest\x1a+.opentrade.rpc.perp.CancelAllOrdersResponse\x12d\n" +
+	"\rPreCheckOrder\x12(.opentrade.rpc.perp.PreCheckOrderRequest\x1a).opentrade.rpc.perp.PreCheckOrderResponse\x12p\n" +
+	"\x11CloseAllPositions\x12,.opentrade.rpc.perp.CloseAllPositionsRequest\x1a-.opentrade.rpc.perp.CloseAllPositionsResponse\x12d\n" +
 	"\rSetMarginMode\x12(.opentrade.rpc.perp.SetMarginModeRequest\x1a).opentrade.rpc.perp.SetMarginModeResponse\x12j\n" +
 	"\x0fSetPositionMode\x12*.opentrade.rpc.perp.SetPositionModeRequest\x1a+.opentrade.rpc.perp.SetPositionModeResponse\x12y\n" +
 	"\x14AdjustIsolatedMargin\x12/.opentrade.rpc.perp.AdjustIsolatedMarginRequest\x1a0.opentrade.rpc.perp.AdjustIsolatedMarginResponse\x12m\n" +
@@ -3329,7 +4821,10 @@ const file_rpc_perp_perp_proto_rawDesc = "" +
 	"\x1aListCustomerLeverageLimits\x125.opentrade.rpc.perp.ListCustomerLeverageLimitsRequest\x1a6.opentrade.rpc.perp.ListCustomerLeverageLimitsResponse\x12s\n" +
 	"\x12SetCustomerFeeRate\x12-.opentrade.rpc.perp.SetCustomerFeeRateRequest\x1a..opentrade.rpc.perp.SetCustomerFeeRateResponse\x12y\n" +
 	"\x14ListCustomerFeeRates\x12/.opentrade.rpc.perp.ListCustomerFeeRatesRequest\x1a0.opentrade.rpc.perp.ListCustomerFeeRatesResponse\x12p\n" +
-	"\x11ProjectRiskConfig\x12,.opentrade.rpc.perp.ProjectRiskConfigRequest\x1a-.opentrade.rpc.perp.ProjectRiskConfigResponseB6Z4github.com/xargin/opentrade/api/gen/rpc/perp;perprpcb\x06proto3"
+	"\x11ProjectRiskConfig\x12,.opentrade.rpc.perp.ProjectRiskConfigRequest\x1a-.opentrade.rpc.perp.ProjectRiskConfigResponse\x12v\n" +
+	"\x13ForceAdjustPosition\x12..opentrade.rpc.perp.ForceAdjustPositionRequest\x1a/.opentrade.rpc.perp.ForceAdjustPositionResponse\x12[\n" +
+	"\n" +
+	"BlockTrade\x12%.opentrade.rpc.perp.BlockTradeRequest\x1a&.opentrade.rpc.perp.BlockTradeResponseB6Z4github.com/xargin/opentrade/api/gen/rpc/perp;perprpcb\x06proto3"
 
 var (
 	file_rpc_perp_perp_proto_rawDescOnce sync.Once
@@ -3343,122 +4838,168 @@ func file_rpc_perp_perp_proto_rawDescGZIP() []byte {
 	return file_rpc_perp_perp_proto_rawDescData
 }
 
-var file_rpc_perp_perp_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_rpc_perp_perp_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_rpc_perp_perp_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_rpc_perp_perp_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
 var file_rpc_perp_perp_proto_goTypes = []any{
 	(MarginMode)(0),                            // 0: opentrade.rpc.perp.MarginMode
 	(PositionMode)(0),                          // 1: opentrade.rpc.perp.PositionMode
-	(*PlaceOrderRequest)(nil),                  // 2: opentrade.rpc.perp.PlaceOrderRequest
-	(*PlaceOrderResponse)(nil),                 // 3: opentrade.rpc.perp.PlaceOrderResponse
-	(*CancelOrderRequest)(nil),                 // 4: opentrade.rpc.perp.CancelOrderRequest
-	(*CancelOrderResponse)(nil),                // 5: opentrade.rpc.perp.CancelOrderResponse
-	(*QueryOrderRequest)(nil),                  // 6: opentrade.rpc.perp.QueryOrderRequest
-	(*QueryOrderResponse)(nil),                 // 7: opentrade.rpc.perp.QueryOrderResponse
-	(*QueryPositionsRequest)(nil),              // 8: opentrade.rpc.perp.QueryPositionsRequest
-	(*QueryPositionsResponse)(nil),             // 9: opentrade.rpc.perp.QueryPositionsResponse
-	(*Position)(nil),                           // 10: opentrade.rpc.perp.Position
-	(*QueryMarginRequest)(nil),                 // 11: opentrade.rpc.perp.QueryMarginRequest
-	(*QueryMarginResponse)(nil),                // 12: opentrade.rpc.perp.QueryMarginResponse
-	(*SetMarginModeRequest)(nil),               // 13: opentrade.rpc.perp.SetMarginModeRequest
-	(*SetMarginModeResponse)(nil),              // 14: opentrade.rpc.perp.SetMarginModeResponse
-	(*SetPositionModeRequest)(nil),             // 15: opentrade.rpc.perp.SetPositionModeRequest
-	(*SetPositionModeResponse)(nil),            // 16: opentrade.rpc.perp.SetPositionModeResponse
-	(*AdjustIsolatedMarginRequest)(nil),        // 17: opentrade.rpc.perp.AdjustIsolatedMarginRequest
-	(*AdjustIsolatedMarginResponse)(nil),       // 18: opentrade.rpc.perp.AdjustIsolatedMarginResponse
-	(*SetAutoAddMarginRequest)(nil),            // 19: opentrade.rpc.perp.SetAutoAddMarginRequest
-	(*SetAutoAddMarginResponse)(nil),           // 20: opentrade.rpc.perp.SetAutoAddMarginResponse
-	(*SetPositionLeverageRequest)(nil),         // 21: opentrade.rpc.perp.SetPositionLeverageRequest
-	(*SetPositionLeverageResponse)(nil),        // 22: opentrade.rpc.perp.SetPositionLeverageResponse
-	(*SetRiskIdRequest)(nil),                   // 23: opentrade.rpc.perp.SetRiskIdRequest
-	(*SetRiskIdResponse)(nil),                  // 24: opentrade.rpc.perp.SetRiskIdResponse
-	(*QueryPositionConfigRequest)(nil),         // 25: opentrade.rpc.perp.QueryPositionConfigRequest
-	(*PositionConfig)(nil),                     // 26: opentrade.rpc.perp.PositionConfig
-	(*QueryPositionConfigResponse)(nil),        // 27: opentrade.rpc.perp.QueryPositionConfigResponse
-	(*QueryAccountConfigRequest)(nil),          // 28: opentrade.rpc.perp.QueryAccountConfigRequest
-	(*QueryAccountConfigResponse)(nil),         // 29: opentrade.rpc.perp.QueryAccountConfigResponse
-	(*CustomerLeverageLimit)(nil),              // 30: opentrade.rpc.perp.CustomerLeverageLimit
-	(*SetCustomerLeverageLimitRequest)(nil),    // 31: opentrade.rpc.perp.SetCustomerLeverageLimitRequest
-	(*SetCustomerLeverageLimitResponse)(nil),   // 32: opentrade.rpc.perp.SetCustomerLeverageLimitResponse
-	(*ListCustomerLeverageLimitsRequest)(nil),  // 33: opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
-	(*ListCustomerLeverageLimitsResponse)(nil), // 34: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
-	(*CustomerFeeRate)(nil),                    // 35: opentrade.rpc.perp.CustomerFeeRate
-	(*SetCustomerFeeRateRequest)(nil),          // 36: opentrade.rpc.perp.SetCustomerFeeRateRequest
-	(*SetCustomerFeeRateResponse)(nil),         // 37: opentrade.rpc.perp.SetCustomerFeeRateResponse
-	(*ListCustomerFeeRatesRequest)(nil),        // 38: opentrade.rpc.perp.ListCustomerFeeRatesRequest
-	(*ListCustomerFeeRatesResponse)(nil),       // 39: opentrade.rpc.perp.ListCustomerFeeRatesResponse
-	(*RiskTierParam)(nil),                      // 40: opentrade.rpc.perp.RiskTierParam
-	(*ProjectRiskConfigRequest)(nil),           // 41: opentrade.rpc.perp.ProjectRiskConfigRequest
-	(*ProjectRiskConfigResponse)(nil),          // 42: opentrade.rpc.perp.ProjectRiskConfigResponse
-	(event.Side)(0),                            // 43: opentrade.event.Side
-	(event.OrderType)(0),                       // 44: opentrade.event.OrderType
-	(event.TimeInForce)(0),                     // 45: opentrade.event.TimeInForce
-	(event.InternalOrderStatus)(0),             // 46: opentrade.event.InternalOrderStatus
+	(CloseAllPhase)(0),                         // 2: opentrade.rpc.perp.CloseAllPhase
+	(*PlaceOrderRequest)(nil),                  // 3: opentrade.rpc.perp.PlaceOrderRequest
+	(*PlaceOrderResponse)(nil),                 // 4: opentrade.rpc.perp.PlaceOrderResponse
+	(*CancelOrderRequest)(nil),                 // 5: opentrade.rpc.perp.CancelOrderRequest
+	(*CancelOrderResponse)(nil),                // 6: opentrade.rpc.perp.CancelOrderResponse
+	(*AmendOrderRequest)(nil),                  // 7: opentrade.rpc.perp.AmendOrderRequest
+	(*AmendOrderResponse)(nil),                 // 8: opentrade.rpc.perp.AmendOrderResponse
+	(*BatchPlaceOrdersRequest)(nil),            // 9: opentrade.rpc.perp.BatchPlaceOrdersRequest
+	(*BatchPlaceOrdersResponse)(nil),           // 10: opentrade.rpc.perp.BatchPlaceOrdersResponse
+	(*BatchCancelOrdersRequest)(nil),           // 11: opentrade.rpc.perp.BatchCancelOrdersRequest
+	(*BatchCancelOrdersResponse)(nil),          // 12: opentrade.rpc.perp.BatchCancelOrdersResponse
+	(*CancelAllOrdersRequest)(nil),             // 13: opentrade.rpc.perp.CancelAllOrdersRequest
+	(*CancelAllOrdersResponse)(nil),            // 14: opentrade.rpc.perp.CancelAllOrdersResponse
+	(*PreCheckOrderRequest)(nil),               // 15: opentrade.rpc.perp.PreCheckOrderRequest
+	(*PreCheckOrderResponse)(nil),              // 16: opentrade.rpc.perp.PreCheckOrderResponse
+	(*CloseAllPositionsRequest)(nil),           // 17: opentrade.rpc.perp.CloseAllPositionsRequest
+	(*CloseAllLeg)(nil),                        // 18: opentrade.rpc.perp.CloseAllLeg
+	(*CloseAllPositionsResponse)(nil),          // 19: opentrade.rpc.perp.CloseAllPositionsResponse
+	(*ForceAdjustPositionRequest)(nil),         // 20: opentrade.rpc.perp.ForceAdjustPositionRequest
+	(*ForceAdjustPositionResponse)(nil),        // 21: opentrade.rpc.perp.ForceAdjustPositionResponse
+	(*BlockTradeLeg)(nil),                      // 22: opentrade.rpc.perp.BlockTradeLeg
+	(*BlockTradeRequest)(nil),                  // 23: opentrade.rpc.perp.BlockTradeRequest
+	(*BlockTradeResponse)(nil),                 // 24: opentrade.rpc.perp.BlockTradeResponse
+	(*QueryOrderRequest)(nil),                  // 25: opentrade.rpc.perp.QueryOrderRequest
+	(*QueryOrderResponse)(nil),                 // 26: opentrade.rpc.perp.QueryOrderResponse
+	(*QueryPositionsRequest)(nil),              // 27: opentrade.rpc.perp.QueryPositionsRequest
+	(*QueryPositionsResponse)(nil),             // 28: opentrade.rpc.perp.QueryPositionsResponse
+	(*Position)(nil),                           // 29: opentrade.rpc.perp.Position
+	(*QueryMarginRequest)(nil),                 // 30: opentrade.rpc.perp.QueryMarginRequest
+	(*QueryMarginResponse)(nil),                // 31: opentrade.rpc.perp.QueryMarginResponse
+	(*SetMarginModeRequest)(nil),               // 32: opentrade.rpc.perp.SetMarginModeRequest
+	(*SetMarginModeResponse)(nil),              // 33: opentrade.rpc.perp.SetMarginModeResponse
+	(*SetPositionModeRequest)(nil),             // 34: opentrade.rpc.perp.SetPositionModeRequest
+	(*SetPositionModeResponse)(nil),            // 35: opentrade.rpc.perp.SetPositionModeResponse
+	(*AdjustIsolatedMarginRequest)(nil),        // 36: opentrade.rpc.perp.AdjustIsolatedMarginRequest
+	(*AdjustIsolatedMarginResponse)(nil),       // 37: opentrade.rpc.perp.AdjustIsolatedMarginResponse
+	(*SetAutoAddMarginRequest)(nil),            // 38: opentrade.rpc.perp.SetAutoAddMarginRequest
+	(*SetAutoAddMarginResponse)(nil),           // 39: opentrade.rpc.perp.SetAutoAddMarginResponse
+	(*SetPositionLeverageRequest)(nil),         // 40: opentrade.rpc.perp.SetPositionLeverageRequest
+	(*SetPositionLeverageResponse)(nil),        // 41: opentrade.rpc.perp.SetPositionLeverageResponse
+	(*SetRiskIdRequest)(nil),                   // 42: opentrade.rpc.perp.SetRiskIdRequest
+	(*SetRiskIdResponse)(nil),                  // 43: opentrade.rpc.perp.SetRiskIdResponse
+	(*QueryPositionConfigRequest)(nil),         // 44: opentrade.rpc.perp.QueryPositionConfigRequest
+	(*PositionConfig)(nil),                     // 45: opentrade.rpc.perp.PositionConfig
+	(*QueryPositionConfigResponse)(nil),        // 46: opentrade.rpc.perp.QueryPositionConfigResponse
+	(*QueryAccountConfigRequest)(nil),          // 47: opentrade.rpc.perp.QueryAccountConfigRequest
+	(*QueryAccountConfigResponse)(nil),         // 48: opentrade.rpc.perp.QueryAccountConfigResponse
+	(*CustomerLeverageLimit)(nil),              // 49: opentrade.rpc.perp.CustomerLeverageLimit
+	(*SetCustomerLeverageLimitRequest)(nil),    // 50: opentrade.rpc.perp.SetCustomerLeverageLimitRequest
+	(*SetCustomerLeverageLimitResponse)(nil),   // 51: opentrade.rpc.perp.SetCustomerLeverageLimitResponse
+	(*ListCustomerLeverageLimitsRequest)(nil),  // 52: opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
+	(*ListCustomerLeverageLimitsResponse)(nil), // 53: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
+	(*CustomerFeeRate)(nil),                    // 54: opentrade.rpc.perp.CustomerFeeRate
+	(*SetCustomerFeeRateRequest)(nil),          // 55: opentrade.rpc.perp.SetCustomerFeeRateRequest
+	(*SetCustomerFeeRateResponse)(nil),         // 56: opentrade.rpc.perp.SetCustomerFeeRateResponse
+	(*ListCustomerFeeRatesRequest)(nil),        // 57: opentrade.rpc.perp.ListCustomerFeeRatesRequest
+	(*ListCustomerFeeRatesResponse)(nil),       // 58: opentrade.rpc.perp.ListCustomerFeeRatesResponse
+	(*RiskTierParam)(nil),                      // 59: opentrade.rpc.perp.RiskTierParam
+	(*ProjectRiskConfigRequest)(nil),           // 60: opentrade.rpc.perp.ProjectRiskConfigRequest
+	(*ProjectRiskConfigResponse)(nil),          // 61: opentrade.rpc.perp.ProjectRiskConfigResponse
+	(event.Side)(0),                            // 62: opentrade.event.Side
+	(event.OrderType)(0),                       // 63: opentrade.event.OrderType
+	(event.TimeInForce)(0),                     // 64: opentrade.event.TimeInForce
+	(event.InternalOrderStatus)(0),             // 65: opentrade.event.InternalOrderStatus
 }
 var file_rpc_perp_perp_proto_depIdxs = []int32{
-	43, // 0: opentrade.rpc.perp.PlaceOrderRequest.side:type_name -> opentrade.event.Side
-	44, // 1: opentrade.rpc.perp.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
-	45, // 2: opentrade.rpc.perp.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
+	62, // 0: opentrade.rpc.perp.PlaceOrderRequest.side:type_name -> opentrade.event.Side
+	63, // 1: opentrade.rpc.perp.PlaceOrderRequest.order_type:type_name -> opentrade.event.OrderType
+	64, // 2: opentrade.rpc.perp.PlaceOrderRequest.tif:type_name -> opentrade.event.TimeInForce
 	0,  // 3: opentrade.rpc.perp.PlaceOrderRequest.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	43, // 4: opentrade.rpc.perp.QueryOrderResponse.side:type_name -> opentrade.event.Side
-	44, // 5: opentrade.rpc.perp.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
-	45, // 6: opentrade.rpc.perp.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
-	46, // 7: opentrade.rpc.perp.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
-	10, // 8: opentrade.rpc.perp.QueryPositionsResponse.positions:type_name -> opentrade.rpc.perp.Position
-	43, // 9: opentrade.rpc.perp.Position.side:type_name -> opentrade.event.Side
-	0,  // 10: opentrade.rpc.perp.Position.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	1,  // 11: opentrade.rpc.perp.Position.position_mode:type_name -> opentrade.rpc.perp.PositionMode
-	0,  // 12: opentrade.rpc.perp.SetMarginModeRequest.target_mode:type_name -> opentrade.rpc.perp.MarginMode
-	0,  // 13: opentrade.rpc.perp.SetMarginModeResponse.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	1,  // 14: opentrade.rpc.perp.SetPositionModeRequest.target_mode:type_name -> opentrade.rpc.perp.PositionMode
-	1,  // 15: opentrade.rpc.perp.SetPositionModeResponse.position_mode:type_name -> opentrade.rpc.perp.PositionMode
-	0,  // 16: opentrade.rpc.perp.PositionConfig.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
-	1,  // 17: opentrade.rpc.perp.PositionConfig.position_mode:type_name -> opentrade.rpc.perp.PositionMode
-	26, // 18: opentrade.rpc.perp.QueryPositionConfigResponse.configs:type_name -> opentrade.rpc.perp.PositionConfig
-	30, // 19: opentrade.rpc.perp.QueryAccountConfigResponse.leverage_limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
-	30, // 20: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse.limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
-	35, // 21: opentrade.rpc.perp.ListCustomerFeeRatesResponse.fee_rates:type_name -> opentrade.rpc.perp.CustomerFeeRate
-	40, // 22: opentrade.rpc.perp.ProjectRiskConfigRequest.risk_tiers:type_name -> opentrade.rpc.perp.RiskTierParam
-	2,  // 23: opentrade.rpc.perp.PerpService.PlaceOrder:input_type -> opentrade.rpc.perp.PlaceOrderRequest
-	4,  // 24: opentrade.rpc.perp.PerpService.CancelOrder:input_type -> opentrade.rpc.perp.CancelOrderRequest
-	6,  // 25: opentrade.rpc.perp.PerpService.QueryOrder:input_type -> opentrade.rpc.perp.QueryOrderRequest
-	8,  // 26: opentrade.rpc.perp.PerpService.QueryPositions:input_type -> opentrade.rpc.perp.QueryPositionsRequest
-	11, // 27: opentrade.rpc.perp.PerpService.QueryMargin:input_type -> opentrade.rpc.perp.QueryMarginRequest
-	13, // 28: opentrade.rpc.perp.PerpService.SetMarginMode:input_type -> opentrade.rpc.perp.SetMarginModeRequest
-	15, // 29: opentrade.rpc.perp.PerpService.SetPositionMode:input_type -> opentrade.rpc.perp.SetPositionModeRequest
-	17, // 30: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:input_type -> opentrade.rpc.perp.AdjustIsolatedMarginRequest
-	19, // 31: opentrade.rpc.perp.PerpService.SetAutoAddMargin:input_type -> opentrade.rpc.perp.SetAutoAddMarginRequest
-	21, // 32: opentrade.rpc.perp.PerpService.SetPositionLeverage:input_type -> opentrade.rpc.perp.SetPositionLeverageRequest
-	23, // 33: opentrade.rpc.perp.PerpService.SetRiskId:input_type -> opentrade.rpc.perp.SetRiskIdRequest
-	25, // 34: opentrade.rpc.perp.PerpService.QueryPositionConfig:input_type -> opentrade.rpc.perp.QueryPositionConfigRequest
-	28, // 35: opentrade.rpc.perp.PerpService.QueryAccountConfig:input_type -> opentrade.rpc.perp.QueryAccountConfigRequest
-	31, // 36: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:input_type -> opentrade.rpc.perp.SetCustomerLeverageLimitRequest
-	33, // 37: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:input_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
-	36, // 38: opentrade.rpc.perp.PerpService.SetCustomerFeeRate:input_type -> opentrade.rpc.perp.SetCustomerFeeRateRequest
-	38, // 39: opentrade.rpc.perp.PerpService.ListCustomerFeeRates:input_type -> opentrade.rpc.perp.ListCustomerFeeRatesRequest
-	41, // 40: opentrade.rpc.perp.PerpService.ProjectRiskConfig:input_type -> opentrade.rpc.perp.ProjectRiskConfigRequest
-	3,  // 41: opentrade.rpc.perp.PerpService.PlaceOrder:output_type -> opentrade.rpc.perp.PlaceOrderResponse
-	5,  // 42: opentrade.rpc.perp.PerpService.CancelOrder:output_type -> opentrade.rpc.perp.CancelOrderResponse
-	7,  // 43: opentrade.rpc.perp.PerpService.QueryOrder:output_type -> opentrade.rpc.perp.QueryOrderResponse
-	9,  // 44: opentrade.rpc.perp.PerpService.QueryPositions:output_type -> opentrade.rpc.perp.QueryPositionsResponse
-	12, // 45: opentrade.rpc.perp.PerpService.QueryMargin:output_type -> opentrade.rpc.perp.QueryMarginResponse
-	14, // 46: opentrade.rpc.perp.PerpService.SetMarginMode:output_type -> opentrade.rpc.perp.SetMarginModeResponse
-	16, // 47: opentrade.rpc.perp.PerpService.SetPositionMode:output_type -> opentrade.rpc.perp.SetPositionModeResponse
-	18, // 48: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:output_type -> opentrade.rpc.perp.AdjustIsolatedMarginResponse
-	20, // 49: opentrade.rpc.perp.PerpService.SetAutoAddMargin:output_type -> opentrade.rpc.perp.SetAutoAddMarginResponse
-	22, // 50: opentrade.rpc.perp.PerpService.SetPositionLeverage:output_type -> opentrade.rpc.perp.SetPositionLeverageResponse
-	24, // 51: opentrade.rpc.perp.PerpService.SetRiskId:output_type -> opentrade.rpc.perp.SetRiskIdResponse
-	27, // 52: opentrade.rpc.perp.PerpService.QueryPositionConfig:output_type -> opentrade.rpc.perp.QueryPositionConfigResponse
-	29, // 53: opentrade.rpc.perp.PerpService.QueryAccountConfig:output_type -> opentrade.rpc.perp.QueryAccountConfigResponse
-	32, // 54: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:output_type -> opentrade.rpc.perp.SetCustomerLeverageLimitResponse
-	34, // 55: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:output_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
-	37, // 56: opentrade.rpc.perp.PerpService.SetCustomerFeeRate:output_type -> opentrade.rpc.perp.SetCustomerFeeRateResponse
-	39, // 57: opentrade.rpc.perp.PerpService.ListCustomerFeeRates:output_type -> opentrade.rpc.perp.ListCustomerFeeRatesResponse
-	42, // 58: opentrade.rpc.perp.PerpService.ProjectRiskConfig:output_type -> opentrade.rpc.perp.ProjectRiskConfigResponse
-	41, // [41:59] is the sub-list for method output_type
-	23, // [23:41] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	3,  // 4: opentrade.rpc.perp.BatchPlaceOrdersRequest.items:type_name -> opentrade.rpc.perp.PlaceOrderRequest
+	4,  // 5: opentrade.rpc.perp.BatchPlaceOrdersResponse.items:type_name -> opentrade.rpc.perp.PlaceOrderResponse
+	6,  // 6: opentrade.rpc.perp.BatchCancelOrdersResponse.items:type_name -> opentrade.rpc.perp.CancelOrderResponse
+	6,  // 7: opentrade.rpc.perp.CancelAllOrdersResponse.items:type_name -> opentrade.rpc.perp.CancelOrderResponse
+	3,  // 8: opentrade.rpc.perp.PreCheckOrderRequest.order:type_name -> opentrade.rpc.perp.PlaceOrderRequest
+	0,  // 9: opentrade.rpc.perp.PreCheckOrderResponse.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
+	2,  // 10: opentrade.rpc.perp.CloseAllPositionsResponse.phase:type_name -> opentrade.rpc.perp.CloseAllPhase
+	18, // 11: opentrade.rpc.perp.CloseAllPositionsResponse.legs:type_name -> opentrade.rpc.perp.CloseAllLeg
+	62, // 12: opentrade.rpc.perp.ForceAdjustPositionRequest.side:type_name -> opentrade.event.Side
+	22, // 13: opentrade.rpc.perp.BlockTradeRequest.buyer:type_name -> opentrade.rpc.perp.BlockTradeLeg
+	22, // 14: opentrade.rpc.perp.BlockTradeRequest.seller:type_name -> opentrade.rpc.perp.BlockTradeLeg
+	62, // 15: opentrade.rpc.perp.QueryOrderResponse.side:type_name -> opentrade.event.Side
+	63, // 16: opentrade.rpc.perp.QueryOrderResponse.order_type:type_name -> opentrade.event.OrderType
+	64, // 17: opentrade.rpc.perp.QueryOrderResponse.tif:type_name -> opentrade.event.TimeInForce
+	65, // 18: opentrade.rpc.perp.QueryOrderResponse.status:type_name -> opentrade.event.InternalOrderStatus
+	29, // 19: opentrade.rpc.perp.QueryPositionsResponse.positions:type_name -> opentrade.rpc.perp.Position
+	62, // 20: opentrade.rpc.perp.Position.side:type_name -> opentrade.event.Side
+	0,  // 21: opentrade.rpc.perp.Position.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
+	1,  // 22: opentrade.rpc.perp.Position.position_mode:type_name -> opentrade.rpc.perp.PositionMode
+	0,  // 23: opentrade.rpc.perp.SetMarginModeRequest.target_mode:type_name -> opentrade.rpc.perp.MarginMode
+	0,  // 24: opentrade.rpc.perp.SetMarginModeResponse.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
+	1,  // 25: opentrade.rpc.perp.SetPositionModeRequest.target_mode:type_name -> opentrade.rpc.perp.PositionMode
+	1,  // 26: opentrade.rpc.perp.SetPositionModeResponse.position_mode:type_name -> opentrade.rpc.perp.PositionMode
+	0,  // 27: opentrade.rpc.perp.PositionConfig.margin_mode:type_name -> opentrade.rpc.perp.MarginMode
+	1,  // 28: opentrade.rpc.perp.PositionConfig.position_mode:type_name -> opentrade.rpc.perp.PositionMode
+	45, // 29: opentrade.rpc.perp.QueryPositionConfigResponse.configs:type_name -> opentrade.rpc.perp.PositionConfig
+	49, // 30: opentrade.rpc.perp.QueryAccountConfigResponse.leverage_limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
+	49, // 31: opentrade.rpc.perp.ListCustomerLeverageLimitsResponse.limits:type_name -> opentrade.rpc.perp.CustomerLeverageLimit
+	54, // 32: opentrade.rpc.perp.ListCustomerFeeRatesResponse.fee_rates:type_name -> opentrade.rpc.perp.CustomerFeeRate
+	59, // 33: opentrade.rpc.perp.ProjectRiskConfigRequest.risk_tiers:type_name -> opentrade.rpc.perp.RiskTierParam
+	3,  // 34: opentrade.rpc.perp.PerpService.PlaceOrder:input_type -> opentrade.rpc.perp.PlaceOrderRequest
+	5,  // 35: opentrade.rpc.perp.PerpService.CancelOrder:input_type -> opentrade.rpc.perp.CancelOrderRequest
+	25, // 36: opentrade.rpc.perp.PerpService.QueryOrder:input_type -> opentrade.rpc.perp.QueryOrderRequest
+	27, // 37: opentrade.rpc.perp.PerpService.QueryPositions:input_type -> opentrade.rpc.perp.QueryPositionsRequest
+	30, // 38: opentrade.rpc.perp.PerpService.QueryMargin:input_type -> opentrade.rpc.perp.QueryMarginRequest
+	7,  // 39: opentrade.rpc.perp.PerpService.AmendOrder:input_type -> opentrade.rpc.perp.AmendOrderRequest
+	9,  // 40: opentrade.rpc.perp.PerpService.BatchPlaceOrders:input_type -> opentrade.rpc.perp.BatchPlaceOrdersRequest
+	11, // 41: opentrade.rpc.perp.PerpService.BatchCancelOrders:input_type -> opentrade.rpc.perp.BatchCancelOrdersRequest
+	13, // 42: opentrade.rpc.perp.PerpService.CancelAllOrders:input_type -> opentrade.rpc.perp.CancelAllOrdersRequest
+	15, // 43: opentrade.rpc.perp.PerpService.PreCheckOrder:input_type -> opentrade.rpc.perp.PreCheckOrderRequest
+	17, // 44: opentrade.rpc.perp.PerpService.CloseAllPositions:input_type -> opentrade.rpc.perp.CloseAllPositionsRequest
+	32, // 45: opentrade.rpc.perp.PerpService.SetMarginMode:input_type -> opentrade.rpc.perp.SetMarginModeRequest
+	34, // 46: opentrade.rpc.perp.PerpService.SetPositionMode:input_type -> opentrade.rpc.perp.SetPositionModeRequest
+	36, // 47: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:input_type -> opentrade.rpc.perp.AdjustIsolatedMarginRequest
+	38, // 48: opentrade.rpc.perp.PerpService.SetAutoAddMargin:input_type -> opentrade.rpc.perp.SetAutoAddMarginRequest
+	40, // 49: opentrade.rpc.perp.PerpService.SetPositionLeverage:input_type -> opentrade.rpc.perp.SetPositionLeverageRequest
+	42, // 50: opentrade.rpc.perp.PerpService.SetRiskId:input_type -> opentrade.rpc.perp.SetRiskIdRequest
+	44, // 51: opentrade.rpc.perp.PerpService.QueryPositionConfig:input_type -> opentrade.rpc.perp.QueryPositionConfigRequest
+	47, // 52: opentrade.rpc.perp.PerpService.QueryAccountConfig:input_type -> opentrade.rpc.perp.QueryAccountConfigRequest
+	50, // 53: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:input_type -> opentrade.rpc.perp.SetCustomerLeverageLimitRequest
+	52, // 54: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:input_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsRequest
+	55, // 55: opentrade.rpc.perp.PerpService.SetCustomerFeeRate:input_type -> opentrade.rpc.perp.SetCustomerFeeRateRequest
+	57, // 56: opentrade.rpc.perp.PerpService.ListCustomerFeeRates:input_type -> opentrade.rpc.perp.ListCustomerFeeRatesRequest
+	60, // 57: opentrade.rpc.perp.PerpService.ProjectRiskConfig:input_type -> opentrade.rpc.perp.ProjectRiskConfigRequest
+	20, // 58: opentrade.rpc.perp.PerpService.ForceAdjustPosition:input_type -> opentrade.rpc.perp.ForceAdjustPositionRequest
+	23, // 59: opentrade.rpc.perp.PerpService.BlockTrade:input_type -> opentrade.rpc.perp.BlockTradeRequest
+	4,  // 60: opentrade.rpc.perp.PerpService.PlaceOrder:output_type -> opentrade.rpc.perp.PlaceOrderResponse
+	6,  // 61: opentrade.rpc.perp.PerpService.CancelOrder:output_type -> opentrade.rpc.perp.CancelOrderResponse
+	26, // 62: opentrade.rpc.perp.PerpService.QueryOrder:output_type -> opentrade.rpc.perp.QueryOrderResponse
+	28, // 63: opentrade.rpc.perp.PerpService.QueryPositions:output_type -> opentrade.rpc.perp.QueryPositionsResponse
+	31, // 64: opentrade.rpc.perp.PerpService.QueryMargin:output_type -> opentrade.rpc.perp.QueryMarginResponse
+	8,  // 65: opentrade.rpc.perp.PerpService.AmendOrder:output_type -> opentrade.rpc.perp.AmendOrderResponse
+	10, // 66: opentrade.rpc.perp.PerpService.BatchPlaceOrders:output_type -> opentrade.rpc.perp.BatchPlaceOrdersResponse
+	12, // 67: opentrade.rpc.perp.PerpService.BatchCancelOrders:output_type -> opentrade.rpc.perp.BatchCancelOrdersResponse
+	14, // 68: opentrade.rpc.perp.PerpService.CancelAllOrders:output_type -> opentrade.rpc.perp.CancelAllOrdersResponse
+	16, // 69: opentrade.rpc.perp.PerpService.PreCheckOrder:output_type -> opentrade.rpc.perp.PreCheckOrderResponse
+	19, // 70: opentrade.rpc.perp.PerpService.CloseAllPositions:output_type -> opentrade.rpc.perp.CloseAllPositionsResponse
+	33, // 71: opentrade.rpc.perp.PerpService.SetMarginMode:output_type -> opentrade.rpc.perp.SetMarginModeResponse
+	35, // 72: opentrade.rpc.perp.PerpService.SetPositionMode:output_type -> opentrade.rpc.perp.SetPositionModeResponse
+	37, // 73: opentrade.rpc.perp.PerpService.AdjustIsolatedMargin:output_type -> opentrade.rpc.perp.AdjustIsolatedMarginResponse
+	39, // 74: opentrade.rpc.perp.PerpService.SetAutoAddMargin:output_type -> opentrade.rpc.perp.SetAutoAddMarginResponse
+	41, // 75: opentrade.rpc.perp.PerpService.SetPositionLeverage:output_type -> opentrade.rpc.perp.SetPositionLeverageResponse
+	43, // 76: opentrade.rpc.perp.PerpService.SetRiskId:output_type -> opentrade.rpc.perp.SetRiskIdResponse
+	46, // 77: opentrade.rpc.perp.PerpService.QueryPositionConfig:output_type -> opentrade.rpc.perp.QueryPositionConfigResponse
+	48, // 78: opentrade.rpc.perp.PerpService.QueryAccountConfig:output_type -> opentrade.rpc.perp.QueryAccountConfigResponse
+	51, // 79: opentrade.rpc.perp.PerpService.SetCustomerLeverageLimit:output_type -> opentrade.rpc.perp.SetCustomerLeverageLimitResponse
+	53, // 80: opentrade.rpc.perp.PerpService.ListCustomerLeverageLimits:output_type -> opentrade.rpc.perp.ListCustomerLeverageLimitsResponse
+	56, // 81: opentrade.rpc.perp.PerpService.SetCustomerFeeRate:output_type -> opentrade.rpc.perp.SetCustomerFeeRateResponse
+	58, // 82: opentrade.rpc.perp.PerpService.ListCustomerFeeRates:output_type -> opentrade.rpc.perp.ListCustomerFeeRatesResponse
+	61, // 83: opentrade.rpc.perp.PerpService.ProjectRiskConfig:output_type -> opentrade.rpc.perp.ProjectRiskConfigResponse
+	21, // 84: opentrade.rpc.perp.PerpService.ForceAdjustPosition:output_type -> opentrade.rpc.perp.ForceAdjustPositionResponse
+	24, // 85: opentrade.rpc.perp.PerpService.BlockTrade:output_type -> opentrade.rpc.perp.BlockTradeResponse
+	60, // [60:86] is the sub-list for method output_type
+	34, // [34:60] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_rpc_perp_perp_proto_init() }
@@ -3471,8 +5012,8 @@ func file_rpc_perp_perp_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_perp_perp_proto_rawDesc), len(file_rpc_perp_perp_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   41,
+			NumEnums:      3,
+			NumMessages:   59,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

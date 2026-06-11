@@ -45,6 +45,12 @@ service TriggerService {
   // all still-PENDING siblings in the same OCO group are auto-canceled
   // (ADR-0044). Idempotent via client_oco_id.
   rpc PlaceOCO(PlaceOCORequest) returns (PlaceOCOResponse);
+
+  // CountActiveTriggers reports the user's PENDING trigger count on one
+  // symbol — the ADR-0077 §3 / ADR-0078 §6 mode-switch guard query
+  // perp-counter's TriggerChecker seam calls. Best-effort UX guard; the
+  // hard guarantee stays perp-counter's fail-closed admission at fire time.
+  rpc CountActiveTriggers(CountActiveTriggersRequest) returns (CountActiveTriggersResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -95,6 +101,11 @@ enum TriggerStatus {
   // is full (ADR-0054). Terminal; reservation (if any) was released. Named
   // after Binance's equivalent spot-filter status.
   TRIGGER_STATUS_EXPIRED_IN_MATCH = 6;
+  // EXPIRED_POSITION_GONE: a perp position-bound trigger fired but the
+  // bound position no longer exists / no longer matches the close side, so
+  // perp-counter's reduce-only admission rejected the inner order
+  // (ADR-0078 §6). Terminal; the trigger never reverse-opens.
+  TRIGGER_STATUS_EXPIRED_POSITION_GONE = 7;
 }
 
 // -----------------------------------------------------------------------------
@@ -125,6 +136,24 @@ message PlaceTriggerRequest {
   // tracking from the first observed price".
   int32 trailing_delta_bps = 12;
   string activation_price = 13;
+
+  // --- ADR-0078 §6 perp position binding -----------------------------------
+  // perp=true marks a position-bound perp trigger: symbol is a perp symbol,
+  // the trigger basis is MARK PRICE (perp-price topic, not PublicTrade), and
+  // the fired inner order goes to perp-counter as reduce_only=true on
+  // position_idx with client_order_id="trig-<id>". quote_qty is forbidden;
+  // qty is required. side stays the CLOSING order side (the bound position's
+  // side is its opposite — validated by the admission matrix at fire time).
+  bool perp = 14;
+  // ADR-0077 leg addressing: 0 in one-way mode, 1/2 in hedge mode. Validated
+  // fail-closed by perp-counter when the trigger fires.
+  uint32 position_idx = 15;
+  // Recorded for audit / product parity; V1 semantics are empty because a
+  // reduce-only perp order reserves no IM (ADR-0078 修订 #7).
+  bool close_on_trigger = 16;
+  // MARKET variants only: protected-market collar forwarded to the inner
+  // order (ADR-0083). 0 = plain market.
+  uint32 slippage_bps = 17;
 }
 
 message PlaceTriggerResponse {
@@ -197,6 +226,23 @@ message Trigger {
   string activation_price = 20;       // 0 = start tracking immediately
   string trailing_watermark = 21;     // current max (sell) / min (buy)
   bool trailing_active = 22;          // true once activation_price crossed
+
+  // ADR-0078 §6 perp position binding (mirrors PlaceTriggerRequest).
+  bool perp = 23;
+  uint32 position_idx = 24;
+  bool close_on_trigger = 25;
+  uint32 slippage_bps = 26;
+}
+
+// --- ADR-0077 §3 / ADR-0078 §6 mode-switch guard query -----------------------
+
+message CountActiveTriggersRequest {
+  uint64 user_id = 1;
+  string symbol = 2;
+}
+
+message CountActiveTriggersResponse {
+  uint32 count = 1; // PENDING triggers for (user_id, symbol)
 }
 
 // -----------------------------------------------------------------------------

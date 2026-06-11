@@ -30,6 +30,14 @@ type placeTriggerBody struct {
 	// type "trailing_stop_loss", forbidden otherwise.
 	TrailingDeltaBps int32  `json:"trailing_delta_bps,omitempty"`
 	ActivationPrice  string `json:"activation_price,omitempty"`
+
+	// ADR-0078 §6 perp position binding: perp=true makes this a
+	// position-bound perp trigger (mark-price basis, reduce_only inner
+	// order on position_idx). slippage_bps applies to MARKET variants.
+	Perp           bool   `json:"perp,omitempty"`
+	PositionIdx    uint32 `json:"position_idx,omitempty"`
+	CloseOnTrigger bool   `json:"close_on_trigger,omitempty"`
+	SlippageBps    uint32 `json:"slippage_bps,omitempty"`
 }
 
 // handlePlaceTrigger POST /v1/trigger — forwards to the
@@ -83,6 +91,10 @@ func (s *Server) handlePlaceTrigger(w http.ResponseWriter, r *http.Request) {
 		ExpiresAtUnixMs:  body.ExpiresAtUnixMs,
 		TrailingDeltaBps: body.TrailingDeltaBps,
 		ActivationPrice:  body.ActivationPrice,
+		Perp:             body.Perp,
+		PositionIdx:      body.PositionIdx,
+		CloseOnTrigger:   body.CloseOnTrigger,
+		SlippageBps:      body.SlippageBps,
 	}))
 	if err != nil {
 		writeConnectError(w, err)
@@ -235,6 +247,10 @@ func (s *Server) handlePlaceOCO(w http.ResponseWriter, r *http.Request) {
 			ExpiresAtUnixMs:  lb.ExpiresAtUnixMs,
 			TrailingDeltaBps: lb.TrailingDeltaBps,
 			ActivationPrice:  lb.ActivationPrice,
+			Perp:             lb.Perp,
+			PositionIdx:      lb.PositionIdx,
+			CloseOnTrigger:   lb.CloseOnTrigger,
+			SlippageBps:      lb.SlippageBps,
 		}
 	}
 	resp, err := s.trigger.PlaceOCO(r.Context(), connect.NewRequest(&condrpc.PlaceOCORequest{
@@ -390,6 +406,10 @@ func triggerToJSON(c *condrpc.Trigger) map[string]any {
 		"activation_price":     c.ActivationPrice,
 		"trailing_watermark":   c.TrailingWatermark,
 		"trailing_active":      c.TrailingActive,
+		"perp":                 c.Perp,
+		"position_idx":         c.PositionIdx,
+		"close_on_trigger":     c.CloseOnTrigger,
+		"slippage_bps":         c.SlippageBps,
 	}
 }
 
@@ -471,6 +491,10 @@ func triggerStatusLabel(s condrpc.TriggerStatus) string {
 		return "rejected"
 	case condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED:
 		return "expired"
+	case condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED_IN_MATCH:
+		return "expired_in_match"
+	case condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED_POSITION_GONE:
+		return "expired_position_gone"
 	}
 	return "unknown"
 }

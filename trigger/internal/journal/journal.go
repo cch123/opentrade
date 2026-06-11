@@ -175,12 +175,13 @@ func (p *Producer) drain() {
 // they don't interact with TriggerUpdate ordering (different
 // trigger_ids on different partitions, and shadow apply doesn't care
 // which order checkpoint vs update arrive).
-func (p *Producer) PublishCheckpoint(ctx context.Context, marketOffsets map[int32]int64) error {
+func (p *Producer) PublishCheckpoint(ctx context.Context, marketOffsets, perpPriceOffsets map[int32]int64) error {
 	envelope := &eventpb.TriggerEvent{
 		Payload: &eventpb.TriggerEvent_MarketCheckpoint{
 			MarketCheckpoint: &eventpb.TriggerMarketCheckpointEvent{
-				MarketOffsets: marketOffsets,
-				TsUnixMs:      time.Now().UnixMilli(),
+				MarketOffsets:    marketOffsets,
+				PerpPriceOffsets: perpPriceOffsets,
+				TsUnixMs:         time.Now().UnixMilli(),
 			},
 		},
 	}
@@ -254,6 +255,10 @@ func convert(c *engine.Trigger, triggerSeq uint64, producerID string) *eventpb.T
 		ActivationPrice:   decString(c.ActivationPrice),
 		TrailingWatermark: decString(c.TrailingWatermark),
 		TrailingActive:    c.TrailingActive,
+		Perp:              c.Perp,
+		PositionIdx:       c.PositionIdx,
+		CloseOnTrigger:    c.CloseOnTrigger,
+		SlippageBps:       c.SlippageBps,
 	}
 	return u
 }
@@ -301,6 +306,12 @@ func mapStatus(s condrpc.TriggerStatus) eventpb.TriggerEventStatus {
 		return eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_REJECTED
 	case condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED:
 		return eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED
+	case condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED_IN_MATCH:
+		// Was missing pre-ADR-0078: the slot-cap terminal degraded to
+		// UNSPECIFIED on the journal wire and the projection lost it.
+		return eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED_IN_MATCH
+	case condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED_POSITION_GONE:
+		return eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED_POSITION_GONE
 	}
 	return eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_UNSPECIFIED
 }

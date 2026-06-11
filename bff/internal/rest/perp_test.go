@@ -81,6 +81,46 @@ func (f *fakePerp) SetCustomerFeeRate(_ context.Context, _ *connect.Request[perp
 func (f *fakePerp) ListCustomerFeeRates(_ context.Context, _ *connect.Request[perprpc.ListCustomerFeeRatesRequest]) (*connect.Response[perprpc.ListCustomerFeeRatesResponse], error) {
 	return connect.NewResponse(&perprpc.ListCustomerFeeRatesResponse{}), nil
 }
+// --- ADR-0078 product surface ------------------------------------------------
+
+func (f *fakePerp) AmendOrder(_ context.Context, req *connect.Request[perprpc.AmendOrderRequest]) (*connect.Response[perprpc.AmendOrderResponse], error) {
+	return connect.NewResponse(&perprpc.AmendOrderResponse{
+		Accepted: true, OldOrderId: req.Msg.OrderId, NewOrderId: req.Msg.OrderId + 1,
+	}), nil
+}
+func (f *fakePerp) BatchPlaceOrders(_ context.Context, req *connect.Request[perprpc.BatchPlaceOrdersRequest]) (*connect.Response[perprpc.BatchPlaceOrdersResponse], error) {
+	resp := &perprpc.BatchPlaceOrdersResponse{BatchId: req.Msg.BatchId}
+	for range req.Msg.Items {
+		resp.Items = append(resp.Items, &perprpc.PlaceOrderResponse{Accepted: true})
+	}
+	return connect.NewResponse(resp), nil
+}
+func (f *fakePerp) BatchCancelOrders(_ context.Context, req *connect.Request[perprpc.BatchCancelOrdersRequest]) (*connect.Response[perprpc.BatchCancelOrdersResponse], error) {
+	resp := &perprpc.BatchCancelOrdersResponse{BatchId: req.Msg.BatchId}
+	for _, id := range req.Msg.OrderIds {
+		resp.Items = append(resp.Items, &perprpc.CancelOrderResponse{OrderId: id, Accepted: true})
+	}
+	return connect.NewResponse(resp), nil
+}
+func (f *fakePerp) CancelAllOrders(_ context.Context, _ *connect.Request[perprpc.CancelAllOrdersRequest]) (*connect.Response[perprpc.CancelAllOrdersResponse], error) {
+	return connect.NewResponse(&perprpc.CancelAllOrdersResponse{}), nil
+}
+func (f *fakePerp) PreCheckOrder(_ context.Context, _ *connect.Request[perprpc.PreCheckOrderRequest]) (*connect.Response[perprpc.PreCheckOrderResponse], error) {
+	return connect.NewResponse(&perprpc.PreCheckOrderResponse{WouldAccept: true, RequiredInitialMargin: "10"}), nil
+}
+func (f *fakePerp) CloseAllPositions(_ context.Context, req *connect.Request[perprpc.CloseAllPositionsRequest]) (*connect.Response[perprpc.CloseAllPositionsResponse], error) {
+	return connect.NewResponse(&perprpc.CloseAllPositionsResponse{
+		Accepted: true, CloseAllId: req.Msg.ClientOpId,
+		Phase: perprpc.CloseAllPhase_CLOSE_ALL_PHASE_CANCELING,
+	}), nil
+}
+func (f *fakePerp) ForceAdjustPosition(_ context.Context, _ *connect.Request[perprpc.ForceAdjustPositionRequest]) (*connect.Response[perprpc.ForceAdjustPositionResponse], error) {
+	return connect.NewResponse(&perprpc.ForceAdjustPositionResponse{Accepted: true}), nil
+}
+func (f *fakePerp) BlockTrade(_ context.Context, _ *connect.Request[perprpc.BlockTradeRequest]) (*connect.Response[perprpc.BlockTradeResponse], error) {
+	return connect.NewResponse(&perprpc.BlockTradeResponse{Accepted: true}), nil
+}
+
 func (f *fakePerp) ProjectRiskConfig(_ context.Context, _ *connect.Request[perprpc.ProjectRiskConfigRequest]) (*connect.Response[perprpc.ProjectRiskConfigResponse], error) {
 	return connect.NewResponse(&perprpc.ProjectRiskConfigResponse{}), nil
 }

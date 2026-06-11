@@ -954,7 +954,7 @@ func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	pending, terminals, offsets := snapshotEngineState(src)
 
 	dst := newEngine(placer)
-	dst.Restore(pending, terminals, offsets)
+	dst.Restore(pending, terminals, offsets, nil)
 
 	got, err := dst.Get(101, id)
 	if err != nil {

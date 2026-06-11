@@ -106,7 +106,7 @@ func TestTriggerCap_RestoreRebuildsIndex(t *testing.T) {
 		{ID: 3, UserID: 101, Symbol: "ETH-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
 		{ID: 4, UserID: 202, Symbol: "BTC-USDT", Status: condrpc.TriggerStatus_TRIGGER_STATUS_PENDING},
 	}
-	e.Restore(pending, nil, nil)
+	e.Restore(pending, nil, nil, nil)
 	if got := e.CountActiveTriggers(101, "BTC-USDT"); got != 2 {
 		t.Errorf("u1 BTC = %d, want 2", got)
 	}

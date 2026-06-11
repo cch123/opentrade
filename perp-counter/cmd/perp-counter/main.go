@@ -92,6 +92,12 @@ type Config struct {
 	SnapshotPath     string
 	SnapshotInterval time.Duration
 
+	// TriggerEndpoint is the trigger service's gRPC address for the
+	// ADR-0077 §3 / ADR-0078 §6 TriggerChecker seam (SetPositionMode's
+	// active-trigger guard). Empty = no checker; exact only while perp
+	// position-bound triggers are not in use.
+	TriggerEndpoint string
+
 	// HA (ADR-0031 cold-standby).
 	HAMode          string
 	EtcdEndpoints   string
@@ -323,6 +329,11 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		logger.Warn("no --brokers: running with no-op sinks (PlaceOrder reserves margin but nothing dispatches/fills)")
 	}
 
+	var triggers service.TriggerChecker
+	if cfg.TriggerEndpoint != "" {
+		triggers = newTriggerChecker(cfg.TriggerEndpoint)
+		logger.Info("trigger checker enabled (ADR-0078 §6)", zap.String("endpoint", cfg.TriggerEndpoint))
+	}
 	svc := service.New(eng, dispatch, jrnl, d.idg.Next, service.Config{
 		ShardID: cfg.IDGenShard, ProducerID: cfg.InstanceID,
 		MaxLeverage: d.maxLev, MMR: d.mmr, RiskTiers: d.riskTiers,
@@ -333,6 +344,7 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		AutoAddMaxPerEvent:    d.autoAddMax,
 		AllowNegativeMakerFee: cfg.NegativeMakerFee,
 		Catalog:               catalog,
+		Triggers:              triggers,
 	})
 	if catalog != nil {
 		// Rebuild the precomputed liq-price index whenever any symbol's
@@ -537,6 +549,7 @@ func parseFlags() Config {
 	flag.DurationVar(&cfg.CatalogPollInterval, "catalog-poll-interval", time.Second, "catalog anchor poll cadence")
 	flag.DurationVar(&cfg.CatalogMaxStaleness, "catalog-max-staleness", 30*time.Second, "reject new orders when the catalog cache has not synced for this long (fail-closed)")
 	flag.StringVar(&cfg.SnapshotPath, "snapshot-path", "./data/perp-counter/snapshot.json", "snapshot file path (state + bound offsets, ADR-0048); empty disables")
+	flag.StringVar(&cfg.TriggerEndpoint, "trigger-endpoint", "", "trigger service gRPC address for the SetPositionMode active-trigger guard (ADR-0078 §6); empty disables the checker")
 	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval", 60*time.Second, "how often to snapshot state + offsets")
 
 	flag.StringVar(&cfg.HAMode, "ha-mode", "disabled", "ha mode: disabled | auto (etcd leader election, ADR-0031)")

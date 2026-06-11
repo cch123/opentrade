@@ -6,6 +6,7 @@ package service
 // per-leg funding journals, and per-leg AdjustIsolatedMargin validation.
 
 import (
+	"errors"
 	"testing"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
@@ -85,9 +86,12 @@ func TestHedge_PlaceOrderIntentMatrix(t *testing.T) {
 	}
 }
 
-type stubTriggers struct{ active bool }
+type stubTriggers struct {
+	active bool
+	err    error
+}
 
-func (s stubTriggers) HasActiveTriggers(uint64, string) bool { return s.active }
+func (s stubTriggers) HasActiveTriggers(uint64, string) (bool, error) { return s.active, s.err }
 
 func TestHedge_SetPositionModeRejectionLadder(t *testing.T) {
 	// Active order blocks the switch.
@@ -113,6 +117,19 @@ func TestHedge_SetPositionModeRejectionLadder(t *testing.T) {
 	})
 	if resp.Accepted || resp.RejectReason != "active_triggers_cancel_first" {
 		t.Fatalf("want trigger reject: %+v", resp)
+	}
+
+	// An unanswerable trigger query fails CLOSED (ADR-0078 §6): the mode
+	// switch rejects with its own reason instead of assuming "no triggers".
+	eng2b := engine.New()
+	var id2 uint64
+	svc2b := New(eng2b, nil, nil, func() uint64 { id2++; return id2 },
+		Config{MaxLeverage: dec.New("100"), Triggers: stubTriggers{err: errors.New("rpc unavailable")}})
+	resp, _ = svc2b.SetPositionMode(&perprpc.SetPositionModeRequest{
+		UserId: user1, Symbol: "BTC-USDT-PERP", TargetMode: perprpc.PositionMode_POSITION_MODE_HEDGE,
+	})
+	if resp.Accepted || resp.RejectReason != "active_triggers_check_unavailable" {
+		t.Fatalf("want fail-closed reject: %+v", resp)
 	}
 
 	// Non-flat position blocks (engine re-check).

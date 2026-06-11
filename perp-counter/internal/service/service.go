@@ -9,7 +9,6 @@
 package service
 
 import (
-	"errors"
 	"sync"
 	"time"
 
@@ -40,13 +39,15 @@ type Journal interface {
 
 // TriggerChecker reports whether (user, symbol) holds any ACTIVE
 // position-bound trigger (TP/SL/OCO/TrailingStop) — the ADR-0077 §3
-// mode-switch guard. Position-bound perp triggers arrive with ADR-0078; until
-// that lands no perp trigger can exist, so the nil default (no checker)
-// reporting none is exact, not fail-open. ADR-0078's implementation MUST wire
-// its real active-set query here (its implementation notes carry the
-// dependency).
+// mode-switch guard, wired to the trigger service's CountActiveTriggers RPC
+// (ADR-0078 §6). A non-nil error means the query could not be answered;
+// callers fail CLOSED (the gated op rejects with its own reason rather than
+// assuming "no triggers"). This guard is best-effort UX — the hard
+// guarantee stays the fail-closed admission matrix at fire time, which
+// expires an orphan trigger as EXPIRED_POSITION_GONE instead of letting it
+// reverse-open.
 type TriggerChecker interface {
-	HasActiveTriggers(user uint64, symbol string) bool
+	HasActiveTriggers(user uint64, symbol string) (bool, error)
 }
 
 // Order is an in-flight perp order record held by the service. Mode is the
@@ -142,6 +143,14 @@ type Config struct {
 	// while perp position-bound triggers do not exist (pre-ADR-0078).
 	Triggers TriggerChecker
 
+	// TerminalCOIDCap bounds the terminal client_order_id idempotency ring
+	// (ADR-0078 修订 #3, the ADR-0062 mirror). 0 → 4096.
+	TerminalCOIDCap int
+
+	// BlockTradeBandBps is the ADR-0078 §8 price sanity band: a block trade
+	// price must sit within mark ± band. 0 → 500 (5%).
+	BlockTradeBandBps uint32
+
 	// AllowNegativeMakerFee is the ADR-0079 §5 deployment attestation that
 	// Match runs with STP enabled. While false (default), a negative maker
 	// rate — from SymbolConfig or a per-user override — is degraded to zero
@@ -177,6 +186,26 @@ type Service struct {
 	orderSeq uint64          // shard-scoped order-event sequence (separate stream from perpSeq)
 	offsets  map[int32]int64 // next-to-consume perp-trade-event offset per partition (ADR-0048 snapshot binding)
 
+	// ADR-0078 修订 #3 client_order_id idempotency: live orders indexed by
+	// (user, coid), recently-terminal ids retained in a bounded ring (the
+	// ADR-0062 mirror) so a client retry / trigger crash-replay converges on
+	// the original order id instead of double-placing.
+	activeByCOID map[uint64]map[string]uint64
+	coidRing     coidRing
+
+	// ADR-0078 §2 pending amends keyed by the OLD order id; the terminal
+	// trade-event continuation places the pre-allocated replacement.
+	amends map[uint64]*pendingAmend
+
+	// ADR-0078 §5 close-all registry, one slot per user (terminal entries
+	// stay for idempotent re-reads until a new request replaces them).
+	closeAlls map[uint64]*closeAllState
+
+	// ADR-0078 §7/§8 admin-op idempotency caches (client_op_id /
+	// block_trade_id → first outcome), snapshot-persisted.
+	adjustDone map[string]*perprpc.ForceAdjustPositionResponse
+	blockDone  map[string]*perprpc.BlockTradeResponse
+
 	// In-flight liquidations (ADR-0068 §8). liqByKey guards against
 	// re-triggering a position already being liquidated on the next mark tick;
 	// liqByOrder routes the bankruptcy order's fills to insurance settlement.
@@ -206,15 +235,27 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 	if cfg.AutoAddTargetBuffer.Sign() <= 0 {
 		cfg.AutoAddTargetBuffer = dec.Max(dec.New("0.01"), cfg.AutoAddTriggerBuffer)
 	}
+	if cfg.TerminalCOIDCap <= 0 {
+		cfg.TerminalCOIDCap = 4096
+	}
+	if cfg.BlockTradeBandBps == 0 {
+		cfg.BlockTradeBandBps = 500
+	}
 	svc := &Service{
 		eng: eng, dispatch: dispatch, journal: journal, cfg: cfg,
 		risk:     perpstate.NewRiskModel(cfg.RiskTiers, cfg.MMR, cfg.MaxLeverage, cfg.LiquidationFeeRate),
 		catalog:  cfg.Catalog,
 		riskMemo: riskMemo{m: map[string]perpstate.RiskModel{}},
 		nextID:   nextID, seq: newUserSeq(), orders: map[uint64]*Order{},
-		offsets:    map[int32]int64{},
-		liqByKey:   map[string]*liquidation{},
-		liqByOrder: map[uint64]*liquidation{},
+		offsets:      map[int32]int64{},
+		liqByKey:     map[string]*liquidation{},
+		liqByOrder:   map[uint64]*liquidation{},
+		activeByCOID: map[uint64]map[string]uint64{},
+		coidRing:     newCOIDRing(cfg.TerminalCOIDCap),
+		amends:       map[uint64]*pendingAmend{},
+		closeAlls:    map[uint64]*closeAllState{},
+		adjustDone:   map[string]*perprpc.ForceAdjustPositionResponse{},
+		blockDone:    map[string]*perprpc.BlockTradeResponse{},
 	}
 	// ADR-0072/0074: Engine maintains the liq-price index and resolves each
 	// position's effective MMR (tier table + RiskID) itself, so the service
@@ -232,201 +273,35 @@ func New(eng *engine.Engine, dispatch Dispatcher, journal Journal, nextID func()
 func (s *Service) now() int64 { return s.cfg.Clock().UnixMilli() }
 
 // PlaceOrder runs the pre-trade margin gate and dispatches to Match. The
-// match outcome arrives asynchronously via HandleTrade (ADR-0007).
+// match outcome arrives asynchronously via HandleTrade (ADR-0007). Idempotent
+// on client_order_id (ADR-0078 修订 #3): an active or recently-terminal hit
+// returns the original order id with accepted=false.
 func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrderResponse, error) {
-	if req.GetUserId() == 0 || req.GetSymbol() == "" {
-		return nil, errors.New("user_id and symbol required")
+	sp, err := parseOrderSpec(req)
+	if err != nil {
+		return nil, err
 	}
-	side := fromEventSide(req.GetSide())
-	if side == 0 {
-		return nil, errors.New("invalid side")
-	}
-	qty, err := dec.Parse(req.GetQty())
-	if err != nil || qty.Sign() <= 0 {
-		return nil, errors.New("invalid qty")
-	}
-	// ADR-0074 §8: leverage is position config; the order field is only a
-	// convenience entry that creates/overwrites the config. Empty = use the
-	// configured leverage.
-	reqLev := zero
-	if v := req.GetLeverage(); v != "" {
-		reqLev, err = dec.Parse(v)
-		if err != nil || reqLev.Sign() <= 0 {
-			return nil, errors.New("invalid leverage")
-		}
-	}
-	var price dec.Decimal
-	isMarket := req.GetOrderType() == eventpb.OrderType_ORDER_TYPE_MARKET
-	if !isMarket {
-		price, err = dec.Parse(req.GetPrice())
-		if err != nil || price.Sign() <= 0 {
-			return nil, errors.New("invalid price")
-		}
-	}
-	// ADR-0083: slippage protection is a market-order-only attribute; Match
-	// derives the collar from its book, perp-counter only validates the range
-	// and adjusts the IM reference price below.
-	if req.GetSlippageBps() > 10_000 || (req.GetSlippageBps() > 0 && !isMarket) {
-		return nil, errors.New("invalid slippage_bps")
-	}
-
-	if req.GetPositionIdx() > uint32(perpstate.IdxShort) {
-		return nil, errors.New("invalid position_idx")
-	}
-	posIdx := uint8(req.GetPositionIdx())
-
 	resp := &perprpc.PlaceOrderResponse{ReceivedTsUnixMs: s.now()}
-	s.seq.do(req.GetUserId(), func() {
-		user, symbol := req.GetUserId(), req.GetSymbol()
-		// ADR-0075 admission gates: status machine + precision + order
-		// limits against ONE captured catalog view; its config_version is
-		// stamped into the OrderEvent for Match's handshake. Fail-closed on
-		// unknown symbol or a stale cache.
-		postOnly := req.GetTif() == eventpb.TimeInForce_TIME_IN_FORCE_POST_ONLY
-		cfgVersion, cfgReject := s.admitAgainstCatalog(symbol, price, qty, isMarket, postOnly, req.GetReduceOnly())
-		if cfgReject != "" {
-			resp = s.reject(req, cfgReject)
-			return
-		}
-		// ADR-0077 §2 position-intent matrix, fail-closed both ways. Read
-		// inside the sequencer: SetPositionMode runs there too, so the mode
-		// this order is validated against cannot change before the order is
-		// recorded.
-		symCfg := s.eng.SymbolOrderConfigOf(user, symbol)
-		if reason := perpstate.ValidateOrderIntent(symCfg.PosMode, posIdx, side, req.GetReduceOnly()); reason != "" {
-			resp = s.reject(req, reason)
-			return
-		}
-		// reduce_only must close, never increase: requires an existing
-		// position on the side opposite this order, on the targeted leg. This
-		// is intentionally only the admission gate; the settlement side clamps
-		// (and a hedge leg never flips) once Match fills can arrive after the
-		// position has changed.
-		if req.GetReduceOnly() {
-			pos, ok := s.eng.PositionOf(user, symbol, posIdx)
-			if !ok || pos.Side == side {
-				resp = s.reject(req, "reduce_only_requires_opposite_position")
-				return
+	s.seq.do(sp.User, func() {
+		if sp.ClientID != "" {
+			if id, ok := s.lookupByCOID(sp.User, sp.ClientID); ok {
+				resp.OrderId, resp.ClientOrderId = id, sp.ClientID
+				return // dedup hit: accepted stays false, no reject reason
 			}
 		}
-		lev, mode, riskID, reason := s.resolveOrderLeverage(user, symbol, symCfg, reqLev)
+		// ADR-0078 §5: a running close-all owns the scope — every other
+		// placement (including trigger fires) is rejected until it finishes.
+		if s.closeAllBlocksLocked(sp.User, sp.Symbol) {
+			resp = s.reject(req, "close_all_in_progress")
+			return
+		}
+		id, reason := s.placeOrderLocked(sp, 0)
 		if reason != "" {
 			resp = s.reject(req, reason)
 			return
 		}
-		// ADR-0079 §1: pin the fee quadruple at admission, from the SAME
-		// catalog view the gates ran against (content fetched by version —
-		// immutable, no second Active() read). Every order pins, including
-		// reduce-only (closing fills pay fees too); only the buffer below is
-		// open-order-only.
-		pin, pinReject := s.feePinFor(user, symbol, cfgVersion)
-		if pinReject != "" {
-			resp = s.reject(req, pinReject)
-			return
-		}
-		var reservedIM, reservedFee dec.Decimal = zero, zero
-		if !req.GetReduceOnly() {
-			imPrice := price
-			if isMarket {
-				// Market orders have no limit price to bound exposure, so the MVP
-				// reserves initial margin at the current mark. That may reject
-				// aggressively, but it keeps the counter service independent from
-				// order-book liquidity and avoids using last-trade noise for margin.
-				imPrice = s.eng.MarkOf(symbol)
-				if imPrice.Sign() <= 0 {
-					resp = s.reject(req, "no_mark_for_market_order")
-					return
-				}
-				// ADR-0083 §5: a protected market buy admits fills up to
-				// best_ask × (1 + bps), so reserve IM at the adverse-adjusted
-				// mark × (1 + bps). Sells fill below mark, where mark itself is
-				// already the conservative notional bound. This is a best-effort
-				// approximation, not a strict upper bound (the book can sit above
-				// mark); the settlement-side margin recompute + liquidation
-				// engine remain the hard backstop.
-				if req.GetSlippageBps() > 0 && side == perpstate.SideBuy {
-					imPrice = imPrice.Mul(dec.FromInt(10_000 + int64(req.GetSlippageBps()))).Shift(-4)
-				}
-			}
-			if maxLev := s.maxLeverageForOrder(user, symbol, posIdx, side, imPrice, qty); maxLev.Sign() > 0 && lev.Cmp(maxLev) > 0 {
-				resp = s.reject(req, "leverage_exceeds_max")
-				return
-			}
-			// ADR-0074 §9: position + resting orders + this order must fit the
-			// selected risk tier's notional cap (per-symbol tiers, ADR-0075;
-			// hedge legs sum GROSS — ADR-0077 §7).
-			if tierCap := s.riskModelForOrder(symbol).MaxNotionalFor(riskID); tierCap.Sign() > 0 {
-				total := s.eng.SymbolNotionalForCap(user, symbol).
-					Add(s.activeOrderNotional(user, symbol)).
-					Add(imPrice.Mul(qty))
-				if total.Cmp(tierCap) > 0 {
-					resp = s.reject(req, "notional_exceeds_tier_cap")
-					return
-				}
-			}
-			im := perpstate.InitMargin(imPrice, qty, lev)
-			// ADR-0079 §4: the order cost adds a fee buffer at the pinned
-			// taker rate (the worst-case role) on the same IM reference
-			// notional, so the open fee can never dig Available negative.
-			// Reserved in ONE call with the IM — affordability is judged on
-			// the whole order cost atomically.
-			feeBuf := imPrice.Mul(qty).Mul(pin.Taker)
-			cost := im.Add(feeBuf)
-			if mode == perpstate.MarginCross {
-				// ADR-0074 §4: candidate-pool admission, then reserve the order
-				// IM from free cash (rule #4).
-				if reason, ok := s.eng.CrossOrderCheck(user, symbol, posIdx, side, imPrice, qty, lev, im, s.cfg.TargetMarginBuffer); !ok {
-					resp = s.reject(req, reason)
-					return
-				}
-				if !s.eng.ReserveCross(user, cost) {
-					resp = s.reject(req, "insufficient_margin")
-					return
-				}
-			} else if !s.eng.Reserve(user, cost) {
-				resp = s.reject(req, "insufficient_margin")
-				return
-			}
-			reservedIM = im
-			reservedFee = feeBuf
-		}
-
-		o := &Order{
-			OrderID: s.nextID(), ClientID: req.GetClientOrderId(), UserID: user,
-			Symbol: symbol, Side: side, Type: req.GetOrderType(), TIF: req.GetTif(),
-			Price: price, Qty: qty, Leverage: lev, Mode: mode, PositionIdx: posIdx,
-			ReduceOnly:  req.GetReduceOnly(),
-			SlippageBps: req.GetSlippageBps(),
-			ReservedIM:  reservedIM, ReservedFee: reservedFee, FilledQty: zero,
-			Status:    eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW,
-			CreatedMs: s.now(), UpdatedMs: s.now(),
-			ConfigVersion: cfgVersion,
-			FeeRuleID:     pin.RuleID, FeeMakerRate: pin.Maker, FeeTakerRate: pin.Taker,
-			FeeAsset: pin.Asset, FeeMakerSuppressed: pin.MakerSuppressed,
-		}
-		s.putOrder(o)
-
-		if err := s.dispatch.DispatchOrder(o.Symbol, s.placedOrderEvent(o)); err != nil {
-			// Dispatch failure means Match never became responsible for the
-			// order, so the reservation must be undone synchronously. Once the
-			// event is accepted by Match, all later release paths are driven by
-			// trade-event lifecycle records for replay safety.
-			if cost := reservedIM.Add(reservedFee); cost.Sign() > 0 {
-				if mode == perpstate.MarginCross {
-					s.eng.ReleaseCross(user, cost)
-				} else {
-					s.eng.Release(user, cost)
-				}
-			}
-			s.delOrder(o.OrderID)
-			resp = s.reject(req, "dispatch_failed")
-			return
-		}
-		s.emitOrderStatus(o, eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_UNSPECIFIED,
-			eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_NEW)
-
-		resp.OrderId = o.OrderID
-		resp.ClientOrderId = o.ClientID
+		resp.OrderId = id
+		resp.ClientOrderId = sp.ClientID
 		resp.Accepted = true
 	})
 	return resp, nil
@@ -437,29 +312,47 @@ func (s *Service) PlaceOrder(req *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrde
 func (s *Service) CancelOrder(req *perprpc.CancelOrderRequest) (*perprpc.CancelOrderResponse, error) {
 	resp := &perprpc.CancelOrderResponse{OrderId: req.GetOrderId()}
 	s.seq.do(req.GetUserId(), func() {
-		o := s.getOrder(req.GetOrderId())
-		if o == nil || o.UserID != req.GetUserId() || isTerminal(o.Status) {
-			return
-		}
-		// A bankruptcy reduce_only order is system-owned — the user cannot
-		// cancel it to dodge liquidation (ADR-0068 §8).
-		if s.liquidationFor(o.OrderID) != nil {
-			return
-		}
-		// ADR-0075 §2: SETTLING and later states accept system ops only.
-		if !s.cancelAllowed(o.Symbol) {
-			return
-		}
-		if err := s.dispatch.DispatchCancel(o.Symbol, s.cancelOrderEvent(o)); err != nil {
-			return
-		}
-		old := o.Status
-		o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL
-		o.UpdatedMs = s.now()
-		s.emitOrderStatus(o, old, o.Status)
-		resp.Accepted = true
+		s.cancelOrderLocked(req.GetUserId(), req.GetOrderId(), resp)
 	})
 	return resp, nil
+}
+
+// cancelOrderLocked is the per-order cancel body shared by CancelOrder,
+// BatchCancelOrders and CancelAllOrders (ADR-0078 §3). Caller holds the
+// user's seq lock; the outcome (accepted / reject_reason) is written into
+// resp.
+func (s *Service) cancelOrderLocked(user, orderID uint64, resp *perprpc.CancelOrderResponse) {
+	o := s.getOrder(orderID)
+	if o == nil || o.UserID != user || isTerminal(o.Status) {
+		resp.RejectReason = "not_found"
+		return
+	}
+	// A bankruptcy reduce_only order is system-owned — the user cannot
+	// cancel it to dodge liquidation (ADR-0068 §8).
+	if s.liquidationFor(o.OrderID) != nil {
+		resp.RejectReason = "liquidation_owned"
+		return
+	}
+	// ADR-0075 §2: SETTLING and later states accept system ops only.
+	if !s.cancelAllowed(o.Symbol) {
+		resp.RejectReason = "symbol_not_cancelable"
+		return
+	}
+	// ADR-0078 §2: an explicit cancel is a stronger intent than a pending
+	// amend — abort the amend (no replacement will be placed), then cancel.
+	if pa := s.takeAmend(o.OrderID); pa != nil {
+		s.emitAmend(pa, eventpb.PerpAmendEvent_STATE_ABORTED_BY_CANCEL, "", zero)
+	}
+	if err := s.dispatch.DispatchCancel(o.Symbol, s.cancelOrderEvent(o)); err != nil {
+		resp.RejectReason = "dispatch_failed"
+		return
+	}
+	old := o.Status
+	o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_PENDING_CANCEL
+	o.UpdatedMs = s.now()
+	s.emitOrderStatus(o, old, o.Status)
+	resp.Accepted = true
+	resp.RejectReason = ""
 }
 
 // QueryOrder returns a live order by id (terminal orders are evicted — query
@@ -656,6 +549,7 @@ func (s *Service) afterFill(o *Order, t *eventpb.Trade, side perpstate.Side, res
 		// residual hold that no later lifecycle event would free — release it
 		// with the terminal transition.
 		s.releaseRemainingIM(o)
-		s.delOrder(o.OrderID)
+		s.retireOrder(o)
+		s.onOrderTerminalLocked(o)
 	}
 }

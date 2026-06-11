@@ -6,6 +6,7 @@ package rest
 // pre-trade margin gate (ADR-0068 §4), which the client must surface.
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -53,6 +54,49 @@ type perpPlaceOrderBody struct {
 	SlippageBps int `json:"slippage_bps,omitempty"`
 }
 
+// perpPlaceOrderRequest validates one perpPlaceOrderBody and builds the RPC
+// request — shared by PlaceOrder, BatchPlaceOrders items, and PreCheckOrder
+// (ADR-0078 §3/§4: every entry path validates the same way).
+func perpPlaceOrderRequest(userID uint64, body *perpPlaceOrderBody) (*perprpc.PlaceOrderRequest, error) {
+	if body.Symbol == "" {
+		return nil, errors.New("symbol is required")
+	}
+	side, err := parseSide(body.Side)
+	if err != nil {
+		return nil, err
+	}
+	ot, err := parseOrderType(body.OrderType)
+	if err != nil {
+		return nil, err
+	}
+	tif, err := parseTIF(body.TIF)
+	if err != nil {
+		return nil, err
+	}
+	if body.SlippageBps != 0 {
+		if body.SlippageBps < 0 || body.SlippageBps > 10_000 {
+			return nil, errors.New("slippage_bps must be in (0, 10000] (ADR-0083)")
+		}
+		if ot != eventpb.OrderType_ORDER_TYPE_MARKET {
+			return nil, errors.New("slippage_bps is only valid on market orders (ADR-0083)")
+		}
+	}
+	return &perprpc.PlaceOrderRequest{
+		UserId:        userID,
+		ClientOrderId: body.ClientOrderID,
+		Symbol:        body.Symbol,
+		Side:          side,
+		OrderType:     ot,
+		Tif:           tif,
+		Price:         body.Price,
+		Qty:           body.Qty,
+		Leverage:      body.Leverage,
+		ReduceOnly:    body.ReduceOnly,
+		PositionIdx:   body.PositionIdx,
+		SlippageBps:   uint32(body.SlippageBps),
+	}, nil
+}
+
 func (s *Server) handlePerpPlaceOrder(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePerp(w) {
 		return
@@ -66,49 +110,12 @@ func (s *Server) handlePerpPlaceOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if body.Symbol == "" {
-		writeError(w, http.StatusBadRequest, "symbol is required")
-		return
-	}
-	side, err := parseSide(body.Side)
+	req, err := perpPlaceOrderRequest(userID, &body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ot, err := parseOrderType(body.OrderType)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	tif, err := parseTIF(body.TIF)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if body.SlippageBps != 0 {
-		if body.SlippageBps < 0 || body.SlippageBps > 10_000 {
-			writeError(w, http.StatusBadRequest, "slippage_bps must be in (0, 10000] (ADR-0083)")
-			return
-		}
-		if ot != eventpb.OrderType_ORDER_TYPE_MARKET {
-			writeError(w, http.StatusBadRequest, "slippage_bps is only valid on market orders (ADR-0083)")
-			return
-		}
-	}
-	resp, err := s.perp.PlaceOrder(r.Context(), connect.NewRequest(&perprpc.PlaceOrderRequest{
-		UserId:        userID,
-		ClientOrderId: body.ClientOrderID,
-		Symbol:        body.Symbol,
-		Side:          side,
-		OrderType:     ot,
-		Tif:           tif,
-		Price:         body.Price,
-		Qty:           body.Qty,
-		Leverage:      body.Leverage,
-		ReduceOnly:    body.ReduceOnly,
-		PositionIdx:   body.PositionIdx,
-		SlippageBps:   uint32(body.SlippageBps),
-	}))
+	resp, err := s.perp.PlaceOrder(r.Context(), connect.NewRequest(req))
 	if err != nil {
 		writeConnectError(w, err)
 		return

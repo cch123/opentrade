@@ -44,6 +44,23 @@ const (
 	PerpServiceQueryPositionsProcedure = "/opentrade.rpc.perp.PerpService/QueryPositions"
 	// PerpServiceQueryMarginProcedure is the fully-qualified name of the PerpService's QueryMargin RPC.
 	PerpServiceQueryMarginProcedure = "/opentrade.rpc.perp.PerpService/QueryMargin"
+	// PerpServiceAmendOrderProcedure is the fully-qualified name of the PerpService's AmendOrder RPC.
+	PerpServiceAmendOrderProcedure = "/opentrade.rpc.perp.PerpService/AmendOrder"
+	// PerpServiceBatchPlaceOrdersProcedure is the fully-qualified name of the PerpService's
+	// BatchPlaceOrders RPC.
+	PerpServiceBatchPlaceOrdersProcedure = "/opentrade.rpc.perp.PerpService/BatchPlaceOrders"
+	// PerpServiceBatchCancelOrdersProcedure is the fully-qualified name of the PerpService's
+	// BatchCancelOrders RPC.
+	PerpServiceBatchCancelOrdersProcedure = "/opentrade.rpc.perp.PerpService/BatchCancelOrders"
+	// PerpServiceCancelAllOrdersProcedure is the fully-qualified name of the PerpService's
+	// CancelAllOrders RPC.
+	PerpServiceCancelAllOrdersProcedure = "/opentrade.rpc.perp.PerpService/CancelAllOrders"
+	// PerpServicePreCheckOrderProcedure is the fully-qualified name of the PerpService's PreCheckOrder
+	// RPC.
+	PerpServicePreCheckOrderProcedure = "/opentrade.rpc.perp.PerpService/PreCheckOrder"
+	// PerpServiceCloseAllPositionsProcedure is the fully-qualified name of the PerpService's
+	// CloseAllPositions RPC.
+	PerpServiceCloseAllPositionsProcedure = "/opentrade.rpc.perp.PerpService/CloseAllPositions"
 	// PerpServiceSetMarginModeProcedure is the fully-qualified name of the PerpService's SetMarginMode
 	// RPC.
 	PerpServiceSetMarginModeProcedure = "/opentrade.rpc.perp.PerpService/SetMarginMode"
@@ -82,6 +99,11 @@ const (
 	// PerpServiceProjectRiskConfigProcedure is the fully-qualified name of the PerpService's
 	// ProjectRiskConfig RPC.
 	PerpServiceProjectRiskConfigProcedure = "/opentrade.rpc.perp.PerpService/ProjectRiskConfig"
+	// PerpServiceForceAdjustPositionProcedure is the fully-qualified name of the PerpService's
+	// ForceAdjustPosition RPC.
+	PerpServiceForceAdjustPositionProcedure = "/opentrade.rpc.perp.PerpService/ForceAdjustPosition"
+	// PerpServiceBlockTradeProcedure is the fully-qualified name of the PerpService's BlockTrade RPC.
+	PerpServiceBlockTradeProcedure = "/opentrade.rpc.perp.PerpService/BlockTrade"
 )
 
 // PerpServiceClient is a client for the opentrade.rpc.perp.PerpService service.
@@ -91,6 +113,23 @@ type PerpServiceClient interface {
 	QueryOrder(context.Context, *connect.Request[perp.QueryOrderRequest]) (*connect.Response[perp.QueryOrderResponse], error)
 	QueryPositions(context.Context, *connect.Request[perp.QueryPositionsRequest]) (*connect.Response[perp.QueryPositionsResponse], error)
 	QueryMargin(context.Context, *connect.Request[perp.QueryMarginRequest]) (*connect.Response[perp.QueryMarginResponse], error)
+	// ADR-0078 §2: cancel + new amend (conservative mode). The new order id is
+	// pre-allocated and returned synchronously; the replacement order is
+	// dispatched only after the old order reaches a terminal status.
+	AmendOrder(context.Context, *connect.Request[perp.AmendOrderRequest]) (*connect.Response[perp.AmendOrderResponse], error)
+	// ADR-0078 §3: best-effort per-item batches. batch_id is a correlation /
+	// audit key (echoed verbatim); idempotency rides each item's
+	// client_order_id dedup.
+	BatchPlaceOrders(context.Context, *connect.Request[perp.BatchPlaceOrdersRequest]) (*connect.Response[perp.BatchPlaceOrdersResponse], error)
+	BatchCancelOrders(context.Context, *connect.Request[perp.BatchCancelOrdersRequest]) (*connect.Response[perp.BatchCancelOrdersResponse], error)
+	// ADR-0078 §3: cancel every active order, optionally scoped to one symbol.
+	CancelAllOrders(context.Context, *connect.Request[perp.CancelAllOrdersRequest]) (*connect.Response[perp.CancelAllOrdersResponse], error)
+	// ADR-0078 §4: dry-run the PlaceOrder admission (no reservation, no
+	// leverage write-through). An estimate, not a lock.
+	PreCheckOrder(context.Context, *connect.Request[perp.PreCheckOrderRequest]) (*connect.Response[perp.PreCheckOrderResponse], error)
+	// ADR-0078 §5: conservative two-phase close-all. Idempotent on
+	// client_op_id — a repeat returns the in-flight/most-recent state.
+	CloseAllPositions(context.Context, *connect.Request[perp.CloseAllPositionsRequest]) (*connect.Response[perp.CloseAllPositionsResponse], error)
 	// ADR-0074 account / position config surface. Mutations are idempotent on
 	// client_op_id (a repeat returns the first outcome) and run inside the
 	// owning user's sequencer.
@@ -119,6 +158,14 @@ type PerpServiceClient interface {
 	// outright. admin-gateway fans this out across perp shards before letting
 	// an IMMEDIATE tightening publish through.
 	ProjectRiskConfig(context.Context, *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error)
+	// ADR-0078 §7 admin plane: force add/sub a position leg with mandatory
+	// audit fields. Reuses the fill-settlement math but journals a dedicated
+	// PerpAdminPositionAdjustmentEvent — never a trade row or fee.
+	ForceAdjustPosition(context.Context, *connect.Request[perp.ForceAdjustPositionRequest]) (*connect.Response[perp.ForceAdjustPositionResponse], error)
+	// ADR-0078 §8 admin plane: bilateral off-book block trade. Both legs admit
+	// and settle inside both users' sequencers (ordered locking) — all-or-
+	// nothing. Idempotent on block_trade_id.
+	BlockTrade(context.Context, *connect.Request[perp.BlockTradeRequest]) (*connect.Response[perp.BlockTradeResponse], error)
 }
 
 // NewPerpServiceClient constructs a client for the opentrade.rpc.perp.PerpService service. By
@@ -160,6 +207,42 @@ func NewPerpServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			httpClient,
 			baseURL+PerpServiceQueryMarginProcedure,
 			connect.WithSchema(perpServiceMethods.ByName("QueryMargin")),
+			connect.WithClientOptions(opts...),
+		),
+		amendOrder: connect.NewClient[perp.AmendOrderRequest, perp.AmendOrderResponse](
+			httpClient,
+			baseURL+PerpServiceAmendOrderProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("AmendOrder")),
+			connect.WithClientOptions(opts...),
+		),
+		batchPlaceOrders: connect.NewClient[perp.BatchPlaceOrdersRequest, perp.BatchPlaceOrdersResponse](
+			httpClient,
+			baseURL+PerpServiceBatchPlaceOrdersProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("BatchPlaceOrders")),
+			connect.WithClientOptions(opts...),
+		),
+		batchCancelOrders: connect.NewClient[perp.BatchCancelOrdersRequest, perp.BatchCancelOrdersResponse](
+			httpClient,
+			baseURL+PerpServiceBatchCancelOrdersProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("BatchCancelOrders")),
+			connect.WithClientOptions(opts...),
+		),
+		cancelAllOrders: connect.NewClient[perp.CancelAllOrdersRequest, perp.CancelAllOrdersResponse](
+			httpClient,
+			baseURL+PerpServiceCancelAllOrdersProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("CancelAllOrders")),
+			connect.WithClientOptions(opts...),
+		),
+		preCheckOrder: connect.NewClient[perp.PreCheckOrderRequest, perp.PreCheckOrderResponse](
+			httpClient,
+			baseURL+PerpServicePreCheckOrderProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("PreCheckOrder")),
+			connect.WithClientOptions(opts...),
+		),
+		closeAllPositions: connect.NewClient[perp.CloseAllPositionsRequest, perp.CloseAllPositionsResponse](
+			httpClient,
+			baseURL+PerpServiceCloseAllPositionsProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("CloseAllPositions")),
 			connect.WithClientOptions(opts...),
 		),
 		setMarginMode: connect.NewClient[perp.SetMarginModeRequest, perp.SetMarginModeResponse](
@@ -240,6 +323,18 @@ func NewPerpServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(perpServiceMethods.ByName("ProjectRiskConfig")),
 			connect.WithClientOptions(opts...),
 		),
+		forceAdjustPosition: connect.NewClient[perp.ForceAdjustPositionRequest, perp.ForceAdjustPositionResponse](
+			httpClient,
+			baseURL+PerpServiceForceAdjustPositionProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("ForceAdjustPosition")),
+			connect.WithClientOptions(opts...),
+		),
+		blockTrade: connect.NewClient[perp.BlockTradeRequest, perp.BlockTradeResponse](
+			httpClient,
+			baseURL+PerpServiceBlockTradeProcedure,
+			connect.WithSchema(perpServiceMethods.ByName("BlockTrade")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -250,6 +345,12 @@ type perpServiceClient struct {
 	queryOrder                 *connect.Client[perp.QueryOrderRequest, perp.QueryOrderResponse]
 	queryPositions             *connect.Client[perp.QueryPositionsRequest, perp.QueryPositionsResponse]
 	queryMargin                *connect.Client[perp.QueryMarginRequest, perp.QueryMarginResponse]
+	amendOrder                 *connect.Client[perp.AmendOrderRequest, perp.AmendOrderResponse]
+	batchPlaceOrders           *connect.Client[perp.BatchPlaceOrdersRequest, perp.BatchPlaceOrdersResponse]
+	batchCancelOrders          *connect.Client[perp.BatchCancelOrdersRequest, perp.BatchCancelOrdersResponse]
+	cancelAllOrders            *connect.Client[perp.CancelAllOrdersRequest, perp.CancelAllOrdersResponse]
+	preCheckOrder              *connect.Client[perp.PreCheckOrderRequest, perp.PreCheckOrderResponse]
+	closeAllPositions          *connect.Client[perp.CloseAllPositionsRequest, perp.CloseAllPositionsResponse]
 	setMarginMode              *connect.Client[perp.SetMarginModeRequest, perp.SetMarginModeResponse]
 	setPositionMode            *connect.Client[perp.SetPositionModeRequest, perp.SetPositionModeResponse]
 	adjustIsolatedMargin       *connect.Client[perp.AdjustIsolatedMarginRequest, perp.AdjustIsolatedMarginResponse]
@@ -263,6 +364,8 @@ type perpServiceClient struct {
 	setCustomerFeeRate         *connect.Client[perp.SetCustomerFeeRateRequest, perp.SetCustomerFeeRateResponse]
 	listCustomerFeeRates       *connect.Client[perp.ListCustomerFeeRatesRequest, perp.ListCustomerFeeRatesResponse]
 	projectRiskConfig          *connect.Client[perp.ProjectRiskConfigRequest, perp.ProjectRiskConfigResponse]
+	forceAdjustPosition        *connect.Client[perp.ForceAdjustPositionRequest, perp.ForceAdjustPositionResponse]
+	blockTrade                 *connect.Client[perp.BlockTradeRequest, perp.BlockTradeResponse]
 }
 
 // PlaceOrder calls opentrade.rpc.perp.PerpService.PlaceOrder.
@@ -288,6 +391,36 @@ func (c *perpServiceClient) QueryPositions(ctx context.Context, req *connect.Req
 // QueryMargin calls opentrade.rpc.perp.PerpService.QueryMargin.
 func (c *perpServiceClient) QueryMargin(ctx context.Context, req *connect.Request[perp.QueryMarginRequest]) (*connect.Response[perp.QueryMarginResponse], error) {
 	return c.queryMargin.CallUnary(ctx, req)
+}
+
+// AmendOrder calls opentrade.rpc.perp.PerpService.AmendOrder.
+func (c *perpServiceClient) AmendOrder(ctx context.Context, req *connect.Request[perp.AmendOrderRequest]) (*connect.Response[perp.AmendOrderResponse], error) {
+	return c.amendOrder.CallUnary(ctx, req)
+}
+
+// BatchPlaceOrders calls opentrade.rpc.perp.PerpService.BatchPlaceOrders.
+func (c *perpServiceClient) BatchPlaceOrders(ctx context.Context, req *connect.Request[perp.BatchPlaceOrdersRequest]) (*connect.Response[perp.BatchPlaceOrdersResponse], error) {
+	return c.batchPlaceOrders.CallUnary(ctx, req)
+}
+
+// BatchCancelOrders calls opentrade.rpc.perp.PerpService.BatchCancelOrders.
+func (c *perpServiceClient) BatchCancelOrders(ctx context.Context, req *connect.Request[perp.BatchCancelOrdersRequest]) (*connect.Response[perp.BatchCancelOrdersResponse], error) {
+	return c.batchCancelOrders.CallUnary(ctx, req)
+}
+
+// CancelAllOrders calls opentrade.rpc.perp.PerpService.CancelAllOrders.
+func (c *perpServiceClient) CancelAllOrders(ctx context.Context, req *connect.Request[perp.CancelAllOrdersRequest]) (*connect.Response[perp.CancelAllOrdersResponse], error) {
+	return c.cancelAllOrders.CallUnary(ctx, req)
+}
+
+// PreCheckOrder calls opentrade.rpc.perp.PerpService.PreCheckOrder.
+func (c *perpServiceClient) PreCheckOrder(ctx context.Context, req *connect.Request[perp.PreCheckOrderRequest]) (*connect.Response[perp.PreCheckOrderResponse], error) {
+	return c.preCheckOrder.CallUnary(ctx, req)
+}
+
+// CloseAllPositions calls opentrade.rpc.perp.PerpService.CloseAllPositions.
+func (c *perpServiceClient) CloseAllPositions(ctx context.Context, req *connect.Request[perp.CloseAllPositionsRequest]) (*connect.Response[perp.CloseAllPositionsResponse], error) {
+	return c.closeAllPositions.CallUnary(ctx, req)
 }
 
 // SetMarginMode calls opentrade.rpc.perp.PerpService.SetMarginMode.
@@ -355,6 +488,16 @@ func (c *perpServiceClient) ProjectRiskConfig(ctx context.Context, req *connect.
 	return c.projectRiskConfig.CallUnary(ctx, req)
 }
 
+// ForceAdjustPosition calls opentrade.rpc.perp.PerpService.ForceAdjustPosition.
+func (c *perpServiceClient) ForceAdjustPosition(ctx context.Context, req *connect.Request[perp.ForceAdjustPositionRequest]) (*connect.Response[perp.ForceAdjustPositionResponse], error) {
+	return c.forceAdjustPosition.CallUnary(ctx, req)
+}
+
+// BlockTrade calls opentrade.rpc.perp.PerpService.BlockTrade.
+func (c *perpServiceClient) BlockTrade(ctx context.Context, req *connect.Request[perp.BlockTradeRequest]) (*connect.Response[perp.BlockTradeResponse], error) {
+	return c.blockTrade.CallUnary(ctx, req)
+}
+
 // PerpServiceHandler is an implementation of the opentrade.rpc.perp.PerpService service.
 type PerpServiceHandler interface {
 	PlaceOrder(context.Context, *connect.Request[perp.PlaceOrderRequest]) (*connect.Response[perp.PlaceOrderResponse], error)
@@ -362,6 +505,23 @@ type PerpServiceHandler interface {
 	QueryOrder(context.Context, *connect.Request[perp.QueryOrderRequest]) (*connect.Response[perp.QueryOrderResponse], error)
 	QueryPositions(context.Context, *connect.Request[perp.QueryPositionsRequest]) (*connect.Response[perp.QueryPositionsResponse], error)
 	QueryMargin(context.Context, *connect.Request[perp.QueryMarginRequest]) (*connect.Response[perp.QueryMarginResponse], error)
+	// ADR-0078 §2: cancel + new amend (conservative mode). The new order id is
+	// pre-allocated and returned synchronously; the replacement order is
+	// dispatched only after the old order reaches a terminal status.
+	AmendOrder(context.Context, *connect.Request[perp.AmendOrderRequest]) (*connect.Response[perp.AmendOrderResponse], error)
+	// ADR-0078 §3: best-effort per-item batches. batch_id is a correlation /
+	// audit key (echoed verbatim); idempotency rides each item's
+	// client_order_id dedup.
+	BatchPlaceOrders(context.Context, *connect.Request[perp.BatchPlaceOrdersRequest]) (*connect.Response[perp.BatchPlaceOrdersResponse], error)
+	BatchCancelOrders(context.Context, *connect.Request[perp.BatchCancelOrdersRequest]) (*connect.Response[perp.BatchCancelOrdersResponse], error)
+	// ADR-0078 §3: cancel every active order, optionally scoped to one symbol.
+	CancelAllOrders(context.Context, *connect.Request[perp.CancelAllOrdersRequest]) (*connect.Response[perp.CancelAllOrdersResponse], error)
+	// ADR-0078 §4: dry-run the PlaceOrder admission (no reservation, no
+	// leverage write-through). An estimate, not a lock.
+	PreCheckOrder(context.Context, *connect.Request[perp.PreCheckOrderRequest]) (*connect.Response[perp.PreCheckOrderResponse], error)
+	// ADR-0078 §5: conservative two-phase close-all. Idempotent on
+	// client_op_id — a repeat returns the in-flight/most-recent state.
+	CloseAllPositions(context.Context, *connect.Request[perp.CloseAllPositionsRequest]) (*connect.Response[perp.CloseAllPositionsResponse], error)
 	// ADR-0074 account / position config surface. Mutations are idempotent on
 	// client_op_id (a repeat returns the first outcome) and run inside the
 	// owning user's sequencer.
@@ -390,6 +550,14 @@ type PerpServiceHandler interface {
 	// outright. admin-gateway fans this out across perp shards before letting
 	// an IMMEDIATE tightening publish through.
 	ProjectRiskConfig(context.Context, *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error)
+	// ADR-0078 §7 admin plane: force add/sub a position leg with mandatory
+	// audit fields. Reuses the fill-settlement math but journals a dedicated
+	// PerpAdminPositionAdjustmentEvent — never a trade row or fee.
+	ForceAdjustPosition(context.Context, *connect.Request[perp.ForceAdjustPositionRequest]) (*connect.Response[perp.ForceAdjustPositionResponse], error)
+	// ADR-0078 §8 admin plane: bilateral off-book block trade. Both legs admit
+	// and settle inside both users' sequencers (ordered locking) — all-or-
+	// nothing. Idempotent on block_trade_id.
+	BlockTrade(context.Context, *connect.Request[perp.BlockTradeRequest]) (*connect.Response[perp.BlockTradeResponse], error)
 }
 
 // NewPerpServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -427,6 +595,42 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 		PerpServiceQueryMarginProcedure,
 		svc.QueryMargin,
 		connect.WithSchema(perpServiceMethods.ByName("QueryMargin")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceAmendOrderHandler := connect.NewUnaryHandler(
+		PerpServiceAmendOrderProcedure,
+		svc.AmendOrder,
+		connect.WithSchema(perpServiceMethods.ByName("AmendOrder")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceBatchPlaceOrdersHandler := connect.NewUnaryHandler(
+		PerpServiceBatchPlaceOrdersProcedure,
+		svc.BatchPlaceOrders,
+		connect.WithSchema(perpServiceMethods.ByName("BatchPlaceOrders")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceBatchCancelOrdersHandler := connect.NewUnaryHandler(
+		PerpServiceBatchCancelOrdersProcedure,
+		svc.BatchCancelOrders,
+		connect.WithSchema(perpServiceMethods.ByName("BatchCancelOrders")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceCancelAllOrdersHandler := connect.NewUnaryHandler(
+		PerpServiceCancelAllOrdersProcedure,
+		svc.CancelAllOrders,
+		connect.WithSchema(perpServiceMethods.ByName("CancelAllOrders")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServicePreCheckOrderHandler := connect.NewUnaryHandler(
+		PerpServicePreCheckOrderProcedure,
+		svc.PreCheckOrder,
+		connect.WithSchema(perpServiceMethods.ByName("PreCheckOrder")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceCloseAllPositionsHandler := connect.NewUnaryHandler(
+		PerpServiceCloseAllPositionsProcedure,
+		svc.CloseAllPositions,
+		connect.WithSchema(perpServiceMethods.ByName("CloseAllPositions")),
 		connect.WithHandlerOptions(opts...),
 	)
 	perpServiceSetMarginModeHandler := connect.NewUnaryHandler(
@@ -507,6 +711,18 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(perpServiceMethods.ByName("ProjectRiskConfig")),
 		connect.WithHandlerOptions(opts...),
 	)
+	perpServiceForceAdjustPositionHandler := connect.NewUnaryHandler(
+		PerpServiceForceAdjustPositionProcedure,
+		svc.ForceAdjustPosition,
+		connect.WithSchema(perpServiceMethods.ByName("ForceAdjustPosition")),
+		connect.WithHandlerOptions(opts...),
+	)
+	perpServiceBlockTradeHandler := connect.NewUnaryHandler(
+		PerpServiceBlockTradeProcedure,
+		svc.BlockTrade,
+		connect.WithSchema(perpServiceMethods.ByName("BlockTrade")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/opentrade.rpc.perp.PerpService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PerpServicePlaceOrderProcedure:
@@ -519,6 +735,18 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 			perpServiceQueryPositionsHandler.ServeHTTP(w, r)
 		case PerpServiceQueryMarginProcedure:
 			perpServiceQueryMarginHandler.ServeHTTP(w, r)
+		case PerpServiceAmendOrderProcedure:
+			perpServiceAmendOrderHandler.ServeHTTP(w, r)
+		case PerpServiceBatchPlaceOrdersProcedure:
+			perpServiceBatchPlaceOrdersHandler.ServeHTTP(w, r)
+		case PerpServiceBatchCancelOrdersProcedure:
+			perpServiceBatchCancelOrdersHandler.ServeHTTP(w, r)
+		case PerpServiceCancelAllOrdersProcedure:
+			perpServiceCancelAllOrdersHandler.ServeHTTP(w, r)
+		case PerpServicePreCheckOrderProcedure:
+			perpServicePreCheckOrderHandler.ServeHTTP(w, r)
+		case PerpServiceCloseAllPositionsProcedure:
+			perpServiceCloseAllPositionsHandler.ServeHTTP(w, r)
 		case PerpServiceSetMarginModeProcedure:
 			perpServiceSetMarginModeHandler.ServeHTTP(w, r)
 		case PerpServiceSetPositionModeProcedure:
@@ -545,6 +773,10 @@ func NewPerpServiceHandler(svc PerpServiceHandler, opts ...connect.HandlerOption
 			perpServiceListCustomerFeeRatesHandler.ServeHTTP(w, r)
 		case PerpServiceProjectRiskConfigProcedure:
 			perpServiceProjectRiskConfigHandler.ServeHTTP(w, r)
+		case PerpServiceForceAdjustPositionProcedure:
+			perpServiceForceAdjustPositionHandler.ServeHTTP(w, r)
+		case PerpServiceBlockTradeProcedure:
+			perpServiceBlockTradeHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -572,6 +804,30 @@ func (UnimplementedPerpServiceHandler) QueryPositions(context.Context, *connect.
 
 func (UnimplementedPerpServiceHandler) QueryMargin(context.Context, *connect.Request[perp.QueryMarginRequest]) (*connect.Response[perp.QueryMarginResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.QueryMargin is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) AmendOrder(context.Context, *connect.Request[perp.AmendOrderRequest]) (*connect.Response[perp.AmendOrderResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.AmendOrder is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) BatchPlaceOrders(context.Context, *connect.Request[perp.BatchPlaceOrdersRequest]) (*connect.Response[perp.BatchPlaceOrdersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.BatchPlaceOrders is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) BatchCancelOrders(context.Context, *connect.Request[perp.BatchCancelOrdersRequest]) (*connect.Response[perp.BatchCancelOrdersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.BatchCancelOrders is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) CancelAllOrders(context.Context, *connect.Request[perp.CancelAllOrdersRequest]) (*connect.Response[perp.CancelAllOrdersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.CancelAllOrders is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) PreCheckOrder(context.Context, *connect.Request[perp.PreCheckOrderRequest]) (*connect.Response[perp.PreCheckOrderResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.PreCheckOrder is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) CloseAllPositions(context.Context, *connect.Request[perp.CloseAllPositionsRequest]) (*connect.Response[perp.CloseAllPositionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.CloseAllPositions is not implemented"))
 }
 
 func (UnimplementedPerpServiceHandler) SetMarginMode(context.Context, *connect.Request[perp.SetMarginModeRequest]) (*connect.Response[perp.SetMarginModeResponse], error) {
@@ -624,4 +880,12 @@ func (UnimplementedPerpServiceHandler) ListCustomerFeeRates(context.Context, *co
 
 func (UnimplementedPerpServiceHandler) ProjectRiskConfig(context.Context, *connect.Request[perp.ProjectRiskConfigRequest]) (*connect.Response[perp.ProjectRiskConfigResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.ProjectRiskConfig is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) ForceAdjustPosition(context.Context, *connect.Request[perp.ForceAdjustPositionRequest]) (*connect.Response[perp.ForceAdjustPositionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.ForceAdjustPosition is not implemented"))
+}
+
+func (UnimplementedPerpServiceHandler) BlockTrade(context.Context, *connect.Request[perp.BlockTradeRequest]) (*connect.Response[perp.BlockTradeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.perp.PerpService.BlockTrade is not implemented"))
 }

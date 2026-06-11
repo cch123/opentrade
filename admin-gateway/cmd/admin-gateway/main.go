@@ -194,15 +194,18 @@ func main() {
 		logger.Info("perp catalog configured (ADR-0075)")
 	}
 
-	// Optional perp-counter shard clients for the §3 reprice dry-run.
+	// Optional perp-counter shard clients: the §3 reprice dry-run and the
+	// ADR-0078 §7/§8 admin ops share the same dialed clients.
 	var perpProjectors []server.PerpProjector
+	var perpAdmin []server.PerpAdminOps
 	if len(cfg.PerpCounterShards) > 0 {
 		for _, ep := range cfg.PerpCounterShards {
 			hc := connectx.NewH2CClient()
 			cli := perprpcconnect.NewPerpServiceClient(hc, connectx.BaseURL(ep), connect.WithGRPC())
 			perpProjectors = append(perpProjectors, cli)
+			perpAdmin = append(perpAdmin, cli)
 		}
-		logger.Info("perp-counter shards configured for reprice dry-run",
+		logger.Info("perp-counter shards configured (reprice dry-run + ADR-0078 admin ops)",
 			zap.Strings("shards", cfg.PerpCounterShards))
 	}
 
@@ -211,6 +214,7 @@ func main() {
 		Etcd:           etcdShim,
 		PerpCatalog:    perpStore,
 		PerpCounters:   perpProjectors,
+		PerpAdmin:      perpAdmin,
 		Audit:          audit,
 		Logger:         logger,
 		RequestTimeout: cfg.RequestTimeout,

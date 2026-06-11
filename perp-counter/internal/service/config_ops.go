@@ -278,10 +278,19 @@ func (s *Service) SetPositionMode(req *perprpc.SetPositionModeRequest) (*perprpc
 		}
 		// ADR-0077 §3 trigger guard via the TriggerChecker seam: a
 		// position-bound trigger is not in the Match book but holds
-		// position_idx semantics; switching under it would orphan it.
-		if s.cfg.Triggers != nil && s.cfg.Triggers.HasActiveTriggers(user, symbol) {
-			fillPositionModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "active_triggers_cancel_first"})
-			return
+		// position_idx semantics; switching under it would orphan it. An
+		// unanswerable query fails CLOSED with its own reason (ADR-0078 §6)
+		// — "no answer" must not pass as "no triggers".
+		if s.cfg.Triggers != nil {
+			has, err := s.cfg.Triggers.HasActiveTriggers(user, symbol)
+			if err != nil {
+				fillPositionModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "active_triggers_check_unavailable"})
+				return
+			}
+			if has {
+				fillPositionModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "active_triggers_cancel_first"})
+				return
+			}
 		}
 		if s.hasLiquidationAnyLeg(user, symbol) {
 			fillPositionModeResp(resp, engine.OpOutcome{Accepted: false, Reason: "liquidation_in_flight"})

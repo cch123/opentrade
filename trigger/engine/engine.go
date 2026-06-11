@@ -34,6 +34,7 @@ import (
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
 	counterrpc "github.com/xargin/opentrade/api/gen/rpc/counter"
+	perprpc "github.com/xargin/opentrade/api/gen/rpc/perp"
 	condrpc "github.com/xargin/opentrade/api/gen/rpc/trigger"
 	"github.com/xargin/opentrade/pkg/dec"
 	"github.com/xargin/opentrade/pkg/etcdcfg"
@@ -64,9 +65,17 @@ var (
 	ErrOCOSymbolMismatch      = errors.New("trigger: OCO legs must share the same symbol")
 	ErrOCOSideMismatch        = errors.New("trigger: OCO legs must share the same side")
 	ErrOCOUserMismatch        = errors.New("trigger: OCO legs must share the same user_id")
+	ErrOCOPerpMismatch        = errors.New("trigger: OCO legs must share the same perp binding")
 	ErrNotFound               = errors.New("trigger: not found")
 	ErrNotOwner               = errors.New("trigger: user does not own this trigger")
 	ErrNotActive              = errors.New("trigger: already terminal")
+
+	// ADR-0078 §6 perp position-binding shape errors.
+	ErrPerpNotEnabled        = errors.New("trigger: perp triggers not enabled (no perp-counter wired)")
+	ErrPerpFieldsForbidden   = errors.New("trigger: position_idx/close_on_trigger/slippage_bps require perp=true")
+	ErrPerpQuoteQtyForbidden = errors.New("trigger: quote_qty not allowed for perp triggers (qty required)")
+	ErrPerpPositionIdxRange  = errors.New("trigger: position_idx must be 0 (one-way) or 1/2 (hedge)")
+	ErrPerpSlippageShape     = errors.New("trigger: slippage_bps only valid on MARKET trigger variants, in (0, 10000]")
 )
 
 // -----------------------------------------------------------------------------
@@ -94,6 +103,16 @@ type OrderPlacer interface {
 type Reservations interface {
 	Reserve(ctx context.Context, in *counterrpc.ReserveRequest) (*counterrpc.ReserveResponse, error)
 	ReleaseReservation(ctx context.Context, in *counterrpc.ReleaseReservationRequest) (*counterrpc.ReleaseReservationResponse, error)
+}
+
+// PerpOrderPlacer is the perp-counter slice perp position-bound triggers
+// fire through (ADR-0078 §6). nil (the default) rejects perp triggers at
+// Place — fail-closed until main wires the client. Idempotency rides
+// perp-counter's client_order_id dedup ("trig-<id>", ADR-0078 修订 #3), so
+// a crash between fire and commit converges on replay exactly like the
+// spot path.
+type PerpOrderPlacer interface {
+	PlaceOrder(ctx context.Context, in *perprpc.PlaceOrderRequest) (*perprpc.PlaceOrderResponse, error)
 }
 
 // -----------------------------------------------------------------------------
@@ -134,6 +153,16 @@ type Trigger struct {
 	ActivationPrice   dec.Decimal
 	TrailingWatermark dec.Decimal
 	TrailingActive    bool
+
+	// ADR-0078 §6 perp position binding. A perp trigger fires off the
+	// perp-price MarkTick stream (not PublicTrade) and places a
+	// reduce_only inner order into perp-counter on PositionIdx; no spot
+	// reservation is taken (reduce-only perp orders hold no IM).
+	// CloseOnTrigger is recorded for audit only in V1 (修订 #7).
+	Perp           bool
+	PositionIdx    uint32
+	CloseOnTrigger bool
+	SlippageBps    uint32 // MARKET variants: ADR-0083 protected-market collar
 }
 
 // -----------------------------------------------------------------------------
@@ -180,11 +209,12 @@ type JournalSink interface {
 
 // Engine owns the pending / terminal maps and coordinates triggers.
 type Engine struct {
-	cfg      Config
-	idgen    IDGen
-	placer   OrderPlacer
-	reserver Reservations // may be nil → MVP-14a behaviour
-	logger   *zap.Logger
+	cfg        Config
+	idgen      IDGen
+	placer     OrderPlacer
+	reserver   Reservations    // may be nil → MVP-14a behaviour
+	perpPlacer PerpOrderPlacer // may be nil → perp triggers rejected (ADR-0078 §6)
+	logger     *zap.Logger
 
 	mu          sync.Mutex
 	pending     map[uint64]*Trigger
@@ -194,6 +224,10 @@ type Engine struct {
 	ocoByClient map[string]string // client_oco_id → oco_group_id (ADR-0044)
 	lastPrice   map[string]dec.Decimal
 	offsets     map[int32]int64
+	// perpOffsets is the perp-price consumer position (partition →
+	// next-to-consume), the second stateful price feed (ADR-0078 §6).
+	// Checkpointed alongside offsets and restored on startup (ADR-0048).
+	perpOffsets map[int32]int64
 	// activeTriggers counts pending triggers per (user, symbol) for
 	// the ADR-0054 slot cap. Derived index, rebuilt from pending on
 	// Restore — not persisted.
@@ -252,8 +286,18 @@ func New(cfg Config, idgen IDGen, placer OrderPlacer, reserver Reservations, log
 		ocoByClient:    make(map[string]string),
 		lastPrice:      make(map[string]dec.Decimal),
 		offsets:        make(map[int32]int64),
+		perpOffsets:    make(map[int32]int64),
 		activeTriggers: make(map[uint64]map[string]int),
 	}
+}
+
+// SetPerpPlacer installs the perp-counter client perp position-bound
+// triggers fire through (ADR-0078 §6). Wired by main after the perp client
+// dials; nil keeps perp triggers rejected at Place (fail-closed).
+func (e *Engine) SetPerpPlacer(p PerpOrderPlacer) {
+	e.mu.Lock()
+	e.perpPlacer = p
+	e.mu.Unlock()
 }
 
 // capActiveTriggersLocked returns the per-(user, symbol) pending cap
@@ -337,6 +381,17 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceTriggerRequest) (i
 		e.mu.Unlock()
 	}
 
+	// ADR-0078 §6: a perp position-bound trigger needs the perp-counter
+	// client — fail-closed at Place, not at fire time.
+	if c.Perp {
+		e.mu.Lock()
+		perpEnabled := e.perpPlacer != nil
+		e.mu.Unlock()
+		if !perpEnabled {
+			return 0, 0, false, ErrPerpNotEnabled
+		}
+	}
+
 	// Allocate the trigger id now so we can form the reservation
 	// ref_id before calling Counter. idgen is independently
 	// concurrency-safe; a "wasted" id on reservation failure is harmless
@@ -346,7 +401,10 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceTriggerRequest) (i
 
 	// Reserve funds outside any engine lock. Counter's Reserve is
 	// idempotent on ref_id so retries or replays after crash converge.
-	if e.reserver != nil {
+	// Perp triggers never reserve: the inner order is reduce_only and
+	// holds no IM in perp-counter (ADR-0078 修订 #7), and the spot
+	// reservation ledger must not be touched for a perp instrument.
+	if e.reserver != nil && !c.Perp {
 		if _, rerr := e.reserver.Reserve(ctx, buildReserveReq(c, refID)); rerr != nil {
 			return 0, 0, false, rerr
 		}
@@ -437,6 +495,11 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID uint64, clientOCOID string
 		}
 		if parsed[i].Side != parsed[0].Side {
 			return "", nil, false, ErrOCOSideMismatch
+		}
+		// ADR-0078 §6: a perp TP+SL pair must bind the SAME leg — mixed
+		// spot/perp or cross-leg groups have no coherent cancel semantics.
+		if parsed[i].Perp != parsed[0].Perp || parsed[i].PositionIdx != parsed[0].PositionIdx {
+			return "", nil, false, ErrOCOPerpMismatch
 		}
 	}
 
@@ -656,6 +719,50 @@ func (e *Engine) handleLocked(evt *eventpb.MarketDataEvent, partition int32, off
 	if err != nil || !dec.IsPositive(price) {
 		return nil
 	}
+	return e.scanSymbolLocked(symbol, price)
+}
+
+// HandlePerpPriceRecord is the perp-price topic ingress (ADR-0078 §6): a
+// MarkTick updates the symbol's price and runs the same trigger scan the
+// PublicTrade path uses — mark price is the trigger basis for perp
+// position-bound triggers (修订 #2). FundingTicks only advance the offset.
+// Spot and perp symbol namespaces are disjoint, so sharing the price table
+// is unambiguous.
+func (e *Engine) HandlePerpPriceRecord(ctx context.Context, evt *eventpb.PerpPriceEvent, partition int32, offset int64) {
+	tofire := e.handlePerpPriceLocked(evt, partition, offset)
+	if len(tofire) == 0 {
+		return
+	}
+	triggeredAt := e.cfg.Clock().UnixMilli()
+	for _, id := range tofire {
+		e.tryFire(ctx, id, triggeredAt)
+	}
+}
+
+func (e *Engine) handlePerpPriceLocked(evt *eventpb.PerpPriceEvent, partition int32, offset int64) []uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.perpOffsets[partition] = offset + 1
+	if evt == nil {
+		return nil
+	}
+	tick := evt.GetTick()
+	if tick == nil {
+		return nil // FundingTick: no price semantics for triggers
+	}
+	price, err := dec.Parse(tick.GetMarkPrice())
+	if err != nil || !dec.IsPositive(price) {
+		return nil
+	}
+	return e.scanSymbolLocked(evt.GetSymbol(), price)
+}
+
+// scanSymbolLocked records the symbol's latest price and collects every
+// pending trigger the new price crosses. Caller holds e.mu.
+func (e *Engine) scanSymbolLocked(symbol string, price dec.Decimal) []uint64 {
+	if symbol == "" {
+		return nil
+	}
 	e.lastPrice[symbol] = price
 	var tofire []uint64
 	for _, c := range e.pending {
@@ -745,15 +852,54 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 		e.mu.Unlock()
 		return
 	}
-	req := buildPlaceOrderReq(c)
-	refID := e.refIDFor(c.ID)
-	if e.reserver != nil {
-		req.ReservationId = refID
+	isPerp := c.Perp
+	var spotReq *counterrpc.PlaceOrderRequest
+	var perpReq *perprpc.PlaceOrderRequest
+	perpPlacer := e.perpPlacer
+	if isPerp {
+		perpReq = buildPerpPlaceOrderReq(c)
+	} else {
+		spotReq = buildPlaceOrderReq(c)
+		if e.reserver != nil {
+			spotReq.ReservationId = e.refIDFor(c.ID)
+		}
 	}
+	refID := e.refIDFor(c.ID)
 	userID := c.UserID
 	e.mu.Unlock()
 
-	resp, err := e.placer.PlaceOrder(ctx, req)
+	// Fire outside the lock (a slow Counter must not block cancels). The
+	// inner order's client_order_id ("trig-<id>") is the crash-replay
+	// anchor on BOTH paths: spot Counter and perp-counter (ADR-0078 修订
+	// #3) each dedup it and return the original order id.
+	var orderID uint64
+	var fireErr error
+	var perpReject string
+	switch {
+	case isPerp && perpPlacer == nil:
+		// Place fail-closes on nil, so this only races a perp placer
+		// removal; surface as a plain rejection.
+		fireErr = ErrPerpNotEnabled
+	case isPerp:
+		resp, err := perpPlacer.PlaceOrder(ctx, perpReq)
+		switch {
+		case err != nil:
+			fireErr = err
+		case resp.GetAccepted() || resp.GetOrderId() != 0:
+			// Accepted, or a COID dedup hit (accepted=false, order id set,
+			// no reason) — the replay-convergence success path.
+			orderID = resp.GetOrderId()
+		default:
+			perpReject = resp.GetRejectReason()
+		}
+	default:
+		resp, err := e.placer.PlaceOrder(ctx, spotReq)
+		if err != nil {
+			fireErr = err
+		} else {
+			orderID = resp.GetOrderId()
+		}
+	}
 
 	e.mu.Lock()
 	c = e.lookupLocked(id)
@@ -763,8 +909,9 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 	}
 	c.TriggeredAtMs = triggeredAtMs
 	failed := false
-	if err != nil {
-		reason := cleanRejectReason(err)
+	switch {
+	case fireErr != nil:
+		reason := cleanRejectReason(fireErr)
 		c.RejectReason = reason
 		// ADR-0054: Counter's per-(user, symbol) MAX_OPEN_LIMIT_ORDERS
 		// reject gets its own terminal status so clients (and audit tools)
@@ -775,32 +922,85 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 			c.Status = condrpc.TriggerStatus_TRIGGER_STATUS_REJECTED
 		}
 		failed = true
-		if e.logger != nil {
-			e.logger.Warn("trigger trigger rejected",
-				zap.Uint64("id", id),
-				zap.Uint64("user_id", c.UserID),
-				zap.String("symbol", c.Symbol),
-				zap.String("err", c.RejectReason))
+	case perpReject != "":
+		c.RejectReason = perpReject
+		// ADR-0078 §6: the bound position is gone or no longer matches the
+		// close side — the trigger expires cleanly, it never reverse-opens.
+		if perpPositionGone(perpReject) {
+			c.Status = condrpc.TriggerStatus_TRIGGER_STATUS_EXPIRED_POSITION_GONE
+		} else {
+			c.Status = condrpc.TriggerStatus_TRIGGER_STATUS_REJECTED
 		}
-	} else {
+		failed = true
+	default:
 		c.Status = condrpc.TriggerStatus_TRIGGER_STATUS_TRIGGERED
-		c.PlacedOrderID = resp.OrderId
+		c.PlacedOrderID = orderID
 		if e.logger != nil {
 			e.logger.Info("trigger triggered",
 				zap.Uint64("id", id),
-				zap.Uint64("order_id", resp.OrderId))
+				zap.Uint64("order_id", orderID))
 		}
+	}
+	if failed && e.logger != nil {
+		e.logger.Warn("trigger trigger rejected",
+			zap.Uint64("id", id),
+			zap.Uint64("user_id", c.UserID),
+			zap.String("symbol", c.Symbol),
+			zap.String("status", c.Status.String()),
+			zap.String("err", c.RejectReason))
 	}
 	primary := *c
 	e.graduateLocked(c)
 	cascaded, cascadeSnaps := e.cascadeOCOCancelLocked(c, "sibling OCO leg terminated")
 	e.mu.Unlock()
 
-	if failed {
+	if failed && !isPerp {
 		e.bestEffortRelease(ctx, userID, refID)
 	}
 	e.releaseAll(ctx, cascaded)
 	e.emitSnapshots(append([]Trigger{primary}, cascadeSnaps...))
+}
+
+// perpPositionGone classifies perp-counter admission rejects that mean "the
+// bound position no longer exists / no longer matches the close side"
+// (ADR-0078 §6): the reduce-only opposite-position gate and the ADR-0077 §2
+// intent-matrix rejects a mode switch behind the trigger's back produces.
+func perpPositionGone(reason string) bool {
+	switch reason {
+	case "reduce_only_requires_opposite_position",
+		"position_idx_requires_hedge_mode",
+		"position_idx_required_in_hedge_mode",
+		"position_intent_mismatch":
+		return true
+	}
+	return false
+}
+
+// buildPerpPlaceOrderReq turns a perp position-bound Trigger into the
+// perp-counter request fired at trigger time (ADR-0078 §6): always
+// reduce_only on the bound leg; MARKET variants carry the protected-market
+// collar (ADR-0083).
+func buildPerpPlaceOrderReq(c *Trigger) *perprpc.PlaceOrderRequest {
+	isLimit := c.Type == condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS_LIMIT ||
+		c.Type == condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT_LIMIT
+	req := &perprpc.PlaceOrderRequest{
+		UserId:        c.UserID,
+		ClientOrderId: "trig-" + formatUint(c.ID),
+		Symbol:        c.Symbol,
+		Side:          c.Side,
+		Qty:           optString(c.Qty),
+		ReduceOnly:    true,
+		PositionIdx:   c.PositionIdx,
+	}
+	if isLimit {
+		req.OrderType = eventpb.OrderType_ORDER_TYPE_LIMIT
+		req.Price = c.LimitPrice.String()
+		req.Tif = c.TIF
+	} else {
+		req.OrderType = eventpb.OrderType_ORDER_TYPE_MARKET
+		req.SlippageBps = c.SlippageBps
+	}
+	return req
 }
 
 // -----------------------------------------------------------------------------
@@ -810,7 +1010,9 @@ func (e *Engine) tryFire(ctx context.Context, id uint64, triggeredAtMs int64) {
 // Restore replaces in-memory state. Engine must be fresh (no prior writes)
 // or callers must accept replacement semantics. ADR-0054: the
 // activeTriggers index is derived from pending and rebuilt here.
-func (e *Engine) Restore(pending, terminals []*Trigger, offsets map[int32]int64) {
+// perpOffsets is the perp-price consumer position (ADR-0078 §6) — both
+// stateful price feeds restore together (ADR-0048).
+func (e *Engine) Restore(pending, terminals []*Trigger, offsets, perpOffsets map[int32]int64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.pending = make(map[uint64]*Trigger, len(pending))
@@ -835,6 +1037,10 @@ func (e *Engine) Restore(pending, terminals []*Trigger, offsets map[int32]int64)
 	for p, o := range offsets {
 		e.offsets[p] = o
 	}
+	e.perpOffsets = make(map[int32]int64, len(perpOffsets))
+	for p, o := range perpOffsets {
+		e.perpOffsets[p] = o
+	}
 }
 
 // Offsets returns a copy of the consumer watermark for restart.
@@ -843,6 +1049,18 @@ func (e *Engine) Offsets() map[int32]int64 {
 	defer e.mu.Unlock()
 	out := make(map[int32]int64, len(e.offsets))
 	for p, o := range e.offsets {
+		out[p] = o
+	}
+	return out
+}
+
+// PerpPriceOffsets returns a copy of the perp-price consumer watermark
+// (ADR-0078 §6) for the market checkpoint + restart seek.
+func (e *Engine) PerpPriceOffsets() map[int32]int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[int32]int64, len(e.perpOffsets))
+	for p, o := range e.perpOffsets {
 		out[p] = o
 	}
 	return out
@@ -983,6 +1201,22 @@ func buildTrigger(req *condrpc.PlaceTriggerRequest) (*Trigger, error) {
 	if err := validateShape(req.Side, req.Type, qty, quoteQty); err != nil {
 		return nil, err
 	}
+	// ADR-0078 §6 perp position-binding shape, fail-closed both ways.
+	if !req.Perp {
+		if req.PositionIdx != 0 || req.CloseOnTrigger || req.SlippageBps != 0 {
+			return nil, ErrPerpFieldsForbidden
+		}
+	} else {
+		if dec.IsPositive(quoteQty) || !dec.IsPositive(qty) {
+			return nil, ErrPerpQuoteQtyForbidden
+		}
+		if req.PositionIdx > 2 {
+			return nil, ErrPerpPositionIdxRange
+		}
+		if req.SlippageBps > 0 && (isLimit || req.SlippageBps > 10_000) {
+			return nil, ErrPerpSlippageShape
+		}
+	}
 	return &Trigger{
 		ClientTriggerID:  req.ClientTriggerId,
 		UserID:           req.UserId,
@@ -997,6 +1231,10 @@ func buildTrigger(req *condrpc.PlaceTriggerRequest) (*Trigger, error) {
 		ExpiresAtMs:      req.ExpiresAtUnixMs,
 		TrailingDeltaBps: req.TrailingDeltaBps,
 		ActivationPrice:  activation,
+		Perp:             req.Perp,
+		PositionIdx:      req.PositionIdx,
+		CloseOnTrigger:   req.CloseOnTrigger,
+		SlippageBps:      req.SlippageBps,
 	}, nil
 }
 

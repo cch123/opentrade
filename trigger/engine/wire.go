@@ -35,6 +35,10 @@ func ToProto(c *Trigger) *condrpc.Trigger {
 		ActivationPrice:     decOrEmpty(c.ActivationPrice),
 		TrailingWatermark:   decOrEmpty(c.TrailingWatermark),
 		TrailingActive:      c.TrailingActive,
+		Perp:                c.Perp,
+		PositionIdx:         c.PositionIdx,
+		CloseOnTrigger:      c.CloseOnTrigger,
+		SlippageBps:         c.SlippageBps,
 	}
 }
 

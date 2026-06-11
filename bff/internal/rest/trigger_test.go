@@ -53,6 +53,10 @@ func (f *fakeTrigger) ListTriggers(_ context.Context, req *connect.Request[condr
 	}
 	return connect.NewResponse(resp), nil
 }
+func (f *fakeTrigger) CountActiveTriggers(_ context.Context, _ *connect.Request[condrpc.CountActiveTriggersRequest]) (*connect.Response[condrpc.CountActiveTriggersResponse], error) {
+	return connect.NewResponse(&condrpc.CountActiveTriggersResponse{}), nil
+}
+
 func (f *fakeTrigger) PlaceOCO(_ context.Context, req *connect.Request[condrpc.PlaceOCORequest]) (*connect.Response[condrpc.PlaceOCOResponse], error) {
 	resp, err := f.placeOCOFn(req.Msg)
 	if err != nil {

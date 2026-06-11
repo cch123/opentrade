@@ -68,6 +68,12 @@ enum TriggerEventStatus {
   TRIGGER_EVENT_STATUS_CANCELED = 3;
   TRIGGER_EVENT_STATUS_REJECTED = 4;
   TRIGGER_EVENT_STATUS_EXPIRED = 5;
+  // ADR-0054 slot-cap terminal (was missing from this enum — journal records
+  // previously degraded it to UNSPECIFIED; mapping fixed with ADR-0078).
+  TRIGGER_EVENT_STATUS_EXPIRED_IN_MATCH = 6;
+  // ADR-0078 §6: perp position-bound trigger fired into a gone/mismatched
+  // position; the inner reduce-only order was rejected fail-closed.
+  TRIGGER_EVENT_STATUS_EXPIRED_POSITION_GONE = 7;
 }
 
 // TriggerUpdate is the post-change full snapshot of one trigger.
@@ -111,6 +117,13 @@ message TriggerUpdate {
   bool trailing_active = 23;
 
   uint64 trigger_seq_id = 24;
+
+  // ADR-0078 §6 perp position binding (mirrors rpc/trigger.Trigger). The
+  // trade-dump shadow needs these to rebuild a perp trigger on restore.
+  bool perp = 25;
+  uint32 position_idx = 26;
+  bool close_on_trigger = 27;
+  uint32 slippage_bps = 28;
 }
 
 // TriggerMarketCheckpointEvent advances trade-dump's view of the trigger
@@ -129,4 +142,9 @@ message TriggerMarketCheckpointEvent {
   // market-data topic the trigger primary subscribes to.
   map<int32, int64> market_offsets = 1;
   int64 ts_unix_ms = 2;
+  // ADR-0078 §6: partition → next-to-consume offset on the perp-price
+  // topic (perp position-bound triggers fire off MarkTick). Travels with
+  // market_offsets so a restored trigger seeks BOTH price feeds — a
+  // stateful consumer's snapshot must bind every input offset (ADR-0048).
+  map<int32, int64> perp_price_offsets = 3;
 }

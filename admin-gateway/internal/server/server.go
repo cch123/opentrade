@@ -59,6 +59,7 @@ type Server struct {
 	etcd           EtcdSource
 	perp           perpcfg.Store
 	perpCounters   []PerpProjector
+	perpAdmin      []PerpAdminOps
 	audit          adminaudit.Logger
 	logger         *zap.Logger
 	requestTimeout time.Duration
@@ -70,6 +71,7 @@ type Config struct {
 	Etcd           EtcdSource             // optional; nil → /admin/symbols 503
 	PerpCatalog    perpcfg.Store          // optional; nil → /admin/perp/* 503 (ADR-0075)
 	PerpCounters   []PerpProjector        // optional; required to publish reprice policies (§3 dry-run)
+	PerpAdmin      []PerpAdminOps         // optional; required for ADR-0078 §7/§8 admin ops (same clients, shard-ordered)
 	Audit          adminaudit.Logger      // required; NopLogger accepted
 	Logger         *zap.Logger
 	RequestTimeout time.Duration // default 5s
@@ -95,6 +97,7 @@ func New(cfg Config) (*Server, error) {
 		etcd:           cfg.Etcd,
 		perp:           cfg.PerpCatalog,
 		perpCounters:   cfg.PerpCounters,
+		perpAdmin:      cfg.PerpAdmin,
 		audit:          cfg.Audit,
 		logger:         cfg.Logger,
 		requestTimeout: cfg.RequestTimeout,
@@ -124,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/cancel-orders", s.handleCancelOrders)
 	// ADR-0075 perp symbol catalog.
 	s.perpRoutes(mux)
+	s.perpOpsRoutes(mux)
 	return mux
 }
 

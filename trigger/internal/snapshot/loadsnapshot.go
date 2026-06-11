@@ -28,10 +28,13 @@ const Version = 1
 // "trigger restored" log line. Engine state has already been installed
 // onto eng by the time Load returns.
 type Restored struct {
-	Offsets   map[int32]int64
-	TakenAtMs int64
-	Pending   int
-	Terminals int
+	Offsets map[int32]int64
+	// PerpPriceOffsets seeds the perp-price consumer (ADR-0078 §6); empty
+	// on snapshots taken before perp triggers existed.
+	PerpPriceOffsets map[int32]int64
+	TakenAtMs        int64
+	Pending          int
+	Terminals        int
 }
 
 // Load fetches the trigger snapshot at key from store and installs it
@@ -59,13 +62,14 @@ func Load(
 	if err != nil {
 		return nil, fmt.Errorf("terminals: %w", err)
 	}
-	eng.Restore(pending, terminals, pb.Offsets)
+	eng.Restore(pending, terminals, pb.Offsets, pb.PerpPriceOffsets)
 	eng.SetOCOByClient(pb.OcoByClient)
 	return &Restored{
-		Offsets:   pb.Offsets,
-		TakenAtMs: pb.TakenAtMs,
-		Pending:   len(pending),
-		Terminals: len(terminals),
+		Offsets:          pb.Offsets,
+		PerpPriceOffsets: pb.PerpPriceOffsets,
+		TakenAtMs:        pb.TakenAtMs,
+		Pending:          len(pending),
+		Terminals:        len(terminals),
 	}, nil
 }
 
@@ -122,6 +126,10 @@ func triggersFromProto(in []*snapshotpb.TriggerRecord) ([]*engine.Trigger, error
 			ActivationPrice:   activation,
 			TrailingWatermark: watermark,
 			TrailingActive:    r.TrailingActive,
+			Perp:              r.Perp,
+			PositionIdx:       r.PositionIdx,
+			CloseOnTrigger:    r.CloseOnTrigger,
+			SlippageBps:       r.SlippageBps,
 		})
 	}
 	return out, nil

@@ -80,7 +80,99 @@ message PerpJournalEvent {
     PerpCustomerRiskLimitEvent customer_risk_limit = 20; // ADR-0074
     PerpInvariantBreachEvent invariant_breach = 21; // ADR-0077 §2 / ADR-0081 §2
     PerpCustomerFeeEvent customer_fee = 22; // ADR-0079 user fee override audit
+    PerpAmendEvent amend = 23;              // ADR-0078 §2 amend lifecycle
+    PerpCloseAllEvent close_all = 24;       // ADR-0078 §5 close-all lifecycle
+    PerpAdminPositionAdjustmentEvent admin_adjustment = 25; // ADR-0078 §7
+    PerpBlockTradeEvent block_trade = 26;   // ADR-0078 §8
   }
+}
+
+// Amend lifecycle (ADR-0078 §2, cancel + new). One event per state
+// transition; REQUESTED carries the pre-allocated new_order_id so the chain
+// old_order → amend → new_order reconstructs from the journal alone.
+message PerpAmendEvent {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_REQUESTED = 1;          // cancel dispatched, amend pending
+    STATE_COMPLETED = 2;          // replacement order dispatched
+    STATE_ALREADY_FILLED = 3;     // old fills >= new total qty; no new order
+    STATE_FAILED = 4;             // replacement admission rejected (reason set)
+    STATE_ABORTED_BY_CANCEL = 5;  // explicit user cancel overrode the amend
+  }
+  uint64 user_id = 1;
+  string symbol = 2;
+  uint64 old_order_id = 3;
+  uint64 new_order_id = 4;        // pre-allocated replacement id
+  string new_price = 5;           // decimal
+  string new_qty = 6;             // decimal: new TOTAL intent qty
+  State state = 7;
+  string reason = 8;              // FAILED: admission reject reason
+  string placed_qty = 9;          // decimal: replacement qty actually dispatched (COMPLETED)
+}
+
+// Close-all lifecycle (ADR-0078 §5 conservative two-phase).
+message PerpCloseAllEvent {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_REQUESTED = 1;          // canceling phase entered
+    STATE_PLACING = 2;            // scope quiesced, close orders dispatched
+    STATE_DONE = 3;
+    STATE_DONE_WITH_ERRORS = 4;   // some legs failed to place (legs carry reasons)
+  }
+  message Leg {
+    string symbol = 1;
+    uint32 position_idx = 2;
+    uint64 order_id = 3;          // pre-allocated close order id (0 = skipped)
+    string qty = 4;               // decimal close qty at sizing time
+    string reject_reason = 5;     // per-leg placement failure
+  }
+  uint64 user_id = 1;
+  string close_all_id = 2;        // = client_op_id
+  string symbol = 3;              // scope filter; empty = all symbols
+  State state = 4;
+  repeated Leg legs = 5;          // PLACING / DONE*: per-leg outcomes
+}
+
+// Admin force position adjustment (ADR-0078 §7). Deliberately NOT a
+// settlement event: no trade row, no fee, no market data. The position
+// mutation reuses the fill primitives (entry averaging / realized PnL /
+// margin routing) and embeds the post-op snapshot.
+message PerpAdminPositionAdjustmentEvent {
+  uint64 user_id = 1;
+  string symbol = 2;
+  uint32 position_idx = 3;
+  bool sub = 4;                   // false = ADD (increase), true = SUB (decrease)
+  Side side = 5;                  // fill side actually applied
+  string qty = 6;                 // decimal
+  string price = 7;               // decimal admin-specified execution price
+  string realized_pnl = 8;        // decimal (SUB only; "0" for ADD)
+  string margin_moved = 9;        // decimal IM committed (ADD) / released (SUB)
+  string reason = 10;             // mandatory audit triple (ADR-0078 §7)
+  string ticket = 11;
+  string operator = 12;
+  string client_op_id = 13;
+  PerpPositionSnapshot position_after = 14;
+}
+
+// Block trade (ADR-0078 §8): bilateral off-book execution. The per-leg cash
+// effects are the two PerpSettlementEvents sharing
+// trade_id = "block-<block_trade_id>" (order_id = 0 marks the non-matched
+// provenance); this event records the bilateral envelope + audit fields.
+message PerpBlockTradeEvent {
+  string block_trade_id = 1;
+  string symbol = 2;
+  string price = 3;               // decimal execution price
+  string qty = 4;                 // decimal
+  uint64 buyer_user_id = 5;
+  uint32 buyer_position_idx = 6;
+  bool buyer_reduce_only = 7;
+  uint64 seller_user_id = 8;
+  uint32 seller_position_idx = 9;
+  bool seller_reduce_only = 10;
+  string reason = 11;
+  string ticket = 12;
+  string operator = 13;
+  string mark_price = 14;         // band-check reference at admission
 }
 
 // Order lifecycle transition (analogous to counter OrderStatusEvent).

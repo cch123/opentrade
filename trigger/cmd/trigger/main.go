@@ -45,18 +45,28 @@ import (
 	"github.com/xargin/opentrade/trigger/internal/consumer"
 	"github.com/xargin/opentrade/trigger/internal/counterclient"
 	"github.com/xargin/opentrade/trigger/internal/journal"
+	"github.com/xargin/opentrade/trigger/internal/perpclient"
 	"github.com/xargin/opentrade/trigger/internal/server"
 	"github.com/xargin/opentrade/trigger/internal/service"
 	"github.com/xargin/opentrade/trigger/internal/snapshot"
 )
 
 type Config struct {
-	InstanceID           string
-	GRPCAddr             string
-	Brokers              []string
-	MarketTopic          string
-	ConsumerGroup        string
-	CounterShards        []string
+	InstanceID    string
+	GRPCAddr      string
+	Brokers       []string
+	MarketTopic   string
+	ConsumerGroup string
+	CounterShards []string
+
+	// PerpPriceTopic is the perp-price (MarkTick) topic — the trigger
+	// basis for perp position-bound triggers (ADR-0078 §6). Empty
+	// disables the perp consumer (spot-only deployment).
+	PerpPriceTopic string
+	// PerpEndpoint is perp-counter's gRPC address; fired perp triggers
+	// place their reduce_only inner order here. Empty keeps perp
+	// triggers rejected at Place (fail-closed).
+	PerpEndpoint         string
 	SnapshotDir          string
 	TerminalHistoryLimit int
 	// ExpirySweepInterval tunes how often the primary scans pending
@@ -287,6 +297,19 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		SymbolLookup:                  symbolLookup,
 	}, idg, placer, placer, logger)
 
+	// ADR-0078 §6: the perp placer is optional wiring; without it the
+	// engine fail-closes perp triggers at Place.
+	if cfg.PerpEndpoint != "" {
+		perpHTTP, perpCli, err := perpclient.Dial(ctx, cfg.PerpEndpoint)
+		if err != nil {
+			logger.Error("dial perp-counter", zap.Error(err))
+			return
+		}
+		defer perpHTTP.CloseIdleConnections()
+		eng.SetPerpPlacer(perpclient.NewPlacer(perpCli))
+		logger.Info("perp triggers enabled", zap.String("endpoint", cfg.PerpEndpoint))
+	}
+
 	var jProducer *journal.Producer
 	if cfg.JournalTopic != "" {
 		p, err := journal.New(journal.Config{
@@ -311,7 +334,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		snapStore = snapshotpkg.NewFSBlobStore(cfg.SnapshotDir)
 	}
 
-	initialOffsets, err := tryRestoreSnapshot(ctx, snapStore, cfg, eng, logger)
+	initialOffsets, initialPerpOffsets, err := tryRestoreSnapshot(ctx, snapStore, cfg, eng, logger)
 	if err != nil {
 		logger.Error("snapshot restore", zap.Error(err))
 		return
@@ -330,6 +353,22 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 	defer mdCons.Close()
 
+	var perpCons *consumer.PerpPriceConsumer
+	if cfg.PerpPriceTopic != "" {
+		perpCons, err = consumer.NewPerpPrice(consumer.Config{
+			Brokers:        cfg.Brokers,
+			ClientID:       cfg.InstanceID + "-perp",
+			GroupID:        cfg.ConsumerGroup + "-perp",
+			Topic:          cfg.PerpPriceTopic,
+			InitialOffsets: initialPerpOffsets,
+		}, eng.HandlePerpPriceRecord, logger)
+		if err != nil {
+			logger.Error("perp-price consumer", zap.Error(err))
+			return
+		}
+		defer perpCons.Close()
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -338,6 +377,15 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 			logger.Error("consumer exited", zap.Error(err))
 		}
 	}()
+	if perpCons != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := perpCons.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("perp-price consumer exited", zap.Error(err))
+			}
+		}()
+	}
 
 	wg.Add(1)
 	go func() {
@@ -375,6 +423,9 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	}
 	shutdownCancel()
 	mdCons.Close()
+	if perpCons != nil {
+		perpCons.Close()
+	}
 	wg.Wait()
 	// No final snapshot write — trade-dump's shadow pipeline is the
 	// sole snapshot producer for trigger (ADR-0067 M6, mirrors ADR-0061
@@ -406,20 +457,20 @@ const sharedSnapshotKey = "trigger"
 // the M5 cold path (read the periodic shared snapshot at
 // sharedSnapshotKey). Absent both → cold start. Returns the captured
 // market-data offsets so the caller can seed the consumer.
-func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, error) {
+func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, map[int32]int64, error) {
 	if store == nil {
 		logger.Info("snapshot disabled (empty --snapshot-dir); cold start")
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Hot path: TakeTriggerSnapshot RPC.
 	if cfg.TradeDumpEndpoint != "" {
-		offsets, ok, err := tryHotPathRestore(ctx, store, cfg, eng, logger)
+		offsets, perpOffsets, ok, err := tryHotPathRestore(ctx, store, cfg, eng, logger)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if ok {
-			return offsets, nil
+			return offsets, perpOffsets, nil
 		}
 		// Hot path returned but didn't restore (RPC unavailable /
 		// timeout / unimplemented); fall through to cold path.
@@ -435,12 +486,12 @@ func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Co
 			zap.Int("pending", r.Pending),
 			zap.Int("terminals", r.Terminals),
 			zap.Int("partitions", len(r.Offsets)))
-		return r.Offsets, nil
+		return r.Offsets, r.PerpPriceOffsets, nil
 	case errors.Is(err, os.ErrNotExist):
 		logger.Info("no snapshot found; cold start", zap.String("key", sharedSnapshotKey))
-		return nil, nil
+		return nil, nil, nil
 	default:
-		return nil, fmt.Errorf("load shared snapshot: %w", err)
+		return nil, nil, fmt.Errorf("load shared snapshot: %w", err)
 	}
 }
 
@@ -449,7 +500,7 @@ func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Co
 // successful restore. ok=false signals "fall back to cold path"; the
 // only fatal errors are surfaced as err (currently unused, but
 // reserved for future fail-fast scenarios).
-func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, bool, error) {
+func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, map[int32]int64, bool, error) {
 	timeout := cfg.TradeDumpRPCTimeout
 	if timeout <= 0 {
 		timeout = 3 * time.Second
@@ -470,7 +521,7 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 		logger.Warn("TakeTriggerSnapshot RPC failed; cold path",
 			zap.String("endpoint", cfg.TradeDumpEndpoint),
 			zap.Error(err))
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 
 	// trade-dump writes the on-demand snapshot at resp.Msg.SnapshotKey
@@ -480,7 +531,7 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 	if err != nil {
 		logger.Warn("hot-path snapshot load failed; cold path",
 			zap.String("key", resp.Msg.SnapshotKey), zap.Error(err))
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	logger.Info("trigger state restored from on-demand snapshot (hot path)",
 		zap.String("key", resp.Msg.SnapshotKey),
@@ -489,7 +540,7 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 		zap.Int("terminals", r.Terminals),
 		zap.Int("trigger_event_partitions", len(resp.Msg.TriggerEventOffsets)),
 		zap.Int("market_partitions", len(r.Offsets)))
-	return r.Offsets, true, nil
+	return r.Offsets, r.PerpPriceOffsets, true, nil
 }
 
 // runExpirySweeper sweeps PENDING triggers whose ExpiresAtMs has
@@ -534,10 +585,11 @@ func runMarketCheckpointTicker(ctx context.Context, cfg Config, eng *engine.Engi
 			return
 		case <-ticker.C:
 			offsets := eng.Offsets()
-			if len(offsets) == 0 {
+			perpOffsets := eng.PerpPriceOffsets()
+			if len(offsets) == 0 && len(perpOffsets) == 0 {
 				continue
 			}
-			if err := producer.PublishCheckpoint(ctx, offsets); err != nil {
+			if err := producer.PublishCheckpoint(ctx, offsets, perpOffsets); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
 				}
@@ -596,6 +648,8 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	flag.StringVar(&brokersStr, "brokers", "localhost:9092", "comma-separated Kafka brokers")
 	flag.StringVar(&cfg.MarketTopic, "market-topic", cfg.MarketTopic, "market-data topic name")
+	flag.StringVar(&cfg.PerpPriceTopic, "perp-price-topic", cfg.PerpPriceTopic, "perp-price MarkTick topic for perp position-bound triggers (ADR-0078 §6); empty disables")
+	flag.StringVar(&cfg.PerpEndpoint, "perp-endpoint", cfg.PerpEndpoint, "perp-counter gRPC address for fired perp triggers (ADR-0078 §6); empty rejects perp triggers at Place")
 	flag.StringVar(&cfg.JournalTopic, "journal-topic", cfg.JournalTopic, "trigger-event audit topic name (empty disables journaling; ADR-0047)")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default trigger-{instance-id})")
 	flag.StringVar(&shardsStr, "counter-shards", "localhost:8081",

@@ -53,6 +53,16 @@ func (s *Server) QueryTrigger(_ context.Context, req *connect.Request[condrpc.Qu
 	return connect.NewResponse(resp), nil
 }
 
+// CountActiveTriggers is the ADR-0077 §3 / ADR-0078 §6 mode-switch guard
+// query perp-counter's TriggerChecker seam calls.
+func (s *Server) CountActiveTriggers(_ context.Context, req *connect.Request[condrpc.CountActiveTriggersRequest]) (*connect.Response[condrpc.CountActiveTriggersResponse], error) {
+	if req.Msg.GetUserId() == 0 || req.Msg.GetSymbol() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id and symbol required"))
+	}
+	n := s.svc.Engine().CountActiveTriggers(req.Msg.GetUserId(), req.Msg.GetSymbol())
+	return connect.NewResponse(&condrpc.CountActiveTriggersResponse{Count: uint32(n)}), nil
+}
+
 func (s *Server) ListTriggers(_ context.Context, req *connect.Request[condrpc.ListTriggersRequest]) (*connect.Response[condrpc.ListTriggersResponse], error) {
 	resp, err := s.svc.List(req.Msg)
 	if err != nil {
@@ -97,8 +107,17 @@ func toConnectErr(err error) error {
 		errors.Is(err, engine.ErrTrailingDeltaForbidden),
 		errors.Is(err, engine.ErrTrailingDeltaRange),
 		errors.Is(err, engine.ErrActivationPriceShape),
-		errors.Is(err, engine.ErrStopPriceForbidden):
+		errors.Is(err, engine.ErrStopPriceForbidden),
+		errors.Is(err, engine.ErrOCOPerpMismatch),
+		errors.Is(err, engine.ErrPerpFieldsForbidden),
+		errors.Is(err, engine.ErrPerpQuoteQtyForbidden),
+		errors.Is(err, engine.ErrPerpPositionIdxRange),
+		errors.Is(err, engine.ErrPerpSlippageShape):
 		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, engine.ErrPerpNotEnabled):
+		// Deployment-state precondition, not a request-shape problem
+		// (ADR-0078 §6: perp triggers fail closed without a perp placer).
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
 }

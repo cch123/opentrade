@@ -26,15 +26,47 @@ func newUserSeq() *userSeq { return &userSeq{locks: map[uint64]*sync.Mutex{}} }
 
 func (s *userSeq) do(user uint64, fn func()) {
 	s.mu.Lock()
+	l := s.lockFor(user)
+	s.mu.Unlock()
+	l.Lock()
+	defer l.Unlock()
+	fn()
+}
+
+// do2 serializes one operation across TWO users' sequencers (ADR-0078 §8
+// block trade). Locks are acquired in ascending user-id order so concurrent
+// reversed pairs cannot deadlock; both checks and mutations run inside the
+// double critical section, so per-leg validation has no TOCTOU window. The
+// same-user case degrades to do — callers reject it upstream, this is the
+// defensive path.
+func (s *userSeq) do2(a, b uint64, fn func()) {
+	if a == b {
+		s.do(a, fn)
+		return
+	}
+	lo, hi := a, b
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	s.mu.Lock()
+	l1, l2 := s.lockFor(lo), s.lockFor(hi)
+	s.mu.Unlock()
+	l1.Lock()
+	defer l1.Unlock()
+	l2.Lock()
+	defer l2.Unlock()
+	fn()
+}
+
+// lockFor returns (creating on demand) a user's sequencer mutex. Caller
+// holds s.mu.
+func (s *userSeq) lockFor(user uint64) *sync.Mutex {
 	l := s.locks[user]
 	if l == nil {
 		l = &sync.Mutex{}
 		s.locks[user] = l
 	}
-	s.mu.Unlock()
-	l.Lock()
-	defer l.Unlock()
-	fn()
+	return l
 }
 
 func userIDString(user uint64) string {
@@ -50,6 +82,10 @@ func errInvalid(msg string) error { return errors.New(msg) }
 func (s *Service) putOrder(o *Order) {
 	s.mu.Lock()
 	s.orders[o.OrderID] = o
+	// ADR-0078 修订 #3: live orders are dedup-indexed by (user, coid). An
+	// amend replacement inherits the old order's coid — the active index
+	// then points at the replacement, shadowing the ring entry.
+	s.indexCOIDLocked(o)
 	s.mu.Unlock()
 }
 
@@ -242,8 +278,10 @@ func (s *Service) positionSnap(user uint64, symbol string, idx uint8) *eventpb.P
 // legs, ADR-0077 §7); a provided value that differs from the config is a
 // write-through convenience set, allowed only while nothing live depends on
 // the old value (every leg flat, no orders). symCfg is the locked config
-// snapshot PlaceOrder already read. Caller holds the user's seq lock.
-func (s *Service) resolveOrderLeverage(user uint64, symbol string, symCfg engine.SymbolOrderConfig, reqLev dec.Decimal) (lev dec.Decimal, mode perpstate.MarginMode, riskID uint32, reason string) {
+// snapshot PlaceOrder already read. dryRun (PreCheckOrder, ADR-0078 §4)
+// reports the same outcome without performing the write-through. Caller
+// holds the user's seq lock.
+func (s *Service) resolveOrderLeverage(user uint64, symbol string, symCfg engine.SymbolOrderConfig, reqLev dec.Decimal, dryRun bool) (lev dec.Decimal, mode perpstate.MarginMode, riskID uint32, reason string) {
 	mode = symCfg.MarginMode
 	riskID = symCfg.RiskID
 	cfgLev := symCfg.Leverage
@@ -261,6 +299,9 @@ func (s *Service) resolveOrderLeverage(user uint64, symbol string, symCfg engine
 		// resizes margin / re-checks requirements) instead of a side effect.
 		if (s.eng.SymbolNotionalForCap(user, symbol).Sign() > 0 && cfgLev.Sign() > 0) || s.hasActiveOrders(user, symbol) {
 			return zero, mode, riskID, "leverage_conflict_use_set_leverage"
+		}
+		if dryRun {
+			return reqLev, mode, riskID, ""
 		}
 		out := s.eng.SetLeverage(user, symbol, "", reqLev, s.cfg.TargetMarginBuffer)
 		if !out.Accepted {

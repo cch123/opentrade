@@ -47,6 +47,9 @@ const (
 	TriggerServiceListTriggersProcedure = "/opentrade.rpc.trigger.TriggerService/ListTriggers"
 	// TriggerServicePlaceOCOProcedure is the fully-qualified name of the TriggerService's PlaceOCO RPC.
 	TriggerServicePlaceOCOProcedure = "/opentrade.rpc.trigger.TriggerService/PlaceOCO"
+	// TriggerServiceCountActiveTriggersProcedure is the fully-qualified name of the TriggerService's
+	// CountActiveTriggers RPC.
+	TriggerServiceCountActiveTriggersProcedure = "/opentrade.rpc.trigger.TriggerService/CountActiveTriggers"
 )
 
 // TriggerServiceClient is a client for the opentrade.rpc.trigger.TriggerService service.
@@ -71,6 +74,11 @@ type TriggerServiceClient interface {
 	// all still-PENDING siblings in the same OCO group are auto-canceled
 	// (ADR-0044). Idempotent via client_oco_id.
 	PlaceOCO(context.Context, *connect.Request[trigger.PlaceOCORequest]) (*connect.Response[trigger.PlaceOCOResponse], error)
+	// CountActiveTriggers reports the user's PENDING trigger count on one
+	// symbol — the ADR-0077 §3 / ADR-0078 §6 mode-switch guard query
+	// perp-counter's TriggerChecker seam calls. Best-effort UX guard; the
+	// hard guarantee stays perp-counter's fail-closed admission at fire time.
+	CountActiveTriggers(context.Context, *connect.Request[trigger.CountActiveTriggersRequest]) (*connect.Response[trigger.CountActiveTriggersResponse], error)
 }
 
 // NewTriggerServiceClient constructs a client for the opentrade.rpc.trigger.TriggerService service.
@@ -114,16 +122,23 @@ func NewTriggerServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(triggerServiceMethods.ByName("PlaceOCO")),
 			connect.WithClientOptions(opts...),
 		),
+		countActiveTriggers: connect.NewClient[trigger.CountActiveTriggersRequest, trigger.CountActiveTriggersResponse](
+			httpClient,
+			baseURL+TriggerServiceCountActiveTriggersProcedure,
+			connect.WithSchema(triggerServiceMethods.ByName("CountActiveTriggers")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // triggerServiceClient implements TriggerServiceClient.
 type triggerServiceClient struct {
-	placeTrigger  *connect.Client[trigger.PlaceTriggerRequest, trigger.PlaceTriggerResponse]
-	cancelTrigger *connect.Client[trigger.CancelTriggerRequest, trigger.CancelTriggerResponse]
-	queryTrigger  *connect.Client[trigger.QueryTriggerRequest, trigger.QueryTriggerResponse]
-	listTriggers  *connect.Client[trigger.ListTriggersRequest, trigger.ListTriggersResponse]
-	placeOCO      *connect.Client[trigger.PlaceOCORequest, trigger.PlaceOCOResponse]
+	placeTrigger        *connect.Client[trigger.PlaceTriggerRequest, trigger.PlaceTriggerResponse]
+	cancelTrigger       *connect.Client[trigger.CancelTriggerRequest, trigger.CancelTriggerResponse]
+	queryTrigger        *connect.Client[trigger.QueryTriggerRequest, trigger.QueryTriggerResponse]
+	listTriggers        *connect.Client[trigger.ListTriggersRequest, trigger.ListTriggersResponse]
+	placeOCO            *connect.Client[trigger.PlaceOCORequest, trigger.PlaceOCOResponse]
+	countActiveTriggers *connect.Client[trigger.CountActiveTriggersRequest, trigger.CountActiveTriggersResponse]
 }
 
 // PlaceTrigger calls opentrade.rpc.trigger.TriggerService.PlaceTrigger.
@@ -151,6 +166,11 @@ func (c *triggerServiceClient) PlaceOCO(ctx context.Context, req *connect.Reques
 	return c.placeOCO.CallUnary(ctx, req)
 }
 
+// CountActiveTriggers calls opentrade.rpc.trigger.TriggerService.CountActiveTriggers.
+func (c *triggerServiceClient) CountActiveTriggers(ctx context.Context, req *connect.Request[trigger.CountActiveTriggersRequest]) (*connect.Response[trigger.CountActiveTriggersResponse], error) {
+	return c.countActiveTriggers.CallUnary(ctx, req)
+}
+
 // TriggerServiceHandler is an implementation of the opentrade.rpc.trigger.TriggerService service.
 type TriggerServiceHandler interface {
 	// PlaceTrigger stores a new PENDING trigger. Idempotent via
@@ -173,6 +193,11 @@ type TriggerServiceHandler interface {
 	// all still-PENDING siblings in the same OCO group are auto-canceled
 	// (ADR-0044). Idempotent via client_oco_id.
 	PlaceOCO(context.Context, *connect.Request[trigger.PlaceOCORequest]) (*connect.Response[trigger.PlaceOCOResponse], error)
+	// CountActiveTriggers reports the user's PENDING trigger count on one
+	// symbol — the ADR-0077 §3 / ADR-0078 §6 mode-switch guard query
+	// perp-counter's TriggerChecker seam calls. Best-effort UX guard; the
+	// hard guarantee stays perp-counter's fail-closed admission at fire time.
+	CountActiveTriggers(context.Context, *connect.Request[trigger.CountActiveTriggersRequest]) (*connect.Response[trigger.CountActiveTriggersResponse], error)
 }
 
 // NewTriggerServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -212,6 +237,12 @@ func NewTriggerServiceHandler(svc TriggerServiceHandler, opts ...connect.Handler
 		connect.WithSchema(triggerServiceMethods.ByName("PlaceOCO")),
 		connect.WithHandlerOptions(opts...),
 	)
+	triggerServiceCountActiveTriggersHandler := connect.NewUnaryHandler(
+		TriggerServiceCountActiveTriggersProcedure,
+		svc.CountActiveTriggers,
+		connect.WithSchema(triggerServiceMethods.ByName("CountActiveTriggers")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/opentrade.rpc.trigger.TriggerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case TriggerServicePlaceTriggerProcedure:
@@ -224,6 +255,8 @@ func NewTriggerServiceHandler(svc TriggerServiceHandler, opts ...connect.Handler
 			triggerServiceListTriggersHandler.ServeHTTP(w, r)
 		case TriggerServicePlaceOCOProcedure:
 			triggerServicePlaceOCOHandler.ServeHTTP(w, r)
+		case TriggerServiceCountActiveTriggersProcedure:
+			triggerServiceCountActiveTriggersHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -251,4 +284,8 @@ func (UnimplementedTriggerServiceHandler) ListTriggers(context.Context, *connect
 
 func (UnimplementedTriggerServiceHandler) PlaceOCO(context.Context, *connect.Request[trigger.PlaceOCORequest]) (*connect.Response[trigger.PlaceOCOResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.trigger.TriggerService.PlaceOCO is not implemented"))
+}
+
+func (UnimplementedTriggerServiceHandler) CountActiveTriggers(context.Context, *connect.Request[trigger.CountActiveTriggersRequest]) (*connect.Response[trigger.CountActiveTriggersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("opentrade.rpc.trigger.TriggerService.CountActiveTriggers is not implemented"))
 }

@@ -64,7 +64,18 @@ func journalPartitionKey(evt *eventpb.PerpJournalEvent) string {
 		return journalUserKey(p.InvariantBreach.GetUserId())
 	case *eventpb.PerpJournalEvent_CustomerFee:
 		return journalUserKey(p.CustomerFee.GetUserId())
+	case *eventpb.PerpJournalEvent_Amend:
+		return journalUserKey(p.Amend.GetUserId())
+	case *eventpb.PerpJournalEvent_CloseAll:
+		return journalUserKey(p.CloseAll.GetUserId())
+	case *eventpb.PerpJournalEvent_AdminAdjustment:
+		return journalUserKey(p.AdminAdjustment.GetUserId())
 	case *eventpb.PerpJournalEvent_RiskPoolSettlement:
+		return ""
+	case *eventpb.PerpJournalEvent_BlockTrade:
+		// Bilateral envelope: two users, no single owner — default
+		// partitioner, like risk_pool_settlement. The per-leg cash effects
+		// are the two PerpSettlementEvents, each keyed by its own user.
 		return ""
 	default:
 		return ""

@@ -32,6 +32,11 @@ message TriggerSnapshot {
   // legacy snapshots (trigger self-produced) — caller falls back to
   // AtStart for catch-up.
   map<int32, int64> trigger_event_offsets = 7;
+  // perp_price_offsets is partition → next-to-consume on the perp-price
+  // topic — the second price feed perp position-bound triggers fire off
+  // (ADR-0078 §6). Travels with `offsets` so a restored trigger seeks both
+  // consumers (ADR-0048).
+  map<int32, int64> perp_price_offsets = 8;
 }
 
 message TriggerRecord {
@@ -58,4 +63,9 @@ message TriggerRecord {
   string activation_price = 20;
   string trailing_watermark = 21;
   bool   trailing_active = 22;
+  // ADR-0078 §6 perp position binding.
+  bool   perp = 23;
+  uint32 position_idx = 24;
+  bool   close_on_trigger = 25;
+  uint32 slippage_bps = 26;
 }

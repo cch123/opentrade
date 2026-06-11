@@ -87,13 +87,23 @@ func (s *Service) handleRejected(r *eventpb.OrderRejected) {
 		if o == nil || o.UserID != user || isTerminal(o.Status) {
 			return
 		}
+		// ADR-0078 修订 #6: a DUPLICATE_ORDER_ID reject for an order we track
+		// is the echo of a crash-replay re-dispatch (amend continuation /
+		// close-all leg) — Match already holds the original under this id.
+		// Ignore it: the order's own lifecycle events, already queued in the
+		// replay stream, drive this record to its true state. Order ids are
+		// snowflakes, so a tracked order can collide only with itself.
+		if r.GetReason() == eventpb.RejectReason_REJECT_REASON_DUPLICATE_ORDER_ID {
+			return
+		}
 		old := o.Status
 		s.releaseRemainingIM(o)
 		o.Status = eventpb.InternalOrderStatus_INTERNAL_ORDER_STATUS_REJECTED
 		o.UpdatedMs = s.now()
 		s.emitOrderStatusReason(o, old, o.Status, r.GetReason())
 		s.clearLiquidationIfAny(o.OrderID) // re-arm if this was a bankruptcy order
-		s.delOrder(o.OrderID)
+		s.retireOrder(o)
+		s.onOrderTerminalLocked(o)
 	})
 }
 
@@ -115,7 +125,8 @@ func (s *Service) handleCancelled(c *eventpb.OrderCancelled) {
 		o.UpdatedMs = s.now()
 		s.emitOrderStatus(o, old, o.Status)
 		s.clearLiquidationIfAny(o.OrderID)
-		s.delOrder(o.OrderID)
+		s.retireOrder(o)
+		s.onOrderTerminalLocked(o)
 	})
 }
 
@@ -137,7 +148,8 @@ func (s *Service) handleExpired(e *eventpb.OrderExpired) {
 		o.UpdatedMs = s.now()
 		s.emitOrderStatusReason(o, old, o.Status, e.GetReason())
 		s.clearLiquidationIfAny(o.OrderID)
-		s.delOrder(o.OrderID)
+		s.retireOrder(o)
+		s.onOrderTerminalLocked(o)
 	})
 }
 

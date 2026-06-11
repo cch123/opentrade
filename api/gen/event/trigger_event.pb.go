@@ -91,6 +91,12 @@ const (
 	TriggerEventStatus_TRIGGER_EVENT_STATUS_CANCELED    TriggerEventStatus = 3
 	TriggerEventStatus_TRIGGER_EVENT_STATUS_REJECTED    TriggerEventStatus = 4
 	TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED     TriggerEventStatus = 5
+	// ADR-0054 slot-cap terminal (was missing from this enum — journal records
+	// previously degraded it to UNSPECIFIED; mapping fixed with ADR-0078).
+	TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED_IN_MATCH TriggerEventStatus = 6
+	// ADR-0078 §6: perp position-bound trigger fired into a gone/mismatched
+	// position; the inner reduce-only order was rejected fail-closed.
+	TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED_POSITION_GONE TriggerEventStatus = 7
 )
 
 // Enum value maps for TriggerEventStatus.
@@ -102,14 +108,18 @@ var (
 		3: "TRIGGER_EVENT_STATUS_CANCELED",
 		4: "TRIGGER_EVENT_STATUS_REJECTED",
 		5: "TRIGGER_EVENT_STATUS_EXPIRED",
+		6: "TRIGGER_EVENT_STATUS_EXPIRED_IN_MATCH",
+		7: "TRIGGER_EVENT_STATUS_EXPIRED_POSITION_GONE",
 	}
 	TriggerEventStatus_value = map[string]int32{
-		"TRIGGER_EVENT_STATUS_UNSPECIFIED": 0,
-		"TRIGGER_EVENT_STATUS_PENDING":     1,
-		"TRIGGER_EVENT_STATUS_TRIGGERED":   2,
-		"TRIGGER_EVENT_STATUS_CANCELED":    3,
-		"TRIGGER_EVENT_STATUS_REJECTED":    4,
-		"TRIGGER_EVENT_STATUS_EXPIRED":     5,
+		"TRIGGER_EVENT_STATUS_UNSPECIFIED":           0,
+		"TRIGGER_EVENT_STATUS_PENDING":               1,
+		"TRIGGER_EVENT_STATUS_TRIGGERED":             2,
+		"TRIGGER_EVENT_STATUS_CANCELED":              3,
+		"TRIGGER_EVENT_STATUS_REJECTED":              4,
+		"TRIGGER_EVENT_STATUS_EXPIRED":               5,
+		"TRIGGER_EVENT_STATUS_EXPIRED_IN_MATCH":      6,
+		"TRIGGER_EVENT_STATUS_EXPIRED_POSITION_GONE": 7,
 	}
 )
 
@@ -262,8 +272,14 @@ type TriggerUpdate struct {
 	TrailingWatermark string `protobuf:"bytes,22,opt,name=trailing_watermark,json=trailingWatermark,proto3" json:"trailing_watermark,omitempty"`
 	TrailingActive    bool   `protobuf:"varint,23,opt,name=trailing_active,json=trailingActive,proto3" json:"trailing_active,omitempty"`
 	TriggerSeqId      uint64 `protobuf:"varint,24,opt,name=trigger_seq_id,json=triggerSeqId,proto3" json:"trigger_seq_id,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// ADR-0078 §6 perp position binding (mirrors rpc/trigger.Trigger). The
+	// trade-dump shadow needs these to rebuild a perp trigger on restore.
+	Perp           bool   `protobuf:"varint,25,opt,name=perp,proto3" json:"perp,omitempty"`
+	PositionIdx    uint32 `protobuf:"varint,26,opt,name=position_idx,json=positionIdx,proto3" json:"position_idx,omitempty"`
+	CloseOnTrigger bool   `protobuf:"varint,27,opt,name=close_on_trigger,json=closeOnTrigger,proto3" json:"close_on_trigger,omitempty"`
+	SlippageBps    uint32 `protobuf:"varint,28,opt,name=slippage_bps,json=slippageBps,proto3" json:"slippage_bps,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TriggerUpdate) Reset() {
@@ -464,6 +480,34 @@ func (x *TriggerUpdate) GetTriggerSeqId() uint64 {
 	return 0
 }
 
+func (x *TriggerUpdate) GetPerp() bool {
+	if x != nil {
+		return x.Perp
+	}
+	return false
+}
+
+func (x *TriggerUpdate) GetPositionIdx() uint32 {
+	if x != nil {
+		return x.PositionIdx
+	}
+	return 0
+}
+
+func (x *TriggerUpdate) GetCloseOnTrigger() bool {
+	if x != nil {
+		return x.CloseOnTrigger
+	}
+	return false
+}
+
+func (x *TriggerUpdate) GetSlippageBps() uint32 {
+	if x != nil {
+		return x.SlippageBps
+	}
+	return 0
+}
+
 // TriggerMarketCheckpointEvent advances trade-dump's view of the trigger
 // service's market-data consumer position (ADR-0067). Trigger primary
 // produces one of these periodically; trade-dump's trigger shadow keeps
@@ -481,8 +525,13 @@ type TriggerMarketCheckpointEvent struct {
 	// market-data topic the trigger primary subscribes to.
 	MarketOffsets map[int32]int64 `protobuf:"bytes,1,rep,name=market_offsets,json=marketOffsets,proto3" json:"market_offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	TsUnixMs      int64           `protobuf:"varint,2,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// ADR-0078 §6: partition → next-to-consume offset on the perp-price
+	// topic (perp position-bound triggers fire off MarkTick). Travels with
+	// market_offsets so a restored trigger seeks BOTH price feeds — a
+	// stateful consumer's snapshot must bind every input offset (ADR-0048).
+	PerpPriceOffsets map[int32]int64 `protobuf:"bytes,3,rep,name=perp_price_offsets,json=perpPriceOffsets,proto3" json:"perp_price_offsets,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TriggerMarketCheckpointEvent) Reset() {
@@ -529,6 +578,13 @@ func (x *TriggerMarketCheckpointEvent) GetTsUnixMs() int64 {
 	return 0
 }
 
+func (x *TriggerMarketCheckpointEvent) GetPerpPriceOffsets() map[int32]int64 {
+	if x != nil {
+		return x.PerpPriceOffsets
+	}
+	return nil
+}
+
 var File_event_trigger_event_proto protoreflect.FileDescriptor
 
 const file_event_trigger_event_proto_rawDesc = "" +
@@ -538,7 +594,7 @@ const file_event_trigger_event_proto_rawDesc = "" +
 	"\x06update\x18\n" +
 	" \x01(\v2\x1e.opentrade.event.TriggerUpdateH\x00R\x06update\x12\\\n" +
 	"\x11market_checkpoint\x18\x14 \x01(\v2-.opentrade.event.TriggerMarketCheckpointEventH\x00R\x10marketCheckpointB\t\n" +
-	"\apayload\"\xbb\a\n" +
+	"\apayload\"\xbf\b\n" +
 	"\rTriggerUpdate\x12.\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1a.opentrade.event.EventMetaR\x04meta\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\x04R\x02id\x12*\n" +
@@ -567,12 +623,20 @@ const file_event_trigger_event_proto_rawDesc = "" +
 	"\x10activation_price\x18\x15 \x01(\tR\x0factivationPrice\x12-\n" +
 	"\x12trailing_watermark\x18\x16 \x01(\tR\x11trailingWatermark\x12'\n" +
 	"\x0ftrailing_active\x18\x17 \x01(\bR\x0etrailingActive\x12$\n" +
-	"\x0etrigger_seq_id\x18\x18 \x01(\x04R\ftriggerSeqId\"\xe7\x01\n" +
+	"\x0etrigger_seq_id\x18\x18 \x01(\x04R\ftriggerSeqId\x12\x12\n" +
+	"\x04perp\x18\x19 \x01(\bR\x04perp\x12!\n" +
+	"\fposition_idx\x18\x1a \x01(\rR\vpositionIdx\x12(\n" +
+	"\x10close_on_trigger\x18\x1b \x01(\bR\x0ecloseOnTrigger\x12!\n" +
+	"\fslippage_bps\x18\x1c \x01(\rR\vslippageBps\"\x9f\x03\n" +
 	"\x1cTriggerMarketCheckpointEvent\x12g\n" +
 	"\x0emarket_offsets\x18\x01 \x03(\v2@.opentrade.event.TriggerMarketCheckpointEvent.MarketOffsetsEntryR\rmarketOffsets\x12\x1c\n" +
 	"\n" +
-	"ts_unix_ms\x18\x02 \x01(\x03R\btsUnixMs\x1a@\n" +
+	"ts_unix_ms\x18\x02 \x01(\x03R\btsUnixMs\x12q\n" +
+	"\x12perp_price_offsets\x18\x03 \x03(\v2C.opentrade.event.TriggerMarketCheckpointEvent.PerpPriceOffsetsEntryR\x10perpPriceOffsets\x1a@\n" +
 	"\x12MarketOffsetsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1aC\n" +
+	"\x15PerpPriceOffsetsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01*\xf9\x01\n" +
 	"\x10TriggerEventType\x12\"\n" +
@@ -581,14 +645,16 @@ const file_event_trigger_event_proto_rawDesc = "" +
 	"\"TRIGGER_EVENT_TYPE_STOP_LOSS_LIMIT\x10\x02\x12\"\n" +
 	"\x1eTRIGGER_EVENT_TYPE_TAKE_PROFIT\x10\x03\x12(\n" +
 	"$TRIGGER_EVENT_TYPE_TAKE_PROFIT_LIMIT\x10\x04\x12)\n" +
-	"%TRIGGER_EVENT_TYPE_TRAILING_STOP_LOSS\x10\x05*\xe8\x01\n" +
+	"%TRIGGER_EVENT_TYPE_TRAILING_STOP_LOSS\x10\x05*\xc3\x02\n" +
 	"\x12TriggerEventStatus\x12$\n" +
 	" TRIGGER_EVENT_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cTRIGGER_EVENT_STATUS_PENDING\x10\x01\x12\"\n" +
 	"\x1eTRIGGER_EVENT_STATUS_TRIGGERED\x10\x02\x12!\n" +
 	"\x1dTRIGGER_EVENT_STATUS_CANCELED\x10\x03\x12!\n" +
 	"\x1dTRIGGER_EVENT_STATUS_REJECTED\x10\x04\x12 \n" +
-	"\x1cTRIGGER_EVENT_STATUS_EXPIRED\x10\x05B1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
+	"\x1cTRIGGER_EVENT_STATUS_EXPIRED\x10\x05\x12)\n" +
+	"%TRIGGER_EVENT_STATUS_EXPIRED_IN_MATCH\x10\x06\x12.\n" +
+	"*TRIGGER_EVENT_STATUS_EXPIRED_POSITION_GONE\x10\aB1Z/github.com/xargin/opentrade/api/gen/event;eventb\x06proto3"
 
 var (
 	file_event_trigger_event_proto_rawDescOnce sync.Once
@@ -603,7 +669,7 @@ func file_event_trigger_event_proto_rawDescGZIP() []byte {
 }
 
 var file_event_trigger_event_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_event_trigger_event_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_event_trigger_event_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_event_trigger_event_proto_goTypes = []any{
 	(TriggerEventType)(0),                // 0: opentrade.event.TriggerEventType
 	(TriggerEventStatus)(0),              // 1: opentrade.event.TriggerEventStatus
@@ -611,24 +677,26 @@ var file_event_trigger_event_proto_goTypes = []any{
 	(*TriggerUpdate)(nil),                // 3: opentrade.event.TriggerUpdate
 	(*TriggerMarketCheckpointEvent)(nil), // 4: opentrade.event.TriggerMarketCheckpointEvent
 	nil,                                  // 5: opentrade.event.TriggerMarketCheckpointEvent.MarketOffsetsEntry
-	(*EventMeta)(nil),                    // 6: opentrade.event.EventMeta
-	(Side)(0),                            // 7: opentrade.event.Side
-	(TimeInForce)(0),                     // 8: opentrade.event.TimeInForce
+	nil,                                  // 6: opentrade.event.TriggerMarketCheckpointEvent.PerpPriceOffsetsEntry
+	(*EventMeta)(nil),                    // 7: opentrade.event.EventMeta
+	(Side)(0),                            // 8: opentrade.event.Side
+	(TimeInForce)(0),                     // 9: opentrade.event.TimeInForce
 }
 var file_event_trigger_event_proto_depIdxs = []int32{
 	3, // 0: opentrade.event.TriggerEvent.update:type_name -> opentrade.event.TriggerUpdate
 	4, // 1: opentrade.event.TriggerEvent.market_checkpoint:type_name -> opentrade.event.TriggerMarketCheckpointEvent
-	6, // 2: opentrade.event.TriggerUpdate.meta:type_name -> opentrade.event.EventMeta
-	7, // 3: opentrade.event.TriggerUpdate.side:type_name -> opentrade.event.Side
+	7, // 2: opentrade.event.TriggerUpdate.meta:type_name -> opentrade.event.EventMeta
+	8, // 3: opentrade.event.TriggerUpdate.side:type_name -> opentrade.event.Side
 	0, // 4: opentrade.event.TriggerUpdate.type:type_name -> opentrade.event.TriggerEventType
-	8, // 5: opentrade.event.TriggerUpdate.tif:type_name -> opentrade.event.TimeInForce
+	9, // 5: opentrade.event.TriggerUpdate.tif:type_name -> opentrade.event.TimeInForce
 	1, // 6: opentrade.event.TriggerUpdate.status:type_name -> opentrade.event.TriggerEventStatus
 	5, // 7: opentrade.event.TriggerMarketCheckpointEvent.market_offsets:type_name -> opentrade.event.TriggerMarketCheckpointEvent.MarketOffsetsEntry
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	6, // 8: opentrade.event.TriggerMarketCheckpointEvent.perp_price_offsets:type_name -> opentrade.event.TriggerMarketCheckpointEvent.PerpPriceOffsetsEntry
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_event_trigger_event_proto_init() }
@@ -647,7 +715,7 @@ func file_event_trigger_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_trigger_event_proto_rawDesc), len(file_event_trigger_event_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

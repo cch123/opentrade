@@ -59,6 +59,11 @@ type Engine struct {
 	// at the right position (ADR-0048).
 	marketOffsets map[int32]int64
 
+	// perpPriceOffsets mirrors marketOffsets for the perp-price topic —
+	// the second stateful price feed (ADR-0078 §6), carried on the same
+	// checkpoint event.
+	perpPriceOffsets map[int32]int64
+
 	// nextTriggerEventOffsets is the per-partition apply cursor on the
 	// trigger-event topic. Mirror of counter shadow's NextJournalOffset
 	// but partition-aware because trigger-event is partitioned by
@@ -82,6 +87,7 @@ func New(terminalLimit int) *Engine {
 		terminalLimit:           terminalLimit,
 		pending:                 make(map[uint64]*snapshotpb.TriggerRecord),
 		marketOffsets:           make(map[int32]int64),
+		perpPriceOffsets:        make(map[int32]int64),
 		nextTriggerEventOffsets: make(map[int32]int64),
 	}
 }
@@ -163,6 +169,11 @@ func (e *Engine) ApplyMarketCheckpoint(c *eventpb.TriggerMarketCheckpointEvent, 
 	for part, off := range c.MarketOffsets {
 		if cur, ok := e.marketOffsets[part]; !ok || off > cur {
 			e.marketOffsets[part] = off
+		}
+	}
+	for part, off := range c.PerpPriceOffsets {
+		if cur, ok := e.perpPriceOffsets[part]; !ok || off > cur {
+			e.perpPriceOffsets[part] = off
 		}
 	}
 	e.advanceCursorLocked(partition, kafkaOffset)
@@ -269,6 +280,12 @@ func (e *Engine) Capture(takenAtMs int64, resetCounter bool) *snapshotpb.Trigger
 			snap.Offsets[p] = o
 		}
 	}
+	if len(e.perpPriceOffsets) > 0 {
+		snap.PerpPriceOffsets = make(map[int32]int64, len(e.perpPriceOffsets))
+		for p, o := range e.perpPriceOffsets {
+			snap.PerpPriceOffsets[p] = o
+		}
+	}
 	// OcoByClient is intentionally empty — shadow can't reconstruct
 	// the client_oco_id → group_id map from trigger-event alone (the
 	// mapping is set on PlaceOCO and never appears in TriggerUpdate
@@ -295,6 +312,7 @@ func (e *Engine) RestoreFromSnapshot(snap *snapshotpb.TriggerSnapshot) error {
 	e.pending = make(map[uint64]*snapshotpb.TriggerRecord, len(snap.Pending))
 	e.terminals = e.terminals[:0]
 	e.marketOffsets = make(map[int32]int64, len(snap.Offsets))
+	e.perpPriceOffsets = make(map[int32]int64, len(snap.PerpPriceOffsets))
 	e.nextTriggerEventOffsets = make(map[int32]int64, len(snap.TriggerEventOffsets))
 
 	for _, r := range snap.Pending {
@@ -305,6 +323,9 @@ func (e *Engine) RestoreFromSnapshot(snap *snapshotpb.TriggerSnapshot) error {
 	}
 	for p, o := range snap.Offsets {
 		e.marketOffsets[p] = o
+	}
+	for p, o := range snap.PerpPriceOffsets {
+		e.perpPriceOffsets[p] = o
 	}
 	for p, o := range snap.TriggerEventOffsets {
 		e.nextTriggerEventOffsets[p] = o
@@ -322,7 +343,13 @@ func isTerminal(s eventpb.TriggerEventStatus) bool {
 	case eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_TRIGGERED,
 		eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_CANCELED,
 		eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_REJECTED,
-		eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED:
+		eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED,
+		// EXPIRED_IN_MATCH joined the wire enum with ADR-0078 (it
+		// previously degraded to UNSPECIFIED and left a zombie pending
+		// record in the shadow); EXPIRED_POSITION_GONE is the ADR-0078 §6
+		// perp terminal.
+		eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED_IN_MATCH,
+		eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_EXPIRED_POSITION_GONE:
 		return true
 	}
 	return false
@@ -352,6 +379,10 @@ func triggerUpdateToRecord(u *eventpb.TriggerUpdate) *snapshotpb.TriggerRecord {
 		ActivationPrice:   u.ActivationPrice,
 		TrailingWatermark: u.TrailingWatermark,
 		TrailingActive:    u.TrailingActive,
+		Perp:              u.Perp,
+		PositionIdx:       u.PositionIdx,
+		CloseOnTrigger:    u.CloseOnTrigger,
+		SlippageBps:       u.SlippageBps,
 	}
 }
 
