@@ -1,6 +1,6 @@
 # ADR-0078: perp 订单与持仓产品 API
 
-- 状态: **Proposed**（2026-05-31 起草；2026-06-11 实现前设计修订，修订内容见「设计修订记录」）
+- 状态: **Accepted / Implemented**（2026-05-31 起草；2026-06-11 实现前设计修订并接受，修订内容见「设计修订记录」；同日实现落地，commit `99ad14d` —— perp-counter COID 幂等/amend/batch/cancel-all/pre-check/close-all/force-adjust/block-trade + trigger perp position binding/mark-price 消费/CountActiveTriggers + trade-dump shadow + BFF/admin-gateway 端点，全仓 build/vet/test/test-race 通过）
 - 日期: 2026-05-31（修订 2026-06-11）
 - 决策者: xargin, Codex
 - 相关 ADR: 0014（改单为撤单 + 新建）、0020（订单状态机）、0035（服务端 MARKET）、0062（终态退场 + 幂等环）、0068（perp MVP）、0074（保证金模式）、0077（position_idx）、0081（reduce_only 结算硬约束）、0083（protected market order）
