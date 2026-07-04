@@ -20,6 +20,19 @@
 
 ## Open
 
+### 2026-07-05
+
+> 以下 8 条来自同一次盘点：user 提出"我要实现一个完整的交易所，你看看现在的代码，从架构和业务上，给我列一个清单，还缺哪些东西"，dev 对照代码与 [industry-gap-analysis-2026-05-31.md](./research/industry-gap-analysis-2026-05-31.md) 梳理出交易内核之外的空白业务域。详细论证统一见 [research/full-exchange-gap-checklist-2026-07-05.md](./research/full-exchange-gap-checklist-2026-07-05.md)（下称"缺口清单"）。已有 ADR / roadmap 覆盖的内核缺口不在此重复登记。
+
+- **[user/dev]** 链上充提 / 钱包系统 — 充值地址生成与归集、per-chain 确认数、冷热钱包分离、提现审批流（限额/延时/多签）、链上 reorg/双花处理、链上-账务对账。现状 `asset` 只有 funding wallet + 内部转账 saga，对外无 Deposit/Withdraw。接真实资金的先决条件。状态：`pending`。去向：缺口清单 §4.1。
+- **[user/dev]** 法币通道（fiat on-ramp/off-ramp） — 支付渠道对接 + 法币账务。先做产品决策再谈技术。状态：`pending`。去向：缺口清单 §4.2。
+- **[user/dev]** 用户账户体系 — 注册/登录、密码与 2FA、设备与会话管理、防钓鱼码、API-key 自助管理（创建/吊销/scope/IP 白名单）、母子账户（sub-account）及划转。现状"用户"只是 `user_id` 字符串 + 静态 key 文件。子账户分组是机构级 STP/SMP 的数据前提。状态：`pending`。去向：缺口清单 §4.3。
+- **[user/dev]** KYC / AML / 制裁筛查 — KYC 分级与额度联动、AML 交易监测、Travel Rule、提现风控。外采/对接为主；在钱包与用户服务设计时预留 hook，实施可最后。状态：`pending`。去向：缺口清单 §4.4。
+- **[user/dev]** 杠杆现货 / 借贷（margin trading + lending） — 借币下单、利息计提、维持保证金率、爆仓、借贷池/利率模型；与 ADR-0074 的 unified margin 后续路径有架构耦合（0074 的 isolated / USDT cross 已落地），需先明确关系避免两套保证金引擎。状态：`pending`。去向：缺口清单 §4.5。
+- **[user/dev]** 运营与市场生命周期 — 上币流程（预热、集合竞价/开盘价保护、首日涨跌幅限制）、下架清退、公告与维护窗口、现货侧 cancel-only/reduce-only 状态编排、风险参数 staged rollout。状态：`pending`。去向：缺口清单 §4.6（与 ADR-0075 联动）。
+- **[user/dev]** 财务与对账报表 — 现货手续费平台账户账本（对齐 ADR-0079 模式）、proof of reserves（储备金证明）、税务/监管导出、日终结算报表、Counter+asset+钱包三方资金守恒对账。状态：`pending`。去向：缺口清单 §4.7。
+- **[user/dev]** 客服支撑工具 — 按 order_id 的全链路事件轨迹调查、资金流水导出、带审计的冲正/调账流程（走 `Transfer` + 审计，不破坏 non-goals 对 admin 直改余额的禁令）。与可观测性 correlation 查询共用地基。状态：`pending`。去向：缺口清单 §4.8。
+
 ### 2026-04-19
 
 - **[user]** Counter / Match 核心链路改异步日志 — "counter 和 match 核心链路，日志都用异步日志，先看看 zap 支持不支持"。现状：`pkg/logx` 用 `zapcore.Lock(os.Stdout)`，每条日志在 caller goroutine 走 stdout syscall + 互斥锁，counter sequencer / match SymbolWorker 热路径被 I/O 拖。**zap 原生是否支持**：不支持"真·异步"（队列 + 后台 goroutine 写）。zap 只提供 `zapcore.BufferedWriteSyncer`（v1.20+）——属于 buffered+定期 flush：仍在 caller goroutine 写 `bufio.Writer`（加锁），后台 goroutine 仅按 `FlushInterval`（默认 30s）定期 `Sync`；默认 256KB 缓冲，满则 caller 内 flush。等价于"合并 syscall"，但 caller 仍可能被 I/O stall。**真·异步**要自己实现 `WriteSyncer`：channel / ring buffer 入队，单消费 goroutine 写 underlying sink；权衡：(a) 队列满怎么办（drop 最旧 / drop 最新 / 阻塞 caller）；(b) 进程 crash 时 tail 丢失（SIGKILL 前未 flush 的条目丢；`logger.Fatal` 路径要强制 flush 否则错误日志丢失）；(c) caller 侧字段编码是否仍同步（zap 的 `CheckedEntry.Write` 会先 `enc.EncodeEntry` 再写 sink，异步化的切点通常在 sink 之后）。状态：`pending`。去向：待分流。
