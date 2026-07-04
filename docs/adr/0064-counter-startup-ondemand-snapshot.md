@@ -198,7 +198,7 @@ func (s *SnapshotServer) takeSnapshotOnce(ctx context.Context, partition int32) 
 
 #### 2.7 Shadow engine 新增 `WaitAppliedTo`(跨 goroutine 安全)
 
-**关键观察**:ADR-0061 [pipeline.go:22-24](../../trade-dump/internal/snapshot/pipeline/pipeline.go:22) 的 threading model 是 "**单 Run goroutine 多路复用全部 256 vshard**",不是 per-vshard goroutine。所以 WaitAppliedTo 的 RPC handler goroutine 必须跨线程读 applied offset。
+**关键观察**:ADR-0061 [pipeline.go:22-24](../../trade-dump/internal/snapshot/counter/pipeline/pipeline.go:22) 的 threading model 是 "**单 Run goroutine 多路复用全部 256 vshard**",不是 per-vshard goroutine。所以 WaitAppliedTo 的 RPC handler goroutine 必须跨线程读 applied offset。
 
 ```go
 // trade-dump/internal/snapshot/shadow/engine.go (增量)

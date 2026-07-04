@@ -338,5 +338,5 @@ message OrderBook {
   - [match/internal/orderbook/](../../match/internal/orderbook/) — 新增 Top N 截取
   - [match/internal/journal/producer.go](../../match/internal/journal/producer.go) — 新增 OrderBook 帧 emit
   - [api/event/market_data.proto](../../api/event/market_data.proto) — 新增 `OrderBook` / `OrderBookFull` / `OrderBookDelta` 消息
-  - [quote/internal/depth/](../../quote/internal/depth/) — P3 删除
+  - `quote/internal/depth/` — P3 删除（已完成，目录已移除）
   - [bff/internal/marketcache/](../../bff/internal/marketcache/) — P2 切换消费源

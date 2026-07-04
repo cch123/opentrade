@@ -21,7 +21,7 @@
 
 ## 可用性层
 
-- **Match / Counter hot-standby** — HA 只做 cold-standby：primary 周期 snapshot，standby 平时不 tail journal；failover 时 standby 加载 snapshot + seek Kafka offset 恢复。**Why not**：hot-standby 需要 replicate in-memory state 的一致性协议（Raft / 自研），复杂度远高于 cold-standby 的可接受 RTO（秒级）。**关联**：[ADR-0031](./adr/0031-counter-ha.md)。
+- **Match / Counter hot-standby** — HA 只做 cold-standby：primary 周期 snapshot，standby 平时不 tail journal；failover 时 standby 加载 snapshot + seek Kafka offset 恢复。**Why not**：hot-standby 需要 replicate in-memory state 的一致性协议（Raft / 自研），复杂度远高于 cold-standby 的可接受 RTO（秒级）。**关联**：[ADR-0031](./adr/0031-ha-cold-standby-rollout.md)。
 - **Push 服务端消息 replay** — 客户端断线重连不从服务端 replay 历史消息；客户端自己 `GET /v1/depth/{symbol}` + `/v1/klines` 拉 snapshot 对齐。**Why not**：Push 是纯 fanout，不保留历史；replay 需要 per-user WAL，存储 + 一致性成本远超其价值。**关联**：[ADR-0038](./adr/0038-bff-reconnect-snapshot.md)。
 
 ## 状态 / 持久化层

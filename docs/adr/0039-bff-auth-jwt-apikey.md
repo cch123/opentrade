@@ -197,7 +197,7 @@ API-Key 签名用 `r.URL.RawQuery` 而非 `r.URL.Query().Encode()`：后者会
 - RFC 7519 — JSON Web Token
 - [Binance API — Signed endpoints](https://binance-docs.github.io/apidocs/spot/en/#signed-trade-user_data-and-margin-endpoint-security)
 - 实现：
-  - [bff/internal/auth/jwt.go](../../bff/internal/auth/jwt.go)
-  - [bff/internal/auth/apikey.go](../../bff/internal/auth/apikey.go)
-  - [bff/internal/auth/middleware.go](../../bff/internal/auth/middleware.go)
+  - [pkg/auth/jwt.go](../../pkg/auth/jwt.go)
+  - [pkg/auth/apikey.go](../../pkg/auth/apikey.go)
+  - [pkg/auth/middleware.go](../../pkg/auth/middleware.go)
   - [bff/cmd/bff/main.go](../../bff/cmd/bff/main.go)

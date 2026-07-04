@@ -1,6 +1,6 @@
 # OpenTrade
 
-OpenTrade 是一个面向现货交易的中心化加密货币交易所（CEX）核心系统。仓库采用 Go monorepo，覆盖下单网关、账户清算、撮合、行情、WebSocket 推送、触发单、资金钱包、历史查询、管理平面、持久化投影与 snapshot 生产。
+OpenTrade 是一个覆盖现货与 USDT 线性永续合约（perp）的中心化加密货币交易所（CEX）核心系统。仓库采用 Go monorepo，覆盖下单网关、账户清算、撮合、行情、WebSocket 推送、触发单、资金钱包、合约账户与风险引擎、历史查询、管理平面、持久化投影与 snapshot 生产。
 
 > **状态**：MVP 功能已基本闭环，仍处于工程验证与性能打磨阶段，不按生产可用系统发布。
 
@@ -48,6 +48,9 @@ Client REST/WS
 | [push/](push/) | WebSocket fanout，公共行情与私有用户事件推送 |
 | [trigger/](trigger/) | 止损、止盈、OCO、trailing stop 等触发单 |
 | [asset/](asset/) | 资金钱包、内部转账与 asset journal |
+| [perp-counter/](perp-counter/) | 永续合约账户：仓位、保证金、mark/funding 结算、强平入口 |
+| [perp-pricing/](perp-pricing/) | 指数价 / 标记价计算与 funding rate 发布 |
+| [perp-risk/](perp-risk/) | 合约风险协调：保险基金、跨 shard ADL（auto-deleveraging，自动减仓） |
 | [trade-dump/](trade-dump/) | Kafka 事件持久化、MySQL projection、counter/trigger snapshot pipeline |
 | [history/](history/) | 只读历史查询服务，读取 trade-dump 投影 |
 | [admin-gateway/](admin-gateway/) | 内部运维入口，symbol 管理、灰度切换、批量撤单与审计 |

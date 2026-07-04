@@ -75,7 +75,7 @@
 
 ## 可用性
 
-- **Primary / Standby** — HA 角色。primary 唯一服务请求，standby 等选主（etcd lease）。[ADR-0031](./adr/0031-counter-ha.md)。
+- **Primary / Standby** — HA 角色。primary 唯一服务请求，standby 等选主（etcd lease）。[ADR-0031](./adr/0031-ha-cold-standby-rollout.md)。
 - **Cold-standby** — standby 平时不 tail journal；failover 时加载 snapshot + seek Kafka offset 恢复。
 - **EOS（Exactly-Once Semantics）** — 通过"transactional producer + snapshot 原子绑 offset + 下游业务层幂等"三件套达成。[ADR-0032](./adr/0032-match-transactional-producer.md) / [ADR-0048](./adr/0048-snapshot-offset-atomicity.md)。
 - **Output flush barrier** — snapshot 前先 `FlushAndWait` producer，保证 snapshot 里 offset X+1 == "≤X 的 output 都已 commit 到下游 Kafka"。[ADR-0048](./adr/0048-snapshot-offset-atomicity.md)。

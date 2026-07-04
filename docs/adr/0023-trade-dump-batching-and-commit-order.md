@@ -120,5 +120,5 @@ MVP-5 落地 `trade-event → trades` 单表投影，需要确定：
 - ADR-0005: Kafka Transactions for Dual Writes（producer 侧 EOS；与本 ADR 无直接
   耦合，但 ReadCommitted 消费依赖它）
 - ADR-0008: Sidecar Persistence（trade-dump）
-- 实现：[trade-dump/internal/consumer/trade.go](../../trade-dump/internal/consumer/trade.go)、
-  [trade-dump/internal/writer/mysql.go](../../trade-dump/internal/writer/mysql.go)
+- 实现：[trade-dump/internal/mysqlsink/consumer/trade.go](../../trade-dump/internal/mysqlsink/consumer/trade.go)、
+  [trade-dump/internal/mysqlsink/writer/mysql.go](../../trade-dump/internal/mysqlsink/writer/mysql.go)

@@ -146,9 +146,9 @@ account_logs（accounts 仍然落库，因为不需要 shard_id）。
 
 ## 实施约束 (Implementation Notes)
 
-- Writer 实现：[trade-dump/internal/writer/mysql_journal.go](../../trade-dump/internal/writer/mysql_journal.go)
-  + 纯 projection 函数 [projection.go](../../trade-dump/internal/writer/projection.go)
-- Consumer：[trade-dump/internal/consumer/journal.go](../../trade-dump/internal/consumer/journal.go)
+- Writer 实现：[trade-dump/internal/mysqlsink/writer/mysql_journal.go](../../trade-dump/internal/mysqlsink/writer/mysql_journal.go)
+  + 纯 projection 函数 [projection.go](../../trade-dump/internal/mysqlsink/writer/projection.go)
+- Consumer：[trade-dump/internal/mysqlsink/consumer/journal.go](../../trade-dump/internal/mysqlsink/consumer/journal.go)
 - main.go 新增 flag：
   - `--journal-topic=counter-journal`
   - `--journal-group=trade-dump-journal-<instance>`
@@ -175,8 +175,8 @@ ALTER TABLE account_logs ADD PRIMARY KEY (shard_id, seq_id, asset);
 - ADR-0008: sidecar persistence
 - ADR-0023: trade-dump 批量写入与 offset 提交顺序
 - 实现：
-  - [trade-dump/internal/writer/projection.go](../../trade-dump/internal/writer/projection.go)
-  - [trade-dump/internal/writer/mysql_journal.go](../../trade-dump/internal/writer/mysql_journal.go)
-  - [trade-dump/internal/consumer/journal.go](../../trade-dump/internal/consumer/journal.go)
+  - [trade-dump/internal/mysqlsink/writer/projection.go](../../trade-dump/internal/mysqlsink/writer/projection.go)
+  - [trade-dump/internal/mysqlsink/writer/mysql_journal.go](../../trade-dump/internal/mysqlsink/writer/mysql_journal.go)
+  - [trade-dump/internal/mysqlsink/consumer/journal.go](../../trade-dump/internal/mysqlsink/consumer/journal.go)
   - [trade-dump/cmd/trade-dump/main.go](../../trade-dump/cmd/trade-dump/main.go)
   - [deploy/docker/mysql-init/01-schema.sql](../../deploy/docker/mysql-init/01-schema.sql)

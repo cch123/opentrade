@@ -1,6 +1,6 @@
 # ADR-0010: Counter 按 user_id 分 10 个固定 shard
 
-- 状态: Accepted
+- 状态: Superseded by [ADR-0058](0058-counter-virtual-shard-and-instance-lock.md)（固定 shard 数模型被 256 vshard + assignment 取代，扩缩容不再重 hash 用户）
 - 日期: 2026-04-18
 - 决策者: xargin, Claude
 - 相关 ADR: 0002, 0018

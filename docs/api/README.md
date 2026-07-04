@@ -34,7 +34,7 @@
 
 ## WebSocket
 
-入口：BFF `/ws` 反向代理到 push `/ws`。协议见 [ADR-0026](../adr/0026-ws-subscription-protocol.md)。
+入口：BFF `/ws` 反向代理到 push `/ws`。协议见 [ADR-0026](../adr/0026-push-ws-protocol-and-mvp-scope.md)。
 
 **连接**：`ws://bff/ws`（生产应 WSS）。
 

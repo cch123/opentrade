@@ -168,4 +168,4 @@ main.go 单独 goroutine，每 5s 调用 `Engine.SnapshotAll()` 并 publish。
 - 实现：[quote/internal/engine/engine.go](../../quote/internal/engine/engine.go)、
   [quote/internal/consumer/consumer.go](../../quote/internal/consumer/consumer.go)、
   [quote/internal/kline/kline.go](../../quote/internal/kline/kline.go)、
-  [quote/internal/depth/depth.go](../../quote/internal/depth/depth.go)
+  `quote/internal/depth/depth.go`（已随 [ADR-0055](./0055-match-as-orderbook-authority-bybit-style.md) 下线）

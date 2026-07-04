@@ -208,5 +208,5 @@ snapshot。Graceful restart 后级联逻辑、dedup 均继续工作。
 - ADR-0043: 过期 sweeper（同一 cascade helper）
 - 实现：
   - [api/rpc/trigger/trigger.proto](../../api/rpc/trigger/trigger.proto)
-  - [trigger/internal/engine/engine.go](../../trigger/internal/engine/engine.go)
+  - [trigger/engine/engine.go](../../trigger/engine/engine.go)
   - [bff/internal/rest/trigger.go](../../bff/internal/rest/trigger.go)

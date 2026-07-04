@@ -183,7 +183,7 @@ excess > 0 → REDUCE_ONLY_INVARIANT_BREACH(停机告警,不静默反开)
 
 ### A5. ADR-0078:block trade 双边跨 sequencer 协调缺失 【中】
 
-§8 只写"perp-counter internal settlement → journal",但 block trade 是双边成交:两个对手方的仓位/保证金要么都改、要么都不改。这是和 [ADR-0071 跨 shard ADL](adr/0071-perp-risk-coordinator.md) 同级的跨 sequencer 协调难题(一方结算时保证金不足怎么办、两 sequencer 不同 shard 如何两阶段)。建议引用 0071 的协调机制,而不是当成单边 mutation。
+§8 只写"perp-counter internal settlement → journal",但 block trade 是双边成交:两个对手方的仓位/保证金要么都改、要么都不改。这是和 [ADR-0071 跨 shard ADL](adr/0071-perp-sharded-insurance-and-cross-shard-adl.md) 同级的跨 sequencer 协调难题(一方结算时保证金不足怎么办、两 sequencer 不同 shard 如何两阶段)。建议引用 0071 的协调机制,而不是当成单边 mutation。
 
 ### A6. ADR-0079:负 maker rebate + 缺 STP = 刷返佣套利 【中】
 

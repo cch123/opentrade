@@ -70,7 +70,7 @@ byID miss 时直接返回 `Accepted=false` + `RejectReason="Cancel Failed, Order
 
 ### 当前问题
 
-[counter/engine/orders.go:86-109](../../counter/engine/orders.go:86) 的 `UpdateStatus`：
+[pkg/counterstate/orders.go:86-109](../../pkg/counterstate/orders.go:86) 的 `UpdateStatus`：
 
 ```go
 func (s *OrderStore) UpdateStatus(id uint64, newStatus OrderStatus, ...) (*Order, error) {

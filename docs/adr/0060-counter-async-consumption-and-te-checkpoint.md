@@ -23,7 +23,7 @@
 
 **缺陷 1：消费循环阻塞**
 
-[trade_consumer.go:154-170](../../counter/internal/journal/trade_consumer.go:154) 的 `Run()` 循环串行调用 `handler.HandleTradeRecord(...)`，而 [service.go:174-184](../../counter/internal/service/service.go:174) 里：
+[trade_consumer.go:154-170](../../counter/internal/tradeevent/consumer.go:154) 的 `Run()` 循环串行调用 `handler.HandleTradeRecord(...)`，而 [service.go:174-184](../../counter/internal/service/service.go:174) 里：
 
 ```go
 func (s *Service) HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent, partition int32, offset int64) error {
@@ -44,7 +44,7 @@ func (s *Service) HandleTradeRecord(ctx context.Context, evt *eventpb.TradeEvent
 
 **缺陷 2：snapshot cross-account 不一致**
 
-[snapshot/snapshot.go:203-229](../../counter/snapshot/snapshot.go:203) 的 `Capture` 用 `sync.Map.Range` 遍历所有 user 并调用 `acc.Copy() / MatchSeqSnapshot() / RecentTransferIDsSnapshot()` 三次独立 RLock 读取。
+[snapshot/snapshot.go:203-229](../../pkg/snapshot/counter/snapshot.go:203) 的 `Capture` 用 `sync.Map.Range` 遍历所有 user 并调用 `acc.Copy() / MatchSeqSnapshot() / RecentTransferIDsSnapshot()` 三次独立 RLock 读取。
 
 `sync.Map.Range` 的 Go 官方文档明确：**"Range may reflect any mapping for that key from any point during the Range call"** —— 不是 consistent snapshot。
 
@@ -265,7 +265,7 @@ func (w *VShardWorker) restore(ctx context.Context) error {
 ```
 
 **关键前提**：
-- match_seq guard 严格幂等，粒度为 `(user, symbol)`（本 ADR 核对过 [state.go:267-281](../../counter/engine/state.go:267)）
+- match_seq guard 严格幂等，粒度为 `(user, symbol)`（本 ADR 核对过 [state.go:267-281](../../pkg/counterstate/state.go:267)）
 - Transfer 靠 per-user `recentTransferIDs` ring（ADR-0057）
 - 订单状态路径：**本 ADR 假设订单永不删**（ADR-0062 引入 evict 后由 `recentTerminatedOrders` ring 兜底）
 - Kafka 事务 + `read_committed` 过滤 aborted 事务
@@ -347,7 +347,7 @@ Counter 的 partition ↔ vshard 严格 1:1 绑定（ADR-0058），单 partition
 
 ### 为什么 Counter 不 commit consumer group offset
 
-[trade_consumer.go:115-150](../../counter/internal/journal/trade_consumer.go:115) 已经是 `ConsumePartitions` assign 模式，不走 consumer group 协议。te 位置的权威源 = snapshot。保持现状，避免引入新的持久化状态和一致性问题。
+[trade_consumer.go:115-150](../../counter/internal/tradeevent/consumer.go:115) 已经是 `ConsumePartitions` assign 模式，不走 consumer group 协议。te 位置的权威源 = snapshot。保持现状，避免引入新的持久化状态和一致性问题。
 
 ## 影响 (Consequences)
 

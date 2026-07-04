@@ -228,5 +228,5 @@ freeze 多少"。
 - ADR-0043 / 0044: expiry / OCO 都和 trailing 正交
 - 实现：
   - [api/rpc/trigger/trigger.proto](../../api/rpc/trigger/trigger.proto)
-  - [trigger/internal/engine/engine.go](../../trigger/internal/engine/engine.go)
+  - [trigger/engine/engine.go](../../trigger/engine/engine.go)
   - [bff/internal/rest/trigger.go](../../bff/internal/rest/trigger.go)

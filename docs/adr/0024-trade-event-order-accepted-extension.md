@@ -91,8 +91,8 @@ message OrderAccepted {
 - 旧 trade-event 历史（MVP-5 之前产出的）里 OrderAccepted 没有这些字段。
   Quote 重启时重放会得到 price="" / remaining_qty="" 的记录；depth 代码需要
   对零值 price / 非正 remaining 做 no-op 处理（已实现，见
-  [quote/internal/depth/depth.go](../../quote/internal/depth/depth.go) 对
-  `dec.IsPositive` 的检查）。
+  `quote/internal/depth/depth.go` 对
+  `dec.IsPositive` 的检查；该模块后随 [ADR-0055](./0055-match-as-orderbook-authority-bybit-style.md) 下线）。
 
 ### 中性
 

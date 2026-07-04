@@ -1,6 +1,6 @@
 # ADR-0002: Counter 主备通过 etcd lease 选主，不用 Raft
 
-- 状态: Accepted
+- 状态: Superseded by [ADR-0058](0058-counter-virtual-shard-and-instance-lock.md)（cluster + vshard cold handoff 取代 1 主 1 备选主模型；"不用 Raft" 与 Kafka 事务 fencing 的结论仍有效）
 - 日期: 2026-04-18
 - 决策者: xargin, Claude
 - 相关 ADR: 0001, 0005, 0017

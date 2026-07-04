@@ -44,13 +44,14 @@
 | [0008](0008-sidecar-persistence-trade-dump.md) | Counter/Match 不直接写 MySQL，通过 trade-dump 旁路持久化 | Accepted |
 | [0024](0024-trade-event-order-accepted-extension.md) | 扩展 trade-event.OrderAccepted 以支持行情重建 | Accepted |
 | [0051](0051-typed-producer-sequence-naming.md) | 事件单调序按 producer 命名（counter_seq_id / match_seq_id / quote_seq_id / trigger_seq_id） | Accepted |
+| [0066](0066-trade-dump-projection-platform-admission.md) | trade-dump 角色定位与状态投影平台准入规则 | Accepted |
 
 ### 分片与路由
 
 | 编号 | 标题 | 状态 |
 |---|---|---|
 | [0009](0009-match-sharding-by-symbol.md) | Match 按 symbol 分片，etcd 配置驱动，支持停机迁移 | Accepted |
-| [0010](0010-counter-sharding-by-userid.md) | Counter 按 user_id 分 10 个固定 shard | Accepted |
+| [0010](0010-counter-sharding-by-userid.md) | Counter 按 user_id 分 10 个固定 shard | Superseded by 0058 |
 | [0017](0017-kafka-transactional-id-naming.md) | Kafka transactional.id 按 shard 稳定命名，用于主备 fencing | Accepted |
 | [0022](0022-push-sharding-sticky-routing.md) | Push 分片与 sticky WS 路由 | Accepted |
 | [0027](0027-counter-sharding-rollout.md) | MVP-8 Counter 10-shard 路由落地 | Accepted |
@@ -61,13 +62,17 @@
 
 | 编号 | 标题 | 状态 |
 |---|---|---|
-| [0002](0002-counter-ha-via-etcd-lease.md) | Counter 主备通过 etcd lease 选主，不用 Raft | Accepted |
-| [0006](0006-snapshots-by-backup-node.md) | 快照由备节点产生 | Accepted |
+| [0002](0002-counter-ha-via-etcd-lease.md) | Counter 主备通过 etcd lease 选主，不用 Raft | Superseded by 0058 |
+| [0006](0006-snapshots-by-backup-node.md) | 快照由备节点产生 | Superseded by 0061/0067 |
 | [0031](0031-ha-cold-standby-rollout.md) | MVP-12 Counter/Match HA — etcd lease + cold standby | Accepted |
 | [0032](0032-match-transactional-producer.md) | MVP-12b Match TradeProducer 升级为 transactional (fencing) | Accepted |
 | [0048](0048-snapshot-offset-atomicity.md) | counter/match snapshot 绑 Kafka offset + output flush barrier | Accepted |
 | [0049](0049-snapshot-protobuf-with-json-debug.md) | snapshot 默认 protobuf, debug 可选 JSON | Accepted |
 | [0050](0050-match-input-topic-per-symbol.md) | Match 输入 topic 按 symbol 分（order-event-\<symbol\>） | Accepted |
+| [0058](0058-counter-virtual-shard-and-instance-lock.md) | Counter 虚拟分片（256 vshard）+ 实例锁 + 动态迁移 | Accepted |
+| [0061](0061-trade-dump-snapshot-pipeline.md) | trade-dump snapshot pipeline（shadow replay，Counter 不再自产 snapshot） | Accepted |
+| [0064](0064-counter-startup-ondemand-snapshot.md) | Counter 启动时主动触发 on-demand snapshot | Accepted |
+| [0067](0067-trigger-snapshot-via-trade-dump-shadow.md) | Trigger snapshot 由 trade-dump shadow 接管 | Accepted |
 
 ### 并发与 Sequencer
 
@@ -76,6 +81,8 @@
 | [0016](0016-per-symbol-single-thread-matching.md) | 每个 symbol 在 Match 内单线程撮合 | Accepted |
 | [0018](0018-counter-sequencer-fifo.md) | Counter Sequencer：懒启动 per-user worker + channel FIFO | Accepted |
 | [0019](0019-match-sequencer-per-symbol-actor.md) | Match Sequencer：per-symbol 常驻 goroutine + channel FIFO | Accepted |
+| [0060](0060-counter-async-consumption-and-te-checkpoint.md) | Counter 消费异步化 + trade-event checkpoint | Accepted |
+| [0063](0063-counter-back-pressure-research.md) | Counter 反压机制（注：编号与《终态即 Evict》重复，历史遗留） | Research |
 
 ### 账户与资金
 
@@ -97,7 +104,10 @@
 | [0035](0035-market-orders-native-server-side.md) | MARKET 单服务端原生支持 + 可选 BFF 滑点保护翻译 | Accepted |
 | [0053](0053-symbol-precision-and-tiered-evolution.md) | Symbol 精度治理 + 分层精度演进（tick / lot / min-quote-amount） | Accepted |
 | [0054](0054-per-symbol-order-slots.md) | 单用户 per-symbol 挂单数上限（Limit / Trigger 双槽位） | Accepted |
-| [0083](0083-match-native-protected-market-order.md) | Match 原生 protected market order — 基于撮合时刻盘口的滑点保护 | Proposed |
+| [0062](0062-order-terminal-eviction-and-idempotency-ring.md) | 订单终态 Evict + 幂等兜底 Ring Buffer | Superseded by 0063 |
+| [0063](0063-terminal-is-evict.md) | 终态即 Evict — 同步删除 + 事件合并 | Accepted |
+| [0083](0083-match-native-protected-market-order.md) | Match 原生 protected market order — 基于撮合时刻盘口的滑点保护 | Accepted / Implemented |
+| [0085](0085-spot-order-product-api.md) | 现货订单产品 API（amend + batch） | Proposed |
 
 ### 行情与推送
 
@@ -145,11 +155,11 @@
 | [0072](0072-perp-liquidation-scan-index.md) | 强平扫描改为强平价排序索引 — 阈值穿越查询取代每 tick 全量评估 | Accepted / Implemented |
 | [0073](0073-perp-takeover-inventory-and-riskpool-settlement.md) | perp 强平托管仓位 — TakenOverLot 生命周期 + RiskPool 结算 + ADL 消耗库存 | Accepted / MVP Implemented |
 | [0074](0074-perp-account-margin-modes.md) | perp 账户与保证金模式 — cross / unified / portfolio 的演进路径 | Accepted / Implemented (P0+P1) |
-| [0075](0075-perp-symbol-config-productization.md) | perp 合约 SymbolConfig 产品化 | Proposed |
+| [0075](0075-perp-symbol-config-productization.md) | perp 合约 SymbolConfig 产品化 | Accepted / Implemented (M1-M8) |
 | [0076](0076-perp-contract-product-expansion.md) | perp 合约品类扩展 — linear dated futures / settlement，inverse 延后 | Proposed |
-| [0077](0077-perp-position-mode-hedge-both-side.md) | perp 持仓模式 — one-way / hedge both-side position | Proposed |
-| [0078](0078-perp-order-position-product-api.md) | perp 订单与持仓产品 API | Proposed |
-| [0079](0079-perp-fee-accounting.md) | perp 手续费与财务记账 | Proposed |
+| [0077](0077-perp-position-mode-hedge-both-side.md) | perp 持仓模式 — one-way / hedge both-side position | Accepted / Implemented |
+| [0078](0078-perp-order-position-product-api.md) | perp 订单与持仓产品 API | Accepted / Implemented |
+| [0079](0079-perp-fee-accounting.md) | perp 手续费与财务记账 | Accepted / Implemented |
 | [0080](0080-perp-admission-risk-price-protection.md) | perp 订单准入风控与价格保护 | Proposed |
 | [0081](0081-perp-reduce-only-settlement-hardening.md) | perp reduce_only 结算时硬约束 | Proposed |
 
@@ -160,4 +170,5 @@
 | [0012](0012-multi-module-monorepo.md) | 采用 multi-module monorepo + Go workspace | Accepted |
 | [0013](0013-tech-stack-choices.md) | 核心技术选型：franz-go、etcd-v3、shopspring/decimal、zap | Accepted |
 | [0056](0056-symbol-config-via-mysql.md) | Symbol 配置存储从 etcd 迁到独立 MySQL（版本位点轻量 poll；leader election 仍在 etcd） | Proposed |
+| [0059](0059-kafka-cluster-scaling-and-match-output-dispatch.md) | Kafka 集群扩容策略与撮合输出分发模式（长期调研） | Research |
 | [0082](0082-match-counter-benchmark-methodology.md) | Match / Counter 延迟与吞吐 benchmark 方法 | Proposed |

@@ -1,6 +1,6 @@
 # ADR-0079: perp 手续费与财务记账
 
-- 状态: **Accepted**（2026-05-31 起草；2026-06-10 修订并接受——修订原因见文末"修订记录"）
+- 状态: **Accepted / Implemented**（2026-05-31 起草；2026-06-10 修订并接受——修订原因见文末"修订记录"；同日实现落地，范围见 [roadmap perp 产品化缺口 #6](../roadmap.md#填坑--backlog)）
 - 日期: 2026-05-31（修订 2026-06-10）
 - 决策者: xargin, Codex
 - 相关 ADR: 0057（asset-service + transfer saga）、0068（perp settlement）、0070（强平加固 / liq_fee_rate）、0073（RiskPool settlement）、0074（保证金模式 / 客户风险上限）、0075（SymbolConfig 产品化）、0076（合约产品扩展边界）

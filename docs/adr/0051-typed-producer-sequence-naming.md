@@ -207,4 +207,4 @@ MVP 期实操：`make dev-down -v && make dev-up`（清掉 MySQL volume 让 init
   - [api/event/counter_journal.proto](../../api/event/counter_journal.proto)
   - [api/event/trade_event.proto](../../api/event/trade_event.proto)
   - [deploy/docker/mysql-init/01-schema.sql](../../deploy/docker/mysql-init/01-schema.sql)
-  - [trade-dump/internal/writer/mysql_journal.go](../../trade-dump/internal/writer/mysql_journal.go)
+  - [trade-dump/internal/mysqlsink/writer/mysql_journal.go](../../trade-dump/internal/mysqlsink/writer/mysql_journal.go)

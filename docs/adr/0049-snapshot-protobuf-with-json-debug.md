@@ -196,5 +196,5 @@ OPENTRADE_SNAPSHOT_FORMAT=json   # 全局覆盖，优先级高于 flag（方便�
 - backlog item 4（transfer ring）—— 体积放大触发点
 - 实现（第一批）：
   - [api/snapshot/counter.proto](../../api/snapshot/counter.proto)
-  - [counter/snapshot/snapshot.go](../../counter/snapshot/snapshot.go)
+  - [pkg/snapshot/counter/snapshot.go](../../pkg/snapshot/counter/snapshot.go)
   - [counter/cmd/counter/main.go](../../counter/cmd/counter/main.go)

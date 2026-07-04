@@ -1,6 +1,6 @@
 # ADR-0006: 快照由备节点产生
 
-- 状态: Accepted
+- 状态: Superseded by [ADR-0061](0061-trade-dump-snapshot-pipeline.md) / [ADR-0067](0067-trigger-snapshot-via-trade-dump-shadow.md)（trade-dump shadow pipeline 是 Counter / Trigger snapshot 的唯一生产者，"主不打快照"的动机由旁路投影实现）
 - 日期: 2026-04-18
 - 决策者: xargin, Claude
 - 相关 ADR: 0001, 0002
