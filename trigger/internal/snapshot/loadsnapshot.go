@@ -32,9 +32,14 @@ type Restored struct {
 	// PerpPriceOffsets seeds the perp-price consumer (ADR-0078 §6); empty
 	// on snapshots taken before perp triggers existed.
 	PerpPriceOffsets map[int32]int64
-	TakenAtMs        int64
-	Pending          int
-	Terminals        int
+	// TriggerEventOffsets is the per-partition next-to-consume cursor for
+	// trigger-event. Startup must replay from these offsets before it exposes
+	// RPC or starts either price consumer, otherwise updates published after
+	// the snapshot can be lost (or a post-snapshot cancel can be resurrected).
+	TriggerEventOffsets map[int32]int64
+	TakenAtMs           int64
+	Pending             int
+	Terminals           int
 }
 
 // Load fetches the trigger snapshot at key from store and installs it
@@ -65,11 +70,12 @@ func Load(
 	eng.Restore(pending, terminals, pb.Offsets, pb.PerpPriceOffsets)
 	eng.SetOCOByClient(pb.OcoByClient)
 	return &Restored{
-		Offsets:          pb.Offsets,
-		PerpPriceOffsets: pb.PerpPriceOffsets,
-		TakenAtMs:        pb.TakenAtMs,
-		Pending:          len(pending),
-		Terminals:        len(terminals),
+		Offsets:             pb.Offsets,
+		PerpPriceOffsets:    pb.PerpPriceOffsets,
+		TriggerEventOffsets: pb.TriggerEventOffsets,
+		TakenAtMs:           pb.TakenAtMs,
+		Pending:             len(pending),
+		Terminals:           len(terminals),
 	}, nil
 }
 

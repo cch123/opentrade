@@ -297,9 +297,16 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			p.logger.Warn("fetch error",
 				zap.String("topic", t), zap.Int32("partition", part), zap.Error(err))
 		})
+		var recordErr error
 		fetches.EachRecord(func(rec *kgo.Record) {
-			p.handleRecord(ctx, rec)
+			if recordErr != nil {
+				return
+			}
+			recordErr = p.handleRecord(ctx, rec)
 		})
+		if recordErr != nil {
+			return recordErr
+		}
 	}
 }
 
@@ -318,30 +325,25 @@ func (p *Pipeline) Close() {
 // handleRecord decodes one journal record, Applies it, and
 // triggers a snapshot if the window is exceeded. All on the
 // caller's goroutine (the Run loop).
-func (p *Pipeline) handleRecord(ctx context.Context, rec *kgo.Record) {
+func (p *Pipeline) handleRecord(ctx context.Context, rec *kgo.Record) error {
 	eng, ok := p.engines[rec.Partition]
 	if !ok {
-		// Unknown partition. Likely a VShardCount misconfig — log
-		// once per partition and drop.
-		p.logger.Warn("unknown partition", zap.Int32("partition", rec.Partition))
-		return
+		// Consuming an unowned partition means the assignment or vshard
+		// configuration is wrong. Dropping it would create a snapshot that
+		// silently omits an entire shard.
+		return fmt.Errorf("pipeline: unowned counter-journal partition %d", rec.Partition)
 	}
 	var evt eventpb.CounterJournalEvent
 	if err := proto.Unmarshal(rec.Value, &evt); err != nil {
-		p.logger.Error("decode counter-journal record",
-			zap.Int32("partition", rec.Partition),
-			zap.Int64("offset", rec.Offset),
-			zap.Error(err))
-		return
+		return fmt.Errorf("pipeline: decode counter-journal partition %d offset %d: %w", rec.Partition, rec.Offset, err)
 	}
 	if err := eng.Apply(&evt, rec.Offset); err != nil {
-		p.logger.Error("apply counter-journal record",
-			zap.Int32("partition", rec.Partition),
-			zap.Int64("offset", rec.Offset),
-			zap.Error(err))
-		return
+		return fmt.Errorf("pipeline: apply counter-journal partition %d offset %d: %w", rec.Partition, rec.Offset, err)
 	}
-	p.maybeCapture(ctx, rec.Partition, eng)
+	if err := p.maybeCapture(ctx, rec.Partition, eng); err != nil {
+		return err
+	}
+	return nil
 }
 
 // maybeCapture checks the trigger conditions for vshard part and,
@@ -349,13 +351,13 @@ func (p *Pipeline) handleRecord(ctx context.Context, rec *kgo.Record) {
 // save goroutine. Called on the main loop goroutine, synchronous
 // with Apply — Capture is inexpensive (engine deep-copies) and
 // the expensive Save is deferred.
-func (p *Pipeline) maybeCapture(ctx context.Context, part int32, eng *shadow.Engine) {
+func (p *Pipeline) maybeCapture(ctx context.Context, part int32, eng *shadow.Engine) error {
 	now := time.Now()
 	lastAt := p.lastSnapshotAt[part] // seeded in Start so always valid
 	byTime := now.Sub(lastAt) >= p.cfg.SnapshotInterval
 	byCount := eng.EventsSinceLastSnapshot() >= p.cfg.SnapshotEventCount
 	if !byTime && !byCount {
-		return
+		return nil
 	}
 
 	// Bail early if a save for this vshard is already running.
@@ -363,10 +365,14 @@ func (p *Pipeline) maybeCapture(ctx context.Context, part int32, eng *shadow.Eng
 	// at the blob store and race the key.
 	inFlight := p.getSavingFlag(part)
 	if !inFlight.CompareAndSwap(false, true) {
-		return
+		return nil
 	}
 
-	snap := eng.Capture(now.UnixMilli())
+	snap, err := eng.CaptureChecked(now.UnixMilli())
+	if err != nil {
+		inFlight.Store(false)
+		return fmt.Errorf("pipeline: capture poisoned vshard %d: %w", part, err)
+	}
 	eng.ClearEventsSinceLastSnapshot()
 	p.lastSnapshotAt[part] = now
 
@@ -376,6 +382,7 @@ func (p *Pipeline) maybeCapture(ctx context.Context, part int32, eng *shadow.Eng
 		defer inFlight.Store(false)
 		p.saveSnapshot(ctx, part, snap)
 	}()
+	return nil
 }
 
 // saveSnapshot runs on a background goroutine. Failures log +

@@ -310,6 +310,7 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		producer *journal.Producer
 		err      error
 	)
+	journalFatal := make(chan error, 1)
 	brokers := splitCSV(cfg.Brokers)
 	if len(brokers) > 0 {
 		producer, err = journal.NewProducer(journal.ProducerConfig{
@@ -318,6 +319,12 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 			OrderEventTopicPrefix: cfg.OrderEventTopicPrefix,
 			JournalTopic:          cfg.JournalTopic,
 			TransactionalID:       cfg.TransactionalID,
+			OnFatal: func(err error) {
+				select {
+				case journalFatal <- err:
+				default:
+				}
+			},
 		}, logger)
 		if err != nil {
 			logger.Error("perp producer", zap.Error(err))
@@ -406,12 +413,19 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		zap.Bool("transactional", cfg.TransactionalID != ""), zap.String("ha", cfg.HAMode),
 		zap.Int("vshard_count", cfg.VShardCount), zap.Bool("risk_coordinator", cfg.RiskCoordinator))
 
+	snapshotCtx, stopSnapshots := context.WithCancel(ctx)
+	defer stopSnapshots()
+	var snapshotWG sync.WaitGroup
 	if cfg.SnapshotPath != "" {
 		if err := snapshot.EnsureDir(cfg.SnapshotPath); err != nil {
 			logger.Error("snapshot dir", zap.Error(err))
 			return
 		}
-		go runSnapshotLoop(ctx, cfg, svc, producer, logger)
+		snapshotWG.Add(1)
+		go func() {
+			defer snapshotWG.Done()
+			runSnapshotLoop(snapshotCtx, cfg, svc, producer, logger)
+		}()
 	}
 
 	srvErr := make(chan error, 1)
@@ -441,13 +455,26 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 		}()
 	}
 
+	unsafeShutdown := false
 	select {
 	case <-ctx.Done():
 	case err := <-srvErr:
 		logger.Error("grpc serve", zap.Error(err))
+	case err := <-journalFatal:
+		unsafeShutdown = true
+		logger.Error("perp-journal durability failure; stopping without final snapshot", zap.Error(err))
 	}
 
 	logger.Info("primary shutting down")
+	// Stop periodic capture first, then close the RPC admission surface. A
+	// final snapshot is only meaningful after every mutation source is quiet.
+	stopSnapshots()
+	snapshotWG.Wait()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("http shutdown", zap.Error(err))
+	}
+	cancel()
 	if consumer != nil {
 		consumer.Close()
 	}
@@ -457,17 +484,12 @@ func runPrimary(ctx context.Context, cfg Config, d deps, logger *zap.Logger) {
 	consumerWG.Wait()
 
 	// Final snapshot once the consumers have stopped mutating state.
-	if cfg.SnapshotPath != "" {
+	if cfg.SnapshotPath != "" && !unsafeShutdown {
 		if err := saveSnapshot(cfg, svc, producer); err != nil {
 			logger.Error("final snapshot", zap.Error(err))
 		} else {
 			logger.Info("wrote final snapshot", zap.String("path", cfg.SnapshotPath))
 		}
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("http shutdown", zap.Error(err))
 	}
 }
 

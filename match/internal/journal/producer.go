@@ -63,6 +63,10 @@ type TradeProducer struct {
 	// and waits for reply. Buffer of 1 is enough — callers are expected to
 	// serialise FlushAndWait calls per producer.
 	flushCh chan flushReq
+
+	// publishBatchHook is test-only fault injection for the Pump. Production
+	// leaves it nil and Pump calls PublishBatch directly.
+	publishBatchHook func(context.Context, []*sequencer.Output) error
 }
 
 // NewTradeProducer constructs a TradeProducer. If cfg.TransactionalID is
@@ -209,10 +213,12 @@ func outputTargets(out *sequencer.Output, vshardCount int) []routeTarget {
 // the transactional mode doesn't commit one txn per event (which would melt
 // the broker's transaction state machine at match throughput).
 //
-// Publish errors are logged; franz-go internally retries for transient
-// broker issues. Fatal errors (fenced producer on lease loss) will surface
-// repeatedly — callers should notice and exit runPrimary so the election
-// loop can demote this process.
+// A background publish error is fatal. The worker has already mutated its
+// orderbook by the time an Output reaches this pump, so continuing after an
+// undurable output would split Match from Counter permanently. Crashing also
+// deliberately skips the final snapshot: the next owner restores an older
+// state/offset and replays the input event. This is the same fail-stop policy
+// Counter's journal producer uses for exhausted publish retries.
 func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Output) {
 	batch := make([]*sequencer.Output, 0, p.cfg.BatchSize)
 	timer := time.NewTimer(p.cfg.FlushInterval)
@@ -221,14 +227,18 @@ func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Outpu
 	}
 	timerArmed := false
 
-	// flush publishes the current batch and returns the first error (if any).
-	// Background tick / shutdown paths ignore the return value (errors are
-	// already logged); FlushAndWait surfaces it to its caller.
+	// flush only releases a batch after Kafka acknowledges it. In particular,
+	// FlushAndWait may use a short-lived context; retaining the batch on its
+	// timeout lets a later flush retry the exact same outputs.
 	flush := func(useCtx context.Context) error {
 		if len(batch) == 0 {
 			return nil
 		}
-		err := p.PublishBatch(useCtx, batch)
+		publish := p.PublishBatch
+		if p.publishBatchHook != nil {
+			publish = p.publishBatchHook
+		}
+		err := publish(useCtx, batch)
 		if err != nil {
 			// Log one line per batch (not per event); include the first
 			// symbol so we can find the flow in other services.
@@ -237,9 +247,21 @@ func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Outpu
 				zap.String("first_symbol", batch[0].Symbol),
 				zap.Uint64("first_match_seq_id", batch[0].MatchSeq),
 				zap.Error(err))
+			return err
 		}
 		batch = batch[:0]
-		return err
+		return nil
+	}
+
+	// failStop is only used for autonomous Pump flushes. FlushAndWait returns
+	// its error to the snapshot caller instead, while keeping the batch queued.
+	// A cancelled pump is already shutting down and must not turn an intentional
+	// cancellation into a second panic.
+	failStop := func(err error) {
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		panic(fmt.Sprintf("match: durable trade-event publish failed: %v", err))
 	}
 
 	disarmTimer := func() {
@@ -252,11 +274,12 @@ func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Outpu
 	for {
 		select {
 		case <-ctx.Done():
-			_ = flush(ctx)
+			// The primary shutdown path closes outbox and drains it before
+			// cancelling the pump. This branch is the forced-abort fallback.
 			return
 		case out, ok := <-outbox:
 			if !ok {
-				_ = flush(ctx)
+				failStop(flush(ctx))
 				return
 			}
 			batch = append(batch, out)
@@ -266,11 +289,11 @@ func (p *TradeProducer) Pump(ctx context.Context, outbox <-chan *sequencer.Outpu
 			}
 			if len(batch) >= p.cfg.BatchSize {
 				disarmTimer()
-				_ = flush(ctx)
+				failStop(flush(ctx))
 			}
 		case <-timer.C:
 			timerArmed = false
-			_ = flush(ctx)
+			failStop(flush(ctx))
 		case req := <-p.flushCh:
 			disarmTimer()
 			// Drain any events already sitting in outbox (non-blocking) so

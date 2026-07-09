@@ -46,6 +46,7 @@ import (
 	"github.com/xargin/opentrade/trigger/internal/counterclient"
 	"github.com/xargin/opentrade/trigger/internal/journal"
 	"github.com/xargin/opentrade/trigger/internal/perpclient"
+	"github.com/xargin/opentrade/trigger/internal/recovery"
 	"github.com/xargin/opentrade/trigger/internal/server"
 	"github.com/xargin/opentrade/trigger/internal/service"
 	"github.com/xargin/opentrade/trigger/internal/snapshot"
@@ -77,6 +78,10 @@ type Config struct {
 	// Empty disables journaling — useful for CI / local dev and for
 	// backward compatibility with MVP-14 deployments.
 	JournalTopic string
+	// TriggerCatchUpTimeout bounds startup replay from the snapshot's
+	// trigger-event cursor to a stable Kafka LEO. The service stays closed
+	// to RPC and price feeds until this pass completes.
+	TriggerCatchUpTimeout time.Duration
 
 	// MarketCheckpointInterval is how often the trigger primary
 	// publishes a TriggerMarketCheckpointEvent on the trigger-event
@@ -328,18 +333,45 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 	} else {
 		logger.Info("trigger journal disabled (empty --journal-topic)")
 	}
+	journalClosed := false
+	defer func() {
+		if jProducer == nil || journalClosed {
+			return
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = jProducer.Close(closeCtx)
+		cancel()
+	}()
 
 	var snapStore snapshotpkg.BlobStore
 	if cfg.SnapshotDir != "" {
 		snapStore = snapshotpkg.NewFSBlobStore(cfg.SnapshotDir)
 	}
 
-	initialOffsets, initialPerpOffsets, err := tryRestoreSnapshot(ctx, snapStore, cfg, eng, logger)
+	initialOffsets, initialPerpOffsets, triggerEventOffsets, err := tryRestoreSnapshot(ctx, snapStore, cfg, eng, logger)
 	if err != nil {
 		logger.Error("snapshot restore", zap.Error(err))
 		return
 	}
+	if cfg.JournalTopic != "" {
+		if err := recovery.CatchUp(ctx, recovery.Config{
+			Brokers:        cfg.Brokers,
+			ClientID:       cfg.InstanceID + "-trigger-event-catchup",
+			Topic:          cfg.JournalTopic,
+			InitialOffsets: triggerEventOffsets,
+			Timeout:        cfg.TriggerCatchUpTimeout,
+			Logger:         logger,
+		}, eng); err != nil {
+			logger.Error("trigger-event catch-up", zap.Error(err))
+			return
+		}
+		// Catch-up may include market checkpoints newer than the snapshot.
+		// Seed the live consumers from the engine's post-replay cursors.
+		initialOffsets = eng.Offsets()
+		initialPerpOffsets = eng.PerpPriceOffsets()
+	}
 
+	// Recovery is complete before either state-mutating price feed starts.
 	mdCons, err := consumer.New(consumer.Config{
 		Brokers:        cfg.Brokers,
 		ClientID:       cfg.InstanceID,
@@ -435,6 +467,7 @@ func runPrimary(ctx context.Context, cfg Config, logger *zap.Logger) {
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = jProducer.Close(drainCtx)
 		drainCancel()
+		journalClosed = true
 	}
 	logger.Info("primary stopped")
 }
@@ -456,21 +489,22 @@ const sharedSnapshotKey = "trigger"
 // partition); on RPC failure or unconfigured endpoint, falls back to
 // the M5 cold path (read the periodic shared snapshot at
 // sharedSnapshotKey). Absent both → cold start. Returns the captured
-// market-data offsets so the caller can seed the consumer.
-func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, map[int32]int64, error) {
+// market-data, perp-price, and trigger-event offsets; the caller replays the
+// latter before starting either price feed or RPC.
+func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, map[int32]int64, map[int32]int64, error) {
 	if store == nil {
 		logger.Info("snapshot disabled (empty --snapshot-dir); cold start")
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// Hot path: TakeTriggerSnapshot RPC.
 	if cfg.TradeDumpEndpoint != "" {
-		offsets, perpOffsets, ok, err := tryHotPathRestore(ctx, store, cfg, eng, logger)
+		offsets, perpOffsets, triggerOffsets, ok, err := tryHotPathRestore(ctx, store, cfg, eng, logger)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if ok {
-			return offsets, perpOffsets, nil
+			return offsets, perpOffsets, triggerOffsets, nil
 		}
 		// Hot path returned but didn't restore (RPC unavailable /
 		// timeout / unimplemented); fall through to cold path.
@@ -486,12 +520,12 @@ func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Co
 			zap.Int("pending", r.Pending),
 			zap.Int("terminals", r.Terminals),
 			zap.Int("partitions", len(r.Offsets)))
-		return r.Offsets, r.PerpPriceOffsets, nil
+		return r.Offsets, r.PerpPriceOffsets, r.TriggerEventOffsets, nil
 	case errors.Is(err, os.ErrNotExist):
 		logger.Info("no snapshot found; cold start", zap.String("key", sharedSnapshotKey))
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	default:
-		return nil, nil, fmt.Errorf("load shared snapshot: %w", err)
+		return nil, nil, nil, fmt.Errorf("load shared snapshot: %w", err)
 	}
 }
 
@@ -500,7 +534,7 @@ func tryRestoreSnapshot(ctx context.Context, store snapshotpkg.BlobStore, cfg Co
 // successful restore. ok=false signals "fall back to cold path"; the
 // only fatal errors are surfaced as err (currently unused, but
 // reserved for future fail-fast scenarios).
-func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, map[int32]int64, bool, error) {
+func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Config, eng *engine.Engine, logger *zap.Logger) (map[int32]int64, map[int32]int64, map[int32]int64, bool, error) {
 	timeout := cfg.TradeDumpRPCTimeout
 	if timeout <= 0 {
 		timeout = 3 * time.Second
@@ -521,7 +555,7 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 		logger.Warn("TakeTriggerSnapshot RPC failed; cold path",
 			zap.String("endpoint", cfg.TradeDumpEndpoint),
 			zap.Error(err))
-		return nil, nil, false, nil
+		return nil, nil, nil, false, nil
 	}
 
 	// trade-dump writes the on-demand snapshot at resp.Msg.SnapshotKey
@@ -531,7 +565,7 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 	if err != nil {
 		logger.Warn("hot-path snapshot load failed; cold path",
 			zap.String("key", resp.Msg.SnapshotKey), zap.Error(err))
-		return nil, nil, false, nil
+		return nil, nil, nil, false, nil
 	}
 	logger.Info("trigger state restored from on-demand snapshot (hot path)",
 		zap.String("key", resp.Msg.SnapshotKey),
@@ -540,7 +574,7 @@ func tryHotPathRestore(ctx context.Context, store snapshotpkg.BlobStore, cfg Con
 		zap.Int("terminals", r.Terminals),
 		zap.Int("trigger_event_partitions", len(resp.Msg.TriggerEventOffsets)),
 		zap.Int("market_partitions", len(r.Offsets)))
-	return r.Offsets, r.PerpPriceOffsets, true, nil
+	return r.Offsets, r.PerpPriceOffsets, r.TriggerEventOffsets, true, nil
 }
 
 // runExpirySweeper sweeps PENDING triggers whose ExpiresAtMs has
@@ -634,6 +668,7 @@ func parseFlags() Config {
 		ExpirySweepInterval:           5 * time.Second,
 		MarketCheckpointInterval:      1 * time.Second,
 		TradeDumpRPCTimeout:           3 * time.Second,
+		TriggerCatchUpTimeout:         2 * time.Minute,
 		IDGenShard:                    900, // deliberately out of counter's 0..99 range
 		HAMode:                        "disabled",
 		LeaseTTL:                      10,
@@ -651,6 +686,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.PerpPriceTopic, "perp-price-topic", cfg.PerpPriceTopic, "perp-price MarkTick topic for perp position-bound triggers (ADR-0078 §6); empty disables")
 	flag.StringVar(&cfg.PerpEndpoint, "perp-endpoint", cfg.PerpEndpoint, "perp-counter gRPC address for fired perp triggers (ADR-0078 §6); empty rejects perp triggers at Place")
 	flag.StringVar(&cfg.JournalTopic, "journal-topic", cfg.JournalTopic, "trigger-event audit topic name (empty disables journaling; ADR-0047)")
+	flag.DurationVar(&cfg.TriggerCatchUpTimeout, "trigger-catchup-timeout", cfg.TriggerCatchUpTimeout, "startup budget for replaying trigger-event from snapshot cursor to stable LEO")
 	flag.StringVar(&cfg.ConsumerGroup, "group", "", "Kafka consumer group (default trigger-{instance-id})")
 	flag.StringVar(&shardsStr, "counter-shards", "localhost:8081",
 		"comma-separated Counter gRPC endpoints, in shard-id order (shard 0 first)")

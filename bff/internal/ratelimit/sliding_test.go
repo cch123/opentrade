@@ -76,3 +76,22 @@ func TestSweepEvictsStale(t *testing.T) {
 		t.Fatalf("sweep left %d buckets", len(sw.buckets))
 	}
 }
+
+func TestAllowAutomaticallySweepsIdleKeys(t *testing.T) {
+	sw := New(3, 50*time.Millisecond)
+	now := time.Unix(0, 0)
+	sw.SetNowFunc(func() time.Time { return now })
+
+	sw.Allow("one-off-attacker-key")
+	now = now.Add(100 * time.Millisecond)
+	sw.Allow("active-key")
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if _, ok := sw.buckets["one-off-attacker-key"]; ok {
+		t.Fatal("Allow did not evict stale idle bucket")
+	}
+	if _, ok := sw.buckets["active-key"]; !ok {
+		t.Fatal("Allow unexpectedly removed the active bucket")
+	}
+}

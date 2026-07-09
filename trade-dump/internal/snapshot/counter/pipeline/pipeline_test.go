@@ -202,7 +202,9 @@ func TestHandleRecord_AppliesAndAdvances(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := mustMarshalRecord(t, depositEvt(1001, "tx-1", "100", 7), 2, 500)
-	p.handleRecord(context.Background(), rec)
+	if err := p.handleRecord(context.Background(), rec); err != nil {
+		t.Fatalf("handleRecord: %v", err)
+	}
 
 	eng := p.engines[2]
 	if eng.CounterSeq() != 7 {
@@ -217,26 +219,30 @@ func TestHandleRecord_AppliesAndAdvances(t *testing.T) {
 	}
 }
 
-// TestHandleRecord_UnknownPartitionDropped ensures a record from
-// a partition outside VShardCount logs + drops (doesn't panic).
-func TestHandleRecord_UnknownPartitionDropped(t *testing.T) {
+// TestHandleRecord_UnknownPartitionFailsStop ensures an assignment/config
+// mismatch cannot be hidden by dropping an entire partition.
+func TestHandleRecord_UnknownPartitionFailsStop(t *testing.T) {
 	p := mustPipeline(t, Config{VShardCount: 2})
 	if err := p.primeEnginesFromStore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	rec := mustMarshalRecord(t, depositEvt(1001, "tx", "1", 1), 99, 0)
-	p.handleRecord(context.Background(), rec) // must not panic
+	if err := p.handleRecord(context.Background(), rec); err == nil {
+		t.Fatal("unknown partition was silently dropped")
+	}
 }
 
-// TestHandleRecord_DecodeErrorDropped feeds garbage bytes at a
-// known partition; shouldn't mutate state or panic.
-func TestHandleRecord_DecodeErrorDropped(t *testing.T) {
+// TestHandleRecord_DecodeErrorFailsStop feeds garbage at a known partition;
+// the cursor must stay on that record so a restart cannot skip it.
+func TestHandleRecord_DecodeErrorFailsStop(t *testing.T) {
 	p := mustPipeline(t, Config{VShardCount: 1})
 	if err := p.primeEnginesFromStore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	rec := &kgo.Record{Topic: "counter-journal", Partition: 0, Offset: 1, Value: []byte{0xff, 0x00}}
-	p.handleRecord(context.Background(), rec)
+	if err := p.handleRecord(context.Background(), rec); err == nil {
+		t.Fatal("decode error was silently dropped")
+	}
 	if p.engines[0].NextJournalOffset() != 0 {
 		t.Fatal("decode-error record advanced offset")
 	}

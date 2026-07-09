@@ -37,6 +37,11 @@ import (
 	snapshotpb "github.com/xargin/opentrade/api/gen/snapshot"
 )
 
+// ocoGroupMarkerPrefix stores a group-only recovery marker in the existing
+// OcoByClient snapshot map. Trigger's loader recognizes the reserved NUL
+// prefix and rebuilds its known-group set without treating it as a client key.
+const ocoGroupMarkerPrefix = "\x00oco-group:"
+
 // Engine is the trigger-shadow state. Construct via New.
 type Engine struct {
 	mu sync.Mutex
@@ -52,6 +57,13 @@ type Engine struct {
 	// terminals is a FIFO of triggered/canceled/rejected/expired
 	// records, capped at terminalLimit.
 	terminals []*snapshotpb.TriggerRecord
+
+	// The TriggerUpdate wire carries oco_group_id but not client_oco_id.
+	// Preserve legacy client mappings loaded from a snapshot and separately
+	// remember every observed group so a later snapshot can retain dedup state
+	// even after all of that group's terminal rows age out.
+	ocoByClient map[string]string
+	ocoGroups   map[string]struct{}
 
 	// marketOffsets is partition → next-to-consume on the market-data
 	// topic, advanced by TriggerMarketCheckpointEvent. Stamped onto
@@ -86,6 +98,8 @@ func New(terminalLimit int) *Engine {
 	return &Engine{
 		terminalLimit:           terminalLimit,
 		pending:                 make(map[uint64]*snapshotpb.TriggerRecord),
+		ocoByClient:             make(map[string]string),
+		ocoGroups:               make(map[string]struct{}),
 		marketOffsets:           make(map[int32]int64),
 		perpPriceOffsets:        make(map[int32]int64),
 		nextTriggerEventOffsets: make(map[int32]int64),
@@ -137,6 +151,9 @@ func (e *Engine) ApplyTriggerUpdate(u *eventpb.TriggerUpdate, partition int32, k
 	defer e.mu.Unlock()
 
 	rec := triggerUpdateToRecord(u)
+	if u.OcoGroupId != "" {
+		e.ocoGroups[u.OcoGroupId] = struct{}{}
+	}
 	if isTerminal(u.Status) {
 		// Drop from pending if present, push to terminal ring.
 		delete(e.pending, u.Id)
@@ -221,18 +238,6 @@ func (e *Engine) appliedAtLeast(targets map[int32]int64) bool {
 	return true
 }
 
-// AdvanceCursor moves the per-partition apply cursor past kafkaOffset
-// without touching shadow state. Called by the pipeline for unknown
-// envelope payload variants (forward-compat with newer producer
-// versions): no Apply happens, but the consumer must move past the
-// record or it'll replay it forever after a snapshot+restart.
-func (e *Engine) AdvanceCursor(partition int32, kafkaOffset int64) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.advanceCursorLocked(partition, kafkaOffset)
-	return nil
-}
-
 func (e *Engine) advanceCursorLocked(partition int32, kafkaOffset int64) {
 	next := kafkaOffset + 1
 	if next > e.nextTriggerEventOffsets[partition] {
@@ -286,11 +291,15 @@ func (e *Engine) Capture(takenAtMs int64, resetCounter bool) *snapshotpb.Trigger
 			snap.PerpPriceOffsets[p] = o
 		}
 	}
-	// OcoByClient is intentionally empty — shadow can't reconstruct
-	// the client_oco_id → group_id map from trigger-event alone (the
-	// mapping is set on PlaceOCO and never appears in TriggerUpdate
-	// payloads). M2/M3 will revisit; until then trigger restart with
-	// outstanding client OCO ids in flight loses the dedup history.
+	if len(e.ocoByClient) > 0 || len(e.ocoGroups) > 0 {
+		snap.OcoByClient = make(map[string]string, len(e.ocoByClient)+len(e.ocoGroups))
+		for clientID, groupID := range e.ocoByClient {
+			snap.OcoByClient[clientID] = groupID
+		}
+		for groupID := range e.ocoGroups {
+			snap.OcoByClient[ocoGroupMarkerPrefix+groupID] = groupID
+		}
+	}
 	if resetCounter {
 		e.eventsSinceLastSnapshot = 0
 	}
@@ -311,15 +320,29 @@ func (e *Engine) RestoreFromSnapshot(snap *snapshotpb.TriggerSnapshot) error {
 
 	e.pending = make(map[uint64]*snapshotpb.TriggerRecord, len(snap.Pending))
 	e.terminals = e.terminals[:0]
+	e.ocoByClient = make(map[string]string, len(snap.OcoByClient))
+	e.ocoGroups = make(map[string]struct{})
 	e.marketOffsets = make(map[int32]int64, len(snap.Offsets))
 	e.perpPriceOffsets = make(map[int32]int64, len(snap.PerpPriceOffsets))
 	e.nextTriggerEventOffsets = make(map[int32]int64, len(snap.TriggerEventOffsets))
 
 	for _, r := range snap.Pending {
 		e.pending[r.Id] = cloneRecord(r)
+		if r.OcoGroupId != "" {
+			e.ocoGroups[r.OcoGroupId] = struct{}{}
+		}
 	}
 	for _, r := range snap.Terminals {
 		e.terminals = append(e.terminals, cloneRecord(r))
+		if r.OcoGroupId != "" {
+			e.ocoGroups[r.OcoGroupId] = struct{}{}
+		}
+	}
+	for clientID, groupID := range snap.OcoByClient {
+		e.ocoByClient[clientID] = groupID
+		if groupID != "" {
+			e.ocoGroups[groupID] = struct{}{}
+		}
 	}
 	for p, o := range snap.Offsets {
 		e.marketOffsets[p] = o

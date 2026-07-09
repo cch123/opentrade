@@ -373,6 +373,38 @@ func TestServer_TakeSnapshot_HappyPath(t *testing.T) {
 	}
 }
 
+func TestServer_TakeSnapshot_PoisonedShadowCannotUpload(t *testing.T) {
+	srv, sh, admin, blob := newTestServer(t, 1)
+	eng := sh.engines[0]
+	seedApply(t, eng, 1, 0)
+	bad := &eventpb.CounterJournalEvent{
+		CounterSeqId: 2,
+		Payload: &eventpb.CounterJournalEvent_Settlement{Settlement: &eventpb.SettlementEvent{
+			UserId: 1001,
+			BaseBalanceAfter: &eventpb.BalanceSnapshot{
+				UserId: 1001, Asset: "BTC", Available: "not-a-decimal",
+			},
+		}},
+	}
+	if err := eng.Apply(bad, 1); err == nil {
+		t.Fatal("malformed event did not poison shadow")
+	}
+	// Model a LEO read that raced just before the malformed record arrived.
+	// WaitAppliedTo would otherwise pass for offset 1; CaptureChecked must
+	// still refuse the partially mutated engine.
+	admin.set(0, 1)
+
+	_, err := srv.TakeSnapshot(context.Background(), connect.NewRequest(&tradedumprpc.TakeSnapshotRequest{
+		VshardId: 0, RequesterEpoch: 1,
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("want Unavailable, got %v (msg=%v)", got, connectErrMsg(err))
+	}
+	if blob.saves.Load() != 0 {
+		t.Fatalf("poisoned shadow uploaded %d snapshots", blob.saves.Load())
+	}
+}
+
 // TestServer_TakeSnapshot_UnknownVshard fails fast when this
 // trade-dump instance does not own the requested vshard. Counter's
 // fallback picks this up and retries via cluster routing.

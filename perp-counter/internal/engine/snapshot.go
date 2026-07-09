@@ -13,11 +13,14 @@ import (
 // per-partition Kafka offsets (ADR-0048 invariant #5); this struct is the
 // state half.
 type Snapshot struct {
-	Wallets   []WalletSnap            `json:"wallets"`
-	Positions []PositionSnap          `json:"positions"`
-	Marks     map[string]string       `json:"marks"`
-	Insurance map[string]string       `json:"insurance"`
-	Transfers map[string]TransferSnap `json:"transfers"` // transfer_id → cached outcome (AssetHolder idempotency)
+	Wallets   []WalletSnap      `json:"wallets"`
+	Positions []PositionSnap    `json:"positions"`
+	Marks     map[string]string `json:"marks"`
+	Insurance map[string]string `json:"insurance"`
+	// Keys are the operation-qualified strings produced by
+	// transferOperationKey. Restore also accepts legacy raw transfer_id keys,
+	// so the on-disk JSON shape stays backward compatible.
+	Transfers map[string]TransferSnap `json:"transfers"`
 
 	// ADR-0074 state. Limits are the admin leverage caps; Ops is the config
 	// op idempotency cache (client_op_id → first outcome) — both must

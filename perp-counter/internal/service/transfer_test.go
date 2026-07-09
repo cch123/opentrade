@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"testing"
 
 	eventpb "github.com/xargin/opentrade/api/gen/event"
@@ -13,6 +14,19 @@ func marginEvents(jr *fakeJournal, kind eventpb.PerpMarginEvent_Kind) int {
 		m := e.GetMargin()
 		return m != nil && m.GetKind() == kind
 	})
+}
+
+func snapshotJSONRoundTrip(t *testing.T, snap engine.Snapshot) engine.Snapshot {
+	t.Helper()
+	blob, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	var decoded engine.Snapshot
+	if err := json.Unmarshal(blob, &decoded); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	return decoded
 }
 
 func TestFuturesTransferIn_CreditsAndJournals(t *testing.T) {
@@ -73,14 +87,23 @@ func TestFuturesTransferOut_RejectIsCachedByID(t *testing.T) {
 }
 
 func TestFuturesCompensate_CreditsBack(t *testing.T) {
-	svc, eng, _, _ := newSvc()
+	svc, eng, _, jr := newSvc()
 	svc.FuturesTransferIn(user1, "in", "USDT", dec.New("100"))
 	svc.FuturesTransferOut(user1, "out1", "USDT", dec.New("100")) // wallet → 0
-	r := svc.FuturesCompensateTransferOut(user1, "out1-comp", "USDT", dec.New("100"))
+	r := svc.FuturesCompensateTransferOut(user1, "out1", "USDT", dec.New("100"))
 	if r.Status != TransferConfirmed {
 		t.Fatalf("compensate status = %d, want confirmed", r.Status)
 	}
 	eqd(t, eng.WalletOf(user1).Available, "100", "compensate credited the amount back")
+
+	retry := svc.FuturesCompensateTransferOut(user1, "out1", "USDT", dec.New("100"))
+	if retry.Status != TransferDuplicated {
+		t.Fatalf("repeat compensate status = %d, want duplicated", retry.Status)
+	}
+	eqd(t, eng.WalletOf(user1).Available, "100", "repeat compensate must not double credit")
+	if marginEvents(jr, eventpb.PerpMarginEvent_KIND_TRANSFER_IN) != 2 {
+		t.Fatal("seed and first compensate should emit exactly two TRANSFER_IN events")
+	}
 }
 
 func TestFuturesTransfer_DedupSurvivesSnapshot(t *testing.T) {
@@ -91,7 +114,7 @@ func TestFuturesTransfer_DedupSurvivesSnapshot(t *testing.T) {
 		t.Fatalf("capture: %v", err)
 	}
 	eng2 := engine.New()
-	eng2.Restore(engSnap)
+	eng2.Restore(snapshotJSONRoundTrip(t, engSnap))
 	svc2 := New(eng2, &fakeDispatcher{}, &fakeJournal{}, func() uint64 { return 0 },
 		Config{ProducerID: "p"})
 	r := svc2.FuturesTransferIn(user1, "tx1", "USDT", dec.New("500")) // dup after restore
@@ -99,4 +122,50 @@ func TestFuturesTransfer_DedupSurvivesSnapshot(t *testing.T) {
 		t.Fatalf("dedup must survive snapshot, got status %d", r.Status)
 	}
 	eqd(t, eng2.WalletOf(user1).Available, "500", "no double credit after restore")
+}
+
+func TestFuturesCompensate_DedupSurvivesSnapshot(t *testing.T) {
+	svc, _, _, _ := newSvc()
+	svc.FuturesTransferIn(user1, "seed", "USDT", dec.New("100"))
+	svc.FuturesTransferOut(user1, "saga-1", "USDT", dec.New("100"))
+	if got := svc.FuturesCompensateTransferOut(user1, "saga-1", "USDT", dec.New("100")); got.Status != TransferConfirmed {
+		t.Fatalf("first compensate status = %d, want confirmed", got.Status)
+	}
+
+	engSnap, _, err := svc.Capture(nil)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	eng2 := engine.New()
+	eng2.Restore(snapshotJSONRoundTrip(t, engSnap))
+	svc2 := New(eng2, &fakeDispatcher{}, &fakeJournal{}, func() uint64 { return 0 }, Config{ProducerID: "p"})
+	if got := svc2.FuturesCompensateTransferOut(user1, "saga-1", "USDT", dec.New("100")); got.Status != TransferDuplicated {
+		t.Fatalf("restored compensate status = %d, want duplicated", got.Status)
+	}
+	eqd(t, eng2.WalletOf(user1).Available, "100", "restored retry must not double credit")
+}
+
+func TestFuturesCompensate_AfterLegacySnapshot(t *testing.T) {
+	// Pre-v2 snapshots keyed the original debit by the raw transfer_id. A
+	// retry of that debit must remain duplicated, while its compensation must
+	// be allowed once and then acquire the new operation-qualified key.
+	eng := engine.New()
+	eng.Restore(engine.Snapshot{
+		Wallets: []engine.WalletSnap{{UserID: user1, Available: "0", Reserved: "0"}},
+		Transfers: map[string]engine.TransferSnap{
+			"legacy-saga": {Status: uint8(engine.TransferConfirmed), AvailableAfter: "0", ReservedAfter: "0"},
+		},
+	})
+	svc := New(eng, &fakeDispatcher{}, &fakeJournal{}, func() uint64 { return 0 }, Config{ProducerID: "p"})
+
+	if got := svc.FuturesTransferOut(user1, "legacy-saga", "USDT", dec.New("100")); got.Status != TransferDuplicated {
+		t.Fatalf("legacy debit retry status = %d, want duplicated", got.Status)
+	}
+	if got := svc.FuturesCompensateTransferOut(user1, "legacy-saga", "USDT", dec.New("100")); got.Status != TransferConfirmed {
+		t.Fatalf("legacy compensation status = %d, want confirmed", got.Status)
+	}
+	if got := svc.FuturesCompensateTransferOut(user1, "legacy-saga", "USDT", dec.New("100")); got.Status != TransferDuplicated {
+		t.Fatalf("legacy compensation retry status = %d, want duplicated", got.Status)
+	}
+	eqd(t, eng.WalletOf(user1).Available, "100", "legacy snapshot compensation credited once")
 }

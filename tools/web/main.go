@@ -18,8 +18,8 @@
 //
 // Usage (from repo root):
 //
-//	go run ./tools/web                 # serves :7070, proxies BFF at :8080
-//	./bin/opentrade-web --addr :9000 --bff http://host:8080
+//	go run ./tools/web                 # serves 127.0.0.1:7070, proxies BFF at :8080
+//	./bin/opentrade-web --addr 127.0.0.1:9000 --bff http://host:8080
 package main
 
 import (
@@ -46,7 +46,10 @@ var indexHTML []byte
 
 func main() {
 	var (
-		addr = flag.String("addr", ":7070", "dev server listen address")
+		// The console can start/stop local processes and mint test funds. Keep
+		// it loopback-only by default; an explicit --addr is required to expose
+		// that control plane to another host.
+		addr = flag.String("addr", "127.0.0.1:7070", "dev server listen address")
 		bff  = flag.String("bff", "http://localhost:8080", "BFF base URL")
 	)
 	flag.Parse()
@@ -83,11 +86,13 @@ func main() {
 		Addr:              *addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
 		log.Printf("opentrade-web console on %s (repo root %s)", *addr, repoRoot)
-		log.Printf("open http://localhost%s/ — click \"Start All\" to boot the stack", *addr)
+		log.Printf("open http://%s/ — click \"Start All\" to boot the stack", *addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}

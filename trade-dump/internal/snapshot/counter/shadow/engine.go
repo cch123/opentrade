@@ -105,6 +105,13 @@ type Engine struct {
 	// reads to decide when to trigger a Capture (ADR-0061 §4.1).
 	// Reset to 0 by the pipeline immediately before Capture.
 	eventsSinceLastSnapshot uint64
+
+	// poisonErr is set after any state-apply failure. Apply may have changed a
+	// subset of the in-memory projection before returning that error, so the
+	// process must neither accept later records nor publish a snapshot from
+	// this engine. The last durable snapshot remains the recovery point.
+	poisonErr error
+	poisoned  atomic.Bool
 }
 
 // New constructs a fresh ShadowEngine for vshardID. state is always
@@ -201,9 +208,9 @@ func (e *Engine) ClearEventsSinceLastSnapshot() {
 // kafkaOffset is the record's offset on counter-journal; used to
 // seed nextJournalOffset so a restart can resume correctly.
 //
-// Errors from the engine apply pass are returned; the pipeline
-// logs and continues (matching Counter's catch-up semantics —
-// corrupt events don't brick the vshard).
+// Errors from the engine apply pass poison the engine and are returned. The
+// pipeline must stop: skipping a corrupt financial event would let a later
+// record advance the published cursor beyond state that was never applied.
 //
 // Callers: the pipeline Run goroutine is expected to be the sole
 // driver (ADR-0061 §4.2). Apply also takes e.mu to serialise
@@ -214,19 +221,14 @@ func (e *Engine) Apply(evt *eventpb.CounterJournalEvent, kafkaOffset int64) erro
 	if evt == nil {
 		return nil
 	}
+	if err := e.PoisonError(); err != nil {
+		return err
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	// Snapshot cursor first — so a partial apply still leaves the
-	// cursor pointing past this record (subsequent restart will
-	// resume at kafkaOffset+1, and idempotent apply handles any
-	// re-delivered record downstream). This mirrors Counter's
-	// journalHighOffset atomic-max behaviour.
-	e.nextJournalOffset = kafkaOffset + 1
-
-	if evt.CounterSeqId > e.counterSeq {
-		e.counterSeq = evt.CounterSeqId
+	if e.poisonErr != nil {
+		return e.poisonErr
 	}
 
 	// TECheckpointEvent is handled here (not in
@@ -238,24 +240,43 @@ func (e *Engine) Apply(evt *eventpb.CounterJournalEvent, kafkaOffset int64) erro
 			e.teWatermark = cp.TeOffset
 			e.teWatermarkPartition = cp.TePartition
 		}
+		e.commitCursorLocked(evt.CounterSeqId, kafkaOffset)
 		e.eventsSinceLastSnapshot++
 		e.publishedOffset.Store(e.nextJournalOffset)
 		return nil
 	}
 
 	if err := counterstate.ApplyCounterJournalEvent(e.state, evt); err != nil {
-		// Apply failure leaves publishedOffset un-advanced so a
-		// concurrent WaitAppliedTo does not falsely conclude the
-		// record was processed. The pipeline logs and moves on —
-		// next Apply (or retry in catch-up) will advance.
-		return fmt.Errorf("shadow apply: %w", err)
+		e.poisonErr = fmt.Errorf("shadow apply at journal offset %d: %w", kafkaOffset, err)
+		e.poisoned.Store(true)
+		return e.poisonErr
 	}
+	e.commitCursorLocked(evt.CounterSeqId, kafkaOffset)
 	e.eventsSinceLastSnapshot++
 
 	// Publish the cursor at the very end. Writers: single (Run
 	// goroutine under e.mu). Readers: WaitAppliedTo, lock-free.
 	e.publishedOffset.Store(e.nextJournalOffset)
 	return nil
+}
+
+func (e *Engine) commitCursorLocked(counterSeq uint64, kafkaOffset int64) {
+	e.nextJournalOffset = kafkaOffset + 1
+	if counterSeq > e.counterSeq {
+		e.counterSeq = counterSeq
+	}
+}
+
+// PoisonError reports the first apply error. Once poisoned, the engine is
+// intentionally unusable until the process restores a fresh instance from the
+// last durable snapshot.
+func (e *Engine) PoisonError() error {
+	if !e.poisoned.Load() {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.poisonErr
 }
 
 // PublishedOffset returns the most recent cursor position a
@@ -289,6 +310,9 @@ func (e *Engine) PublishedOffset() int64 {
 // codes.DeadlineExceeded so Counter falls through to the legacy
 // fallback path (ADR-0064 §4).
 func (e *Engine) WaitAppliedTo(ctx context.Context, target int64) error {
+	if err := e.PoisonError(); err != nil {
+		return err
+	}
 	// Fast path: already caught up. Saves one ticker allocation
 	// (common case when pipeline is keeping up with journal LEO).
 	if e.publishedOffset.Load() >= target {
@@ -300,6 +324,9 @@ func (e *Engine) WaitAppliedTo(ctx context.Context, target int64) error {
 	for {
 		select {
 		case <-tk.C:
+			if err := e.PoisonError(); err != nil {
+				return err
+			}
 			if e.publishedOffset.Load() >= target {
 				return nil
 			}
@@ -343,8 +370,19 @@ func (e *Engine) WaitAppliedTo(ctx context.Context, target int64) error {
 // idempotency to per-account rings, which are in AccountSnapshot
 // already).
 func (e *Engine) Capture(tsMS int64) *countersnap.ShardSnapshot {
+	snap, _ := e.CaptureChecked(tsMS)
+	return snap
+}
+
+// CaptureChecked refuses to serialize an engine after an apply failure. The
+// in-memory state may be partially mutated at that point; only a restart from
+// the previous durable snapshot can make it trustworthy again.
+func (e *Engine) CaptureChecked(tsMS int64) (*countersnap.ShardSnapshot, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.poisonErr != nil {
+		return nil, e.poisonErr
+	}
 	var offsets map[int32]int64
 	if e.teWatermark > 0 {
 		offsets = map[int32]int64{e.teWatermarkPartition: e.teWatermark}
@@ -356,5 +394,5 @@ func (e *Engine) Capture(tsMS int64) *countersnap.ShardSnapshot {
 		offsets,
 		e.nextJournalOffset,
 		tsMS,
-	)
+	), nil
 }

@@ -24,8 +24,11 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -221,9 +224,13 @@ type Engine struct {
 	terminals   map[uint64]*Trigger
 	termOrder   []uint64 // FIFO of terminal ids for trim
 	byClient    map[string]uint64
-	ocoByClient map[string]string // client_oco_id → oco_group_id (ADR-0044)
-	lastPrice   map[string]dec.Decimal
-	offsets     map[int32]int64
+	ocoByClient map[string]string // scoped client_oco_id → oco_group_id (ADR-0044)
+	// knownOCOGroups survives recovery even when only the deterministic group
+	// id is available from TriggerUpdate. It closes the post-snapshot window
+	// where client_oco_id itself was not present on the journal wire.
+	knownOCOGroups map[string]struct{}
+	lastPrice      map[string]dec.Decimal
+	offsets        map[int32]int64
 	// perpOffsets is the perp-price consumer position (partition →
 	// next-to-consume), the second stateful price feed (ADR-0078 §6).
 	// Checkpointed alongside offsets and restored on startup (ADR-0048).
@@ -284,6 +291,7 @@ func New(cfg Config, idgen IDGen, placer OrderPlacer, reserver Reservations, log
 		terminals:      make(map[uint64]*Trigger),
 		byClient:       make(map[string]uint64),
 		ocoByClient:    make(map[string]string),
+		knownOCOGroups: make(map[string]struct{}),
 		lastPrice:      make(map[string]dec.Decimal),
 		offsets:        make(map[int32]int64),
 		perpOffsets:    make(map[int32]int64),
@@ -372,7 +380,7 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceTriggerRequest) (i
 	// Fast-path dedup: return prior record without reserving anew.
 	if c.ClientTriggerID != "" {
 		e.mu.Lock()
-		if existingID, ok := e.byClient[c.ClientTriggerID]; ok {
+		if existingID, ok := e.byClient[triggerClientKey(c.UserID, c.ClientTriggerID)]; ok {
 			if prior := e.lookupLocked(existingID); prior != nil {
 				e.mu.Unlock()
 				return prior.ID, prior.Status, false, nil
@@ -415,7 +423,7 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceTriggerRequest) (i
 	// orphan a reservation and must release it.
 	e.mu.Lock()
 	if c.ClientTriggerID != "" {
-		if existingID, ok := e.byClient[c.ClientTriggerID]; ok {
+		if existingID, ok := e.byClient[triggerClientKey(c.UserID, c.ClientTriggerID)]; ok {
 			if prior := e.lookupLocked(existingID); prior != nil {
 				priorID, priorStatus := prior.ID, prior.Status
 				e.mu.Unlock()
@@ -441,7 +449,7 @@ func (e *Engine) Place(ctx context.Context, req *condrpc.PlaceTriggerRequest) (i
 	e.pending[c.ID] = c
 	e.incActiveTriggerLocked(c.UserID, c.Symbol)
 	if c.ClientTriggerID != "" {
-		e.byClient[c.ClientTriggerID] = c.ID
+		e.byClient[triggerClientKey(c.UserID, c.ClientTriggerID)] = c.ID
 	}
 	snap := *c
 	e.mu.Unlock()
@@ -503,13 +511,23 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID uint64, clientOCOID string
 		}
 	}
 
-	// Group-level dedup (fast path).
+	// Group-level dedup (fast path). New client-keyed groups use a stable
+	// opaque group id, so recovery can recognize a retry from the journal's
+	// OCOGroupID even though the old wire format does not carry client_oco_id.
+	deterministicGroupID := ""
 	if clientOCOID != "" {
+		deterministicGroupID = clientOCOGroupID(userID, clientOCOID)
 		e.mu.Lock()
-		if gid, ok := e.ocoByClient[clientOCOID]; ok {
+		if gid, ok := e.ocoGroupForClientLocked(userID, clientOCOID); ok {
 			legResults := e.legResultsForGroupLocked(gid)
 			e.mu.Unlock()
 			return gid, legResults, false, nil
+		}
+		if _, ok := e.knownOCOGroups[deterministicGroupID]; ok {
+			e.ocoByClient[ocoClientKey(userID, clientOCOID)] = deterministicGroupID
+			legResults := e.legResultsForGroupLocked(deterministicGroupID)
+			e.mu.Unlock()
+			return deterministicGroupID, legResults, false, nil
 		}
 		e.mu.Unlock()
 	}
@@ -518,7 +536,10 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID uint64, clientOCOID string
 	for _, c := range parsed {
 		c.ID = e.nextID()
 	}
-	groupID = "oco-" + formatUint(parsed[0].ID)
+	groupID = deterministicGroupID
+	if groupID == "" {
+		groupID = "oco-" + formatUint(parsed[0].ID)
+	}
 	for _, c := range parsed {
 		c.OCOGroupID = groupID
 	}
@@ -541,7 +562,7 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID uint64, clientOCOID string
 	// Commit.
 	e.mu.Lock()
 	if clientOCOID != "" {
-		if gid, ok := e.ocoByClient[clientOCOID]; ok {
+		if gid, ok := e.ocoGroupForClientLocked(userID, clientOCOID); ok {
 			// Lost the race: another caller committed the same clientOCOID
 			// between the fast-path dedup and here. Roll back our reservations.
 			legResults := e.legResultsForGroupLocked(gid)
@@ -550,6 +571,15 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID uint64, clientOCOID string
 				e.bestEffortRelease(ctx, r.UserID, e.refIDFor(r.ID))
 			}
 			return gid, legResults, false, nil
+		}
+		if _, ok := e.knownOCOGroups[groupID]; ok {
+			e.ocoByClient[ocoClientKey(userID, clientOCOID)] = groupID
+			legResults := e.legResultsForGroupLocked(groupID)
+			e.mu.Unlock()
+			for _, r := range reserved {
+				e.bestEffortRelease(ctx, r.UserID, e.refIDFor(r.ID))
+			}
+			return groupID, legResults, false, nil
 		}
 	}
 	// ADR-0054 slot cap: all OCO legs share (user, symbol), so the group
@@ -571,12 +601,13 @@ func (e *Engine) PlaceOCO(ctx context.Context, userID uint64, clientOCOID string
 		e.pending[c.ID] = c
 		e.incActiveTriggerLocked(c.UserID, c.Symbol)
 		if c.ClientTriggerID != "" {
-			e.byClient[c.ClientTriggerID] = c.ID
+			e.byClient[triggerClientKey(c.UserID, c.ClientTriggerID)] = c.ID
 		}
 	}
 	if clientOCOID != "" {
-		e.ocoByClient[clientOCOID] = groupID
+		e.ocoByClient[ocoClientKey(userID, clientOCOID)] = groupID
 	}
+	e.knownOCOGroups[groupID] = struct{}{}
 	results = make([]OCOLegResult, len(parsed))
 	snaps := make([]Trigger, len(parsed))
 	for i, c := range parsed {
@@ -604,6 +635,49 @@ func (e *Engine) legResultsForGroupLocked(groupID string) []OCOLegResult {
 		}
 	}
 	return out
+}
+
+func clientOCOGroupID(userID uint64, clientOCOID string) string {
+	sum := sha256.Sum256([]byte(formatUint(userID) + "\x00" + clientOCOID))
+	// 128 bits is ample collision resistance while keeping IDs concise in
+	// logs and journal rows. The raw client key is intentionally not exposed.
+	return "oco-c-" + hex.EncodeToString(sum[:16])
+}
+
+func ocoClientKey(userID uint64, clientOCOID string) string {
+	return "\x00user:" + formatUint(userID) + ":" + clientOCOID
+}
+
+func triggerClientKey(userID uint64, clientTriggerID string) string {
+	return "\x00user:" + formatUint(userID) + ":" + clientTriggerID
+}
+
+func (e *Engine) ocoGroupForClientLocked(userID uint64, clientOCOID string) (string, bool) {
+	if groupID, ok := e.ocoByClient[ocoClientKey(userID, clientOCOID)]; ok {
+		return groupID, true
+	}
+	// Snapshots written before client ids were user-scoped used the raw key.
+	// Accept that fallback only when a retained leg proves ownership; otherwise
+	// one user's client_oco_id could alias another user's group.
+	groupID, ok := e.ocoByClient[clientOCOID]
+	if !ok || !e.ocoGroupOwnedByLocked(groupID, userID) {
+		return "", false
+	}
+	return groupID, true
+}
+
+func (e *Engine) ocoGroupOwnedByLocked(groupID string, userID uint64) bool {
+	for _, trigger := range e.pending {
+		if trigger.OCOGroupID == groupID {
+			return trigger.UserID == userID
+		}
+	}
+	for _, trigger := range e.terminals {
+		if trigger.OCOGroupID == groupID {
+			return trigger.UserID == userID
+		}
+	}
+	return false
 }
 
 // Cancel transitions a PENDING trigger to CANCELED and releases its
@@ -1016,15 +1090,20 @@ func (e *Engine) Restore(pending, terminals []*Trigger, offsets, perpOffsets map
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.pending = make(map[uint64]*Trigger, len(pending))
-	e.byClient = make(map[string]uint64, len(pending))
+	e.byClient = make(map[string]uint64, len(pending)+len(terminals))
+	e.ocoByClient = make(map[string]string)
+	e.knownOCOGroups = make(map[string]struct{})
 	e.activeTriggers = make(map[uint64]map[string]int)
 	for _, c := range pending {
 		cp := *c
 		e.pending[cp.ID] = &cp
 		if cp.ClientTriggerID != "" {
-			e.byClient[cp.ClientTriggerID] = cp.ID
+			e.byClient[triggerClientKey(cp.UserID, cp.ClientTriggerID)] = cp.ID
 		}
 		e.incActiveTriggerLocked(cp.UserID, cp.Symbol)
+		if cp.OCOGroupID != "" {
+			e.knownOCOGroups[cp.OCOGroupID] = struct{}{}
+		}
 	}
 	e.terminals = make(map[uint64]*Trigger, len(terminals))
 	e.termOrder = make([]uint64, 0, len(terminals))
@@ -1032,6 +1111,12 @@ func (e *Engine) Restore(pending, terminals []*Trigger, offsets, perpOffsets map
 		cp := *c
 		e.terminals[cp.ID] = &cp
 		e.termOrder = append(e.termOrder, cp.ID)
+		if cp.ClientTriggerID != "" {
+			e.byClient[triggerClientKey(cp.UserID, cp.ClientTriggerID)] = cp.ID
+		}
+		if cp.OCOGroupID != "" {
+			e.knownOCOGroups[cp.OCOGroupID] = struct{}{}
+		}
 	}
 	e.offsets = make(map[int32]int64, len(offsets))
 	for p, o := range offsets {
@@ -1071,8 +1156,20 @@ func (e *Engine) SetOCOByClient(m map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ocoByClient = make(map[string]string, len(m))
+	if e.knownOCOGroups == nil {
+		e.knownOCOGroups = make(map[string]struct{})
+	}
 	for k, v := range m {
-		e.ocoByClient[k] = v
+		if v == "" {
+			continue
+		}
+		e.knownOCOGroups[v] = struct{}{}
+		// Trade-dump stores group-only recovery markers under a reserved NUL
+		// prefix. They rebuild the durable set without pretending the journal
+		// contained the original client key.
+		if !strings.HasPrefix(k, "\x00oco-group:") {
+			e.ocoByClient[k] = v
+		}
 	}
 }
 
@@ -1514,7 +1611,7 @@ func (e *Engine) graduateLocked(c *Trigger) {
 		e.termOrder = e.termOrder[1:]
 		if t, ok := e.terminals[drop]; ok {
 			if t.ClientTriggerID != "" {
-				delete(e.byClient, t.ClientTriggerID)
+				delete(e.byClient, triggerClientKey(t.UserID, t.ClientTriggerID))
 			}
 			delete(e.terminals, drop)
 		}

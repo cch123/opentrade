@@ -10,8 +10,8 @@
 
 - **Go 1.26+**（`go.work` 锁定，低版本 build 不过；参见 claude memory `feedback_go_version.md`）
 - **Docker + docker compose**（起 Kafka / MySQL / etcd / MinIO）
-- **protoc 3.20+**（改 proto 才需要；主线代码里 `.pb.go` 已 checkin）
-- **make / bash**（smoke / proto 脚本依赖）
+- **buf**（改 proto 才需要；主线代码里生成的 Go 文件已 checkin）
+- **make / bash**（smoke / proto 生成依赖）
 - macOS / Linux；Windows 未验证
 
 ## 一次性初始化
@@ -47,31 +47,54 @@ smoke 脚本里的命令展开版，用于开发 / 调试。每个服务独立�
 
 ```bash
 # 数据目录（放 snapshot）
-mkdir -p data/counter data/match data/quote data/trigger
+mkdir -p data/counter data/match
 
-# Counter（shard 0，单 shard 集群）
+# Counter（单节点持有 16 个 vshard；依赖 etcd 做 assignment）
 go run ./counter/cmd/counter \
-  --shard-id=0 --total-shards=1 \
+  --node-id=counter-0 \
+  --node-endpoint=localhost:8081 \
   --grpc-addr=:8081 \
+  --vshard-count=16 \
+  --brokers=localhost:9092 \
+  --etcd=localhost:2379 \
+  --snapshot-backend=fs \
   --snapshot-dir=./data/counter
 
 # Match（默认 symbol=BTC-USDT）
 go run ./match/cmd/match \
   --instance-id=match-0 --shard-id=match-0 \
   --symbols=BTC-USDT \
+  --brokers=localhost:9092 \
+  --vshard-count=16 \
   --snapshot-dir=./data/match
 
 # trade-dump
-go run ./trade-dump/cmd/trade-dump --instance-id=trade-dump-0
+go run ./trade-dump/cmd/trade-dump \
+  --instance-id=trade-dump-0 \
+  --brokers=localhost:9092 \
+  --pipelines=sql,snap \
+  --mysql-dsn='opentrade:opentrade@tcp(localhost:3306)/opentrade?parseTime=true&multiStatements=true' \
+  --vshard-count=16 \
+  --snapshot-backend=fs \
+  --snapshot-dir=./data/counter
 
 # Quote
-go run ./quote/cmd/quote --instance-id=quote-0
+go run ./quote/cmd/quote --instance-id=quote-0 --brokers=localhost:9092
 
 # Push
-go run ./push/cmd/push --instance-id=push-0 --http=:8090
+go run ./push/cmd/push --instance-id=push-0 --http=:8090 --brokers=localhost:9092
 
 # History（BFF 历史数据需要）
-go run ./history/cmd/history --grpc-addr=:8085
+go run ./history/cmd/history \
+  --grpc=:8085 \
+  --mysql-dsn='opentrade:opentrade@tcp(localhost:3306)/opentrade?parseTime=true&multiStatements=true'
+
+# Asset（funding wallet + funding↔spot transfer saga）
+go run ./asset/cmd/asset \
+  --instance=asset-0 \
+  --grpc=:19000 \
+  --mysql-dsn='opentrade:opentrade@tcp(localhost:3306)/opentrade_asset?parseTime=true&multiStatements=true' \
+  --peer-holders=spot=localhost:8081
 
 # BFF
 go run ./bff/cmd/bff \
@@ -79,29 +102,41 @@ go run ./bff/cmd/bff \
   --counter-shards=localhost:8081 \
   --push-ws=ws://localhost:8090/ws \
   --history=localhost:8085 \
+  --asset=localhost:19000 \
   --market-brokers=localhost:9092
 
 # 可选：trigger
-go run ./trigger/cmd/trigger --grpc-addr=:8086 --snapshot-dir=./data/trigger
+go run ./trigger/cmd/trigger \
+  --instance-id=trigger-0 \
+  --grpc-addr=:8082 \
+  --brokers=localhost:9092 \
+  --counter-shards=localhost:8081 \
+  --snapshot-dir=
 
 # 可选：Web UI（浏览器验证下单流程）
-go run ./tools/web --listen=:7070 --bff=http://localhost:8080 --push-ws=ws://localhost:8090/ws
+go run ./tools/web --addr=localhost:7070 --bff=http://localhost:8080
 ```
 
 ## 常用操作
 
-**下单 / 查余额**（手工验证）：
+**外部入金、转到 spot、下单 / 查余额**（手工验证）：
 
 ```bash
+# 开发充值：先调用 asset-service 的 funding AssetHolder，模拟外部入金。
+curl -X POST http://localhost:19000/opentrade.rpc.assetholder.AssetHolder/TransferIn \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"1001","transfer_id":"funding-in-1001-1","asset":"USDT","amount":"10000","peer_biz":"external-deposit"}'
+
+# 当前 /v1/transfer 是 biz-line 间 saga，不再接受旧的 type=deposit body。
 curl -X POST http://localhost:8080/v1/transfer \
-  -H 'X-User-Id: alice' -H 'Content-Type: application/json' \
-  -d '{"transfer_id":"t1","asset":"USDT","amount":"10000","type":"deposit"}'
+  -H 'X-User-Id: 1001' -H 'Content-Type: application/json' \
+  -d '{"transfer_id":"funding-to-spot-1001-1","from_biz":"funding","to_biz":"spot","asset":"USDT","amount":"10000"}'
 
 curl -X POST http://localhost:8080/v1/order \
-  -H 'X-User-Id: alice' -H 'Content-Type: application/json' \
+  -H 'X-User-Id: 1001' -H 'Content-Type: application/json' \
   -d '{"symbol":"BTC-USDT","side":"buy","order_type":"limit","tif":"gtc","price":"50000","qty":"0.1","client_order_id":"a1"}'
 
-curl http://localhost:8080/v1/account -H 'X-User-Id: alice'
+curl http://localhost:8080/v1/account -H 'X-User-Id: 1001'
 ```
 
 **看 MySQL projection**：
@@ -122,17 +157,20 @@ docker exec opentrade-kafka kafka-console-consumer.sh --bootstrap-server localho
 ## 测试
 
 ```bash
-# 全量
-go test ./... -race
+# 全量（根目录是 multi-module workspace，统一由 Makefile 遍历）
+make test
+
+# 并发密集 module 的 race suite
+make test-race
 
 # 单 module
-go test ./counter/... -race -v
+(cd counter && go test ./... -race -v)
 
 # 单测试
-go test ./counter/internal/service -run TestSelfTrade -race -v
+(cd counter && go test ./internal/service -run TestSelfTrade -race -v)
 
 # 覆盖率
-go test ./counter/... -cover -coverprofile=coverage.out
+(cd counter && go test ./... -cover -coverprofile=../coverage.out)
 go tool cover -html=coverage.out
 ```
 
@@ -141,11 +179,11 @@ go tool cover -html=coverage.out
 ## Proto 改了要重新生成
 
 ```bash
-# 依赖 protoc + protoc-gen-go + protoc-gen-go-grpc
-./scripts/gen-proto.sh  # 或手动对 api/**/*.proto 调 protoc
+# buf.gen.yaml 使用远程 protobuf-go + Connect-Go 插件。
+make proto
 ```
 
-改 proto 一般连带影响多个 module；跑一次 `go test ./... -race` 确认 build 没碎。
+改 proto 一般连带影响多个 module；运行 `make test`，并对并发密集模块补跑 `make test-race`。
 
 ## 停机 / 清场
 
@@ -164,7 +202,7 @@ rm -rf data/ logs/ snapshots/
 
 - **BFF 503 from `/v1/orders`** —— 没启 history 或 BFF 没带 `--history=localhost:8085`。
 - **`GET /v1/depth/` 空** —— BFF 没带 `--market-brokers=localhost:9092`，market cache 没启动。
-- **Counter 启动后不消费** —— `--total-shards` 配置和 `--shard-id` 不一致，或者 etcd 没起。
+- **Counter 启动后不消费** —— etcd 没起、`--node-id` 缺失，或 Counter / Match / trade-dump 的 `--vshard-count` 不一致。
 - **Snapshot 恢复后 balance / order 异常** —— 见 [ADR-0048](./adr/0048-snapshot-offset-atomicity.md)，强制保留 snapshot + Kafka 对齐；别单独删 snapshot 保留 topic，或反过来。
 
 ---

@@ -19,11 +19,11 @@ import (
 // slot of the saga; asset-service orchestrates the cross-biz_line flow
 // and calls these methods on Counter as one leg of each saga.
 //
-// All three methods share a common shape: they translate the incoming
-// request into a counter counterstate.TransferRequest (with SagaTransferID
-// filled from the incoming transfer_id) and call svc.Transfer. Counter's
-// existing per-user sequencer + ring-buffer dedup + counter-journal
-// publisher take care of idempotency and durability.
+// All three methods translate the incoming request into a
+// counterstate.TransferRequest and call svc.Transfer. The external saga ID is
+// retained in SagaTransferID, while TransferID is an operation-qualified
+// internal key. Keeping those identities separate lets TransferOut and its
+// required same-ID compensation each execute exactly once.
 type AssetHolderServer struct {
 	router Router
 }
@@ -64,6 +64,7 @@ func (s *AssetHolderServer) TransferOut(ctx context.Context, req *connect.Reques
 	internalReq, err := holderRequestToEngine(holderRequestInput{
 		UserID:     m.UserId,
 		TransferID: m.TransferId,
+		Operation:  holderOperationTransferOut,
 		Asset:      m.Asset,
 		Amount:     m.Amount,
 		PeerBiz:    m.PeerBiz,
@@ -100,6 +101,7 @@ func (s *AssetHolderServer) TransferIn(ctx context.Context, req *connect.Request
 	internalReq, err := holderRequestToEngine(holderRequestInput{
 		UserID:     m.UserId,
 		TransferID: m.TransferId,
+		Operation:  holderOperationTransferIn,
 		Asset:      m.Asset,
 		Amount:     m.Amount,
 		PeerBiz:    m.PeerBiz,
@@ -130,15 +132,9 @@ func (s *AssetHolderServer) TransferIn(ctx context.Context, req *connect.Request
 // prefixed with a compensate marker so audit consumers (trade-dump,
 // reconciliation jobs) can distinguish normal credits from saga
 // compensations. The SagaTransferID MUST equal the original TransferOut
-// transfer_id; Counter's ring-buffer dedup then makes repeated
-// CompensateTransferOut calls idempotent.
-//
-// Note: although this RPC shares Counter's dedup space with TransferIn /
-// TransferOut (all keyed by req.TransferId), asset-service is expected
-// to use a derived, distinct transfer_id for the compensate leg (e.g.
-// "<saga>-compensate") so the compensate credit is not collapsed with a
-// possible earlier in/out under the same id. That policy lives in
-// asset-service; Counter just honours whatever transfer_id it receives.
+// transfer_id. Counter derives a distinct internal compensation key, so the
+// first compensation is not mistaken for the original debit while retries of
+// the compensation still return DUPLICATED.
 func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *connect.Request[assetholderrpc.CompensateTransferOutRequest]) (*connect.Response[assetholderrpc.CompensateTransferOutResponse], error) {
 	m := req.Msg
 	if m == nil {
@@ -148,6 +144,7 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *conn
 	internalReq, err := holderRequestToEngine(holderRequestInput{
 		UserID:     m.UserId,
 		TransferID: m.TransferId,
+		Operation:  holderOperationCompensateTransferOut,
 		Asset:      m.Asset,
 		Amount:     m.Amount,
 		PeerBiz:    m.PeerBiz,
@@ -180,6 +177,7 @@ func (s *AssetHolderServer) CompensateTransferOut(ctx context.Context, req *conn
 type holderRequestInput struct {
 	UserID     uint64
 	TransferID string
+	Operation  holderOperation
 	Asset      string
 	Amount     string
 	PeerBiz    string
@@ -187,11 +185,27 @@ type holderRequestInput struct {
 	Direction  counterstate.TransferType // TransferWithdraw (out) or TransferDeposit (in / compensate)
 }
 
+type holderOperation string
+
+const (
+	holderOperationTransferOut           holderOperation = "transfer_out"
+	holderOperationTransferIn            holderOperation = "transfer_in"
+	holderOperationCompensateTransferOut holderOperation = "compensate_transfer_out"
+
+	// The snapshot wire field remains repeated string. A versioned namespace
+	// gives each holder RPC its own stable key without a schema migration;
+	// counter-journal replay remembers TransferEvent.transfer_id verbatim.
+	holderDedupKeyPrefix = "assetholder:v1:"
+)
+
+func holderDedupKey(operation holderOperation, transferID string) string {
+	return holderDedupKeyPrefix + string(operation) + ":" + transferID
+}
+
 // holderRequestToEngine validates the RPC shape and returns the
-// corresponding counterstate.TransferRequest. The saga's transfer_id is
-// stamped into BOTH the dedup key (counterstate.TransferRequest.TransferID)
-// AND the cross-ref field (counterstate.TransferRequest.SagaTransferID) so
-// downstream trade-dump projections can correlate either way.
+// corresponding counterstate.TransferRequest. TransferID is the internal,
+// operation-qualified idempotency key persisted in journal/snapshot state;
+// SagaTransferID remains the caller's original ID for external correlation.
 func holderRequestToEngine(in holderRequestInput) (counterstate.TransferRequest, error) {
 	if in.UserID == 0 {
 		return counterstate.TransferRequest{}, errors.New("user_id required")
@@ -202,6 +216,11 @@ func holderRequestToEngine(in holderRequestInput) (counterstate.TransferRequest,
 	if in.Asset == "" {
 		return counterstate.TransferRequest{}, errors.New("asset required")
 	}
+	switch in.Operation {
+	case holderOperationTransferOut, holderOperationTransferIn, holderOperationCompensateTransferOut:
+	default:
+		return counterstate.TransferRequest{}, errors.New("holder operation required")
+	}
 	amount, err := dec.Parse(in.Amount)
 	if err != nil {
 		return counterstate.TransferRequest{}, fmt.Errorf("invalid amount %q: %w", in.Amount, err)
@@ -209,15 +228,24 @@ func holderRequestToEngine(in holderRequestInput) (counterstate.TransferRequest,
 	if amount.Sign() <= 0 {
 		return counterstate.TransferRequest{}, errors.New("amount must be positive")
 	}
+	// Old snapshots and journal records used the unqualified saga ID. Out/In
+	// retries must still match those records after a rolling upgrade. A
+	// compensation intentionally has no fallback: the legacy raw ID normally
+	// belongs to its original TransferOut and must not suppress the refund.
+	legacyID := in.TransferID
+	if in.Operation == holderOperationCompensateTransferOut {
+		legacyID = ""
+	}
 	return counterstate.TransferRequest{
-		TransferID:     in.TransferID,
-		UserID:         in.UserID,
-		Asset:          in.Asset,
-		Amount:         amount,
-		Type:           in.Direction,
-		BizRefID:       in.PeerBiz, // saga counterparty; audit-only
-		Memo:           in.Memo,
-		SagaTransferID: in.TransferID,
+		TransferID:      holderDedupKey(in.Operation, in.TransferID),
+		DedupFallbackID: legacyID,
+		UserID:          in.UserID,
+		Asset:           in.Asset,
+		Amount:          amount,
+		Type:            in.Direction,
+		BizRefID:        in.PeerBiz, // saga counterparty; audit-only
+		Memo:            in.Memo,
+		SagaTransferID:  in.TransferID,
 	}, nil
 }
 

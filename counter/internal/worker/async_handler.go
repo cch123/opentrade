@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"go.uber.org/zap"
@@ -40,6 +41,11 @@ type asyncTradeHandler struct {
 	pending *pendingList
 	advance chan<- struct{}
 	logger  *zap.Logger
+	// fatal is invoked for any per-record fn error. Production panics so the
+	// process cannot checkpoint past a partially applied financial event;
+	// tests replace it to assert the fail-stop boundary without crashing the
+	// test process.
+	fatal func(error)
 }
 
 func newAsyncTradeHandler(svc asyncTradeService, pending *pendingList, advance chan<- struct{}, logger *zap.Logger) *asyncTradeHandler {
@@ -51,15 +57,16 @@ func newAsyncTradeHandler(svc asyncTradeService, pending *pendingList, advance c
 		pending: pending,
 		advance: advance,
 		logger:  logger,
+		fatal: func(err error) {
+			panic(fmt.Errorf("counter: async trade processing failed: %w", err))
+		},
 	}
 }
 
-// HandleTradeRecord implements the tradeevent.Handler interface from
-// the trade-event consumer. Returns nil untriggerly — fn-level
-// failures surface via the async cb (logged; the Publish-5s-panic
-// upstream tears down the process on systemic failures). Returning
-// nil here tells the consumer to continue polling; the advancer is
-// responsible for offset management.
+// HandleTradeRecord implements the tradeevent.Handler interface from the
+// trade-event consumer. Submission itself is non-blocking; fn-level failures
+// arrive through cb and fail-stop the process. Returning nil here only means
+// dispatch succeeded, not that the record is checkpointable.
 //
 // Race-safety contract with Service.HandleTradeRecordAsync:
 //   - The onCount callback fires synchronously BEFORE any SubmitAsync.
@@ -87,15 +94,16 @@ func (h *asyncTradeHandler) HandleTradeRecord(ctx context.Context, evt *eventpb.
 	}
 	cb := func(err error) {
 		if err != nil {
-			// Publish-level retries are handled inside TxnProducer;
-			// anything that reaches here is a non-retryable fn error
-			// (state inconsistency, invalid payload). Log and let
-			// pendingList advance — the match_seq / ring guards keep
-			// the system idempotent across restart.
+			// Never decrement pending on failure. Doing so would let the
+			// advancer publish a checkpoint for state that was not applied.
+			// The default fatal hook panics; if a test hook returns, keeping
+			// this entry pending still preserves the production invariant.
 			h.logger.Error("async trade fn",
 				zap.Int32("partition", partition),
 				zap.Int64("offset", offset),
 				zap.Error(err))
+			h.fatal(err)
+			return
 		}
 		if h.pending.MarkFnDone(infl) {
 			select {

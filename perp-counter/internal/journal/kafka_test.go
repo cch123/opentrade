@@ -1,9 +1,14 @@
 package journal
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
+
+	eventpb "github.com/xargin/opentrade/api/gen/event"
 )
 
 func TestNewProducer_RejectsEmptyBrokers(t *testing.T) {
@@ -45,4 +50,30 @@ func TestNewProducer_TransactionalMode(t *testing.T) {
 	if !p.transactional {
 		t.Error("non-empty TransactionalID should enable transactional mode")
 	}
+}
+
+func TestEmitPublishFailureNotifiesOwnerAndPanics(t *testing.T) {
+	boom := errors.New("broker unavailable")
+	var notified error
+	p := &Producer{
+		cfg:     ProducerConfig{JournalTopic: "perp-journal"},
+		logger:  zap.NewNop(),
+		onFatal: func(err error) { notified = err },
+		publishHook: func(string, string, proto.Message) error {
+			return boom
+		},
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Emit did not panic on an undurable WAL record")
+		}
+		if !errors.Is(notified, boom) {
+			t.Fatalf("OnFatal error = %v, want wrapped broker error", notified)
+		}
+		if err := p.Flush(context.Background()); err == nil {
+			t.Fatal("Flush accepted a producer after fatal WAL failure")
+		}
+	}()
+	p.Emit(&eventpb.PerpJournalEvent{})
 }

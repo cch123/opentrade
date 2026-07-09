@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -35,6 +36,11 @@ type ProducerConfig struct {
 	// ProduceTimeout bounds a single produce/commit. Zero → 5s. The PlaceOrder
 	// RPC blocks on this (an order is not "accepted" until durably in Kafka).
 	ProduceTimeout time.Duration
+
+	// OnFatal is notified once when a perp-journal record cannot be made
+	// durable. The owner must stop serving and skip its final snapshot; keeping
+	// a state mutation whose WAL record is missing would make recovery diverge.
+	OnFatal func(error)
 }
 
 // Producer publishes order-event + perp-journal records. It satisfies the
@@ -45,8 +51,14 @@ type Producer struct {
 	cfg           ProducerConfig
 	logger        *zap.Logger
 	transactional bool
+	onFatal       func(error)
+	fatalOnce     sync.Once
+	fatal         atomic.Bool
 
 	mu sync.Mutex // serializes BeginTransaction … EndTransaction in txn mode
+
+	// publishHook is test-only fault injection. Production leaves it nil.
+	publishHook func(topic, key string, pb proto.Message) error
 }
 
 // NewProducer constructs the client. In transactional mode franz-go issues
@@ -64,6 +76,9 @@ func NewProducer(cfg ProducerConfig, logger *zap.Logger) (*Producer, error) {
 	}
 	if cfg.ProduceTimeout <= 0 {
 		cfg.ProduceTimeout = 5 * time.Second
+	}
+	if logger == nil {
+		logger = zap.NewNop()
 	}
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
@@ -84,7 +99,10 @@ func NewProducer(cfg ProducerConfig, logger *zap.Logger) (*Producer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kgo.NewClient: %w", err)
 	}
-	return &Producer{cli: cli, cfg: cfg, logger: logger, transactional: transactional}, nil
+	return &Producer{
+		cli: cli, cfg: cfg, logger: logger, transactional: transactional,
+		onFatal: cfg.OnFatal,
+	}, nil
 }
 
 // DispatchOrder publishes a new/cancel order-event to the symbol's Match input
@@ -101,16 +119,33 @@ func (p *Producer) DispatchCancel(symbol string, evt *eventpb.OrderEvent) error 
 }
 
 // Emit publishes a perp-journal record (keyed by user_id). The service's
-// Journal interface is fire-and-forget (no error return), matching the spot
-// counter's best-effort settlement publish: a transient failure is logged and
-// the record is re-derivable on consumer replay (idempotency watermarks make
-// reprocessing safe). A durable WAL pipeline with retry-then-handoff is a later
-// milestone (ADR-0068 snapshot/HA).
+// Journal interface has no error return, so failure is a fail-stop boundary:
+// notify the process owner and panic. A request-server panic may be recovered
+// by net/http, but OnFatal concurrently tears the primary down and prevents a
+// final snapshot from blessing the unjournaled mutation.
 func (p *Producer) Emit(evt *eventpb.PerpJournalEvent) {
-	if err := p.publish(p.cfg.JournalTopic, journalPartitionKey(evt), evt); err != nil {
-		p.logger.Error("emit perp-journal",
-			zap.String("key", journalPartitionKey(evt)), zap.Error(err))
+	key := journalPartitionKey(evt)
+	var err error
+	if p.publishHook != nil {
+		err = p.publishHook(p.cfg.JournalTopic, key, evt)
+	} else {
+		err = p.publish(p.cfg.JournalTopic, key, evt)
 	}
+	if err == nil {
+		return
+	}
+	fatalErr := fmt.Errorf("emit perp-journal key %q: %w", key, err)
+	p.logger.Error("emit perp-journal", zap.String("key", key), zap.Error(err))
+	// Capture calls Flush while holding the service snapshot barrier. Marking
+	// fatal before notifying the owner makes any concurrent/later capture abort
+	// instead of persisting state whose WAL event is missing.
+	p.fatal.Store(true)
+	p.fatalOnce.Do(func() {
+		if p.onFatal != nil {
+			p.onFatal(fatalErr)
+		}
+	})
+	panic(fatalErr)
 }
 
 func (p *Producer) orderTopic(symbol string) string {
@@ -154,7 +189,18 @@ func (p *Producer) publish(topic, key string, pb proto.Message) error {
 
 // Flush blocks until buffered records are acked — the ADR-0048 output barrier a
 // future snapshot takes before binding offsets.
-func (p *Producer) Flush(ctx context.Context) error { return p.cli.Flush(ctx) }
+func (p *Producer) Flush(ctx context.Context) error {
+	if p.fatal.Load() {
+		return errors.New("journal: producer is unsafe after a failed WAL publish")
+	}
+	if err := p.cli.Flush(ctx); err != nil {
+		return err
+	}
+	if p.fatal.Load() {
+		return errors.New("journal: producer became unsafe during flush")
+	}
+	return nil
+}
 
 // Close flushes and closes the client.
 func (p *Producer) Close() { p.cli.Close() }

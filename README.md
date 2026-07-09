@@ -132,4 +132,4 @@ go build ./...
 - 涉及架构边界、数据一致性、恢复模型或对外协议的变更，应补充或更新 ADR。
 - 修改 proto 后运行 `make proto`，并提交生成代码。
 - 提交前至少运行相关 module 的 `go test ./...`；跨服务改动优先运行 `make test` 和 `./deploy/scripts/smoke.sh`。
-- 并发密集代码建议额外运行 `go test ./... -race`，尤其是 Counter、Match、Push、Trigger。
+- 并发密集代码建议额外运行 `make test-race`；根目录是 multi-module workspace，不要在仓库根目录直接对 `./...` 运行 Go race test。

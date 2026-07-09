@@ -22,7 +22,7 @@ services:
     image: bitnamilegacy/kafka:3.8
     container_name: opentrade-kafka
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       # KRaft (no ZooKeeper)
       KAFKA_CFG_NODE_ID: "1"
@@ -73,7 +73,7 @@ services:
     image: bitnamilegacy/etcd:3.5
     container_name: opentrade-etcd
     ports:
-      - "2379:2379"
+      - "127.0.0.1:2379:2379"
     environment:
       ALLOW_NONE_AUTHENTICATION: "yes"
       ETCD_ADVERTISE_CLIENT_URLS: "http://localhost:2379"
@@ -91,7 +91,7 @@ services:
     container_name: opentrade-mysql
     command: --default-authentication-plugin=caching_sha2_password --sql-mode=STRICT_ALL_TABLES
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: "root"
       MYSQL_DATABASE: "opentrade"
@@ -111,8 +111,8 @@ services:
     container_name: opentrade-minio
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: "minioadmin"
       MINIO_ROOT_PASSWORD: "minioadmin"
@@ -129,7 +129,7 @@ services:
     image: provectuslabs/kafka-ui:latest
     container_name: opentrade-kafka-ui
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: "opentrade"
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:9092"

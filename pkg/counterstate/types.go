@@ -63,12 +63,20 @@ func (t TransferType) String() string {
 // TransferRequest is the input to ShardState.ApplyTransfer.
 type TransferRequest struct {
 	TransferID string
-	UserID     uint64
-	Asset      string
-	Amount     dec.Decimal
-	Type       TransferType
-	BizRefID   string
-	Memo       string
+	// DedupFallbackID is checked for a previously committed transfer but is
+	// never written to the journal or remembered after a successful request.
+	// AssetHolder uses it while rolling out operation-qualified keys: legacy
+	// snapshots contain only the external saga transfer_id, so TransferIn and
+	// TransferOut retries must still hit that old key. Compensate deliberately
+	// leaves this empty because the same legacy key belongs to the original
+	// TransferOut and must not suppress the reversing credit.
+	DedupFallbackID string
+	UserID          uint64
+	Asset           string
+	Amount          dec.Decimal
+	Type            TransferType
+	BizRefID        string
+	Memo            string
 	// SagaTransferID carries the asset-service saga id (ADR-0057) when
 	// this transfer is one leg of a cross-biz_line saga driven through
 	// the AssetHolder gRPC surface. Empty for system / admin transfers

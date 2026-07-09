@@ -179,27 +179,36 @@ func TestAsyncHandler_SerialConsumerLoop(t *testing.T) {
 	}
 }
 
-func TestAsyncHandler_FnErrorDoesNotBlockAdvance(t *testing.T) {
+func TestAsyncHandler_FnErrorFailsStopAndBlocksAdvance(t *testing.T) {
 	pending := newPendingList()
 	signal := make(chan struct{}, 4)
-	// Service reports an error from the drain fn; handler logs and still
-	// decrements pending — this keeps the watermark moving even under
-	// non-retryable fn errors.
+	// Service reports an error from the drain fn. The handler must invoke its
+	// fail-stop hook without decrementing pending; otherwise the advancer could
+	// permanently checkpoint past the bad record.
 	svc := &stubSvc{
 		plan:  []planStep{{count: 1}},
 		fnErr: errors.New("simulated non-retryable"),
 	}
 	h := newAsyncTradeHandler(svc, pending, signal, zap.NewNop())
+	fatal := make(chan error, 1)
+	h.fatal = func(err error) { fatal <- err }
 	if err := h.HandleTradeRecord(context.Background(), &eventpb.TradeEvent{}, 0, 7); err != nil {
 		t.Fatalf("HandleTradeRecord: %v", err)
 	}
 	select {
-	case <-signal:
+	case err := <-fatal:
+		if err == nil || err.Error() != "simulated non-retryable" {
+			t.Fatalf("fatal error = %v", err)
+		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected advance signal even after fn error")
+		t.Fatal("expected fail-stop hook after fn error")
 	}
-	_, off, ok := pending.PopConsecutiveDone()
-	if !ok || off != 7 {
-		t.Fatalf("pop = (off=%d, ok=%v); want (7, true)", off, ok)
+	select {
+	case <-signal:
+		t.Fatal("fn error signalled the advancer")
+	default:
+	}
+	if _, _, ok := pending.PopConsecutiveDone(); ok {
+		t.Fatal("failed record became checkpoint-eligible")
 	}
 }

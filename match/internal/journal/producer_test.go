@@ -1,11 +1,107 @@
 package journal
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
+	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/xargin/opentrade/match/internal/sequencer"
 	"github.com/xargin/opentrade/pkg/shard"
 )
+
+func newPumpTestProducer() *TradeProducer {
+	return &TradeProducer{
+		cfg: ProducerConfig{
+			BatchSize:     32,
+			FlushInterval: time.Hour,
+		},
+		logger:  zap.NewNop(),
+		flushCh: make(chan flushReq, 1),
+	}
+}
+
+// A snapshot flush has its own deadline and may fail while the producer is
+// otherwise healthy. The output must stay queued: clearing it here would let a
+// later snapshot bind an input offset whose corresponding trade-event was
+// never durable.
+func TestPump_FlushAndWaitFailureRetainsBatch(t *testing.T) {
+	p := newPumpTestProducer()
+	wantErr := errors.New("kafka unavailable")
+
+	var (
+		mu      sync.Mutex
+		batches [][]*sequencer.Output
+	)
+	p.publishBatchHook = func(_ context.Context, batch []*sequencer.Output) error {
+		mu.Lock()
+		defer mu.Unlock()
+		batches = append(batches, append([]*sequencer.Output(nil), batch...))
+		if len(batches) == 1 {
+			return wantErr
+		}
+		return nil
+	}
+
+	outbox := make(chan *sequencer.Output, 1)
+	want := &sequencer.Output{Kind: sequencer.OutputOrderAccepted, Symbol: "BTC-USDT", MatchSeq: 7}
+	outbox <- want
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.Pump(context.Background(), outbox)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.FlushAndWait(ctx); !errors.Is(err, wantErr) {
+		t.Fatalf("first FlushAndWait error = %v, want %v", err, wantErr)
+	}
+	if err := p.FlushAndWait(ctx); err != nil {
+		t.Fatalf("retry FlushAndWait: %v", err)
+	}
+	close(outbox)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Pump did not stop after outbox close")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(batches) != 2 {
+		t.Fatalf("publish calls = %d, want 2", len(batches))
+	}
+	for i, batch := range batches {
+		if len(batch) != 1 || batch[0] != want {
+			t.Fatalf("batch[%d] = %#v, want retained output %#v", i, batch, want)
+		}
+	}
+}
+
+// Autonomous batch/timer flushes have no caller that can safely recover the
+// error. They must fail-stop the process before Match can consume more input or
+// write a snapshot containing the advanced orderbook.
+func TestPump_BackgroundPublishFailurePanics(t *testing.T) {
+	p := newPumpTestProducer()
+	p.cfg.BatchSize = 1
+	p.publishBatchHook = func(context.Context, []*sequencer.Output) error {
+		return errors.New("durability lost")
+	}
+	outbox := make(chan *sequencer.Output, 1)
+	outbox <- &sequencer.Output{Kind: sequencer.OutputTrade, Symbol: "BTC-USDT", MatchSeq: 9}
+	close(outbox)
+
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("Pump returned after a background publish failure; want fail-stop panic")
+		}
+	}()
+	p.Pump(context.Background(), outbox)
+}
 
 // TestOutputTargets_NonTrade: every OutputKind other than Trade carries
 // exactly one user_id and targets one vshard.

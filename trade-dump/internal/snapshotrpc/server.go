@@ -397,6 +397,10 @@ func (s *Server) takeSnapshotOnce(
 	waitCtx, cancel := context.WithTimeout(ctx, s.cfg.WaitApplyTimeout)
 	defer cancel()
 	if err := eng.WaitAppliedTo(waitCtx, leo); err != nil {
+		if poisonErr := eng.PoisonError(); poisonErr != nil {
+			return nil, connect.NewError(connect.CodeUnavailable,
+				fmt.Errorf("shadow engine unhealthy: %w", poisonErr))
+		}
 		// Distinguish: parent ctx canceled (Counter gave up) vs.
 		// our WaitApplyTimeout fired. Both return as
 		// DeadlineExceeded with different reasons for logs.
@@ -423,7 +427,11 @@ func (s *Server) takeSnapshotOnce(
 	// offset than the state already baked in, risking duplicate
 	// apply on any future resume path).
 	now := s.nowFn()
-	snap := eng.Capture(now.UnixMilli())
+	snap, err := eng.CaptureChecked(now.UnixMilli())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("shadow engine unhealthy: %w", err))
+	}
 
 	// On-demand key namespace: separate from periodic snapshot
 	// key to avoid churn on the standard "vshard-NNN" name.

@@ -281,6 +281,41 @@ func TestCapture_PreservesAllRecordFields(t *testing.T) {
 	}
 }
 
+func TestCapture_OCOGroupMarkersSurviveTerminalEvictionAndRestore(t *testing.T) {
+	e := New(1)
+	first := update(1, 1, eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_TRIGGERED)
+	first.OcoGroupId = "oco-c-first"
+	second := update(2, 2, eventpb.TriggerEventStatus_TRIGGER_EVENT_STATUS_TRIGGERED)
+	second.OcoGroupId = "oco-c-second"
+	if err := e.ApplyTriggerUpdate(first, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.ApplyTriggerUpdate(second, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := e.Capture(10, false)
+	if len(snap.Terminals) != 1 || snap.Terminals[0].Id != 2 {
+		t.Fatalf("terminal ring = %+v, want only id=2", snap.Terminals)
+	}
+	for _, groupID := range []string{"oco-c-first", "oco-c-second"} {
+		if got := snap.OcoByClient[ocoGroupMarkerPrefix+groupID]; got != groupID {
+			t.Fatalf("OCO marker %q = %q, want %q", groupID, got, groupID)
+		}
+	}
+
+	restored := New(1)
+	if err := restored.RestoreFromSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip := restored.Capture(11, false)
+	for _, groupID := range []string{"oco-c-first", "oco-c-second"} {
+		if got := roundTrip.OcoByClient[ocoGroupMarkerPrefix+groupID]; got != groupID {
+			t.Fatalf("restored OCO marker %q = %q, want %q", groupID, got, groupID)
+		}
+	}
+}
+
 func recordsEqual(a, b *snapshotpb.TriggerRecord) bool {
 	if a == nil || b == nil {
 		return a == b

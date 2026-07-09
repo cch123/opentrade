@@ -682,9 +682,9 @@ func TestShadow_PublishedOffsetTracksApply(t *testing.T) {
 // contract ADR-0064 WaitAppliedTo relies on: PublishedOffset() only
 // moves forward after a fully successful Apply. A malformed event
 // that fails inside counterstate.ApplyCounterJournalEvent must leave the
-// atomic mirror un-advanced even though nextJournalOffset has been
-// pre-set for restart purposes. Without this invariant a waiter
-// would falsely conclude a corrupt record was processed.
+// atomic mirror and authoritative nextJournalOffset un-advanced. Without
+// this invariant a waiter or snapshot could falsely conclude a corrupt
+// record was processed.
 func TestShadow_PublishedOffsetNotAdvancedOnApplyError(t *testing.T) {
 	sh := New(0)
 	// Prime with one good apply so publishedOffset is > 0.
@@ -697,9 +697,7 @@ func TestShadow_PublishedOffsetNotAdvancedOnApplyError(t *testing.T) {
 	}
 
 	// Malformed event: BalanceSnapshot with unparseable Available
-	// → applyBalanceSnapshot → dec.Parse error. nextJournalOffset
-	// WILL have been pre-advanced inside Apply; publishedOffset
-	// must NOT.
+	// → applyBalanceSnapshot → dec.Parse error.
 	bad := &eventpb.CounterJournalEvent{
 		CounterSeqId: 2,
 		Payload: &eventpb.CounterJournalEvent_Settlement{
@@ -721,6 +719,19 @@ func TestShadow_PublishedOffsetNotAdvancedOnApplyError(t *testing.T) {
 	if sh.PublishedOffset() != seedPublished {
 		t.Fatalf("publishedOffset advanced on failed Apply: %d → %d",
 			seedPublished, sh.PublishedOffset())
+	}
+	if sh.NextJournalOffset() != seedPublished {
+		t.Fatalf("nextJournalOffset advanced on failed Apply: %d → %d",
+			seedPublished, sh.NextJournalOffset())
+	}
+	if sh.PoisonError() == nil {
+		t.Fatal("failed Apply did not poison the engine")
+	}
+	if err := sh.Apply(settlementAt(1001, 1, 0, 1), 102); err == nil {
+		t.Fatal("poisoned engine accepted a later record")
+	}
+	if snap, err := sh.CaptureChecked(time.Now().UnixMilli()); err == nil || snap != nil {
+		t.Fatalf("poisoned capture = (%v, %v), want nil/error", snap, err)
 	}
 }
 

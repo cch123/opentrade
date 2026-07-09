@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -134,6 +135,26 @@ func TestVerifyAPIKey_Missing(t *testing.T) {
 	}
 }
 
+func TestVerifyAPIKey_RejectsOversizedBody(t *testing.T) {
+	store := &fakeStore{m: map[string]struct {
+		s    string
+		u    uint64
+		role string
+	}{"K": {s: "S", u: 1001}}}
+	now := time.Unix(1_700_000_000, 0)
+	rawQ := "timestamp=" + itoa(now.UnixMilli())
+	r := httptest.NewRequest(
+		"POST",
+		"/v1/order?"+rawQ+"&signature=irrelevant",
+		bytes.NewReader(bytes.Repeat([]byte("x"), int(MaxSignedRequestBodyBytes)+1)),
+	)
+	r.Header.Set(HeaderAPIKey, "K")
+
+	if _, _, err := VerifyAPIKeyRequest(r, store, now); !errors.Is(err, ErrAPIKeyBodyTooLarge) {
+		t.Fatalf("VerifyAPIKeyRequest() error = %v, want ErrAPIKeyBodyTooLarge", err)
+	}
+}
+
 func TestMemoryStore_FileRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "keys.json")
@@ -163,6 +184,22 @@ func TestMemoryStore_DuplicateKeysRejected(t *testing.T) {
 	_ = os.WriteFile(path, []byte(content), 0o600)
 	if _, err := NewMemoryStore(path); err == nil {
 		t.Fatal("expected duplicate-key error")
+	}
+}
+
+func TestMemoryStore_MissingFieldErrorDoesNotLeakSecret(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keys.json")
+	const secret = "do-not-print-this-secret"
+	content := `{"keys":[{"key":"K","secret":"` + secret + `","user_id":0}]}`
+	_ = os.WriteFile(path, []byte(content), 0o600)
+
+	_, err := NewMemoryStore(path)
+	if err == nil {
+		t.Fatal("expected missing-field error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("validation error leaked secret: %v", err)
 	}
 }
 

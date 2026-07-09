@@ -21,6 +21,10 @@ type SlidingWindow struct {
 
 	mu      sync.Mutex
 	buckets map[string]*bucket
+	// lastSweep makes cleanup self-maintaining. Requiring every caller to
+	// remember a background sweeper previously let one-off attacker keys
+	// stay in memory for the lifetime of the process.
+	lastSweep time.Time
 
 	nowFunc func() time.Time // override in tests
 }
@@ -55,6 +59,12 @@ func (s *SlidingWindow) Allow(key string) bool {
 	defer s.mu.Unlock()
 	now := s.nowFunc()
 	cutoff := now.Add(-s.window)
+	if s.lastSweep.IsZero() || now.Before(s.lastSweep) {
+		s.lastSweep = now
+	} else if !now.Before(s.lastSweep.Add(s.window)) {
+		s.sweepLocked(cutoff)
+		s.lastSweep = now
+	}
 
 	b, ok := s.buckets[key]
 	if !ok {
@@ -83,6 +93,11 @@ func (s *SlidingWindow) Sweep() {
 	cutoff := now.Add(-s.window)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.sweepLocked(cutoff)
+	s.lastSweep = now
+}
+
+func (s *SlidingWindow) sweepLocked(cutoff time.Time) {
 	for k, b := range s.buckets {
 		if len(b.stamps) == 0 || b.stamps[len(b.stamps)-1].Before(cutoff) {
 			delete(s.buckets, k)

@@ -48,9 +48,10 @@ func TestLoad_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
 	pb := &snapshotpb.TriggerSnapshot{
-		Version:   uint32(Version),
-		TakenAtMs: 99,
-		Offsets:   map[int32]int64{0: 555, 2: 200},
+		Version:             uint32(Version),
+		TakenAtMs:           99,
+		Offsets:             map[int32]int64{0: 555, 2: 200},
+		TriggerEventOffsets: map[int32]int64{0: 123, 1: 456},
 		Pending: []*snapshotpb.TriggerRecord{
 			{
 				Id:         7,
@@ -91,6 +92,9 @@ func TestLoad_HappyPath(t *testing.T) {
 	}
 	if got.Offsets[0] != 555 || got.Offsets[2] != 200 {
 		t.Errorf("Offsets = %+v", got.Offsets)
+	}
+	if got.TriggerEventOffsets[0] != 123 || got.TriggerEventOffsets[1] != 456 {
+		t.Errorf("TriggerEventOffsets = %+v", got.TriggerEventOffsets)
 	}
 	if got.Pending != 1 || got.Terminals != 1 {
 		t.Errorf("counts = (%d, %d), want (1, 1)", got.Pending, got.Terminals)

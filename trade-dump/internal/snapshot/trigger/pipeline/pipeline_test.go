@@ -184,13 +184,30 @@ func TestHandleRecord_TerminalMovesToRing(t *testing.T) {
 	}
 }
 
-func TestHandleRecord_DecodeErrorDropped(t *testing.T) {
+func TestHandleRecord_DecodeErrorFailsStop(t *testing.T) {
 	p := mustPipeline(t, Config{})
 	bad := &kgo.Record{Topic: "trigger-event", Partition: 0, Offset: 0, Value: []byte("garbage")}
-	p.handleRecord(context.Background(), bad) // must not panic
+	if err := p.handleRecord(context.Background(), bad); err == nil {
+		t.Fatal("decode error was silently dropped")
+	}
 	snap := p.engine.Capture(0, false)
 	if len(snap.Pending) != 0 || len(snap.Terminals) != 0 {
 		t.Errorf("garbage record mutated state: pending=%+v terminals=%+v", snap.Pending, snap.Terminals)
+	}
+}
+
+func TestHandleRecord_UnknownPayloadFailsStopWithoutAdvancing(t *testing.T) {
+	p := mustPipeline(t, Config{})
+	value, err := proto.Marshal(&eventpb.TriggerEvent{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &kgo.Record{Topic: "trigger-event", Partition: 0, Offset: 7, Value: value}
+	if err := p.handleRecord(context.Background(), rec); err == nil {
+		t.Fatal("unknown payload was silently checkpointed")
+	}
+	if got := p.engine.NextTriggerEventOffset(0); got != 0 {
+		t.Fatalf("cursor = %d, want 0", got)
 	}
 }
 

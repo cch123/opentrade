@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +43,14 @@ import (
 // timestamp and the server's clock. Anything more skewed than this
 // is treated as a replay / clock-drift attempt.
 const RecvWindow = 5 * time.Second
+
+// MaxSignedRequestBodyBytes bounds the body buffered while verifying an
+// API-key signature. HMAC verification has to see the complete body, so an
+// explicit ceiling prevents an unauthenticated client from forcing an
+// unbounded allocation before normal request handlers run.
+const MaxSignedRequestBodyBytes int64 = 1 << 20
+
+const maxAPIKeyFileBytes int64 = 4 << 20
 
 // Role tags an API-Key's authorization level. "user" is the default and
 // covers every /v1/* endpoint. "admin" is additionally authorized for
@@ -104,9 +113,12 @@ func NewMemoryStore(path string, allowedRoles ...string) (APIKeyStore, error) {
 		return nil, fmt.Errorf("auth: open api keys %s: %w", path, err)
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, maxAPIKeyFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("auth: read api keys: %w", err)
+	}
+	if int64(len(data)) > maxAPIKeyFileBytes {
+		return nil, fmt.Errorf("auth: api key file exceeds %d bytes", maxAPIKeyFileBytes)
 	}
 	var parsed apiKeysFile
 	if err := json.Unmarshal(data, &parsed); err != nil {
@@ -116,9 +128,21 @@ func NewMemoryStore(path string, allowedRoles ...string) (APIKeyStore, error) {
 	for _, r := range allowedRoles {
 		allowed[r] = struct{}{}
 	}
-	for _, r := range parsed.Keys {
-		if r.Key == "" || r.Secret == "" || r.UserID == 0 {
-			return nil, fmt.Errorf("auth: api key entry missing field: %+v", r)
+	for i, r := range parsed.Keys {
+		missing := make([]string, 0, 3)
+		if r.Key == "" {
+			missing = append(missing, "key")
+		}
+		if r.Secret == "" {
+			missing = append(missing, "secret")
+		}
+		if r.UserID == 0 {
+			missing = append(missing, "user_id")
+		}
+		if len(missing) > 0 {
+			// Never format the record itself here: validation errors commonly
+			// reach startup logs, where that would disclose the shared secret.
+			return nil, fmt.Errorf("auth: api key entry %d missing required field(s): %s", i, strings.Join(missing, ", "))
 		}
 		if _, dup := s.m[r.Key]; dup {
 			return nil, fmt.Errorf("auth: duplicate api key %q", r.Key)
@@ -171,6 +195,8 @@ var (
 	ErrAPIKeyBadSig = errors.New("auth: bad signature")
 	// ErrAPIKeyStale: timestamp drift > RecvWindow.
 	ErrAPIKeyStale = errors.New("auth: stale timestamp")
+	// ErrAPIKeyBodyTooLarge: signed body exceeds MaxSignedRequestBodyBytes.
+	ErrAPIKeyBodyTooLarge = errors.New("auth: signed request body too large")
 )
 
 // VerifyAPIKeyRequest authenticates an incoming request against store. On
@@ -208,9 +234,12 @@ func VerifyAPIKeyRequest(r *http.Request, store APIKeyStore, now time.Time) (uin
 	// Build the signing string: drop `signature`, keep all other params
 	// in their on-the-wire order via RawQuery filtering.
 	signingQuery := queryWithoutSignature(r.URL.RawQuery)
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, MaxSignedRequestBodyBytes+1))
 	if err != nil {
 		return 0, "", fmt.Errorf("%w: body read: %v", ErrAPIKeyBadSig, err)
+	}
+	if int64(len(body)) > MaxSignedRequestBodyBytes {
+		return 0, "", ErrAPIKeyBodyTooLarge
 	}
 	// Restore body for downstream handlers.
 	_ = r.Body.Close()

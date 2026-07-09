@@ -133,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 		mux,
 		recoverMW(s.logger),
 		accessLog(s.logger),
+		requestBodyLimitMW,
 		authMW,
 		s.rateLimitMW,
 	)
@@ -180,6 +181,20 @@ func accessLog(logger *zap.Logger) func(http.Handler) http.Handler {
 				zap.String("ip", clientIP(r)))
 		})
 	}
+}
+
+func requestBodyLimitMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > auth.MaxSignedRequestBodyBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		// Content-Length may be absent for chunked requests. MaxBytesReader
+		// keeps those bounded too, and it also applies before API-key auth
+		// buffers the body to verify its HMAC.
+		r.Body = http.MaxBytesReader(w, r.Body, auth.MaxSignedRequestBodyBytes)
+		next.ServeHTTP(w, r)
+	})
 }
 
 type statusWriter struct {

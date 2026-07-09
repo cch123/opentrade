@@ -746,3 +746,17 @@ func TestCancelMyOrders_MissingAuth(t *testing.T) {
 		t.Fatalf("code = %d", rr.Code)
 	}
 }
+
+func TestHandlerRejectsOversizedRequestBodyBeforeAuth(t *testing.T) {
+	srv := newServer(&fakeCounter{})
+	body := bytes.Repeat([]byte("x"), int(auth.MaxSignedRequestBodyBytes)+1)
+	req := httptest.NewRequest(http.MethodPost, "/v1/order", bytes.NewReader(body))
+	req.Header.Set(auth.HeaderUserID, "1001")
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+}

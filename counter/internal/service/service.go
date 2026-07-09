@@ -158,7 +158,8 @@ func (s *Service) OwnsUser(userID uint64) bool {
 // (ADR-0011). Flow:
 //
 //  1. Validate input.
-//  2. Fast-path dedup: if transfer_id was already confirmed, return cached.
+//  2. Fast-path dedup: if transfer_id (or its migration fallback) was already
+//     confirmed, return cached.
 //  3. Enter the user's FIFO sequencer.
 //  4. Inside the sequencer:
 //     a. Re-check dedup (race protection).
@@ -177,11 +178,13 @@ func (s *Service) Transfer(ctx context.Context, req counterstate.TransferRequest
 		return nil, ErrWrongShard
 	}
 
-	// Fast-path: skip the sequencer if this transfer_id was recently applied.
+	// Fast-path: skip the sequencer if this transfer's internal idempotency key
+	// was recently applied. DedupFallbackID preserves retries from snapshots
+	// written before AssetHolder introduced operation-qualified keys.
 	// ADR-0048 backlog item 4 方案 A — the response lacks balance_after /
 	// counter_seq_id (see dedupResult). Callers that need the post-transfer
 	// balance must follow up with QueryBalance.
-	if s.state.Account(req.UserID).TransferSeen(req.TransferID) {
+	if transferSeen(s.state.Account(req.UserID), req) {
 		return dedupResult(req.TransferID), nil
 	}
 
@@ -189,7 +192,7 @@ func (s *Service) Transfer(ctx context.Context, req counterstate.TransferRequest
 		acc := s.state.Account(req.UserID)
 		// Re-check inside the sequencer so concurrent arrivals of the same
 		// transfer_id collapse to one CONFIRMED + (N-1) DUPLICATED.
-		if acc.TransferSeen(req.TransferID) {
+		if transferSeen(acc, req) {
 			return dedupResult(req.TransferID), nil
 		}
 
@@ -299,6 +302,17 @@ func validateTransfer(req counterstate.TransferRequest) error {
 		return ErrMissingAsset
 	}
 	return nil
+}
+
+// transferSeen checks the authoritative key first, then an optional legacy
+// key used only during rolling upgrades. The fallback is intentionally not
+// remembered: every newly committed event and snapshot must converge on the
+// operation-qualified TransferID rather than perpetuating the ambiguous key.
+func transferSeen(acc *counterstate.Account, req counterstate.TransferRequest) bool {
+	if acc.TransferSeen(req.TransferID) {
+		return true
+	}
+	return req.DedupFallbackID != "" && acc.TransferSeen(req.DedupFallbackID)
 }
 
 // dedupResult is the ADR-0048-era canonical duplicate response. The ring

@@ -257,9 +257,16 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			p.logger.Warn("fetch error",
 				zap.String("topic", t), zap.Int32("partition", part), zap.Error(err))
 		})
+		var recordErr error
 		fetches.EachRecord(func(rec *kgo.Record) {
-			p.handleRecord(ctx, rec)
+			if recordErr != nil {
+				return
+			}
+			recordErr = p.handleRecord(ctx, rec)
 		})
+		if recordErr != nil {
+			return recordErr
+		}
 	}
 }
 
@@ -283,48 +290,29 @@ func (p *Pipeline) Close() {
 // TriggerEvent envelope with one of two payloads — TriggerUpdate
 // (full post-state of one trigger) or TriggerMarketCheckpointEvent
 // (ADR-0067 §4 market-data offset advance). Dispatch by variant.
-func (p *Pipeline) handleRecord(ctx context.Context, rec *kgo.Record) {
+func (p *Pipeline) handleRecord(ctx context.Context, rec *kgo.Record) error {
 	var envelope eventpb.TriggerEvent
 	if err := proto.Unmarshal(rec.Value, &envelope); err != nil {
-		p.logger.Error("decode trigger-event envelope",
-			zap.Int32("partition", rec.Partition),
-			zap.Int64("offset", rec.Offset),
-			zap.Error(err))
-		return
+		return fmt.Errorf("trigger snapshot pipeline: decode partition %d offset %d: %w", rec.Partition, rec.Offset, err)
 	}
 	switch payload := envelope.Payload.(type) {
 	case *eventpb.TriggerEvent_Update:
 		u := payload.Update
 		if err := p.engine.ApplyTriggerUpdate(u, rec.Partition, rec.Offset); err != nil {
-			p.logger.Error("apply trigger update",
-				zap.Int32("partition", rec.Partition),
-				zap.Int64("offset", rec.Offset),
-				zap.Uint64("trigger_id", u.Id),
-				zap.Error(err))
-			return
+			return fmt.Errorf("trigger snapshot pipeline: apply update partition %d offset %d: %w", rec.Partition, rec.Offset, err)
 		}
 	case *eventpb.TriggerEvent_MarketCheckpoint:
 		if err := p.engine.ApplyMarketCheckpoint(payload.MarketCheckpoint, rec.Partition, rec.Offset); err != nil {
-			p.logger.Error("apply trigger market checkpoint",
-				zap.Int32("partition", rec.Partition),
-				zap.Int64("offset", rec.Offset),
-				zap.Error(err))
-			return
+			return fmt.Errorf("trigger snapshot pipeline: apply checkpoint partition %d offset %d: %w", rec.Partition, rec.Offset, err)
 		}
 	default:
-		// Forward-compatible: unknown payload variant means a newer
-		// producer added a payload kind this build doesn't know.
-		// Cursor advance happens in the Apply path; with no Apply we
-		// have to do it here so the consumer doesn't replay this
-		// record forever after a snapshot+restart.
-		if err := p.engine.AdvanceCursor(rec.Partition, rec.Offset); err != nil {
-			p.logger.Error("advance cursor for unknown payload",
-				zap.Int32("partition", rec.Partition),
-				zap.Int64("offset", rec.Offset),
-				zap.Error(err))
-		}
+		// Recovery must be fail-closed across schema upgrades. Advancing the
+		// cursor would certify a snapshot that omitted state owned by the new
+		// payload variant.
+		return fmt.Errorf("trigger snapshot pipeline: unknown payload at partition %d offset %d", rec.Partition, rec.Offset)
 	}
 	p.maybeCapture(ctx)
+	return nil
 }
 
 // maybeCapture runs on the Run goroutine. If either the time window

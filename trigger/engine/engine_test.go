@@ -679,6 +679,70 @@ func TestPlaceOCO_DedupByClientOCOID(t *testing.T) {
 	}
 }
 
+func TestPlaceOCO_DedupSurvivesRestoreWithoutClientMap(t *testing.T) {
+	original := newEngineWithReserver(&fakePlacer{}, &fakeReserver{})
+	req := []*condrpc.PlaceTriggerRequest{
+		ocoLeg("restore-a", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", ""),
+		ocoLeg("restore-b", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", ""),
+	}
+	groupID, _, accepted, err := original.PlaceOCO(context.Background(), 101, "restore-oco", req)
+	if err != nil || !accepted {
+		t.Fatalf("initial PlaceOCO: accepted=%v err=%v", accepted, err)
+	}
+
+	pending := original.List(101, false)
+	reserver := &fakeReserver{}
+	restored := newEngineWithReserver(&fakePlacer{}, reserver)
+	// Deliberately omit SetOCOByClient: trigger-event snapshots historically
+	// contained the group id on each leg but not the client_oco_id map.
+	restored.Restore(pending, nil, nil, nil)
+	retry := []*condrpc.PlaceTriggerRequest{
+		ocoLeg("restore-c", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", ""),
+		ocoLeg("restore-d", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", ""),
+	}
+	gotGroup, gotLegs, gotAccepted, err := restored.PlaceOCO(context.Background(), 101, "restore-oco", retry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAccepted || gotGroup != groupID || len(gotLegs) != 2 {
+		t.Fatalf("restored retry = group %q legs %d accepted %v; want %q/2/false", gotGroup, len(gotLegs), gotAccepted, groupID)
+	}
+	if reserver.reserveCount() != 0 {
+		t.Fatalf("restored duplicate reserved %d legs", reserver.reserveCount())
+	}
+}
+
+func TestClientIdempotencyKeysAreUserScoped(t *testing.T) {
+	e := newEngineWithReserver(&fakePlacer{}, nil)
+	first := ocoLeg("shared-leg-a", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", "")
+	first.UserId = 101
+	firstID, _, accepted, err := e.Place(context.Background(), first)
+	if err != nil || !accepted {
+		t.Fatalf("first Place: id=%d accepted=%v err=%v", firstID, accepted, err)
+	}
+	second := ocoLeg("shared-leg-a", condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", "")
+	second.UserId = 202
+	secondID, _, accepted, err := e.Place(context.Background(), second)
+	if err != nil || !accepted || secondID == firstID {
+		t.Fatalf("second user Place: id=%d accepted=%v err=%v; first=%d", secondID, accepted, err, firstID)
+	}
+
+	legsFor := func(user uint64, suffix string) []*condrpc.PlaceTriggerRequest {
+		a := ocoLeg("a-"+suffix, condrpc.TriggerType_TRIGGER_TYPE_TAKE_PROFIT, "110", "")
+		b := ocoLeg("b-"+suffix, condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", "")
+		a.UserId, b.UserId = user, user
+		return []*condrpc.PlaceTriggerRequest{a, b}
+	}
+	groupA, _, okA, err := e.PlaceOCO(context.Background(), 101, "shared-oco", legsFor(101, "one"))
+	if err != nil || !okA {
+		t.Fatalf("user 101 PlaceOCO: %v accepted=%v", err, okA)
+	}
+	groupB, _, okB, err := e.PlaceOCO(context.Background(), 202, "shared-oco", legsFor(202, "two"))
+	if err != nil || !okB || groupA == groupB {
+		t.Fatalf("user 202 PlaceOCO: group=%q accepted=%v err=%v; first=%q", groupB, okB, err, groupA)
+	}
+}
+
 func TestPlaceOCO_MismatchedSymbolRejected(t *testing.T) {
 	e := newEngineWithReserver(&fakePlacer{}, nil)
 	legA := ocoLeg("a", condrpc.TriggerType_TRIGGER_TYPE_STOP_LOSS, "90", "")

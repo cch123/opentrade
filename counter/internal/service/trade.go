@@ -65,8 +65,10 @@ func (s *Service) HandleTradeEvent(ctx context.Context, evt *eventpb.TradeEvent)
 //     advancer signal).
 //
 // Contract:
-//   - onCount is always called, even on 0 (no owned parties / parse
-//     error / unknown payload). When onCount(0), cb is never called.
+//   - onCount is always called. A genuinely irrelevant record (no owned
+//     parties) reports 0. Invalid/unknown records report 1 and immediately
+//     invoke cb with an error so the worker fail-stops without checkpointing
+//     past data it did not understand.
 //   - When onCount(n>0), cb is called exactly n times across one or
 //     more drain goroutines.
 //   - onCount returns before any SubmitAsync happens, so the caller's
@@ -76,7 +78,8 @@ func (s *Service) HandleTradeEvent(ctx context.Context, evt *eventpb.TradeEvent)
 // only the submission semantics differ.
 func (s *Service) HandleTradeEventAsync(ctx context.Context, evt *eventpb.TradeEvent, onCount func(count int32), cb func(err error)) {
 	if evt == nil {
-		onCount(0)
+		onCount(1)
+		cb(errors.New("nil trade event"))
 		return
 	}
 	matchSeq := evt.MatchSeqId
@@ -92,7 +95,8 @@ func (s *Service) HandleTradeEventAsync(ctx context.Context, evt *eventpb.TradeE
 	case *eventpb.TradeEvent_Expired:
 		s.handleExpiredAsync(ctx, p.Expired, matchSeq, onCount, cb)
 	default:
-		onCount(0)
+		onCount(1)
+		cb(ErrUnknownPayload)
 	}
 }
 
@@ -292,15 +296,16 @@ func (s *Service) handleTrade(ctx context.Context, t *eventpb.Trade, matchSeq ui
 //
 // cb is invoked exactly onCount-reported times, from drain goroutines.
 //
-// Parse errors are logged (the trade-event is poisoned and cannot be
-// retried) and produce an onCount(0) so the caller's pendingList
-// advances past the offset.
+// Parse errors are fatal for this offset. Skipping a malformed financial
+// event would make the checkpoint claim state that was never applied; report
+// one failed fn so the worker stops before advancing the watermark.
 func (s *Service) handleTradeAsync(ctx context.Context, t *eventpb.Trade, matchSeq uint64, onCount func(int32), cb func(err error)) {
 	ti, err := parseTradeInput(t)
 	if err != nil {
 		s.logger.Error("handleTradeAsync: parse failed",
 			zap.String("trade_id", t.TradeId), zap.Error(err))
-		onCount(0)
+		onCount(1)
+		cb(err)
 		return
 	}
 

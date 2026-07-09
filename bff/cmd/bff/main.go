@@ -46,6 +46,9 @@ type Config struct {
 	IPRateLimit             int
 	IPRateWindow            time.Duration
 	ReadHeaderTimeout       time.Duration
+	ReadTimeout             time.Duration
+	WriteTimeout            time.Duration
+	IdleTimeout             time.Duration
 	ShutdownGrace           time.Duration
 
 	// Market-data cache for reconnect replay (ADR-0038). Empty brokers
@@ -225,6 +228,9 @@ func main() {
 		Addr:              cfg.HTTPAddr,
 		Handler:           outer,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 
 	var bgWG sync.WaitGroup
@@ -489,6 +495,9 @@ func parseFlags() Config {
 		IPRateLimit:        200,
 		IPRateWindow:       time.Second,
 		ReadHeaderTimeout:  5 * time.Second,
+		ReadTimeout:        15 * time.Second,
+		WriteTimeout:       30 * time.Second,
+		IdleTimeout:        60 * time.Second,
 		ShutdownGrace:      5 * time.Second,
 		MarketTopic:        "market-data",
 		KlineBuffer:        500,
@@ -518,6 +527,10 @@ func parseFlags() Config {
 	flag.DurationVar(&cfg.UserRateWindow, "user-window", cfg.UserRateWindow, "user rate window")
 	flag.IntVar(&cfg.IPRateLimit, "ip-rate", cfg.IPRateLimit, "requests per IP per window")
 	flag.DurationVar(&cfg.IPRateWindow, "ip-window", cfg.IPRateWindow, "IP rate window")
+	flag.DurationVar(&cfg.ReadHeaderTimeout, "read-header-timeout", cfg.ReadHeaderTimeout, "maximum time to read request headers")
+	flag.DurationVar(&cfg.ReadTimeout, "read-timeout", cfg.ReadTimeout, "maximum time to read a complete request")
+	flag.DurationVar(&cfg.WriteTimeout, "write-timeout", cfg.WriteTimeout, "maximum response write time")
+	flag.DurationVar(&cfg.IdleTimeout, "idle-timeout", cfg.IdleTimeout, "keep-alive idle timeout")
 	flag.DurationVar(&cfg.ShutdownGrace, "shutdown-grace", cfg.ShutdownGrace, "graceful shutdown timeout")
 	flag.StringVar(&marketBrokers, "market-brokers", "", "Kafka brokers for the market-data reconnect cache (empty disables /v1/depth + /v1/klines; ADR-0038)")
 	flag.StringVar(&cfg.MarketTopic, "market-topic", cfg.MarketTopic, "market-data topic name (default: market-data)")
@@ -559,6 +572,31 @@ func parseFlags() Config {
 func (c *Config) validate() error {
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("http-addr required")
+	}
+	switch c.Env {
+	case "dev", "prod":
+	default:
+		return fmt.Errorf("--env must be dev or prod, got %q", c.Env)
+	}
+	if c.ReadHeaderTimeout <= 0 || c.ReadTimeout <= 0 || c.WriteTimeout <= 0 || c.IdleTimeout <= 0 {
+		return fmt.Errorf("HTTP timeouts must all be > 0")
+	}
+	switch c.AuthMode {
+	case string(auth.ModeHeader), string(auth.ModeJWT), string(auth.ModeAPIKey), string(auth.ModeMixed):
+	default:
+		return fmt.Errorf("--auth-mode must be header, jwt, api-key, or mixed, got %q", c.AuthMode)
+	}
+	// Header and mixed modes both accept an unsigned X-User-Id identity.
+	// Keeping that development convenience out of production prevents a
+	// deployment typo from turning an arbitrary client header into auth.
+	if c.Env == "prod" && (c.AuthMode == string(auth.ModeHeader) || c.AuthMode == string(auth.ModeMixed)) {
+		return fmt.Errorf("--auth-mode=%s is unsafe with --env=prod; use jwt or api-key", c.AuthMode)
+	}
+	if c.AuthMode == string(auth.ModeJWT) && c.JWTSecret == "" {
+		return fmt.Errorf("--jwt-secret required when --auth-mode=jwt")
+	}
+	if c.AuthMode == string(auth.ModeAPIKey) && c.APIKeysFile == "" {
+		return fmt.Errorf("--api-keys-file required when --auth-mode=api-key")
 	}
 	switch c.ClusteringMode {
 	case "disabled":
